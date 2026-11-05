@@ -206,6 +206,27 @@ func TestScalarPointerDiscovery(t *testing.T) {
 	}
 }
 
+// A sized untyped pointer reads as struct { u8 bytes[N]; }, as a static hook
+// declares it; without a size it has no members.
+func TestResolveArgSizedVoid(t *testing.T) {
+	void := &btf.Pointer{Target: &btf.Const{Type: &btf.Void{}}}
+	params := []FuncParamInfo{{Name: "value", Index: 3, Kind: "pointer", Type: void, VoidSize: 8}, {Name: "key", Index: 2, Kind: "pointer", Type: void}}
+	for _, tc := range []struct {
+		expr   string
+		offset uint32
+	}{{"value->bytes[0]", 0}, {"value->bytes[7]", 7}} {
+		p, err := ResolveArg(tc.expr, params)
+		if err != nil || !p.Deref || p.Offset != tc.offset || p.Size != 1 || p.Index != 3 {
+			t.Fatalf("%s: %+v %v", tc.expr, p, err)
+		}
+	}
+	for _, expr := range []string{"value->bytes[8]", "value[0]", "key->bytes[0]"} {
+		if _, err := ResolveArg(expr, params); err == nil {
+			t.Errorf("accepted %s", expr)
+		}
+	}
+}
+
 // buildSpec marshals one FUNC with a void* value parameter and loads it back,
 // the way inject-run's BTF reaches the capture.
 // buildSpec round-trips one func named rec_hook per tag list.

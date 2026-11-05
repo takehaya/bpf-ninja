@@ -3,6 +3,7 @@ package inject
 import (
 	"fmt"
 
+	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/btf"
 )
 
@@ -66,6 +67,11 @@ func CheckSuppliedMapTypes(m RawMap) error {
 		if err := check(side.typ); err != nil {
 			return err
 		}
+	}
+	// The kernel sets BPF_F_RDONLY_PROG on a devmap, which a loadable ELF
+	// cannot declare, so the live map would never match its schema.
+	if m.Type == ebpf.DevMap || m.Type == ebpf.DevMapHash {
+		return fmt.Errorf("map type %s is unsupported", m.Type)
 	}
 	if reason := checkLookupMap(&m); reason != "" {
 		return fmt.Errorf("%s", reason)

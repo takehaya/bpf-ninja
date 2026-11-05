@@ -92,6 +92,7 @@ class AuditTests(unittest.TestCase):
             self.assertFalse(module.allowed_skip(module.INJECT, test, reason, None))
             self.assertFalse(module.allowed_skip(module.INJECT, test, "verifier rejected a program that should load", "6.1"))
         for test in ("TestBpfLookupInjectionReadOnlyMapCopy", "TestBpfLookupInjectionReadOnlyMapStatic",
+                     "TestBpfLookupInjectionDevMapCopy", "TestBpfLookupInjectionDevMapStatic",
                      "TestBpfLookupInjectionMapInMapStatic", "TestBpfLookupInjectionGenericKindsStatic",
                      "TestBpfDispatchStatic", "TestBpfDispatchTCStatic", "TestBpfDispatchStackLimit", "TestBpfTailCallHooks"):
             self.assertFalse(module.allowed_skip(module.INJECT, test, reason, "6.1"))

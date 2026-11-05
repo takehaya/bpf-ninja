@@ -68,8 +68,8 @@ func (s LookupSelector) empty() bool {
 // empty. HookName becomes a prefix: each statically known map gets its own hook,
 // int PREFIX_MAP(struct xdp_md *ctx, u32 site, const KEY *key, const VALUE *value),
 // where site is the original SitePC. Lookups whose map Auto cannot bind to a
-// typed hook (a map-in-map, an indirect map reference, an XSK map or a devmap)
-// share one PREFIX_any generic hook (see LookupHook.Generic). Sites that
+// typed hook (a map-in-map, an indirect map reference, an XSK map, a sockmap or
+// a sockhash) share one PREFIX_any generic hook (see LookupHook.Generic). Sites that
 // cannot be instrumented are reported in Skipped instead of refusing the
 // transform: an unsupported site or map kind, a hook name past MaxHookName,
 // slots past the audited stack, or, when the instrumented program would break
@@ -315,8 +315,9 @@ func (k HookKind) keyless() bool { return k == HookPush || k == HookPop || k == 
 // ignore the hook's BTF, as 7.0 does: an fentry observer gets every argument,
 // ctx included, as a u64 and reads through them with bpf_probe_read_kernel.
 //
-// ReadOnly is set for a typed lookup hook on a BPF_F_RDONLY_PROG map, which
-// CopyReadOnly turns from an untrusted hook into a copied one.
+// ReadOnly is set for a typed lookup hook on a BPF_F_RDONLY_PROG map, a
+// devmap or a devmap hash (see progFlags), which CopyReadOnly turns from an
+// untrusted hook into a copied one.
 //
 // Generic is set for Auto's one hook over lookups whose map is not known
 // statically (R1 is not a direct map reference), is a map-in-map, or is of a
@@ -481,7 +482,7 @@ func elfLookupMaps(spec *ebpf.CollectionSpec) lookupMapResolver {
 		}
 		var innerFlags uint32
 		if m.InnerMap != nil {
-			innerFlags = m.InnerMap.Flags
+			innerFlags = progFlags(&RawMap{Type: m.InnerMap.Type, Flags: m.InnerMap.Flags})
 		}
 		return name, &RawMap{Name: name, Type: m.Type, KeySize: m.KeySize, ValueSize: m.ValueSize, Flags: m.Flags, InnerFlags: innerFlags, Key: m.Key, Value: m.Value}
 	}
@@ -631,6 +632,8 @@ func discoverMapCalls(insns asm.Instructions, typ ebpf.ProgramType, resolve look
 					// untyped value accepts; its delete goes along.
 					if op.keyless() {
 						site.Reason = checkQueueMap(m)
+					} else if op != HookLookup && (m.Type == ebpf.DevMap || m.Type == ebpf.DevMapHash) {
+						site.Reason = fmt.Sprintf("map type %s is unsupported", m.Type)
 					} else if reason := checkLookupMap(m); reason != "" {
 						site.Reason, typedOnly = reason, genericKinds[m.Type] && (op == HookLookup || sockKinds[m.Type])
 					}
@@ -700,7 +703,7 @@ func lookupTypeName(t btf.Type) string {
 // kind (a cpumap or reuseport array lookup does not load at all). Add a kind
 // only together with its kernel test.
 var genericKinds = map[ebpf.MapType]bool{
-	ebpf.XSKMap: true, ebpf.DevMap: true, ebpf.DevMapHash: true, ebpf.SockMap: true, ebpf.SockHash: true,
+	ebpf.XSKMap: true, ebpf.SockMap: true, ebpf.SockHash: true,
 }
 
 // sockKinds are the genericKinds whose updates and deletes Auto also passes to
@@ -713,6 +716,15 @@ const (
 	bpfFRdonlyProg = 1 << 7
 	bpfFWronlyProg = 1 << 8
 )
+
+// progFlags is m's map_flags as the verifier applies them: the kernel makes a
+// devmap or devmap hash read-only to programs even without BPF_F_RDONLY_PROG.
+func progFlags(m *RawMap) uint32 {
+	if m.Type == ebpf.DevMap || m.Type == ebpf.DevMapHash {
+		return m.Flags | bpfFRdonlyProg
+	}
+	return m.Flags
+}
 
 // lookupLayout is where the transform's slots sit below the 8-byte-aligned
 // floor of the audited mark: ctx, key and result (the three base slots), and
@@ -752,7 +764,7 @@ func (l lookupLayout) copyAt(size uint32) int {
 // instead of a pointer into the map: m is BPF_F_RDONLY_PROG and req asks for
 // CopyReadOnly.
 func copiesValue(m *RawMap, req LookupRequest) bool {
-	if !req.CopyReadOnly || m.Flags&bpfFRdonlyProg == 0 || m.Flags&bpfFWronlyProg != 0 {
+	if !req.CopyReadOnly || progFlags(m)&bpfFRdonlyProg == 0 || m.Flags&bpfFWronlyProg != 0 {
 		return false
 	}
 	field, err := specialField(m.Value)
@@ -927,7 +939,7 @@ func checkLookupMap(m *RawMap) string {
 	// These maps return ordinary value memory. Other map kinds can return
 	// special objects (notably map-in-map), so do not infer their pointer ABI.
 	switch m.Type {
-	case ebpf.Hash, ebpf.Array, ebpf.PerCPUHash, ebpf.PerCPUArray, ebpf.LRUHash, ebpf.LRUCPUHash, ebpf.LPMTrie:
+	case ebpf.Hash, ebpf.Array, ebpf.PerCPUHash, ebpf.PerCPUArray, ebpf.LRUHash, ebpf.LRUCPUHash, ebpf.LPMTrie, ebpf.DevMap, ebpf.DevMapHash:
 	default:
 		return fmt.Sprintf("map type %s is unsupported", m.Type)
 	}
@@ -1704,7 +1716,7 @@ func (e lookupEmitter) splice(groups []lookupGroup) (asm.Instructions, []LookupH
 		if err != nil {
 			return nil, nil, refuse("map %q value BTF: %v", m.Name, err)
 		}
-		restricted := m.Flags&(bpfFRdonlyProg|bpfFWronlyProg) != 0 || field != "" || readOnlyArg
+		restricted := progFlags(m)&(bpfFRdonlyProg|bpfFWronlyProg) != 0 || field != "" || readOnlyArg
 		copied := group.copies(req)
 		static := restricted && !copied && req.StaticUntrusted
 		untrusted := restricted && !copied && !static
@@ -1712,7 +1724,7 @@ func (e lookupEmitter) splice(groups []lookupGroup) (asm.Instructions, []LookupH
 		if copied {
 			copySize = m.ValueSize
 		}
-		readOnly := m.Flags&bpfFRdonlyProg != 0 && m.Flags&bpfFWronlyProg == 0
+		readOnly := progFlags(m)&bpfFRdonlyProg != 0 && m.Flags&bpfFWronlyProg == 0
 		if req.Lookups.hit() {
 			body := lookupHook(group.name, e.ctxType, key, value, req.Auto, untrusted)
 			if untrusted {

@@ -354,12 +354,13 @@ If that name is empty, invalid, taken or too long, `inject-run` names the hook `
 | `update` | `HOOK_MAP_update` | `(ctx, u32 site, const KEY *key, const VALUE *value, u64 status)` |
 | `delete` | `HOOK_MAP_delete` | `(ctx, u32 site, const KEY *key, u64 status)` |
 | `push`, `pop`, `peek` | `HOOK_MAP_push`, `HOOK_MAP_pop`, `HOOK_MAP_peek` | `(ctx, u32 site, const VALUE *value, u64 status)` |
-| a call on a map known only at run time (map-in-map or an indirect map pointer), or a lookup on an XSK map, devmap, devmap hash, sockmap or sockhash | `HOOK_any`, `HOOK_any_update`, `HOOK_any_delete`, `HOOK_any_push`, `HOOK_any_pop`, `HOOK_any_peek` | `(ctx, u64 info, const void *key, const void *value, const void *map)` |
+| a call on a map known only at run time (map-in-map or an indirect map pointer), or a lookup on an XSK map, sockmap or sockhash | `HOOK_any`, `HOOK_any_update`, `HOOK_any_delete`, `HOOK_any_push`, `HOOK_any_pop`, `HOOK_any_peek` | `(ctx, u64 info, const void *key, const void *value, const void *map)` |
 | `entry` | `HOOK_entry` | `(ctx)` |
 | `tail_calls` | `HOOK_tail_call` | `(ctx, u32 site, u32 index)` |
 | `dispatch` | `HOOK` | as `HOOK_any`, for every site |
 
-- A typed hook with `untrusted: true` in the [hooks file](#hooks-file) takes `const void *key` and `const void *value` instead of typed pointers, with their sizes in BTF decl tags when the bytes are plain data. Member filters such as `value->action` need `untrusted: false`.
+- A typed hook with `untrusted: true` in the [hooks file](#hooks-file) takes `const void *key` and `const void *value` instead of typed pointers, with their sizes in BTF decl tags when the bytes are plain data. Member filters such as `value->action` need `untrusted: false`; a sized pointer reads as `struct { u8 bytes[N]; }`, so `value->bytes[0]` selects its first byte, as on a static hook of a map without BTF.
+- A devmap or devmap hash lookup gets a typed hook like a `BPF_F_RDONLY_PROG` map's, since the kernel makes those maps read-only to programs: untrusted, static with `static_untrusted`, or copied with `copy_read_only`. Its value is the target ifindex, followed by the attached program's ID when the value is 8 bytes.
 - An update or delete on a sockmap or sockhash goes to `HOOK_any_update` or `HOOK_any_delete`, since its value is a socket.
 - A `HOOK_any` hook gets a NULL `value` on a lookup miss or a delete, and a push, pop or peek on it gets a NULL `key`.
 

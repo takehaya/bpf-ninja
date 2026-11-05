@@ -60,6 +60,12 @@ func ResolveArg(expr string, params []FuncParamInfo) (FuncParamInfo, error) {
 			return FuncParamInfo{}, fmt.Errorf("parameter %q must be a pointer to a struct/union", name)
 		}
 		typ := btf.UnderlyingType(ptr.Target)
+		if _, void := typ.(*btf.Void); void && p.VoidSize > 0 {
+			// A sized untyped key or value reads as the struct { u8 bytes[N]; }
+			// a static hook declares for a map without BTF.
+			bytes := &btf.Array{Index: &btf.Int{Name: "u32", Size: 4}, Type: &btf.Int{Name: "u8", Size: 1}, Nelems: p.VoidSize}
+			typ = &btf.Struct{Size: p.VoidSize, Members: []btf.Member{{Name: "bytes", Type: bytes}}}
+		}
 		var offset uint64
 		if rootIndexes != nil {
 			if rootIndexes[0] != "0" {

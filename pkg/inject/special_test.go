@@ -164,7 +164,7 @@ func TestSockMapUpdateGeneric(t *testing.T) {
 	for _, tc := range []struct {
 		typ     ebpf.MapType
 		generic bool
-	}{{ebpf.SockHash, true}, {ebpf.SockMap, true}, {ebpf.DevMap, false}} {
+	}{{ebpf.SockHash, true}, {ebpf.SockMap, true}, {ebpf.DevMap, false}, {ebpf.DevMapHash, false}} {
 		spec := sockUpdateFixture()
 		spec.Maps["m"].Type = tc.typ
 		req := LookupRequest{ProgramName: "p", Auto: true, Lookups: LookupNone, Updates: CallError, Deletes: CallError,
