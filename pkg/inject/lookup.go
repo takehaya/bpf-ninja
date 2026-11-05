@@ -56,11 +56,10 @@ func (s LookupSelector) empty() bool {
 	return s.MapName == "" && s.FuncName == "" && s.Line == 0 && len(s.SitePCs) == 0 && !s.AllMatches
 }
 
-// LookupRequest describes one hash-bound lookup transformation. Lookups are
-// instrumented only in the entry function: a subprogram has its own frame and
-// cannot reach the entry frame's ctx spill (TailCalls does reach subprograms,
-// see below). Stack certifies the reserved spill slots below the audited
-// bound, three, four when a hook takes the map pointer (generic or Dispatch),
+// LookupRequest describes one hash-bound lookup transformation. A subprogram
+// site is supported only when BTF and context flow prove its context source;
+// it initializes the context slot in its own frame. Stack certifies the
+// reserved spill slots below the audited bound, three, four when a hook takes the map pointer (generic or Dispatch),
 // plus the value copy with CopyReadOnly, including aliases and callee stacks.
 // No caller-saved register liveness certification is required at helper calls.
 //
@@ -1261,7 +1260,7 @@ func autoHookName(prefix, mapName string, index int, used map[string]bool) strin
 
 func transformLookupProgramGuarded(insns asm.Instructions, typ ebpf.ProgramType, types *btf.Spec, resolve lookupMapResolver, req LookupRequest, probe func() error) (asm.Instructions, lookupPlan, error) {
 	var plan lookupPlan
-	// Missing function metadata would otherwise surface as "not in the entry function".
+	// Context proof and relocation both require complete function metadata.
 	if err := checkExtInfo(insns); err != nil {
 		return nil, plan, err
 	}
@@ -1295,41 +1294,6 @@ func transformLookupProgramGuarded(insns asm.Instructions, typ ebpf.ProgramType,
 	}
 	if err := CheckLookupStack(req); err != nil {
 		return nil, plan, err
-	}
-	// A static hook does not get the kernel's typed context-argument check.
-	// Until attach-time context proof covers callees, keep such sites closed.
-	var globalGroups []lookupGroup
-	for _, group := range groups {
-		static, err := groupUsesStaticHook(group, req)
-		if err != nil {
-			return nil, plan, err
-		}
-		if !static {
-			globalGroups = append(globalGroups, group)
-			continue
-		}
-		kept := group.sites[:0]
-		for _, site := range group.sites {
-			if site.CtxSource == "entry" {
-				kept = append(kept, site)
-				continue
-			}
-			const reason = "site in a callee frame needs a global hook; static hook form"
-			if !req.Auto {
-				return nil, plan, refuse("%s", reason)
-			}
-			skipped := site.LookupSite
-			skipped.Reason = reason
-			plan.skipped = append(plan.skipped, skipped)
-		}
-		if len(kept) != 0 {
-			group.sites = kept
-			globalGroups = append(globalGroups, group)
-		}
-	}
-	groups = globalGroups
-	if len(groups) == 0 && !req.Entry && !req.TailCalls {
-		return nil, plan, refuse("no supported lookup sites (%d skipped)", len(plan.skipped))
 	}
 	// Drop groups whose slots reach past siteFrameLimit. Auto skips the
 	// sites and lists them; explicit selection refuses, since the user named
@@ -1525,25 +1489,6 @@ func transformLookupProgramGuarded(insns asm.Instructions, typ ebpf.ProgramType,
 	sort.Slice(selected, func(i, j int) bool { return selected[i].SitePC < selected[j].SitePC })
 	plan.sites, plan.hooks = publicLookupSites(selected), hooks
 	return spliced, plan, nil
-}
-
-func groupUsesStaticHook(group lookupGroup, req LookupRequest) (bool, error) {
-	if !req.StaticUntrusted {
-		return false, nil
-	}
-	if group.generic || req.Dispatch {
-		return true, nil
-	}
-	if group.op != HookLookup {
-		return group.readOnlyArg(), nil
-	}
-	m := group.sites[0].mapInfo
-	field, err := specialField(m.Value)
-	if err != nil {
-		return false, refuse("map %q value BTF: %v", m.Name, err)
-	}
-	restricted := m.Flags&(bpfFRdonlyProg|bpfFWronlyProg) != 0 || field != "" || group.readOnlyArg()
-	return req.Lookups.hit() && restricted && !group.copies(req) || req.Lookups.miss() && group.readOnlyArg(), nil
 }
 
 // skipGroup appends group's sites to skipped with reason.

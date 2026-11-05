@@ -79,6 +79,22 @@ func TestProve(t *testing.T) {
 		if got, ok := FunctionAt(functions, leafPC); !ok || got.Name != "leaf" {
 			t.Errorf("FunctionAt = %+v,%v", got, ok)
 		}
+		if reason := CallsRefusal(insns, "leaf"); reason != "" {
+			t.Fatalf("CallsRefusal: %s", reason)
+		}
+		bad := append(asm.Instructions(nil), insns...)
+		for i := range bad {
+			if bad[i].IsFunctionCall() && bad[i].Reference() == "leaf" {
+				bad[i-1] = asm.Mov.Imm(asm.R1, 0)
+				break
+			}
+		}
+		if reason := CallsRefusal(bad, "leaf"); !strings.Contains(reason, "a caller does not pass the context") {
+			t.Fatalf("wrong call accepted: %q", reason)
+		}
+		if reason := CallsRefusal(insns, "absent"); !strings.Contains(reason, "absent") {
+			t.Fatalf("missing target reason = %q", reason)
+		}
 	})
 
 	for _, tc := range []struct {

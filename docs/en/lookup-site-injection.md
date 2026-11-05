@@ -370,7 +370,7 @@ The package checks the program type; the cooperative loader owns attachment mode
 The generated hooks read the context's first word (`len` for `__sk_buff`) and call no helper that changes packet data.
 
 For packet capture at a static XDP or tc hook, bpf-ninja reads the context with `bpf_probe_read_kernel`, after checking that every call passes the context the entry spilled as the first argument.
-A static hook called from a subprogram is skipped until the translated-instruction context check can prove that call, and a hook whose spill a callee may overwrite is refused; [arg-member-filter.md](arg-member-filter.md) lists the cases.
+A static hook called from a subprogram is accepted only when the translated-instruction context check proves every direct call chain again at attach time, and a hook whose spill a callee may overwrite is refused; [arg-member-filter.md](arg-member-filter.md) lists the cases.
 At tc it reads `sk_buff.data`, `len` and `data_len`, using offsets from kernel BTF, and captures only the linear head, `len - data_len`, as at other tc hooks; fragment bytes are not captured.
 A failed context read produces no capture, and a filter with `--tc-vlan-reinsert` is refused on this path.
 
@@ -429,6 +429,21 @@ call HOOK
 restore:
 r0 = *(u64 *)(r10 + result_slot)
 ```
+
+Before the key spill, a callee-frame site initializes its own `ctx_slot` from the source proved during discovery:
+
+```text
+*(u64 *)(r10 + ctx_slot) = r6       ; register premise, R6-R9
+```
+
+or:
+
+```text
+r0 = *(u64 *)(r10 - 80)             ; slot premise example
+*(u64 *)(r10 + ctx_slot) = r0
+```
+
+R0 is dead immediately before the helper, which defines it again.
 
 With `Auto`, the argument setup is `r1 = ctx`, `r2 = SitePC` (a 32-bit move), `r3 = key`, `r4 = r0`, one instruction longer per site.
 A generic-hook site also saves R1 into `map_slot` before the helper and loads it into R5, two more instructions.

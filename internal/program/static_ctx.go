@@ -33,10 +33,10 @@ func checkStaticCtxInsns(insns asm.Instructions, name string) error {
 			"which keeps R1-R5, cannot be told from one that clobbers them; grant CAP_SYSLOG and keep kernel.kptr_restrict below 2, "+
 			"or capture at its caller or at a global function", name, hostArch)
 	}
-	if why := ctxflow.Refusal(insns, name); why != "" {
+	if why := ctxflow.CallsRefusal(insns, name); why != "" {
 		return fmt.Errorf("static function %q: cannot show that every call passes the program context as its first argument (%s), "+
-			"which a context read with bpf_probe_read_kernel relies on; only calls from the entry function, "+
-			"with the context in a register or an 8-byte stack spill, are accepted; capture at its caller or at a global function", name, why)
+			"which a context read with bpf_probe_read_kernel relies on; direct call chains with BTF context parameters "+
+			"and a held register or 8-byte stack spill are accepted; capture at its caller or at a global function", name, why)
 	}
 	return nil
 }

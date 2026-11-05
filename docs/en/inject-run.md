@@ -68,7 +68,6 @@ Each op appears once, so use `lookup:any`, not `lookup:hit` together with `looku
 It skips these sites:
 
 - a function without a context parameter, a callback, a caller that does not pass the context, or a site where no callee-saved register or aligned stack slot still holds it;
-- a called-subprogram site that needs a static hook (global hooks are supported there; see [Load on kernels without arg:untrusted](#load-on-kernels-without-arguntrusted));
 - a call on a map that `maps` does not name (`map not selected by Maps`);
 - a call on a map kind that has no hook;
 - a site whose hook name would be longer than 127 bytes;
@@ -505,10 +504,10 @@ prog 2  entry
 │  ├─ map flows   Hash          delete     prog.c:33  ✓ injectable  (pc 18)
 │  └─ map jmp     ProgramArray  tail_call  prog.c:35  → prog 3
 ├─ func classify
-│  ├─ map flows   Hash          lookup     prog.c:11  ✗ not in the entry function  (pc 33)
-│  └─ map flows   Hash          update     prog.c:14  ✗ not in the entry function  (pc 45)
+│  ├─ map flows   Hash          lookup     prog.c:11  ✗ function has no context parameter  (pc 33)
+│  └─ map flows   Hash          update     prog.c:14  ✗ context is not held in a callee-saved register or an 8-byte slot at the site  (pc 45)
 ├─ func global_sub
-│  └─ map routes  LPMTrie       lookup     prog.c:21  ✗ not in the entry function  (pc 56)
+│  └─ map routes  LPMTrie       lookup     prog.c:21  ✗ a caller does not pass the context (entry@42)  (pc 56)
 └─ prog 3  next_stage  (tail call: jmp[0])
    └─ func next_stage
       └─ map flows  Hash  update  prog.c:45  ✓ injectable  (pc 11)
@@ -601,7 +600,7 @@ In both modes:
 - `inject-run` handles only native x86-64 `bpf(2)` calls.
   Compat and x32 calls pass through without injection.
 - `inject-run` can rewrite only XDP and tc (`SchedCLS`, `SchedACT`) programs loaded with BTF and `func_info`.
-- It instruments map calls in the entry function and in called subprograms whose BTF parameter, callers and held context value can all be proved; callbacks and unproved sites remain skipped.
+- It instruments map calls in the entry function and in called subprograms whose BTF parameter, callers and held context value can all be proved; callbacks and unproved sites remain skipped. Static hooks repeat the proof on translated instructions before attach.
   One rule applies per program.
 - A function-name selector uses the BTF `inject-run` saw the loader load.
   It may not match when the BTF fd was duplicated, inherited, passed in from outside, or evicted from the 64 MiB cache.

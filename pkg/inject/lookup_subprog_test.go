@@ -135,12 +135,12 @@ func TestSubprogramCallerWithoutCtxSkipped(t *testing.T) {
 	}
 }
 
-func TestSubprogramStaticHookSkipped(t *testing.T) {
+func TestSubprogramStaticHookAccepted(t *testing.T) {
 	spec := subprogramLookupFixture("register")
 	req := autoReq()
 	req.Stack.LowestOffset, req.Dispatch, req.StaticUntrusted, req.Entry = -16, true, true, true
 	plan, err := transformLookup(spec, req)
-	if err != nil || len(plan.skipped) != 1 || plan.skipped[0].Reason != "site in a callee frame needs a global hook; static hook form" {
+	if err != nil || len(plan.skipped) != 0 || len(plan.sites) != 1 || len(plan.hooks) != 2 || !plan.hooks[0].Static || !plan.hooks[1].Static {
 		t.Fatalf("plan=%+v err=%v", plan, err)
 	}
 }

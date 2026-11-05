@@ -183,6 +183,43 @@ func Prove(insns asm.Instructions, ctxStruct btf.Type) map[int]Proof {
 	return out
 }
 
+// CallsRefusal reports why calls to name are not proved to pass the program
+// context in R1. The target's first BTF parameter supplies the context type.
+func CallsRefusal(insns asm.Instructions, name string) string {
+	target, ctxStruct, found := -1, btf.Type(nil), false
+	for it := insns.Iterate(); it.Next(); {
+		fn := btf.FuncMetadata(it.Ins)
+		if fn == nil || fn.Name != name {
+			continue
+		}
+		if found {
+			return "the target function name is ambiguous"
+		}
+		found, target = true, int(it.Offset)
+		proto, ok := fn.Type.(*btf.FuncProto)
+		if !ok || len(proto.Params) == 0 {
+			return "the target has no BTF context pointer in its first parameter"
+		}
+		param := btf.UnderlyingType(proto.Params[0].Type)
+		ptr, ok := param.(*btf.Pointer)
+		if !ok || ptr.Target == nil {
+			return "the target has no BTF context pointer in its first parameter"
+		}
+		ctxStruct = btf.UnderlyingType(ptr.Target)
+	}
+	if !found {
+		return "the target function is absent from BTF function metadata"
+	}
+	proof, ok := Prove(insns, ctxStruct)[target]
+	if !ok {
+		return "the target function is outside the proved function graph"
+	}
+	if !proof.Proven {
+		return proof.Reason
+	}
+	return ""
+}
+
 func newFlowProgram(insns asm.Instructions, ctxStruct btf.Type) *flowProgram {
 	p := &flowProgram{insns: insns, funcs: Functions(insns, ctxStruct), at: map[int]int{}, symbols: map[string]int{},
 		starts: map[int]int{}, callback: map[int]bool{}, callers: map[int][]callSite{}, writeFree: map[int]bool{}}
