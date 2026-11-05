@@ -95,6 +95,10 @@ var errTrialVerifier = errors.New("trial load was rejected by the verifier")
 
 var errIndirectJump = errors.New("indirect jump")
 
+// errJumpLimit marks a rewritten load the verifier refused for too long a
+// sequence of pending jumps.
+var errJumpLimit = errors.New("verifier jump sequence limit")
+
 func (s *supervisor) log(format string, args ...any) {
 	_, _ = fmt.Fprintf(s.options.Log, "inject-run: "+format+"\n", args...)
 }
@@ -418,10 +422,16 @@ func (s *supervisor) entry(pid int, t *thread, regs unix.PtraceRegs) error {
 	var result *inject.LookupResultRaw
 	var entry string
 	var injectErr error
+	branches := ""
 	if stackErr != nil {
 		injectErr = fmt.Errorf("stack depth unavailable: %w", stackErr)
 	} else {
-		ret, result, entry, injectErr = s.transformLoad(r, attr, *rule, form, stack)
+		ret, result, entry, injectErr = s.transformLoad(r, attr, *rule, form, stack, false)
+		if errors.Is(injectErr, errJumpLimit) && r.broken == nil {
+			s.log("program %q: %v; retrying with lookup misses first", name, injectErr)
+			branches = ", lookup branches miss-first"
+			ret, result, entry, injectErr = s.transformLoad(r, attr, *rule, form, stack, true)
+		}
 	}
 	if r.broken != nil {
 		return r.broken
@@ -449,7 +459,7 @@ func (s *supervisor) entry(pid int, t *thread, regs unix.PtraceRegs) error {
 			return err
 		}
 	} else {
-		s.log("program %q: injected %s, tracee fd %d", name, summary, ret)
+		s.log("program %q: injected %s, tracee fd %d%s", name, summary, ret, branches)
 		if s.options.OnInject != nil {
 			inj := Injection{HookForm: form, Program: name, Func: entry, Type: ebpf.ProgramType(u32(attr, 0)), Hooks: result.Hooks, Skipped: result.Skipped, Stack: stack}
 			// bpf_prog_info starts with type and id.
@@ -711,7 +721,7 @@ func (s *supervisor) discover(r *remote, attr []byte, name string, stack inject.
 	return nil
 }
 
-func (s *supervisor) transformLoad(r *remote, attr []byte, rule Rule, form HookForm, stack inject.StackReport) (ret int64, result *inject.LookupResultRaw, entry string, err error) {
+func (s *supervisor) transformLoad(r *remote, attr []byte, rule Rule, form HookForm, stack inject.StackReport, missFirst bool) (ret int64, result *inject.LookupResultRaw, entry string, err error) {
 	spec, err := s.programBTF(r, attr)
 	if err != nil {
 		return 0, nil, "", err
@@ -743,6 +753,7 @@ func (s *supervisor) transformLoad(r *remote, attr []byte, rule Rule, form HookF
 	}
 	request := rule.request()
 	request.StaticUntrusted = form.Form == "static"
+	request.MissFirst = missFirst
 	request.Stack = inject.StackAudit{Frames: stack.Frames(), Source: stack.Source, FrameRounding: stack.FrameRounding}
 	injectcheck.Label(raw.Instructions)
 	result, err = inject.TransformLookupRawGuarded(raw, request, s.probeTailCallReachability)
@@ -836,11 +847,49 @@ func (s *supervisor) transformLoad(r *remote, attr []byte, rule Rule, form HookF
 		}
 	}
 	if err := syscallError(ret, nil); err != nil {
+		if !missFirst && missFirstDiffers(request, result) && s.hitJumpLimit(r, patched) {
+			err = fmt.Errorf("%w: %w", errJumpLimit, err)
+		}
 		// Carry the summary so the caller can name the attempted hooks, and a
 		// hint when an untrusted-pointer ABI mismatch may be the cause.
 		return 0, result, entry, fmt.Errorf("transformed PROG_LOAD: %w%s", err, untrustedHint(form, result, err))
 	}
 	return ret, result, entry, nil
+}
+
+// missFirstDiffers reports whether MissFirst would change the rewrite: some
+// lookup hook observes hits. A miss-only site is already laid out miss-first.
+func missFirstDiffers(request inject.LookupRequestRaw, result *inject.LookupResultRaw) bool {
+	if request.Lookups == inject.LookupMiss || request.Lookups == inject.LookupNone {
+		return false
+	}
+	return slices.ContainsFunc(result.Hooks, func(h inject.LookupHook) bool { return h.Kind == inject.HookLookup })
+}
+
+// hitJumpLimit repeats a refused load with a log of its own to read why. The
+// errno cannot say: it differs across kernels and E2BIG also means the
+// instruction limit, and the loader's log may be off or end before the message.
+// A refused load binds no map, and this one does not touch the loader's log.
+func (s *supervisor) hitJumpLimit(r *remote, attr []byte) bool {
+	const logSize = 64 << 10
+	logAddr, err := r.alloc(make([]byte, logSize))
+	if err != nil {
+		return false
+	}
+	trial := bytes.Clone(attr)
+	put32(trial, 24, 4) // BPF_LOG_STATS
+	put32(trial, 28, logSize)
+	put64(trial, 32, logAddr)
+	fd, err := r.bpf(unix.BPF_PROG_LOAD, trial)
+	if err == nil {
+		closed, closeErr := r.call(unix.SYS_CLOSE, uint64(fd))
+		if closeErr = syscallError(closed, closeErr); closeErr != nil {
+			r.broken = fmt.Errorf("close repeated load fd: %w", closeErr)
+		}
+		return false
+	}
+	log, err := readMemory(r.pid, logAddr, logSize)
+	return err == nil && strings.Contains(cstring(log), "jumps is too complex")
 }
 
 // untrustedHint explains how to load a program whose hooks take arg:untrusted

@@ -574,7 +574,8 @@ Diagnostics go to stderr:
 | `program "P": checker accepted sites=N hooks=N floor=N` | The assembled substituted stream passed the load-stream checker. |
 | `program "P": checker not applicable: REASON; load not validated` | The checker cannot pair this stream. The substituted load proceeds unchecked by default; `--fail-closed` returns `EPERM`. |
 | `program "P": injection skipped: checker rejected the transform: ERR; probe was not installed; attempted ...` | The stream could not be read or decoded, or the checker rejected it. The original program is retried by default; `--fail-closed` returns `EPERM`. |
-| `program "P": injected hook "H" (...), tracee fd N` | The rewritten program loaded. The line names each hook with its map and site PCs, then each site `auto` skipped and why. |
+| `program "P": injected hook "H" (...), tracee fd N` | The rewritten program loaded. The line names each hook with its map and site PCs, then each site `auto` skipped and why. After a [jump sequence limit](#jump-sequence-limit) retry it ends with `, lookup branches miss-first`. |
+| `program "P": ...: verifier jump sequence limit: ...; retrying with lookup misses first` | The verifier refused the rewritten program with `The sequence of N jumps is too complex`; see [Jump sequence limit](#jump-sequence-limit). |
 | `program "P": injection skipped: ERR[; attempted ...]` | A read, metadata, transform or BTF-load error, or the kernel rejected the rewritten program. After a rejection the line names the hooks it attempted. |
 | `bpf command N: injection skipped: ERR` | `inject-run` could not read or accept the arguments of a `BPF_BTF_LOAD` or `BPF_PROG_LOAD` call, for example a matched load without BTF, or two rules match the same load (`ambiguous program selectors`). |
 | `global arg:untrusted probe inconclusive: ERR` | The probe failed for a reason other than the tag. The global form is kept. |
@@ -584,11 +585,24 @@ Diagnostics go to stderr:
 
 When the rewritten load fails, `inject-run` retries the original syscall with its original arguments.
 It also retries the original syscall after a checker read, decode, or validation failure.
-It does not retry with another hook form.
+It does not retry with another hook form; the only other rewrite it tries is the one in [Jump sequence limit](#jump-sequence-limit).
 The loader's verifier log buffer can still hold the log of the attempted load.
 After an inconclusive probe, a rejection with `EINVAL`, `EOPNOTSUPP` or `EACCES` of a program with untrusted hooks adds a hint.
 The hint always suggests `"static_untrusted": true`; for a read-only map's lookup hook it also offers `"copy_read_only": true` as an alternative.
 A target that exits successfully has not necessarily been injected; check the diagnostic or the hooks file.
+
+### Jump sequence limit
+
+The verifier keeps at most 8192 branches pending on one path.
+The rewrite tests each lookup's result before its hooks, which keeps one more branch pending until the verifier returns to it.
+By default the hit follows that test and the miss waits, which costs nothing where the program goes on after a miss, but leaves one more pending branch per site, and per loop iteration, where the program goes on after a hit.
+A program close to the limit, such as LoxiLB's `tc_packet_func_fw`, then fails with `The sequence of 8193 jumps is too complex`.
+
+When the rewritten load of a program with hit or `any` lookup hooks fails, `inject-run` loads it once more with a verifier log of its own, without touching the loader's log, to read why.
+If the reason is this limit, it rewrites the program with every lookup's miss following the test and the hit waiting, and loads that; the loader's log buffer then holds that load's log.
+The miss-first layout has the opposite cost, so it is only the fallback.
+A refused load binds no map, so the earlier attempts leave nothing behind.
+If the second layout fails as well, the load continues as any failed rewrite does: the original program, or `EPERM` with `--fail-closed`.
 
 With `--fail-closed`:
 

@@ -141,3 +141,56 @@ func TestSuffixedHookName(t *testing.T) {
 		t.Fatalf("suffixedHookName = %q", got)
 	}
 }
+
+// MissFirst puts the miss on the guard's fall-through: a hit jumps over it, and
+// the first call on that path is the hit hook's. Both layouts restore R0.
+func TestLookupMissFirst(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		when   LookupWhen
+		guards []asm.JumpOp
+		calls  []string
+	}{
+		{"any", LookupAny, []asm.JumpOp{asm.JNE, asm.Ja}, []string{"lookup_hook_sessions_miss", "lookup_hook_sessions"}},
+		{"hit", LookupHit, []asm.JumpOp{asm.JNE, asm.Ja}, []string{"lookup_hook_sessions"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			spec := lookupFixture()
+			req := autoReq()
+			req.Lookups, req.MissFirst = tc.when, true
+			if _, err := transformLookup(spec, req); err != nil {
+				t.Fatal(err)
+			}
+			insns := spec.Programs["p"].Instructions
+			at := slices.IndexFunc(insns, func(ins asm.Instruction) bool {
+				return ins.IsBuiltinCall() && ins.Constant == int64(asm.FnMapLookupElem)
+			})
+			var calls []string
+			var guards []asm.JumpOp
+			var guard, ja int
+			for i, ins := range insns[at+1:] {
+				if ins.OpCode.Class() == asm.LdXClass && ins.Dst == asm.R0 {
+					// The guard reaches the instruction after the Ja, and the Ja this restore.
+					if guard+1+int(insns[at+1+guard].Offset) != ja+1 || ja+1+int(insns[at+1+ja].Offset) != i {
+						t.Fatalf("guard at %d, ja at %d, restore at %d: %v", guard, ja, i, insns[at+1:at+1+i+1])
+					}
+					break
+				}
+				switch {
+				case ins.IsFunctionCall():
+					calls = append(calls, ins.Reference())
+				case ins.OpCode.Class().IsJump():
+					guards = append(guards, ins.OpCode.JumpOp())
+					if ins.OpCode.JumpOp() == asm.Ja {
+						ja = i
+					} else {
+						guard = i
+					}
+				}
+			}
+			if !slices.Equal(guards, tc.guards) || !slices.Equal(calls, tc.calls) {
+				t.Fatalf("guards %v calls %v, want %v %v", guards, calls, tc.guards, tc.calls)
+			}
+		})
+	}
+}

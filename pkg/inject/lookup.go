@@ -118,12 +118,20 @@ func (s LookupSelector) empty() bool {
 //
 // Lookups picks the lookup results the hooks observe: LookupHit (the
 // default) calls them when the lookup found an entry, LookupMiss when it
-// returned NULL, LookupAny on both. A typed hook cannot take a NULL value, so
-// a miss calls int NAME_miss(struct xdp_md *ctx, u32 site, const KEY *key)
-// (without site when Auto is off) instead; with LookupAny both are generated.
+// returned NULL, LookupAny on both. A miss on a typed hook calls int
+// NAME_miss(struct xdp_md *ctx, u32 site, const KEY *key) (without site when
+// Auto is off) instead; with LookupAny both are generated. Kernels 6.12 and 7.0
+// do load and run a typed global hook given a NULL value, but they refuse
+// arg:nullable, and a read-only map's value cannot be passed as typed memory.
 // A generic or Dispatch hook is called with a NULL value on a miss.
 // LookupNone instruments no lookup, for a request that observes only
 // updates or deletes.
+//
+// MissFirst lays out each lookup's guard so the miss falls through and a hit
+// jumps over it. The verifier then finishes the miss before walking the hit:
+// no state stays pending where the program goes on after a hit, and one more
+// does where it goes on after a miss. By default a site that observes hits
+// lets the hit fall through; a miss-only site is laid out miss-first anyway.
 //
 // Updates and Deletes, which need Auto, also instrument map_update_elem and
 // map_delete_elem in the entry function: CallError calls the hook when the
@@ -162,6 +170,7 @@ type LookupRequest struct {
 	CopyReadOnly    bool
 	StaticUntrusted bool
 	Dispatch        bool
+	MissFirst       bool
 	Lookups         LookupWhen
 	Updates         CallWhen
 	Deletes         CallWhen
@@ -1642,7 +1651,7 @@ func (e lookupEmitter) splice(groups []lookupGroup) (asm.Instructions, []LookupH
 			plan = append(plan, hook)
 			for _, site := range group.sites {
 				calls[site.SitePC] = siteCall{hook: group.name, op: group.op, withSite: true, withMap: true,
-					dispatch: req.Dispatch, when: req.Lookups, results: results, ctxFrom: siteCtxSource(site), frameFloor: req.Stack.floor(site.FuncName)}
+					dispatch: req.Dispatch, when: req.Lookups, missFirst: req.MissFirst, results: results, ctxFrom: siteCtxSource(site), frameFloor: req.Stack.floor(site.FuncName)}
 			}
 			continue
 		}
@@ -1733,7 +1742,7 @@ func (e lookupEmitter) splice(groups []lookupGroup) (asm.Instructions, []LookupH
 				Sites: publicLookupSites(group.sites), ReadOnly: readOnly, Untrusted: missUntrusted, Static: missStatic})
 		}
 		for _, site := range group.sites {
-			calls[site.SitePC] = siteCall{hook: group.name, missHook: group.missName, when: req.Lookups,
+			calls[site.SitePC] = siteCall{hook: group.name, missHook: group.missName, when: req.Lookups, missFirst: req.MissFirst,
 				withSite: req.Auto, copySize: copySize, ctxFrom: siteCtxSource(site), frameFloor: req.Stack.floor(site.FuncName)}
 		}
 	}
@@ -1802,6 +1811,7 @@ type siteCall struct {
 	hook       string
 	missHook   string     // a typed lookup's NAME_miss hook
 	when       LookupWhen // the lookup results that call a hook
+	missFirst  bool       // the guard falls through to the miss (LookupRequest.MissFirst)
 	op         HookKind   // the helper: a lookup when empty
 	results    CallWhen   // the results of another map call that call hook
 	withSite   bool
@@ -1907,6 +1917,14 @@ func spliceLookupCalls(input asm.Instructions, calls map[uint32]siteCall, stack 
 		switch {
 		case call.when.hit() && call.when.miss():
 			onHit, onMiss := hit(call.copySize), miss()
+			if call.missFirst {
+				found := asm.JNE.Imm(asm.R0, 0, "")
+				found.Offset = int16(len(onMiss) + 1)
+				done := asm.Ja.Label("")
+				done.Offset = int16(len(onHit))
+				out = append(append(append(append(out, found), onMiss...), done), onHit...)
+				break
+			}
 			null := asm.JEq.Imm(asm.R0, 0, "")
 			null.Offset = int16(len(onHit) + 1)
 			done := asm.Ja.Label("")
@@ -1919,6 +1937,14 @@ func spliceLookupCalls(input asm.Instructions, calls map[uint32]siteCall, stack 
 			out = append(append(out, found), onMiss...)
 		default:
 			onHit := hit(call.copySize)
+			if call.missFirst {
+				found := asm.JNE.Imm(asm.R0, 0, "")
+				found.Offset = 1
+				skip := asm.Ja.Label("")
+				skip.Offset = int16(len(onHit))
+				out = append(append(append(out, found), skip), onHit...)
+				break
+			}
 			null := asm.JEq.Imm(asm.R0, 0, "")
 			null.Offset = int16(len(onHit))
 			out = append(append(out, null), onHit...)

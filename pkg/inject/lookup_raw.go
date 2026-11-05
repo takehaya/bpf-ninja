@@ -60,6 +60,7 @@ type LookupRequestRaw struct {
 	CopyReadOnly    bool       // see LookupRequest.CopyReadOnly
 	StaticUntrusted bool       // see LookupRequest.StaticUntrusted
 	Dispatch        bool       // see LookupRequest.Dispatch
+	MissFirst       bool       // see LookupRequest.MissFirst
 	Lookups         LookupWhen // see LookupRequest.Lookups
 	Updates         CallWhen   // see LookupRequest.Updates
 	Deletes         CallWhen   // see LookupRequest.Deletes
@@ -108,7 +109,7 @@ type LookupResultRaw struct {
 // against a dropped field).
 func (r LookupRequestRaw) Request() LookupRequest {
 	return LookupRequest{Site: r.Site, Auto: r.Auto, Maps: r.Maps, Entry: r.Entry, TailCalls: r.TailCalls,
-		CopyReadOnly: r.CopyReadOnly, StaticUntrusted: r.StaticUntrusted, Dispatch: r.Dispatch, Lookups: r.Lookups, Updates: r.Updates, Deletes: r.Deletes,
+		CopyReadOnly: r.CopyReadOnly, StaticUntrusted: r.StaticUntrusted, Dispatch: r.Dispatch, MissFirst: r.MissFirst, Lookups: r.Lookups, Updates: r.Updates, Deletes: r.Deletes,
 		Pushes: r.Pushes, Pops: r.Pops, Peeks: r.Peeks, HookName: r.HookName, Stack: r.Stack}
 }
 

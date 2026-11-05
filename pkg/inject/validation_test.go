@@ -86,7 +86,8 @@ func TestBuildLookupTargets(t *testing.T) {
 func TestTranslationValidationEquivalence(t *testing.T) {
 	total, accepted, sites, zeroSites := 0, 0, 0, 0
 	for _, seed := range equivDefaultSeeds {
-		for _, config := range []string{"typed-any", "typed-error", "typed-miss", "static-any", "dispatch-any", "dispatch-static", "copy-readonly"} {
+		for _, config := range []string{"typed-any", "typed-error", "typed-miss", "static-any", "dispatch-any", "dispatch-static", "copy-readonly",
+			"typed-any/miss-first", "typed-error/miss-first", "dispatch-any/miss-first", "copy-readonly/miss-first"} {
 			t.Run(fmt.Sprintf("%d/%s", seed, config), func(t *testing.T) {
 				total++
 				c := newEquivCase(uint64(seed))
@@ -114,7 +115,7 @@ func TestTranslationValidationEquivalence(t *testing.T) {
 					if err := os.MkdirAll(dest, 0755); err != nil {
 						t.Fatal(err)
 					}
-					validationSave(t, filepath.Join(dest, fmt.Sprintf("fixture-%d-%s.json", seed, config)), validationPairEvidence(t, in, out, cert, premises, nil, struct {
+					validationSave(t, filepath.Join(dest, fmt.Sprintf("fixture-%d-%s.json", seed, strings.ReplaceAll(config, "/", "-"))), validationPairEvidence(t, in, out, cert, premises, nil, struct {
 						Accepted bool             `json:"accepted"`
 						Kind     injectcheck.Kind `json:"kind"`
 					}{Accepted: true}, ""))
