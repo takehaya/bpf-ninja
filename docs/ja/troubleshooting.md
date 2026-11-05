@@ -64,6 +64,11 @@ BTF に名前があるだけでは、attach できるとは限らない。
 - 共有 BTF が、別の program に本体のある関数を記述している。
   この場合は、その program を対象にする。
 
+ただし、bpf-ninja が前者を証明できる限定的な場合がある。
+`inject-run` は生成した hook を同じロードの `func_info` と照合し、hook がなければ `--hooks-json` に `dead_in_this_load` と `dead_cause` を記録する。
+同じ site を報告する生成 hook がすべてない場合だけ、その site も dead とする。
+照合できない場合は `dead_check_error` を記録し、dead だとは推測しない。
+
 ### 複数の関数や program を指定した場合
 
 - program と関数の組を一つだけ指定した場合、その関数が使えないときは詳しい説明を出して失敗する。同じ `--func` を繰り返した場合も同様である。

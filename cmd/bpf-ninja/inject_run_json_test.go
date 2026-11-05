@@ -9,9 +9,42 @@ import (
 	"testing"
 
 	"github.com/cilium/ebpf"
+	"github.com/takehaya/bpf-ninja/internal/attach"
 	"github.com/takehaya/bpf-ninja/pkg/inject"
 	"github.com/takehaya/bpf-ninja/pkg/syscallhook"
 )
+
+func TestDeadSitesRequireEveryHookToBeAbsent(t *testing.T) {
+	site := func(pc uint32) hookSiteJSON { return hookSiteJSON{Kind: string(inject.HookLookup), PC: pc, Map: "m"} }
+	out := injectedProgJSON{Hooks: []hookJSON{
+		{Name: "hit_dead", Sites: []hookSiteJSON{site(12)}},
+		{Name: "miss_dead", Sites: []hookSiteJSON{site(12)}},
+		{Name: "hit_live", Sites: []hookSiteJSON{site(18)}},
+		{Name: "miss_only_dead", Sites: []hookSiteJSON{site(18)}},
+		{Name: "unknown", Sites: []hookSiteJSON{site(24)}},
+	}}
+	availability := map[string]attach.FuncAvailability{
+		"hit_dead":       {Reason: attach.FuncAbsent},
+		"miss_dead":      {Reason: attach.FuncAbsent},
+		"hit_live":       {Reason: attach.FuncPresent},
+		"miss_only_dead": {Reason: attach.FuncAbsent},
+		"unknown":        {Reason: attach.FuncUnknown},
+	}
+	notices := markDeadHooks(&out, availability)
+	if len(notices) != 1 || notices[0].PC != 12 {
+		t.Fatalf("notices = %+v", notices)
+	}
+	for i := range out.Hooks {
+		wantHookDead := i < 2 || i == 3
+		if out.Hooks[i].DeadInThisLoad != wantHookDead {
+			t.Errorf("hook %s dead=%v", out.Hooks[i].Name, out.Hooks[i].DeadInThisLoad)
+		}
+		wantSiteDead := i < 2
+		if out.Hooks[i].Sites[0].DeadInThisLoad != wantSiteDead {
+			t.Errorf("hook %s site dead=%v", out.Hooks[i].Name, out.Hooks[i].Sites[0].DeadInThisLoad)
+		}
+	}
+}
 
 func TestInjectionJSON(t *testing.T) {
 	site := func(pc uint32, m string) inject.LookupSite {

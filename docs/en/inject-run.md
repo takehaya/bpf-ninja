@@ -368,6 +368,8 @@ The longest suffix a rule appends limits the length of `hook`:
 The file exists, with an empty `programs` list, before the target starts; an unwritable path stops `inject-run` before launch.
 After each injected load, `inject-run` rewrites the whole file through a temporary file and a rename.
 This happens before the target receives the new program fd, so every program the target can attach or run is already listed.
+It also compares each generated hook with that load's `func_info`.
+If the verifier removed a hook because it is unreachable, the file marks the hook instead of presenting a later attach refusal as an attach failure.
 If a rewrite fails, `inject-run` reports it on stderr and keeps running the target.
 
 ```json
@@ -420,7 +422,14 @@ If a rewrite fails, `inject-run` reports it on stderr and keeps running the targ
 | `hooks[].copied` | The value is a stack copy. |
 | `hooks[].static` | The hook is static; read every argument as a `u64`. |
 | `hooks[].read_only` | A typed lookup hook on a `BPF_F_RDONLY_PROG` map. |
+| `hooks[].dead_in_this_load` | `true` when this generated hook is absent from the loaded program's `func_info`. Do not try to attach to it in this load. |
+| `hooks[].dead_cause` | Why a dead hook was marked. Currently this says that the verifier removed the generated hook as unreachable in this load. |
+| `hooks[].sites[].dead_in_this_load`, `dead_cause` | A site is dead only when every generated hook that reports that site is absent. For example, an absent miss hook does not make a site dead while its hit hook remains. |
 | `skipped` | Map calls that `auto` did not instrument, with the site fields and a `reason`. |
+| `dead_check_error` | Present when the loaded `func_info` could not be checked. Hooks remain unmarked; consumers must not guess that they are dead. |
+
+Treat a marked site as having no live observation point in this load, not as an attach failure.
+The marks describe this program load only; a configuration change can make the same generated hook live on the next load.
 
 ### Lookups file
 

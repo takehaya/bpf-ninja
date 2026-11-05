@@ -41,6 +41,11 @@ The reason alone cannot tell these two causes apart:
 - Shared BTF describes a function whose body belongs to another program.
   Target that program instead.
 
+There is one narrower case where bpf-ninja can prove the first cause.
+After `inject-run` creates a hook, it checks that generated hook against the same load's `func_info` and writes `dead_in_this_load` and `dead_cause` to `--hooks-json` when the hook is absent.
+A site is marked dead only when all generated hooks for that site are absent.
+If the check cannot be completed, `dead_check_error` is recorded and no dead mark is guessed.
+
 ## Several functions or programs
 
 - A request for one distinct program and function fails with the full diagnostic when that function is unavailable, even if the same `--func` name is repeated.

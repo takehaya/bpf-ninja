@@ -85,6 +85,10 @@ func newInjectRunCommand() *cli.Command {
 					if err := hooks.add(inj); err != nil {
 						_, _ = fmt.Fprintf(os.Stderr, "inject-run: --hooks-json: %v\n", err)
 						hooksErr = cmp.Or(hooksErr, err)
+						return
+					}
+					for _, site := range hooks.lastDead {
+						_, _ = fmt.Fprintf(os.Stderr, "inject-run: site pc %d (map %s) is dead in this load: %s\n", site.PC, site.Map, site.DeadCause)
 					}
 				}
 			}
