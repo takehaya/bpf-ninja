@@ -5,18 +5,18 @@ Add an argument filter to the [walkthrough's capture example](inject-walkthrough
 
 ```sh
 bpf-ninja -p "$PROG_ID" --func ninja_recent_push \
-  --arg-filter 'status>=1' -w push.pcap
+  --arg-filter 'status.ret!=0' -w push.pcap
 ```
 
 To print the arguments instead, run a separate command:
 
 ```sh
 bpf-ninja -p "$PROG_ID" --func ninja_recent_push \
-  --arg-filter 'status>=1' --arg-echo
+  --arg-filter 'status.ret!=0' --arg-echo
 ```
 
 `--arg-echo` selects argument output instead of packet capture; use the first command to write `push.pcap`.
-With the walkthrough's zero push flags, this selects failed pushes because `status` is unsigned and errors such as `-7` are large values.
+`status.ret` is the helper's result as a signed integer, so this selects failed pushes whatever their flags.
 Write an observer when the CLI cannot supply the result: aggregate counts in the kernel, add the CPU ID to selected events, or keep state across hooks to measure elapsed time.
 For packet bytes and lengths, use the built-in capture.
 

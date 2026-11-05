@@ -63,6 +63,7 @@ type paramJSON struct {
 	Type             string                  `json:"type,omitempty"`
 	Members          *[]attach.ArgMemberInfo `json:"members,omitempty"`
 	MembersTruncated string                  `json:"members_truncated,omitempty"`
+	Fields           []paramJSON             `json:"fields,omitempty"` // status.ret and status.flags of a generated hook's status
 }
 
 // paramsTargetJSON is one attach pair's filterable parameters.

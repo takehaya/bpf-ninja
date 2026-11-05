@@ -27,7 +27,7 @@ type SetKeyField struct {
 	ParamSize   uint32
 	ParamSigned bool   // sign-extend a narrow signed arg into the key field
 	Deref       bool   // Read a pointer member or scalar pointee
-	Offset      uint32 // Byte offset in the pointee
+	Offset      uint32 // Byte offset in the pointee; within the argument, without Deref, for status.flags
 	// ThroughOpaque marks a member path through a bpf_* struct, which a
 	// recording capture does not record.
 	ThroughOpaque bool
@@ -84,7 +84,7 @@ func ResolveSetFilters(sets []*setmap.Set, refs []string, params []attach.FuncPa
 	for _, ref := range refs {
 		s, ok := byName[ref]
 		if !ok {
-			if strings.ContainsAny(ref, ">.") {
+			if strings.ContainsAny(ref, ">.[") {
 				return nil, fmt.Errorf("@%s: member syntax is not supported in set references", ref)
 			}
 			return nil, fmt.Errorf("@%s: no such set (define it with --set %q)", ref, ref+"=/sys/fs/bpf/...")

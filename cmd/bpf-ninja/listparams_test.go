@@ -154,3 +154,34 @@ func TestMembersDepthOutOfRangeCLI(t *testing.T) {
 		})
 	}
 }
+
+func TestListParamsShowsStatusFields(t *testing.T) {
+	target := attach.Target{FuncName: "ninja_sessions_update", Params: []attach.FuncParamInfo{
+		{Name: "site", Index: 1, Size: 4},
+		{Name: "status", Index: 4, Size: 8, StatusWord: true},
+		{Name: "other", Index: 5, Size: 8},
+	}}
+	got := paramsToJSON(target, false, attach.DefaultMembersDepth)
+	if len(got.Params) != 3 || got.Params[0].Fields != nil || got.Params[2].Fields != nil {
+		t.Fatalf("params %+v", got.Params)
+	}
+	fields := got.Params[1].Fields
+	if len(fields) != 2 || fields[0].Name != "status.ret" || fields[1].Name != "status.flags" {
+		t.Fatalf("fields %+v", fields)
+	}
+	if ret := fields[0]; ret.Index != 4 || ret.Size != 4 || !ret.Signed {
+		t.Errorf("status.ret: %+v", ret)
+	}
+	if flags := fields[1]; flags.Index != 4 || flags.Size != 4 || flags.Signed {
+		t.Errorf("status.flags: %+v", flags)
+	}
+	raw, err := json.Marshal(got.Params[1])
+	if err != nil || !strings.Contains(string(raw), `"fields":[{"name":"status.ret"`) {
+		t.Errorf("JSON %s: %v", raw, err)
+	}
+	var out bytes.Buffer
+	printParams(&out, got)
+	if !strings.Contains(out.String(), "status.ret") || !strings.Contains(out.String(), "4 bytes, signed") {
+		t.Errorf("text listing:\n%s", out.String())
+	}
+}

@@ -264,3 +264,229 @@ func TestGeneratedHookRoundTrip(t *testing.T) {
 		t.Fatalf("ambiguous name resolved: %+v", params)
 	}
 }
+
+func arrayIndexParams() []FuncParamInfo {
+	u8, u16, u32 := &btf.Int{Name: "u8", Size: 1}, &btf.Int{Name: "u16", Size: 2}, &btf.Int{Name: "u32", Size: 4}
+	arr := func(t btf.Type, n uint32) btf.Type { return &btf.Array{Type: t, Index: u32, Nelems: n} }
+	rule := &btf.Struct{Name: "rule", Size: 12, Members: []btf.Member{{Name: "id", Type: u32}, {Name: "action", Type: u8, Offset: 88}}}
+	group := &btf.Struct{Name: "group", Size: 28, Members: []btf.Member{{Name: "tag", Type: u32}, {Name: "rules", Type: arr(rule, 2), Offset: 32}}}
+	value := &btf.Struct{Name: "value", Size: 96, Members: []btf.Member{
+		{Name: "rules", Type: &btf.Typedef{Name: "rules_t", Type: arr(&btf.Const{Type: rule}, 3)}},
+		{Name: "counts", Type: arr(u32, 4), Offset: 288},
+		{Name: "grid", Type: arr(arr(u16, 3), 2), Offset: 416},
+		{Name: "groups", Type: arr(group, 1), Offset: 512},
+		{Name: "next", Type: &btf.Pointer{Target: u32}, Offset: 736},
+		{Name: "empty", Type: arr(u8, 0), Offset: 768},
+		{Name: "rulegrid", Type: arr(arr(rule, 2), 2), Offset: 768},
+		{Name: "flex", Type: arr(rule, 0), Offset: 1152},
+		{Name: "locks", Type: arr(&btf.Struct{Name: "bpf_spin_lock", Size: 4, Members: []btf.Member{{Name: "val", Type: u32}}}, 2), Offset: 1152},
+	}}
+	return []FuncParamInfo{
+		{Name: "value", Index: 1, Size: 8, Kind: "ptr-struct", Type: &btf.Pointer{Target: value}},
+		{Name: "vec", Index: 2, Size: 8, Kind: "ptr", Type: &btf.Pointer{Target: arr(u16, 4)}},
+		{Name: "n", Index: 3, Size: 4},
+		{Name: "rs", Index: 4, Size: 8, Kind: "ptr", Type: &btf.Pointer{Target: arr(rule, 3)}},
+		{Name: "sc", Index: 5, Size: 8, Kind: "ptr", Type: &btf.Pointer{Target: u32}},
+		{Name: "st", Index: 6, Size: 8, Kind: "ptr-struct", Type: &btf.Pointer{Target: rule}},
+	}
+}
+
+func TestResolveArgArrayIndex(t *testing.T) {
+	params := arrayIndexParams()
+	for _, tt := range []struct {
+		expr         string
+		offset, size uint32
+	}{
+		{"value->rules[0].action", 11, 1}, {"value->rules[2].action", 35, 1}, {"value->rules[1].id", 12, 4},
+		{"value->counts[0]", 36, 4}, {"value->counts[3]", 48, 4},
+		{"value->grid[1][2]", 52 + 10, 2},
+		{"value->groups[0].tag", 64, 4}, {"value->groups[0].rules[1].action", 64 + 4 + 12 + 11, 1},
+		{"vec[0][3]", 6, 2},
+		{"rs[0][2].action", 35, 1}, {"rs[0][1].id", 12, 4},
+		{"st[0].action", 11, 1}, {"sc[0]", 0, 4},
+		{"value->rulegrid[1][1].action", 96 + 36 + 11, 1},
+	} {
+		got, err := ResolveArg(tt.expr, params)
+		if err != nil {
+			t.Errorf("%s: %v", tt.expr, err)
+			continue
+		}
+		if !got.Deref || got.Name != tt.expr || got.Offset != tt.offset || got.Size != tt.size {
+			t.Errorf("%s: %+v, want offset %d size %d", tt.expr, got, tt.offset, tt.size)
+		}
+	}
+	for _, tt := range []struct{ expr, want string }{
+		{"value->rules[3].action", "index 3 is out of range for an array of 3 elements"},
+		{"value->grid[0][3]", "index 3 is out of range"},
+		{"value->empty[0]", "out of range for an array of 0 elements"},
+		{"value->rules[-1].action", "[-1] must be a non-negative decimal constant"},
+		{"value->rules[i].action", "[i] must be a non-negative decimal constant"},
+		{"value->rules[].action", "[] must be a non-negative decimal constant"},
+		{"value->rules[0x1].action", "must be a non-negative decimal constant"},
+		{"value->rules[99999999999].action", "out of range"},
+		{"value->rules[99999999999999999999999].action", "must be a non-negative decimal constant"},
+		{"value->counts[01]", "[01] must be a non-negative decimal constant"},
+		{"sc[0->x]", "invalid argument expression"}, {"vec[0][1->x]", "invalid argument expression"},
+		{"sc[0->x][1]", "invalid argument expression"}, {"value->counts[1->x]", "invalid argument expression"},
+		{"rs[0]", "got array (select an element with [N])"},
+		{"rs[0][1]", "got struct"}, {"rs[0][3].id", "index 3 is out of range"},
+		{"rs[1][0].id", "takes only [0]"},
+		{"rs->id", "select an element with [N]"},
+		{"st.action", `parameter "st" is a pointer; select a member with st->action`},
+		{"value->rules[1.5].action", "invalid argument expression"},
+		{"value->rules.action", `cannot select member "action" from array (select an element with [N])`},
+		{"value->rules[0]", "got struct"},
+		{"value->counts", "got array (select an element with [N])"},
+		{"value->grid[1]", "got array (select an element with [N])"},
+		{"value->empty", "got zero-length array"},
+		{"value->counts[1][1]", "cannot apply [1] to integer"},
+		{"value->rules[0].id[0]", "cannot apply [0] to integer"},
+		{"value->next[0]", "cannot apply [0] to pointer"},
+		{"value->rules[0]->id", "invalid argument expression"},
+		{"value[1]", "takes only [0]"},
+		{"vec[0]", "got array (select an element with [N])"},
+		{"vec[1][0]", "takes only [0]"},
+		{"vec[0][4]", "index 4 is out of range"},
+		{"n[0]", "must be a pointer"},
+	} {
+		if _, err := ResolveArg(tt.expr, params); err == nil || !strings.Contains(err.Error(), tt.want) {
+			t.Errorf("%s: error = %v, want %q", tt.expr, err, tt.want)
+		}
+	}
+}
+
+// The listing shows an array of structs through its first element, and every
+// row must agree with the resolver.
+func TestListArgMembersThroughArrays(t *testing.T) {
+	params := arrayIndexParams()
+	members, truncated := ListArgMembers(params[0], DefaultMembersDepth)
+	if truncated != "" {
+		t.Fatalf("truncated: %q", truncated)
+	}
+	all := checkMemberResolution(t, params, members)
+	if n := all["value->rules[0].action"]; !n.Filterable || n.Offset != 11 {
+		t.Errorf("array element member: %+v", n)
+	}
+	if n := all["value->groups[0].rules[0].action"]; !n.Filterable || n.Offset != 64+4+11 {
+		t.Errorf("nested array element member: %+v", n)
+	}
+	if n := all["value->counts"]; n.Filterable || !strings.Contains(n.Reason, "[N]") || len(n.Members) != 1 {
+		t.Errorf("array of scalars: %+v", n)
+	}
+	if n := all["value->counts[0]"]; !n.Filterable || n.Type != "u32" || n.Offset != 36 {
+		t.Errorf("array of scalars element: %+v", n)
+	}
+	if n := all["value->grid[0][0]"]; !n.Filterable || n.Type != "u16" || n.Offset != 52 {
+		t.Errorf("two-dimensional array of scalars: %+v", n)
+	}
+	if n := all["value->rulegrid[0][0].action"]; !n.Filterable || n.Offset != 96+11 {
+		t.Errorf("two-dimensional array of structs: %+v", n)
+	}
+	if n := all["value->flex"]; n.Filterable || len(n.Members) != 0 {
+		t.Errorf("zero-length array of structs: %+v", n)
+	}
+
+	// A pointer to an array lists its first element too.
+	u8, u16 := &btf.Int{Name: "u8", Size: 1}, &btf.Int{Name: "u16", Size: 2}
+	rule := &btf.Struct{Name: "rule", Size: 12, Members: []btf.Member{{Name: "action", Type: u8, Offset: 88}}}
+	arr := func(t btf.Type, n uint32) btf.Type { return &btf.Array{Type: t, Index: u16, Nelems: n} }
+	for _, tt := range []struct {
+		target    btf.Type
+		want, typ string
+	}{
+		{arr(u16, 4), "p[0][0]", "u16"}, {arr(arr(u16, 2), 2), "p[0][0][0]", "u16"},
+		{arr(rule, 3), "p[0][0].action", "u8"}, {arr(arr(rule, 2), 2), "p[0][0][0].action", "u8"},
+		{arr(rule, 0), "", ""},
+	} {
+		ps := []FuncParamInfo{{Name: "p", Index: 1, Size: 8, Kind: "ptr", Type: &btf.Pointer{Target: tt.target}}}
+		rows, _ := ListArgMembers(ps[0], DefaultMembersDepth)
+		got := checkMemberResolution(t, ps, rows)
+		if tt.want == "" {
+			if len(rows) != 0 {
+				t.Errorf("zero-length array lists %+v", rows)
+			}
+		} else if n := got[tt.want]; !n.Filterable || n.Type != tt.typ {
+			t.Errorf("%s: rows %+v", tt.want, rows)
+		}
+	}
+}
+
+func TestResolveArgIndexThroughBPFStruct(t *testing.T) {
+	got, err := ResolveArg("value->locks[1].val", arrayIndexParams())
+	if err != nil || got.Offset != 148 || !got.ThroughOpaque {
+		t.Fatalf("%+v %v", got, err)
+	}
+}
+
+func statusHookParams(t *testing.T, tags []string) []FuncParamInfo {
+	t.Helper()
+	u32, u64 := &btf.Int{Name: "u32", Size: 4}, &btf.Int{Name: "u64", Size: 8}
+	fn := &btf.Func{Name: "hook", Linkage: btf.GlobalFunc, Tags: tags, Type: &btf.FuncProto{
+		Return: &btf.Int{Name: "int", Size: 4, Encoding: btf.Signed},
+		Params: []btf.FuncParam{
+			{Name: "ctx", Type: &btf.Pointer{Target: &btf.Struct{Name: "xdp_md", Size: 4}}},
+			{Name: "site", Type: u32}, {Name: "status", Type: u64}, {Name: "other", Type: u64},
+		}}}
+	builder, err := btf.NewBuilder([]btf.Type{fn}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := builder.Marshal(nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec, err := btf.LoadSpecFromReader(bytes.NewReader(raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	params, err := GetFuncParamsFromSpec(spec, "hook")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return params
+}
+
+func TestResolveStatusFields(t *testing.T) {
+	params := statusHookParams(t, []string{hookabi.HookTag})
+	for _, tt := range []struct {
+		expr   string
+		offset uint32
+		size   uint32
+		signed bool
+	}{
+		{"status", 0, 8, false}, {"status.ret", 0, 4, true}, {"status.flags", 4, 4, false},
+	} {
+		got, err := ResolveArg(tt.expr, params)
+		if err != nil {
+			t.Fatalf("%s: %v", tt.expr, err)
+		}
+		if got.Name != tt.expr || got.Deref || got.Index != 2 || got.Offset != tt.offset || got.Size != tt.size || got.Signed != tt.signed {
+			t.Errorf("%s: %+v", tt.expr, got)
+		}
+	}
+	for _, tt := range []struct{ expr, want string }{
+		{"status.bad", "fields ret and flags"}, {"other.ret", "only the status argument"},
+		{"site.ret", "only the status argument"}, {"missing.ret", "not found"},
+		{"status.ret.x", "invalid argument expression"}, {"status.ret[0]", "invalid argument expression"},
+		{"status->ret", "use status.ret or status.flags"}, {"status[0]", "use status.ret or status.flags"},
+	} {
+		if _, err := ResolveArg(tt.expr, params); err == nil || !strings.Contains(err.Error(), tt.want) {
+			t.Errorf("%s: error = %v, want %q", tt.expr, err, tt.want)
+		}
+	}
+	if got := StatusFields(params[1]); len(got) != 2 || got[0].Name != "status.ret" || got[1].Name != "status.flags" {
+		t.Errorf("status fields: %+v", got)
+	}
+	if got := StatusFields(params[2]); got != nil {
+		t.Errorf("other has fields: %+v", got)
+	}
+
+	// A function inject-run did not generate may use the name for anything.
+	plain := statusHookParams(t, nil)
+	if _, err := ResolveArg("status.ret", plain); err == nil || !strings.Contains(err.Error(), "only the status argument") {
+		t.Errorf("untagged status.ret: %v", err)
+	}
+	if got := StatusFields(plain[1]); got != nil {
+		t.Errorf("untagged status has fields: %+v", got)
+	}
+}

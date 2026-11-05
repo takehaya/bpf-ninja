@@ -34,6 +34,9 @@ func paramsToJSON(t attach.Target, members bool, depth int) paramsTargetJSON {
 			children, truncated := attach.ListArgMembers(p, depth)
 			n.Members, n.MembersTruncated = &children, truncated
 		}
+		for _, f := range attach.StatusFields(p) {
+			n.Fields = append(n.Fields, paramJSON{Name: f.Name, Index: f.Index, Size: f.Size, Signed: f.Signed})
+		}
 		out.Params = append(out.Params, n)
 	}
 	return out
@@ -51,11 +54,14 @@ func printParams(w io.Writer, t paramsTargetJSON) {
 		} else if p.Kind != "" {
 			hint := p.Name + "->member"
 			if p.Kind == "ptr" {
-				hint = p.Name + "[0] for scalar pointers"
+				hint = p.Name + "[0] for scalars, " + p.Name + "[0][N] for arrays,"
 			}
 			_, _ = fmt.Fprintf(w, "  %-20s [%s %s, arg index %d; use %s or %s==null]\n", p.Name, p.Kind, p.TypeName, p.Index, hint, p.Name)
 		} else {
 			_, _ = fmt.Fprintf(w, "  %-20s [%d bytes, %s, arg index %d]\n", p.Name, p.Size, signedness(p.Signed), p.Index)
+			for _, f := range p.Fields {
+				_, _ = fmt.Fprintf(w, "    %-18s [%d bytes, %s, part of arg index %d]\n", f.Name, f.Size, signedness(f.Signed), f.Index)
+			}
 		}
 	}
 }

@@ -8,9 +8,11 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/asm"
 	"github.com/takehaya/bpf-ninja/internal/filter"
 	"github.com/takehaya/bpf-ninja/internal/hook"
+	"github.com/takehaya/bpf-ninja/internal/record"
 )
 
 func marshalArgInsns(t *testing.T, insns asm.Instructions) []byte {
@@ -169,5 +171,79 @@ func TestStaticXDPContextCodegen(t *testing.T) {
 		if savedR2 != exit {
 			t.Fatal("entry must not spill uninitialized R2; exit must preserve expected identity")
 		}
+	}
+}
+
+// status.flags reads the whole word and shifts: the verifier refuses a tracing
+// argument read at an offset that is not a multiple of 8. A set key and echo
+// reach the same load.
+func TestStatusFieldLoadCodegen(t *testing.T) {
+	flags := asm.Instructions{
+		asm.LoadMem(asm.R2, asm.R10, -48, asm.DWord),
+		asm.LoadMem(asm.R3, asm.R2, 24, asm.DWord),
+		asm.RSh.Imm(asm.R3, 32),
+		asm.JNE.Imm(asm.R3, 1, "exit"),
+	}
+	got := buildArgFilter([]filter.ArgFilter{{ParamIndex: 3, ParamSize: 4, Offset: 4, Op: filter.OpEqual, Value: 1}}, nil)
+	if !bytes.Equal(marshalArgInsns(t, got), marshalArgInsns(t, flags)) {
+		t.Errorf("status.flags:\n%v", got)
+	}
+	ret := asm.Instructions{
+		asm.LoadMem(asm.R2, asm.R10, -48, asm.DWord),
+		asm.LoadMem(asm.R3, asm.R2, 24, asm.Word),
+		asm.LSh.Imm(asm.R3, 32), asm.ArSh.Imm(asm.R3, 32),
+		asm.JNE.Imm(asm.R3, 0, "exit"),
+	}
+	got = buildArgFilter([]filter.ArgFilter{{ParamIndex: 3, ParamSize: 4, Signed: true, Op: filter.OpEqual}}, nil)
+	if !bytes.Equal(marshalArgInsns(t, got), marshalArgInsns(t, ret)) {
+		t.Errorf("status.ret:\n%v", got)
+	}
+	shifted := func(insns asm.Instructions) bool {
+		for i, ins := range insns {
+			if ins.OpCode == asm.RSh.Op(asm.ImmSource) && ins.Constant == 32 && insns[i-1].OpCode == asm.LoadMemOp(asm.DWord) {
+				return true
+			}
+		}
+		return false
+	}
+	if !shifted(buildArgEchoInsns(1, nil, []attach.FuncParamInfo{{Index: 3, Size: 4, Offset: 4}})) {
+		t.Error("echo does not shift status.flags")
+	}
+	restore := setMapFD
+	setMapFD = func(*ebpf.Map) int { return 1 }
+	defer func() { setMapFD = restore }()
+	flagsField := []filter.ArgFilter{{ParamIndex: 3, ParamSize: 4, Offset: 4, Op: filter.OpEqual, Value: 1}}
+	l := &record.Layout{Mode: record.ModeFilter, Fields: []record.Field{{Name: "status.flags", ParamIndex: 3, Size: 4, Offset: 4}}}
+	if !shifted(buildArgFilter(flagsField, &fieldSnap{fd: 9, layout: l})) {
+		t.Error("recording filter does not shift status.flags")
+	}
+	sets := []filter.SetFilter{{KeySize: 4, Fields: []filter.SetKeyField{{FieldSize: 4, ParamIdx: 3, ParamSize: 4, Offset: 4}}}}
+	if !shifted(emitSetFilters(sets, nil, nil)) {
+		t.Error("set key does not shift status.flags")
+	}
+}
+
+// Two elements of one array are two reads and two record slots.
+func TestRecordingFilterSeparatesArrayElements(t *testing.T) {
+	filters := []filter.ArgFilter{
+		{ParamName: "value->rules[0].action", ParamIndex: 2, ParamSize: 1, Deref: true, Offset: 11, Op: filter.OpEqual, Value: 3},
+		{ParamName: "value->rules[2].action", ParamIndex: 2, ParamSize: 1, Deref: true, Offset: 35, Op: filter.OpEqual, Value: 2},
+	}
+	l := &record.Layout{Mode: record.ModeFilter, Fields: []record.Field{
+		{Name: filters[0].ParamName, ParamIndex: 2, Size: 1, Deref: true, Offset: 11},
+		{Name: filters[1].ParamName, ParamIndex: 2, Size: 1, Deref: true, Offset: 35},
+	}}
+	snap := &fieldSnap{fd: 9, layout: l}
+	if a, b := snap.off(2, true, false, 11, 1, false), snap.off(2, true, false, 35, 1, false); a < 0 || b < 0 || a == b {
+		t.Fatalf("slots %d and %d", a, b)
+	}
+	reads := 0
+	for _, ins := range buildArgFilter(filters, snap) {
+		if ins.IsBuiltinCall() && ins.Constant == int64(asm.FnProbeReadKernel) {
+			reads++
+		}
+	}
+	if reads != 2 {
+		t.Fatalf("%d member reads, want 2", reads)
 	}
 }

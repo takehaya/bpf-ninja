@@ -54,7 +54,7 @@ func TestListArgMembers(t *testing.T) {
 		t.Errorf("promoted enum: %+v", n)
 	}
 	for expr, typ := range map[string]string{"q->bits": "i32", "q->next": "i32 *", "q->array": "i32[2]", "q->odd": "odd"} {
-		if n := all[expr]; n.Filterable || n.Type != typ || len(n.Members) != 0 {
+		if n := all[expr]; n.Filterable || n.Type != typ || (expr == "q->array") != (len(n.Members) == 1) {
 			t.Errorf("unsupported member: %+v", n)
 		}
 	}

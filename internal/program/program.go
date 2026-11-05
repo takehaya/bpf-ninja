@@ -1313,6 +1313,20 @@ func emitArgLoad(dst, base asm.Register, offset int16, size uint32, signed bool)
 	return insns
 }
 
+// emitIntArgLoad reads an integer argument or status field into R3. The verifier
+// allows only u64-aligned offsets into the tracing args, so a non-zero offset
+// shifts down from the whole word: the field must be unsigned and end at the top
+// of the word, as status.flags does.
+func emitIntArgLoad(base asm.Register, index int, offset, size uint32, signed bool) asm.Instructions {
+	if offset != 0 {
+		return asm.Instructions{
+			asm.LoadMem(asm.R3, base, int16(index*8), asm.DWord),
+			asm.RSh.Imm(asm.R3, int32(offset*8)),
+		}
+	}
+	return emitArgLoad(asm.R3, base, int16(index*8), size, signed)
+}
+
 // asmSizeFor maps a 1/2/4/8-byte width to the matching load/store size.
 func asmSizeFor(n uint32) asm.Size {
 	switch n {
@@ -1378,7 +1392,6 @@ func buildArgFilter(filters []filter.ArgFilter, snap *fieldSnap) asm.Instruction
 	insns = append(insns, asm.LoadMem(asm.R2, asm.R10, -48, asm.DWord))
 
 	for _, f := range filters {
-		offset := int16(f.ParamIndex * 8)
 		if f.Pointer {
 			insns = append(insns, emitArgPointerLoad(f.ParamIndex, "exit")...)
 			insns = append(insns, asm.LoadMem(asm.R2, asm.R10, -48, asm.DWord))
@@ -1386,7 +1399,7 @@ func buildArgFilter(filters []filter.ArgFilter, snap *fieldSnap) asm.Instruction
 			insns = append(insns, emitArgMemberLoad(f.ParamIndex, f.Offset, f.ParamSize, f.Signed, "exit")...)
 			insns = append(insns, asm.LoadMem(asm.R2, asm.R10, -48, asm.DWord))
 		} else {
-			insns = append(insns, emitArgLoad(asm.R3, asm.R2, offset, f.ParamSize, f.Signed)...)
+			insns = append(insns, emitIntArgLoad(asm.R2, f.ParamIndex, f.Offset, f.ParamSize, f.Signed)...)
 		}
 		insns = append(insns, emitArgCompare(f)...)
 	}
@@ -1457,7 +1470,7 @@ func buildRecordingArgFilter(filters []filter.ArgFilter, snap *fieldSnap) asm.In
 		case f.Deref:
 			insns = append(insns, emitArgMemberLoad(f.ParamIndex, f.Offset, f.ParamSize, f.Signed, "exit")...)
 		default:
-			insns = append(insns, emitArgLoad(asm.R3, asm.R2, int16(f.ParamIndex*8), f.ParamSize, f.Signed)...)
+			insns = append(insns, emitIntArgLoad(asm.R2, f.ParamIndex, f.Offset, f.ParamSize, f.Signed)...)
 		}
 		// Snapshot the single read (emitSnapStore reloads R3 and R2), then run
 		// every condition on that value.
@@ -1529,7 +1542,7 @@ func emitSetFilters(sets []filter.SetFilter, snap *fieldSnap, written map[int16]
 				insns = append(insns, emitArgMemberLoad(f.ParamIdx, f.Offset, f.ParamSize, f.ParamSigned, "exit")...)
 				insns = append(insns, asm.LoadMem(asm.R2, asm.R10, -48, asm.DWord))
 			default:
-				insns = append(insns, emitArgLoad(asm.R3, asm.R2, int16(f.ParamIdx*8), f.ParamSize, f.ParamSigned)...)
+				insns = append(insns, emitIntArgLoad(asm.R2, f.ParamIdx, f.Offset, f.ParamSize, f.ParamSigned)...)
 			}
 			if off >= 0 && !written[off] {
 				insns = append(insns, emitSnapStore(snap.fd, snap.key, off)...)

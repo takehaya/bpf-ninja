@@ -60,7 +60,7 @@ func TestArgumentComparisons(t *testing.T) {
 		{"n!=1..2", "invalid range"}, {"n=be16(65536)", "out of range"}, {"wide=be64(-1)", "unsigned value"},
 		{"n=null", "requires a pointer"}, {"q->port==null", "requires a pointer"},
 		{"q>=null", "null only supports"}, {"q=0", "pointer"}, {"opaque[0]=0", "integer or enum"},
-		{"value[1]=0", "invalid filter expression"}, {"q[0]=0", "integer or enum"},
+		{"value[1]=0", "takes only [0]"}, {"q[0]=0", "integer or enum"},
 		{"value[0]->port=0", "invalid filter expression"}, {"n=be8(1)", "invalid value"},
 	} {
 		t.Run(tt.expr, func(t *testing.T) {
@@ -73,5 +73,46 @@ func TestArgumentComparisons(t *testing.T) {
 	fs, err := ParseAndValidateFilters([]string{"n==443", "q->port!=0", "value[0]>=1", "value[0]<=1000", "q!=null"}, params)
 	if err != nil || len(fs) != 5 {
 		t.Fatalf("AND filters: %+v %v", fs, err)
+	}
+}
+
+func TestArrayIndexAndStatusFilters(t *testing.T) {
+	u8 := &btf.Int{Name: "u8", Size: 1}
+	rule := &btf.Struct{Name: "rule", Size: 12, Members: []btf.Member{{Name: "action", Type: u8, Offset: 88}}}
+	value := &btf.Struct{Name: "value", Size: 36, Members: []btf.Member{{Name: "rules", Type: &btf.Array{Type: rule, Index: u8, Nelems: 3}}}}
+	params := []attach.FuncParamInfo{
+		{Name: "value", Index: 2, Size: 8, Kind: "ptr-struct", Type: &btf.Pointer{Target: value}},
+		{Name: "status", Index: 3, Size: 8, StatusWord: true},
+	}
+	fs, err := ParseAndValidateFilters([]string{"value->rules[2].action==2", "status.ret==-17", "status.flags>=1", "status==0"}, params)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f := fs[0]; f.ParamName != "value->rules[2].action" || !f.Deref || f.Offset != 35 || f.ParamSize != 1 || f.Value != 2 {
+		t.Errorf("index: %+v", f)
+	}
+	if f := fs[1]; f.ParamName != "status.ret" || f.Deref || f.Offset != 0 || f.ParamSize != 4 || !f.Signed || f.Value != ^uint64(16) {
+		t.Errorf("ret: %+v", f)
+	}
+	if f := fs[2]; f.ParamName != "status.flags" || f.Deref || f.Offset != 4 || f.ParamSize != 4 || f.Signed || f.Value != 1 {
+		t.Errorf("flags: %+v", f)
+	}
+	if f := fs[3]; f.ParamName != "status" || f.Offset != 0 || f.ParamSize != 8 || f.Signed {
+		t.Errorf("plain status changed: %+v", f)
+	}
+	for _, tt := range []struct{ expr, want string }{
+		{"value->rules[3].action==2", "out of range"},
+		{"value->rules[-1].action==2", "non-negative decimal constant"},
+		{"value->rules[i].action==2", "non-negative decimal constant"},
+		{"value->rules.action==2", "select an element with [N]"},
+		{"status.ret==0xffffffef", "out of range"},
+		{"status.flags==-1", "out of range"},
+		{"status.bad==1", "fields ret and flags"},
+		{"status.ret==null", "requires a pointer"},
+		{"value->rules[1.0].action==1", "param->member[N].member"},
+	} {
+		if _, err := ParseAndValidateFilters([]string{tt.expr}, params); err == nil || !strings.Contains(err.Error(), tt.want) {
+			t.Errorf("%s: error = %v, want %q", tt.expr, err, tt.want)
+		}
 	}
 }

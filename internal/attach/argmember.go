@@ -4,30 +4,47 @@ import (
 	"fmt"
 	"math"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/cilium/ebpf/btf"
 	"github.com/takehaya/bpf-ninja/internal/hookabi"
 )
 
-var argExpression = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]*(?:->[a-zA-Z_][a-zA-Z0-9_]*(?:\.[a-zA-Z_][a-zA-Z0-9_]*)*|\[0\])?$`)
+// ArgExpressionPattern is the syntax of an argument expression: param,
+// param->member[N].member, param[0][N].member or param.field. Brackets take
+// any text that cannot end the step, so that ResolveArg can say why an index
+// is refused.
+const ArgExpressionPattern = `[a-zA-Z_][a-zA-Z0-9_]*(?:->` + argMemberStep + `(?:\.` + argMemberStep + `)*|(?:` + argIndex + `)+(?:\.` + argMemberStep + `)*|\.[a-zA-Z_][a-zA-Z0-9_]*)?`
 
-// ResolveArg resolves an integer argument or pointer-member expression using
-// the target function's BTF. It never follows a second pointer.
+const (
+	argIndex      = `\[[^\].>]*\]`
+	argMemberStep = `[a-zA-Z_][a-zA-Z0-9_]*(?:` + argIndex + `)*`
+)
+
+var argExpression = regexp.MustCompile(`^` + ArgExpressionPattern + `$`)
+
+// ResolveArg resolves an integer argument, status field or pointer-member
+// expression using the target function's BTF. It never follows a second pointer.
 func ResolveArg(expr string, params []FuncParamInfo) (FuncParamInfo, error) {
 	if !argExpression.MatchString(expr) {
-		return FuncParamInfo{}, fmt.Errorf("invalid argument expression %q (expected param, param->member.member, or param[0])", expr)
+		return FuncParamInfo{}, fmt.Errorf("invalid argument expression %q (expected param, param->member[N].member, param[0][N].member, or status.ret/status.flags)", expr)
 	}
 	name, path, deref := strings.Cut(expr, "->")
-	scalar := strings.HasSuffix(expr, "[0]")
-	if scalar {
-		name, deref = strings.TrimSuffix(expr, "[0]"), true
+	var rootIndexes []string
+	if base, rest, ok := strings.Cut(name, "["); ok {
+		indexes, members, _ := strings.Cut(rest, "].")
+		name, rootIndexes, path, deref = base, splitIndexes(indexes), members, true
 	}
+	name, field, isField := strings.Cut(name, ".")
 	var available []string
 	for _, p := range params {
 		available = append(available, p.Name)
 		if p.Name != name {
 			continue
+		}
+		if isField {
+			return resolveStatusField(expr, field, p)
 		}
 		if !deref {
 			if p.Kind != "" {
@@ -37,16 +54,29 @@ func ResolveArg(expr string, params []FuncParamInfo) (FuncParamInfo, error) {
 		}
 		ptr, ok := btf.UnderlyingType(p.Type).(*btf.Pointer)
 		if !ok {
+			if p.StatusWord {
+				return FuncParamInfo{}, fmt.Errorf("%q: status is not a pointer; use %s.ret or %s.flags", expr, name, name)
+			}
 			return FuncParamInfo{}, fmt.Errorf("parameter %q must be a pointer to a struct/union", name)
 		}
 		typ := btf.UnderlyingType(ptr.Target)
 		var offset uint64
+		if rootIndexes != nil {
+			if rootIndexes[0] != "0" {
+				return FuncParamInfo{}, fmt.Errorf("%q: a pointer argument takes only [0] before any array index, got [%s]", expr, rootIndexes[0])
+			}
+			var err error
+			if typ, offset, err = indexArray(expr, typ, rootIndexes[1:]); err != nil {
+				return FuncParamInfo{}, err
+			}
+		}
 		var membersPath []string
-		if !scalar {
+		if path != "" {
 			membersPath = strings.Split(path, ".")
 		}
 		through := false
-		for _, member := range membersPath {
+		for _, step := range membersPath {
+			member, rest, indexed := strings.Cut(step, "[")
 			if s, ok := typ.(*btf.Struct); ok && hookabi.Opaque(s) {
 				through = true
 			}
@@ -71,6 +101,13 @@ func ResolveArg(expr string, params []FuncParamInfo) (FuncParamInfo, error) {
 			offset += m.offset / 8
 			typ = btf.UnderlyingType(m.Type)
 			through = through || m.opaque
+			if indexed {
+				elem, at, err := indexArray(expr, typ, splitIndexes(rest))
+				if err != nil {
+					return FuncParamInfo{}, err
+				}
+				typ, offset = elem, offset+at
+			}
 		}
 		switch t := typ.(type) {
 		case *btf.Int:
@@ -93,15 +130,85 @@ func ResolveArg(expr string, params []FuncParamInfo) (FuncParamInfo, error) {
 	return FuncParamInfo{}, fmt.Errorf("parameter %q not found; available parameters: %v", name, available)
 }
 
+// splitIndexes splits "1][2]", the text after a step's first bracket.
+func splitIndexes(s string) []string {
+	return strings.Split(strings.TrimSuffix(s, "]"), "][")
+}
+
+// indexArray applies constant indexes to typ, returning the element type and
+// its byte offset from typ.
+func indexArray(expr string, typ btf.Type, indexes []string) (btf.Type, uint64, error) {
+	var offset uint64
+	for _, s := range indexes {
+		n, err := strconv.ParseUint(s, 10, 64)
+		// A leading zero is refused because C would read it as octal.
+		if err != nil || len(s) > 1 && s[0] == '0' {
+			return nil, 0, fmt.Errorf("%q: array index [%s] must be a non-negative decimal constant", expr, s)
+		}
+		array, ok := typ.(*btf.Array)
+		if !ok {
+			return nil, 0, fmt.Errorf("%q: cannot apply [%d] to %s; expected a fixed-length array", expr, n, memberKind(typ))
+		}
+		if n >= uint64(array.Nelems) {
+			return nil, 0, fmt.Errorf("%q: index %d is out of range for an array of %d elements", expr, n, array.Nelems)
+		}
+		typ = btf.UnderlyingType(array.Type)
+		size, err := btf.Sizeof(typ)
+		if err != nil {
+			return nil, 0, fmt.Errorf("%q: sizing the array element: %w", expr, err)
+		}
+		offset += n * uint64(size)
+	}
+	return typ, offset, nil
+}
+
+// resolveStatusField resolves a half of a generated hook's status word,
+// (u32)ret | flags << 32. Offset is the half's byte offset in the argument.
+func resolveStatusField(expr, field string, p FuncParamInfo) (FuncParamInfo, error) {
+	if p.Kind != "" {
+		return FuncParamInfo{}, fmt.Errorf("%q: parameter %q is a pointer; select a member with %s->%s", expr, p.Name, p.Name, field)
+	}
+	if !p.StatusWord {
+		return FuncParamInfo{}, fmt.Errorf("%q: only the status argument of a generated hook has .ret and .flags", expr)
+	}
+	switch field {
+	case "ret":
+		p.Signed = true
+	case "flags":
+		p.Signed, p.Offset = false, 4
+	default:
+		return FuncParamInfo{}, fmt.Errorf("%q: status has the fields ret and flags, not %q", expr, field)
+	}
+	p.Name, p.Size = expr, 4
+	return p, nil
+}
+
+// StatusFields lists the fields ResolveArg accepts on p, none unless p is a
+// generated hook's status word.
+func StatusFields(p FuncParamInfo) []FuncParamInfo {
+	if !p.StatusWord {
+		return nil
+	}
+	var out []FuncParamInfo
+	for _, field := range []string{"ret", "flags"} {
+		f, _ := resolveStatusField(p.Name+"."+field, field, p) // both names resolve on a status word
+		out = append(out, f)
+	}
+	return out
+}
+
 // memberKind names a non-integer member type for error messages.
 func memberKind(typ btf.Type) string {
-	switch typ.(type) {
+	switch t := typ.(type) {
 	case *btf.Struct:
 		return "struct (select one of its members)"
 	case *btf.Union:
 		return "union (select one of its members)"
 	case *btf.Array:
-		return "array"
+		if t.Nelems == 0 {
+			return "zero-length array"
+		}
+		return "array (select an element with [N])"
 	case *btf.Pointer:
 		return "pointer (only one dereference is supported)"
 	case *btf.Float:

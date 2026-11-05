@@ -131,7 +131,7 @@ int PREFIX_MAP_update(struct xdp_md *ctx, u32 site, const KEY *key, const VALUE 
 int PREFIX_MAP_delete(struct xdp_md *ctx, u32 site, const KEY *key, u64 status);
 ```
 
-`status` is `(u32)ret | flags << 32`: the helper's result in the low half and, for an update, its flags argument in the upper half.
+`status` is `(u32)ret | flags << 32`: the helper's result in the low half and, for an update, its flags argument in the upper half. `--arg-filter` reads them as `status.ret` and `status.flags`.
 The key and value are usually the program's memory, never the map's, so these hooks are typed even on a `BPF_F_WRONLY_PROG` map; a key or value that points into a read-only map's value is the exception (see [Supported sites and trust boundary](#supported-sites-and-trust-boundary)).
 A program cannot update or delete in a `BPF_F_RDONLY_PROG` map or in a map-in-map, so such sites never reach the transform.
 The typed hooks cover the map kinds of the typed lookup hook.

@@ -306,7 +306,8 @@ inject した hook で取得するとき、その hook がどのような値で�
 - 空白区切りの `名前=値` の並びです。
 - 名前は `--arg-filter` と同じ書き方です (`value->action`、`key->hdr.prefixlen`、`value[0]`)。
 - 整数は 10 進数で出力します。符号付き整数は符号拡張されます。
-- `status` は `(u32)ret | flags << 32` であるため、`status=0x00000002fffffffe` のように `0x%016x` で出力します。`info` も `0x%016x` で出力します。どちらの値もそのまま `--arg-filter` に渡せます。
+- `status` は `(u32)ret | flags << 32` であるため、`--record entry` では `status=0x00000002fffffffe` のように `0x%016x` で出力します。`info` も `0x%016x` で出力します。どちらの値もそのまま `--arg-filter` に渡せます。`--record filter` では `status` と `info` もほかの整数と同じ 10 進数です。
+- `status` 全体を比較するとフラグも比較されるため、`status==0` ではフラグ付きの成功を選べません。成功だけを選ぶには `:any` の操作で `status.ret==0` を使います ([ヘルパーの結果で選ぶ](../arg-member-filter.md#ヘルパーの結果で選ぶ))。
 - 読み取りに失敗したフィールドは `名前=?` になります。
 - NULL 判定の対象は `value=null` または `value!=null` になります。
 - `--record-max` で切り詰められた値は `value_bytes=4/8` (8 バイト中 4 バイトを記録) と出力されます。
