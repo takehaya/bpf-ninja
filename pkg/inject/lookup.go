@@ -32,6 +32,7 @@ type LookupSite struct {
 	InstructionIndex int    // index in the decoded instruction slice
 	Reason           string
 	CtxSource        string // entry, r6-r9 or fp-N
+	Floor            int16  // selected floor of FuncName's frame, when known
 	// Generic marks a lookup with a Reason that Auto still instruments,
 	// through the generic hook (see LookupHook.Generic).
 	Generic bool
@@ -788,6 +789,14 @@ func checkLookupStack(req LookupRequest, reserve int) error {
 	if req.Stack.FrameRounding != 0 && req.Stack.FrameRounding != 16 && req.Stack.FrameRounding != 32 {
 		return refuse("StackAudit.FrameRounding must be 16 or 32")
 	}
+	for name, offset := range req.Stack.Frames {
+		if offset > 0 || offset < -512 {
+			return refuse("StackAudit.Frames[%q] must be in [-512, 0]", name)
+		}
+	}
+	if req.Stack.perFrame() {
+		return nil
+	}
 	// Every reserved slot is in a frame that calls a hook (the entry hook, a
 	// tail-call or a lookup hook), so the slots must stay within
 	// siteFrameLimit, not the full 512 bytes.
@@ -814,21 +823,24 @@ func siteFrameLimit(stack StackAudit) int {
 // in it; a plain typed lookup, delete, push, pop or peek uses only the three
 // base slots, which CheckLookupStack already keeps within siteFrameLimit.
 func groupStackReach(group lookupGroup, req LookupRequest) int {
-	slots := lookupSlots(req.Stack.LowestOffset)
 	withMap := group.generic || req.Dispatch
-	if group.op == HookUpdate {
-		return slots.updateValue(withMap)
+	reach := 0
+	for _, site := range group.sites {
+		slots := lookupSlots(req.Stack.floor(site.FuncName))
+		at := slots.result
+		switch {
+		case group.op == HookUpdate:
+			at = slots.updateValue(withMap)
+		case withMap:
+			at = slots.mapSlot
+		case group.op == HookLookup && group.copies(req):
+			at = slots.copyAt(site.mapInfo.ValueSize)
+		}
+		if at < reach {
+			reach = at
+		}
 	}
-	if withMap {
-		return slots.mapSlot
-	}
-	if group.op != HookLookup {
-		return slots.result
-	}
-	if group.copies(req) {
-		return slots.copyAt(group.sites[0].mapInfo.ValueSize)
-	}
-	return slots.result
+	return reach
 }
 
 // siteFrameReason says why group's slots pass siteFrameLimit. Only the map
@@ -836,27 +848,50 @@ func groupStackReach(group lookupGroup, req LookupRequest) int {
 // every group, typed or not, passes the map, but CheckLookupStack already
 // reserves its slot then, so the dispatch reason is kept only for accuracy.
 func siteFrameReason(group lookupGroup, req LookupRequest) string {
+	floorLabel := fmt.Sprintf("Stack.LowestOffset %d", req.Stack.LowestOffset)
+	copySize := uint32(0)
+	if group.sites[0].mapInfo != nil {
+		copySize = group.sites[0].mapInfo.ValueSize
+	}
+	if req.Stack.perFrame() {
+		offender := group.sites[0]
+		deepest := 0
+		for _, site := range group.sites {
+			one := lookupGroup{generic: group.generic, op: group.op, sites: []discoveredLookup{site}}
+			if reach := groupStackReach(one, req); reach < deepest {
+				deepest, offender = reach, site
+				if site.mapInfo != nil {
+					copySize = site.mapInfo.ValueSize
+				}
+			}
+		}
+		floorLabel = fmt.Sprintf("function %q stack floor %d", offender.FuncName, req.Stack.floor(offender.FuncName))
+	}
 	switch {
 	case group.op == HookUpdate:
 		slots := 4
 		if group.generic || req.Dispatch {
 			slots = 5
 		}
-		return fmt.Sprintf("update hook needs %d spill slots for the value pointer; Stack.LowestOffset %d too low", slots, req.Stack.LowestOffset)
+		return fmt.Sprintf("update hook needs %d spill slots for the value pointer; %s too low", slots, floorLabel)
 	case req.Dispatch:
-		return fmt.Sprintf("dispatch hook needs the 4th spill slot for the map pointer; Stack.LowestOffset %d too low", req.Stack.LowestOffset)
+		return fmt.Sprintf("dispatch hook needs the 4th spill slot for the map pointer; %s too low", floorLabel)
 	case group.generic:
-		return fmt.Sprintf("runtime-map hook needs the 4th spill slot; Stack.LowestOffset %d too low", req.Stack.LowestOffset)
+		return fmt.Sprintf("runtime-map hook needs the 4th spill slot; %s too low", floorLabel)
 	}
-	return fmt.Sprintf("read-only value copy needs %d bytes below the spill slots; Stack.LowestOffset %d too low",
-		group.sites[0].mapInfo.ValueSize, req.Stack.LowestOffset)
+	return fmt.Sprintf("read-only value copy needs %d bytes below the spill slots; %s too low", copySize, floorLabel)
 }
 
 // reachesBelowBase reports whether group uses slots below the three base ones:
 // the generic or dispatch hook's map slot, or a value copy. Under Dispatch
 // that is every lookup group, so Auto's first retry already drops them all.
 func reachesBelowBase(group lookupGroup, req LookupRequest) bool {
-	return groupStackReach(group, req) < lookupSlots(req.Stack.LowestOffset).result
+	for _, site := range group.sites {
+		if groupStackReach(lookupGroup{generic: group.generic, op: group.op, sites: []discoveredLookup{site}}, req) < lookupSlots(req.Stack.floor(site.FuncName)).result {
+			return true
+		}
+	}
+	return false
 }
 
 // checkLookupMap returns why a typed hook cannot take m's key and value, or
@@ -1269,6 +1304,14 @@ func transformLookupProgramGuarded(insns asm.Instructions, typ ebpf.ProgramType,
 		return nil, plan, err
 	}
 	sites = slices.DeleteFunc(sites, func(site discoveredLookup) bool { return !req.observes(site.Op) })
+	if req.Stack.perFrame() {
+		for i := range sites {
+			sites[i].Floor = req.Stack.floor(sites[i].FuncName)
+			if _, ok := req.Stack.Frames[sites[i].FuncName]; !ok && sites[i].Reason == "" {
+				sites[i].Reason = "stack floor unavailable for this function"
+			}
+		}
+	}
 	if req.Dispatch && req.CopyReadOnly {
 		return nil, plan, refuse("Dispatch passes untrusted pointers; it does not combine with CopyReadOnly")
 	}
@@ -1295,6 +1338,16 @@ func transformLookupProgramGuarded(insns asm.Instructions, typ ebpf.ProgramType,
 	if err := CheckLookupStack(req); err != nil {
 		return nil, plan, err
 	}
+	entryFunc := btf.FuncMetadata(&insns[0]).Name
+	entryFloor := req.Stack.floor(entryFunc)
+	if req.Stack.perFrame() {
+		if _, ok := req.Stack.Frames[entryFunc]; !ok {
+			return nil, plan, refuse("entry function %q has no usable stack floor", entryFunc)
+		}
+	}
+	if req.Entry && lookupSlots(entryFloor).ctx < -siteFrameLimit(req.Stack) {
+		return nil, plan, refuse("entry hook does not fit below function %q stack floor %d", entryFunc, entryFloor)
+	}
 	// Drop groups whose slots reach past siteFrameLimit. Auto skips the
 	// sites and lists them; explicit selection refuses, since the user named
 	// them. Dropping the one generic group means no hook takes the map pointer.
@@ -1317,7 +1370,31 @@ func transformLookupProgramGuarded(insns asm.Instructions, typ ebpf.ProgramType,
 	allTails := tailCallSites(insns)
 	var tails []tailCallSite
 	if req.TailCalls {
-		if tails = allTails; len(tails) == 0 {
+		for _, tail := range allTails {
+			floor, ok := req.Stack.Frames[tail.FuncName]
+			if req.Stack.perFrame() && !ok {
+				site := tail.LookupSite
+				site.Reason = "stack floor unavailable for this function"
+				plan.skipped = append(plan.skipped, site)
+				continue
+			}
+			if !req.Stack.perFrame() {
+				floor = req.Stack.LowestOffset
+			}
+			tail.Floor = floor
+			reserve := 16
+			if req.Dispatch {
+				reserve = 32
+			}
+			if lookupSlots(floor).ctx+8-reserve < -siteFrameLimit(req.Stack) {
+				site := tail.LookupSite
+				site.Reason = fmt.Sprintf("tail-call hook does not fit below function %q stack floor %d", tail.FuncName, floor)
+				plan.skipped = append(plan.skipped, site)
+				continue
+			}
+			tails = append(tails, tail)
+		}
+		if len(allTails) == 0 {
 			return nil, plan, refuse("TailCalls: no bpf_tail_call in the program")
 		}
 	}
@@ -1341,7 +1418,7 @@ func transformLookupProgramGuarded(insns asm.Instructions, typ ebpf.ProgramType,
 		names[name] = true
 	}
 	checks := []func() error{
-		func() error { return checkStackBound(insns, req.Stack.LowestOffset) },
+		func() error { return checkStackBounds(insns, req.Stack) },
 	}
 	sorted := make([]string, 0, len(names))
 	for name := range names {
@@ -1548,7 +1625,7 @@ func (e lookupEmitter) splice(groups []lookupGroup) (asm.Instructions, []LookupH
 			plan = append(plan, hook)
 			for _, site := range group.sites {
 				calls[site.SitePC] = siteCall{hook: group.name, op: group.op, withSite: true, withMap: true,
-					dispatch: req.Dispatch, when: req.Lookups, results: results, ctxFrom: siteCtxSource(site)}
+					dispatch: req.Dispatch, when: req.Lookups, results: results, ctxFrom: siteCtxSource(site), frameFloor: req.Stack.floor(site.FuncName)}
 			}
 			continue
 		}
@@ -1588,7 +1665,7 @@ func (e lookupEmitter) splice(groups []lookupGroup) (asm.Instructions, []LookupH
 			plan = append(plan, LookupHook{Name: group.name, Kind: group.op, When: when, MapName: group.sites[0].MapName, Sites: publicLookupSites(group.sites),
 				Untrusted: untrusted, Static: static})
 			for _, site := range group.sites {
-				calls[site.SitePC] = siteCall{hook: group.name, op: group.op, results: results, withSite: true, ctxFrom: siteCtxSource(site)}
+				calls[site.SitePC] = siteCall{hook: group.name, op: group.op, results: results, withSite: true, ctxFrom: siteCtxSource(site), frameFloor: req.Stack.floor(site.FuncName)}
 			}
 			continue
 		}
@@ -1640,7 +1717,7 @@ func (e lookupEmitter) splice(groups []lookupGroup) (asm.Instructions, []LookupH
 		}
 		for _, site := range group.sites {
 			calls[site.SitePC] = siteCall{hook: group.name, missHook: group.missName, when: req.Lookups,
-				withSite: req.Auto, copySize: copySize, ctxFrom: siteCtxSource(site)}
+				withSite: req.Auto, copySize: copySize, ctxFrom: siteCtxSource(site), frameFloor: req.Stack.floor(site.FuncName)}
 		}
 	}
 	// With Dispatch the entry and tail-call hooks are the shared hook; otherwise
@@ -1666,11 +1743,12 @@ func (e lookupEmitter) splice(groups []lookupGroup) (asm.Instructions, []LookupH
 				from.helperR1 = true
 			}
 			calls[site.SitePC] = siteCall{hook: e.tailName, withSite: true, withMap: req.Dispatch,
-				dispatch: req.Dispatch, tailCall: true, ctxFrom: from}
+				dispatch: req.Dispatch, tailCall: true, ctxFrom: from, frameFloor: req.Stack.floor(site.FuncName)}
 		}
 		plan = append(plan, hook)
 	}
-	entry := entryCall{name: e.entryName, on: req.Entry, dispatch: req.Dispatch}
+	entryFunc := btf.FuncMetadata(&e.insns[0]).Name
+	entry := entryCall{name: e.entryName, on: req.Entry, dispatch: req.Dispatch, frameFloor: req.Stack.floor(entryFunc)}
 	out, err := spliceLookupCalls(e.insns, calls, req.Stack, hooks, entry)
 	return out, plan, err
 }
@@ -1678,9 +1756,10 @@ func (e lookupEmitter) splice(groups []lookupGroup) (asm.Instructions, []LookupH
 // entryCall is the hook called right after the entry ctx spill, if on. A
 // dispatch entry call also passes DispatchEntrySite and NULL pointers.
 type entryCall struct {
-	name     string
-	on       bool
-	dispatch bool
+	name       string
+	on         bool
+	dispatch   bool
+	frameFloor int16
 }
 
 type ctxSource struct {
@@ -1703,17 +1782,18 @@ func siteCtxSource(site discoveredLookup) ctxSource {
 // lookup calls missHook without a value, a generic one hook with NULL. An
 // update, delete, push, pop or peek site (op) calls hook on results.
 type siteCall struct {
-	hook     string
-	missHook string     // a typed lookup's NAME_miss hook
-	when     LookupWhen // the lookup results that call a hook
-	op       HookKind   // the helper: a lookup when empty
-	results  CallWhen   // the results of another map call that call hook
-	withSite bool
-	withMap  bool
-	tailCall bool
-	dispatch bool
-	ctxFrom  ctxSource
-	copySize uint32
+	hook       string
+	missHook   string     // a typed lookup's NAME_miss hook
+	when       LookupWhen // the lookup results that call a hook
+	op         HookKind   // the helper: a lookup when empty
+	results    CallWhen   // the results of another map call that call hook
+	withSite   bool
+	withMap    bool
+	tailCall   bool
+	dispatch   bool
+	ctxFrom    ctxSource
+	copySize   uint32
+	frameFloor int16
 }
 
 // spliceLookup splices one plain typed hook's calls, the narrow entry point
@@ -1728,9 +1808,9 @@ func spliceLookup(input asm.Instructions, sitePCs []uint32, req LookupRequest) (
 	}
 	calls := make(map[uint32]siteCall, len(sitePCs))
 	for _, pc := range sitePCs {
-		calls[pc] = siteCall{hook: req.HookName}
+		calls[pc] = siteCall{hook: req.HookName, frameFloor: req.Stack.LowestOffset}
 	}
-	return spliceLookupCalls(input, calls, req.Stack, nil, entryCall{})
+	return spliceLookupCalls(input, calls, req.Stack, nil, entryCall{frameFloor: req.Stack.LowestOffset})
 }
 
 // spliceLookupCalls instruments each helper in calls and places hook right
@@ -1738,12 +1818,12 @@ func spliceLookup(input asm.Instructions, sitePCs []uint32, req LookupRequest) (
 // entry ctx spill. The caller has checked that every slot the calls use lies
 // within the stack (CheckLookupStack and groupStackReach, or spliceLookup).
 func spliceLookupCalls(input asm.Instructions, calls map[uint32]siteCall, stack StackAudit, hook asm.Instructions, entryHook entryCall) (asm.Instructions, error) {
-	slots := lookupSlots(stack.LowestOffset)
-	ctx, key, spillR0, mapSlot := int16(slots.ctx), int16(slots.key), int16(slots.result), int16(slots.mapSlot)
-	copyAt := func(call siteCall) int { return slots.copyAt(call.copySize) }
 	// Every site of every hook shares the slots: sites run one at a time.
 	// A tail-call site keeps its index (R3) in the key slot.
 	afterFor := func(pc uint32, call siteCall) asm.Instructions {
+		slots := lookupSlots(call.frameFloor)
+		ctx, key, spillR0, mapSlot := int16(slots.ctx), int16(slots.key), int16(slots.result), int16(slots.mapSlot)
+		copyAt := func() int { return slots.copyAt(call.copySize) }
 		if call.op.MapCall() {
 			return mapCallAfter(pc, call, slots)
 		}
@@ -1774,7 +1854,7 @@ func spliceLookupCalls(input asm.Instructions, calls map[uint32]siteCall, stack 
 		hit := func(copySize uint32) asm.Instructions {
 			var args asm.Instructions
 			if copySize > 0 {
-				args = copyValue(asm.R0, int16(copyAt(call)), copySize)
+				args = copyValue(asm.R0, int16(copyAt()), copySize)
 			}
 			args = append(args, asm.LoadMem(asm.R1, asm.RFP, ctx, asm.DWord))
 			if call.withSite {
@@ -1788,7 +1868,7 @@ func spliceLookupCalls(input asm.Instructions, calls map[uint32]siteCall, stack 
 			}
 			if copySize > 0 {
 				value := args[len(args)-1].Dst // the register given R0
-				args = append(args, asm.Mov.Reg(value, asm.RFP), asm.Add.Imm(value, int32(copyAt(call))))
+				args = append(args, asm.Mov.Reg(value, asm.RFP), asm.Add.Imm(value, int32(copyAt())))
 			}
 			return append(args, asm.Call.Label(call.hook))
 		}
@@ -1829,6 +1909,8 @@ func spliceLookupCalls(input asm.Instructions, calls map[uint32]siteCall, stack 
 		return append(out, asm.LoadMem(asm.R0, asm.RFP, spillR0, asm.DWord))
 	}
 	before := func(call siteCall) asm.Instructions {
+		slots := lookupSlots(call.frameFloor)
+		ctx, key, spillR0, mapSlot := int16(slots.ctx), int16(slots.key), int16(slots.result), int16(slots.mapSlot)
 		initCtx := func(spill asm.Instructions) asm.Instructions {
 			switch {
 			case call.ctxFrom.helperR1:
@@ -1878,6 +1960,8 @@ func spliceLookupCalls(input asm.Instructions, calls map[uint32]siteCall, stack 
 	}
 	// At entry only R1 and R10 are initialized, so the entry hook may clobber
 	// R0-R5; ctx is reloaded into R1.
+	entrySlots := lookupSlots(entryHook.frameFloor)
+	entryCtx := int16(entrySlots.ctx)
 	prologue := asm.Instructions{}
 	if entryHook.dispatch && entryHook.on {
 		// The callee reads every argument register, so none may be left
@@ -1886,7 +1970,7 @@ func spliceLookupCalls(input asm.Instructions, calls map[uint32]siteCall, stack 
 			asm.Mov.Imm(asm.R4, 0), asm.Mov.Imm(asm.R5, 0)}
 	}
 	if entryHook.on {
-		prologue = append(prologue, asm.Call.Label(entryHook.name), asm.LoadMem(asm.R1, asm.RFP, ctx, asm.DWord))
+		prologue = append(prologue, asm.Call.Label(entryHook.name), asm.LoadMem(asm.R1, asm.RFP, entryCtx, asm.DWord))
 	}
 	hookSlots := int(hook.Size() / asm.InstructionSize)
 	hookAt := -1
@@ -1909,7 +1993,7 @@ func spliceLookupCalls(input asm.Instructions, calls map[uint32]siteCall, stack 
 			pc += len(after[uint32(old)])
 		}
 	}
-	entry := btf.WithFuncMetadata(asm.StoreMem(asm.RFP, ctx, asm.R1, asm.DWord).
+	entry := btf.WithFuncMetadata(asm.StoreMem(asm.RFP, entryCtx, asm.R1, asm.DWord).
 		WithSymbol(input[0].Symbol()).WithSource(input[0].Source()), btf.FuncMetadata(&input[0]))
 	out := append(asm.Instructions{entry}, prologue...)
 	it = input.Iterate()

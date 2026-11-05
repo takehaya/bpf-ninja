@@ -40,7 +40,8 @@ func TestFrameFloorsUseDirectAccessAfterFastcallShrink(t *testing.T) {
 		t.Fatal(err)
 	}
 	f := report.Functions[0]
-	if f.VerifiedDepth != 152 || f.TextDepth != 160 || f.Floor != -160 || f.Source != "text" {
+	if f.VerifiedDepth != 152 || f.TextDepth != 160 || f.Floor != -160 || f.Source != "text" ||
+		f.DeepestTextAccess == nil || f.DeepestTextAccess.PC != 0 || f.DeepestTextAccess.Offset != -160 {
 		t.Fatalf("floor = %+v", f)
 	}
 }

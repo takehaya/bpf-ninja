@@ -31,6 +31,22 @@ func TestPremisesJSONRoundTrip(t *testing.T) {
 	}
 }
 
+func TestPerFrameFloorsApplyToOwningFunction(t *testing.T) {
+	in := asm.Instructions{
+		asm.StoreImm(asm.RFP, -8, 0, asm.Word), asm.Return(),
+		asm.StoreImm(asm.RFP, -32, 0, asm.Word), asm.Return(),
+	}
+	cert := Certificate{Original: []int{0, 1, 2, 3}}
+	premises := Premises{LowestOffset: -8, Frames: []FrameFloor{{Start: 0, LowestOffset: -8}, {Start: 2, LowestOffset: -32}}, Targets: []SiteTarget{}}
+	if _, err := Check(in, in, cert, premises); err != nil {
+		t.Fatal(err)
+	}
+	premises.Frames[1].Start = 3
+	if _, err := Check(in, in, cert, premises); err == nil {
+		t.Fatal("accepted a subprogram access under the entry frame floor")
+	}
+}
+
 func TestPairV1ReportsVersionFirst(t *testing.T) {
 	b := []byte(`{"format":1,"original":[],"transformed":[],"certificate":{"original":[]},"premises":{"lowest_offset":-8}}`)
 	var p Pair

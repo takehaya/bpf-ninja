@@ -17,15 +17,34 @@ type KernelInfo struct {
 
 // FrameFloor records the two independently observed depths for one function.
 type FrameFloor struct {
-	Name          string `json:"name"`
-	Start         int    `json:"-"`
-	VerifiedDepth int    `json:"verified_depth"`
-	TextDepth     int    `json:"text_depth"`
-	TextExact     bool   `json:"text_exact"`
-	Floor         int16  `json:"floor"`
-	Source        string `json:"source"`
-	Dead          bool   `json:"dead,omitempty"`
-	SkipReason    string `json:"skip_reason,omitempty"`
+	Name              string      `json:"name"`
+	Start             int         `json:"-"`
+	VerifiedDepth     int         `json:"verified_depth"`
+	TextDepth         int         `json:"text_depth"`
+	TextExact         bool        `json:"text_exact"`
+	Floor             int16       `json:"floor"`
+	Source            string      `json:"source"`
+	Dead              bool        `json:"dead,omitempty"`
+	SkipReason        string      `json:"skip_reason,omitempty"`
+	Note              string      `json:"note,omitempty"`
+	Slots             *FrameSlots `json:"slots,omitempty"`
+	DeepestTextAccess *TextAccess `json:"deepest_text_access,omitempty"`
+}
+
+// TextAccess identifies the deepest direct RFP access when one is present.
+type TextAccess struct {
+	PC     int    `json:"pc"`
+	File   string `json:"file,omitempty"`
+	Line   uint32 `json:"line,omitempty"`
+	Offset int16  `json:"offset"`
+}
+
+type FrameSlots struct {
+	Context int `json:"ctx"`
+	Key     int `json:"key"`
+	Result  int `json:"result"`
+	Map     int `json:"map"`
+	Value   int `json:"value"`
 }
 
 // StackReport is the verifier-backed stack accounting for one trial load.
@@ -34,6 +53,7 @@ type StackReport struct {
 	Kernel        string       `json:"kernel,omitempty"`
 	FrameRounding int          `json:"frame_rounding,omitempty"`
 	Functions     []FrameFloor `json:"functions"`
+	Error         string       `json:"error,omitempty"`
 }
 
 // Frames returns the usable per-function floors. Dead and unsafe old-kernel
@@ -146,7 +166,10 @@ func FrameFloors(depths []int, loadedFuncs []string, insns asm.Instructions, ker
 		seen[fn.name] = true
 		verified, live := loaded[fn.name]
 		floor := FrameFloor{Name: fn.name, Start: fn.start, VerifiedDepth: verified}
+		floor.DeepestTextAccess = deepestTextAccess(insns, fn)
 		if !live {
+			floor.TextDepth, floor.TextExact = stackFrameDepthExact(insns[fn.start:fn.end], 0)
+			floor.Floor = int16(-floor.TextDepth)
 			floor.Dead, floor.Source = true, "dead"
 			report.Functions = append(report.Functions, floor)
 			continue
@@ -158,7 +181,11 @@ func FrameFloors(depths []int, loadedFuncs []string, insns asm.Instructions, ker
 		floor.Source = "verifier"
 		if text > verified {
 			floor.Source = "text"
+		} else if verified > text {
+			floor.Note = "the verifier counted more than the deepest direct access (aliases, callee writes through a caller pointer, or verifier-added stack use)"
 		}
+		slots := lookupSlots(floor.Floor)
+		floor.Slots = &FrameSlots{Context: slots.ctx, Key: slots.key, Result: slots.result, Map: slots.mapSlot, Value: slots.updateValue(true)}
 		if kernel.Major < 6 || kernel.Major == 6 && kernel.Minor < 8 {
 			if !exact {
 				floor.SkipReason = "kernel before 6.8 does not count variable-offset stack accesses and the text scan is not exact"
@@ -172,4 +199,29 @@ func FrameFloors(depths []int, loadedFuncs []string, insns asm.Instructions, ker
 		}
 	}
 	return report, nil
+}
+
+func deepestTextAccess(insns asm.Instructions, fn functionRange) *TextAccess {
+	var deepest *TextAccess
+	var file string
+	var line uint32
+	prefixSlots := 0
+	if fn.start != 0 {
+		prefixSlots = int(insns[:fn.start].Size() / 8)
+	}
+	it := insns[fn.start:fn.end].Iterate()
+	for it.Next() {
+		ins := it.Ins
+		if src, ok := ins.Source().(*btf.Line); ok {
+			file, line = src.FileName(), src.LineNumber()
+		}
+		class := ins.OpCode.Class()
+		direct := class == asm.LdXClass && ins.Src == asm.RFP ||
+			(class == asm.StClass || class == asm.StXClass) && ins.Dst == asm.RFP
+		if !direct || ins.Offset >= 0 || deepest != nil && ins.Offset >= deepest.Offset {
+			continue
+		}
+		deepest = &TextAccess{PC: prefixSlots + int(it.Offset), File: file, Line: line, Offset: ins.Offset}
+	}
+	return deepest
 }
