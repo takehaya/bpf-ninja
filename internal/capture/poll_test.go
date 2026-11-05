@@ -152,7 +152,7 @@ func taskVoluntarySwitches(t *testing.T, tid int) int64 {
 	return 0
 }
 
-func pinnedReaderThreads(t *testing.T, cpus []int) map[int]int64 {
+func pinnedReaderThreads(t *testing.T, cpus []int, exclude map[int]int64) map[int]int64 {
 	t.Helper()
 	want := make(map[int]bool, len(cpus))
 	for _, cpu := range cpus {
@@ -166,6 +166,9 @@ func pinnedReaderThreads(t *testing.T, cpus []int) map[int]int64 {
 	for _, entry := range entries {
 		tid, err := strconv.Atoi(entry.Name())
 		if err != nil {
+			continue
+		}
+		if _, ok := exclude[tid]; ok {
 			continue
 		}
 		var set unix.CPUSet
@@ -224,6 +227,7 @@ func TestFastReaderStopWhileIdle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	existing := pinnedReaderThreads(t, cpus, nil)
 	r, err := NewFastShardedReader([]*ebpf.Map{newPollTestMap(t), newPollTestMap(t)})
 	if err != nil {
 		t.Fatal(err)
@@ -238,7 +242,7 @@ func TestFastReaderStopWhileIdle(t *testing.T) {
 	t.Cleanup(func() { stopWithin(t, stop, 5*time.Second) })
 	var before map[int]int64
 	for deadline := time.Now().Add(time.Second); time.Now().Before(deadline); time.Sleep(time.Millisecond) {
-		before = pinnedReaderThreads(t, cpus)
+		before = pinnedReaderThreads(t, cpus, existing)
 		if len(before) == 2 {
 			break
 		}
