@@ -266,7 +266,8 @@ func (p *flowProgram) target(pc int, ins *asm.Instruction) (int, bool) {
 		return target, ok
 	}
 	rel := int(ins.Offset)
-	if ins.IsLoadOfFunctionPointer() || ins.OpCode.Class() == asm.Jump32Class && ins.OpCode.JumpOp() == asm.Ja {
+	if ins.IsFunctionCall() || ins.IsLoadOfFunctionPointer() ||
+		ins.OpCode.Class() == asm.Jump32Class && ins.OpCode.JumpOp() == asm.Ja {
 		rel = int(int32(ins.Constant))
 	}
 	target := pc + 1 + rel

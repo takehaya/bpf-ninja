@@ -97,6 +97,29 @@ func TestProve(t *testing.T) {
 		}
 	})
 
+	t.Run("translated numeric calls", func(t *testing.T) {
+		insns := fixture(nil, nil)
+		symbols := map[string]int{}
+		for it := insns.Iterate(); it.Next(); {
+			if symbol := it.Ins.Symbol(); symbol != "" {
+				symbols[symbol] = int(it.Offset)
+			}
+		}
+		for it := insns.Iterate(); it.Next(); {
+			if !it.Ins.IsFunctionCall() || it.Ins.Reference() == "" {
+				continue
+			}
+			it.Ins.Constant = int64(symbols[it.Ins.Reference()] - int(it.Offset) - 1)
+			*it.Ins = it.Ins.WithReference("")
+		}
+		functions := Functions(insns, ctx)
+		for _, function := range functions {
+			if proof := Prove(insns, ctx)[function.Start]; !proof.Proven {
+				t.Errorf("%s: %+v", function.Name, proof)
+			}
+		}
+	})
+
 	for _, tc := range []struct {
 		name      string
 		entryHead asm.Instructions
