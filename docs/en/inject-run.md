@@ -426,7 +426,7 @@ If a rewrite fails, `inject-run` reports it on stderr and keeps running the targ
 | `hooks[].dead_cause` | Why a dead hook was marked. Currently this says that the verifier removed the generated hook as unreachable in this load. |
 | `hooks[].sites[].dead_in_this_load`, `dead_cause` | A site is dead only when every generated hook that reports that site is absent. For example, an absent miss hook does not make a site dead while its hit hook remains. |
 | `skipped` | Map calls that `auto` did not instrument, with the site fields and a `reason`. |
-| `dead_check_error` | Present when the loaded `func_info` could not be checked. Hooks remain unmarked; consumers must not guess that they are dead. |
+| `dead_check_error` | Present when one or more hook comparisons failed. Affected hooks, and any site they may report, remain unmarked; independently confirmed absent hooks and sites can still be marked. Consumers must not guess from an unmarked result. |
 
 Treat a marked site as having no live observation point in this load, not as an attach failure.
 The marks describe this program load only; a configuration change can make the same generated hook live on the next load.

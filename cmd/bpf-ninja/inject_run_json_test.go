@@ -4,6 +4,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -43,6 +44,20 @@ func TestDeadSitesRequireEveryHookToBeAbsent(t *testing.T) {
 		if out.Hooks[i].Sites[0].DeadInThisLoad != wantSiteDead {
 			t.Errorf("hook %s site dead=%v", out.Hooks[i].Name, out.Hooks[i].Sites[0].DeadInThisLoad)
 		}
+	}
+}
+
+func TestDeadCheckErrorPreservesIndependentKnownResults(t *testing.T) {
+	out := injectedProgJSON{Hooks: []hookJSON{
+		{Name: "known_dead", Sites: []hookSiteJSON{{Kind: string(inject.HookLookup), PC: 12}}},
+		{Name: "unknown", Sites: []hookSiteJSON{{Kind: string(inject.HookLookup), PC: 18}}},
+	}}
+	notices := applyDeadHookAvailability(&out, map[string]attach.FuncAvailability{
+		"known_dead": {Reason: attach.FuncAbsent},
+		"unknown":    {Reason: attach.FuncUnknown},
+	}, errors.New("hook unknown: func_info unavailable"))
+	if out.DeadCheckError == "" || !out.Hooks[0].DeadInThisLoad || out.Hooks[1].DeadInThisLoad || len(notices) != 1 || notices[0].PC != 12 {
+		t.Fatalf("out=%+v notices=%+v", out, notices)
 	}
 }
 
@@ -122,6 +137,14 @@ func TestHooksWriter(t *testing.T) {
 	f := read()
 	if len(f.Programs) != 2 || f.Programs[1].Program != "b" || f.Programs[1].Hooks[0].Name != "b_entry" {
 		t.Fatalf("after two loads: %+v", f)
+	}
+	for _, prog := range f.Programs {
+		if prog.DeadCheckError == "" || prog.Hooks[0].DeadInThisLoad {
+			t.Fatalf("unchecked program guessed dead: %+v", prog)
+		}
+	}
+	if len(w.lastDead) != 0 {
+		t.Fatalf("unchecked dead notices: %+v", w.lastDead)
 	}
 	if entries, _ := os.ReadDir(filepath.Dir(path)); len(entries) != 1 {
 		t.Fatalf("temporary files left: %v", entries)

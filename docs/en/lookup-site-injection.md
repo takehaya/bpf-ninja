@@ -382,11 +382,12 @@ A failed context read produces no capture, and a filter with `--tc-vlan-reinsert
 The stack audit has the same alias and callee limitations as `StackAudit` in the original transform.
 The audited bound is rounded down to an 8-byte boundary before allocating the slots.
 A lookup site's frame also calls its hook. Kernels using 32-byte rounding count the empty hook as 32 bytes of the 512-byte combined stack, so a site needs `-456` for three slots and `-448` for four. Linux 6.9+ JIT rounding counts the empty hook as zero, allowing `-488` and `-480` respectively. `Auto` skips a site past the selected limit, and explicit selection refuses it.
-`CheckLookupStack` requires `-456` when the request may hold a lookup site.
+With the default 32-byte rule, `CheckLookupStack` requires `-456` when the request may hold a lookup site; selected 16-byte rounding permits `-488`.
 For `Auto`, deeper slots are checked from the selected site groups instead of from operation flags, so requesting update observation does not reserve an update slot in a program with no update site.
 Without one, the entry hook's frame holds only the 8-byte ctx slot and a tail-call site's frame the ctx and index slots, so `Entry` alone needs `-472` and `TailCalls` (with or without `Entry`) `-464`.
-With `Dispatch`, a lookup or tail-call site also fills the map slot, so such a request needs `-448`; `Entry` alone still needs `-472`.
-`Updates` needs `-448` for the update's value slot, and `-440` with `Dispatch`.
+With `Dispatch`, a lookup or tail-call site also fills the map slot, so under the 32-byte rule such a request needs `-448`; selected 16-byte rounding permits `-480`.
+`Entry` alone still needs `-472`.
+Under the 32-byte rule, `Updates` needs `-448` for the update's value slot and `-440` with `Dispatch`; selected 16-byte rounding permits `-480` and `-472` respectively.
 The transform checks direct R10 references throughout the flattened selected program.
 The call-chain check tracks R10 aliases separately in each function, within basic blocks.
 It follows 64-bit register copies and immediate addition/subtraction, counting both formed pointer offsets and memory accesses through them.

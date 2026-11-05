@@ -221,10 +221,18 @@ func parseConfig(r io.Reader, frameRounding int) ([]Rule, error) {
 	if err := d.Decode(&trailing); err != io.EOF {
 		return nil, fmt.Errorf("injection config: expected one JSON array")
 	}
+	var fields []map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return nil, fmt.Errorf("injection config: %w", err)
+	}
 	for i := range rules {
-		if rules[i].FrameRounding == 0 {
-			rules[i].FrameRounding = frameRounding
+		if _, explicit := fields[i]["frame_rounding"]; explicit {
+			if rules[i].FrameRounding != 16 && rules[i].FrameRounding != 32 {
+				return nil, fmt.Errorf("rule %d: frame_rounding must be 16 or 32", i)
+			}
+			continue
 		}
+		rules[i].FrameRounding = frameRounding
 	}
 	if err := Validate(rules); err != nil {
 		return nil, err

@@ -142,6 +142,12 @@ func TestParseConfigAppliesFrameRoundingBeforeValidation(t *testing.T) {
 	if _, err := ParseConfigWithFrameRounding(strings.NewReader(explicit), 16); err == nil {
 		t.Fatal("kernel default replaced an explicit 32-byte rule")
 	}
+	for _, value := range []string{"0", "null"} {
+		explicit = strings.Replace(config, `"hook":"h"`, `"frame_rounding":`+value+`,"hook":"h"`, 1)
+		if _, err := ParseConfigWithFrameRounding(strings.NewReader(explicit), 16); err == nil || !strings.Contains(err.Error(), "frame_rounding must be 16 or 32") {
+			t.Fatalf("explicit %s: %v", value, err)
+		}
+	}
 }
 
 func TestConfig(t *testing.T) {

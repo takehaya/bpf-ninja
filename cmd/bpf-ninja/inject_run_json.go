@@ -38,8 +38,8 @@ type injectedProgJSON struct {
 	HookForm syscallhook.HookForm `json:"hook_form"`
 	Hooks    []hookJSON           `json:"hooks"`
 	Skipped  []hookSiteJSON       `json:"skipped"`
-	// DeadCheckError is present only when func_info could not be checked. In
-	// that case hooks stay unmarked rather than guessing that they are dead.
+	// DeadCheckError names hook comparisons that failed. Those hooks and any
+	// site they may report stay unmarked; independent known results remain.
 	DeadCheckError string `json:"dead_check_error,omitempty"`
 }
 
@@ -128,6 +128,13 @@ func markDeadHooks(out *injectedProgJSON, availability map[string]attach.FuncAva
 		return cmp.Or(cmp.Compare(a.PC, b.PC), cmp.Compare(a.Kind, b.Kind), cmp.Compare(a.Map, b.Map), cmp.Compare(a.Func, b.Func))
 	})
 	return notices
+}
+
+func applyDeadHookAvailability(out *injectedProgJSON, availability map[string]attach.FuncAvailability, err error) []hookSiteJSON {
+	if err != nil {
+		out.DeadCheckError = err.Error()
+	}
+	return markDeadHooks(out, availability)
 }
 
 func loadedHookAvailabilities(progID uint32, names []string) (map[string]attach.FuncAvailability, error) {
@@ -254,10 +261,7 @@ func (w *hooksWriter) add(inj syscallhook.Injection) error {
 			names[i] = out.Hooks[i].Name
 		}
 		availability, err := loadedHookAvailabilities(inj.ProgID, names)
-		if err != nil {
-			out.DeadCheckError = err.Error()
-		}
-		w.lastDead = markDeadHooks(&out, availability)
+		w.lastDead = applyDeadHookAvailability(&out, availability, err)
 	}
 	w.file.Programs = append(w.file.Programs, out)
 	return w.write()
