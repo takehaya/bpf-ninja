@@ -610,6 +610,11 @@ func relocTarget(ins *asm.Instruction, pc int, indices map[int]int, input asm.In
 		return t, true, true, nil
 
 	case ins.OpCode.Class().IsJump() && ins.OpCode.JumpOp() != asm.Call && ins.OpCode.JumpOp() != asm.Exit:
+		// Its table holds instruction indexes of the input and is frozen before
+		// the load, so inserted instructions would misdirect the jump.
+		if isIndirectJump(ins) {
+			return 0, false, false, refuse("indirect jump at %d is unsupported", pc)
+		}
 		if ins.Reference() != "" {
 			return 0, false, false, refuse("symbolic branch at %d is unsupported", pc)
 		}

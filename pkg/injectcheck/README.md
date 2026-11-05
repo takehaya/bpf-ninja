@@ -43,6 +43,7 @@ For a lookup, `any` requires the hook on both the hit and miss paths.
 The caller must use `inject.BuildLookupTargets` or derive the same data from the plan, never from transformed call references.
 `BuildLookupTargets` returns `inject.ErrCheckerNotApplicable` for an indirect `callx`, whose target it cannot pair.
 `inject-run` loads that substituted stream without validation by default and refuses it only with `--fail-closed`.
+An indirect jump (`BPF_JA|BPF_X`) in either stream is rejected with `indirect_jump`, because its targets are in a map outside both streams.
 The checker checks its range and direct RFP accesses, but cannot establish the alias audit from the instruction projection.
 
 ## Checked shapes

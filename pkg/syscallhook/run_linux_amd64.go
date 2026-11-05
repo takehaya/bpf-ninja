@@ -93,6 +93,8 @@ type supervisor struct {
 
 var errTrialVerifier = errors.New("trial load was rejected by the verifier")
 
+var errIndirectJump = errors.New("indirect jump")
+
 func (s *supervisor) log(format string, args ...any) {
 	_, _ = fmt.Fprintf(s.options.Log, "inject-run: "+format+"\n", args...)
 }
@@ -436,7 +438,7 @@ func (s *supervisor) entry(pid int, t *thread, regs unix.PtraceRegs) error {
 				s.log("program %q: injection skipped: %v", name, injectErr)
 			}
 		}
-		refuse := s.options.FailClosed || stackErr != nil && !rule.Auto && !errors.Is(stackErr, errTrialVerifier)
+		refuse := s.options.FailClosed || stackErr != nil && !rule.Auto && !errors.Is(stackErr, errTrialVerifier) && !errors.Is(stackErr, errIndirectJump)
 		ret, err = retryOriginalOrRefuse(refuse, func() (int64, error) {
 			// Substituted attrs and buffers live in scratch memory, so the original
 			// registers, attr and input buffers still describe the unchanged load.
@@ -616,6 +618,11 @@ func (s *supervisor) preloadDepths(r *remote, attr []byte, rounding int) (report
 	raw, err := extractRaw(r, attr, spec)
 	if err != nil {
 		return report, err
+	}
+	// A successful load binds an instruction array for good, even after the
+	// program is closed, so a trial load would make the original load fail.
+	if pc, ok := inject.IndirectJump(raw.Instructions); ok {
+		return report, fmt.Errorf("%w at instruction %d is unsupported", errIndirectJump, pc)
 	}
 	const logSize = 64 << 10
 	logAddr, err := r.alloc(make([]byte, logSize))

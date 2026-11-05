@@ -163,6 +163,14 @@ func Check(in, out asm.Instructions, c Certificate, premises Premises) (Counts, 
 	if len(in) == 0 {
 		return counts, inputError(InputOriginalEmpty, "original must contain instructions")
 	}
+	// A jump table's targets are outside both streams, so no edge can be compared.
+	for _, stream := range []asm.Instructions{in, out} {
+		for i, ins := range stream {
+			if ins.OpCode.Class().IsJump() && ins.OpCode.JumpOp() == asm.Ja && ins.OpCode.Source() == asm.RegSource {
+				return fail(IndirectJump, "indirect jump at instruction %d", i)
+			}
+		}
+	}
 	if len(c.Original) == 0 {
 		return counts, inputError(InputCertificateEmpty, "certificate.original must not be empty")
 	}

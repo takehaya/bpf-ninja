@@ -609,6 +609,10 @@ The checker cannot pair an indirect `callx` instruction with its target.
 By default `inject-run` reports `checker not applicable: cannot pair indirect callx at instruction N; load not validated` and loads the substituted stream unchecked, preserving programs such as Kmesh that use indirect BPF calls.
 With `--fail-closed`, it refuses that load with `EPERM`.
 
+A program with an indirect jump (`BPF_JA|BPF_X`) is not rewritten.
+Its jump table holds instruction indexes of the original program, and the table is frozen before the load, so inserted instructions would send the jump to the wrong place.
+`inject-run` skips the trial load too, because a successful load binds the table for good, then loads the original program, or refuses with `EPERM` under `--fail-closed`.
+
 In both modes:
 
 - an invalid configuration fails before the target starts;

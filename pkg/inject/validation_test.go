@@ -1167,3 +1167,20 @@ func validationPairEvidence(t *testing.T, in, out asm.Instructions, c injectchec
 	p.Reason = reason
 	return p
 }
+
+func TestIndirectJumpRefused(t *testing.T) {
+	spec := lookupFixture()
+	p := spec.Programs["p"]
+	p.Instructions = append(p.Instructions, asm.Instruction{OpCode: asm.Ja.Op(asm.RegSource), Dst: asm.R3}, asm.Return())
+	raw := rawLookupFixture(t, spec, "p", false)
+	req := LookupRequestRaw{Site: LookupSelector{MapName: "sessions"}, HookName: "h", Stack: StackAudit{LowestOffset: -8}}
+	if _, err := TransformLookupRaw(raw, req); err == nil || !strings.Contains(err.Error(), "indirect jump at 17") {
+		t.Fatalf("transform: %v", err)
+	}
+	if _, err := DiscoverMapCallsRaw(raw); err == nil || !strings.Contains(err.Error(), "indirect jump at 17") {
+		t.Fatalf("discovery: %v", err)
+	}
+	if pc, ok := IndirectJump(raw.Instructions); !ok || pc != 17 {
+		t.Fatalf("IndirectJump = %d, %v", pc, ok)
+	}
+}
