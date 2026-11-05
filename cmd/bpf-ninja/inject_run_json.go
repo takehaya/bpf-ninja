@@ -204,7 +204,7 @@ func injectionJSON(inj syscallhook.Injection) injectedProgJSON {
 	dispatch := -1
 	for _, hook := range inj.Hooks {
 		var sites []hookSiteJSON
-		if hook.Dispatch && hook.Kind == inject.HookEntry {
+		if hook.Kind == inject.HookEntry {
 			site := hookSiteJSON{Kind: string(inject.HookEntry), PC: inject.DispatchEntrySite}
 			setFrame(&site, inj.Func)
 			sites = append(sites, site)

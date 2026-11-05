@@ -382,12 +382,12 @@ A failed context read produces no capture, and a filter with `--tc-vlan-reinsert
 | The input ELF matches `ELFSHA256` before parsing. | The hash identifies the audited build. |
 | The selector resolves supported lookups of the same map in the entry function or a context-proved called subprogram. | These are the intended observation sites. |
 | Map BTF sizes, where present, match the map definition, and entry BTF describes the program type's context pointer. | The BTF describes the audited build. |
-| Direct R10 references stay at or above `Stack.LowestOffset`; three aligned spill slots (four with the generic hook, at a typed update, or, at lookup, delete and tail-call sites, `Dispatch`; five at a generic or dispatch update; plus a value copy with `CopyReadOnly`) fit below it within the selected 480- or 512-byte site-frame limit. The call chains of the transformed program stay within the verifier's stack and frame limits wherever the original's do. | Pointer aliases do not reach the reserved spill region in any audited frame, including called subprograms. |
+| Direct R10 references stay at or above the owning frame's floor from `Stack.Frames`, or `Stack.LowestOffset` in single-floor library mode; three aligned spill slots (four with the generic hook, at a typed update, or, at lookup, delete and tail-call sites, `Dispatch`; five at a generic or dispatch update; plus a value copy with `CopyReadOnly`) fit below that floor within the selected 480- or 512-byte site-frame limit. The call chains of the transformed program stay within the verifier's stack and frame limits wherever the original's do. | Pointer aliases do not reach the reserved spill region in any audited frame, including called subprograms. |
 | Existing function and source metadata are complete, references resolve, and relocation fits. | The transformed program remains acceptable to the target kernel verifier. |
 
 For library callers, the stack audit has the same alias and callee limitations as `StackAudit` in the original transform.
 `inject-run` discharges that input with the verifier's accounting of the original load.
-The audited bound is rounded down to an 8-byte boundary before allocating the slots.
+Each owning frame's audited bound is rounded down to an 8-byte boundary before allocating its slots.
 A lookup site's frame also calls its hook. Kernels using 32-byte rounding count the empty hook as 32 bytes of the 512-byte combined stack, so a site needs `-456` for three slots and `-448` for four. Linux 6.9+ JIT rounding counts the empty hook as zero, allowing `-488` and `-480` respectively. `Auto` skips a site past the selected limit, and explicit selection refuses it.
 With the default 32-byte rule, `CheckLookupStack` requires `-456` when the request may hold a lookup site; selected 16-byte rounding permits `-488`.
 For `Auto`, deeper slots are checked from the selected site groups instead of from operation flags, so requesting update observation does not reserve an update slot in a program with no update site.
@@ -401,11 +401,11 @@ It follows 64-bit register copies and immediate addition/subtraction, counting b
 For `bpf_map_lookup_elem`, `bpf_map_delete_elem`, `bpf_map_update_elem`, and `bpf_xdp_load_bytes`, a stack argument in the documented buffer position accesses memory from that pointer forward, so the pointer offset also bounds its deepest access.
 Calls clear R0–R5 and preserve R6–R9 in this analysis.
 
-An alias that crosses a branch or jump target, is stored (including a stack spill), is returned, uses unsupported arithmetic, or is passed to another helper, a BPF subprogram, or a kfunc restores the shared audited bound for the entire frame.
+An alias that crosses a branch or jump target, is stored (including a stack spill), is returned, uses unsupported arithmetic, or is passed to another helper, a BPF subprogram, or a kfunc restores that frame's audited bound.
 A callee can subtract from a passed pointer and deepen the caller's frame; such escapes therefore need the audit even when the pointer's initial offset is known.
 This restricted analysis needs no merging of register values across paths: every supported alias is defined and consumed within one basic block, and every memory access through it has a known offset.
 Direct references in every block still count, including code the verifier may prove dead.
-The shared audit remains required for spill placement and all unsupported aliases.
+The per-frame audit remains required for spill placement and all unsupported aliases.
 A transformed frame that reaches below the audit is always counted as changed, even when an unused pointer formation makes its estimated depth equal before and after injection.
 
 Unlike the existing transform, this transform requires **no caller-saved register liveness certification**.

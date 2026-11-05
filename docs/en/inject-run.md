@@ -410,7 +410,7 @@ If a rewrite fails, `inject-run` reports it on stderr and keeps running the targ
           "static": false,
           "read_only": false
         },
-        {"name": "lookup_hook_entry", "kind": "entry", "sites": [], "untrusted": false, "copied": false, "static": false, "read_only": false}
+        {"name": "lookup_hook_entry", "kind": "entry", "sites": [{"kind": "entry", "pc": 4294967295, "frame": "entry_with_long_name", "floor": -8}], "untrusted": false, "copied": false, "static": false, "read_only": false}
       ],
       "skipped": []
     }
