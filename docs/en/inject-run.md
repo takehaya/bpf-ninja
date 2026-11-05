@@ -302,6 +302,7 @@ The trial uses the original load attributes and adds one verification pass, whic
 Linux before 6.8 does not include every variable-offset access in its reported depth.
 On those kernels, `inject-run` skips sites in a function whose instruction scan is not exact.
 If trial loading, statistics parsing, or function matching fails, automatic rules leave the original program unchanged, explicit rules refuse the load, and `--fail-closed` refuses either kind.
+A program with an [indirect jump](#load-stream-check) has no trial load and no floor, and an explicit rule loads it unchanged.
 
 The `stack` block in `--lookups-json` and `--hooks-json` records the kernel release, every function's verifier and direct-text depths, the selected floor, source, and reserved slots.
 Each hook site also records its `frame` and `floor`.
@@ -611,7 +612,8 @@ With `--fail-closed`, it refuses that load with `EPERM`.
 
 A program with an indirect jump (`BPF_JA|BPF_X`) is not rewritten.
 Its jump table holds instruction indexes of the original program, and the table is frozen before the load, so inserted instructions would send the jump to the wrong place.
-`inject-run` skips the trial load too, because a successful load binds the table for good, then loads the original program, or refuses with `EPERM` under `--fail-closed`.
+`inject-run` skips the trial load too, because a successful load binds the table for good.
+It then loads the original program, even under an explicit rule, or refuses with `EPERM` under `--fail-closed`.
 
 In both modes:
 
@@ -641,6 +643,9 @@ In both modes:
 - Loads must use 8-byte `func_info` and 16-byte `line_info` records.
   Each input buffer can be at most 16 MiB, and the attr at most 4096 bytes.
   `inject-run` refuses loads with kernel-side CO-RE records, fd arrays, tokens, signatures or other unknown extensions.
+- A program with an indirect jump (`BPF_JA|BPF_X`) is never rewritten, so its sites are not observed and it does not appear in discovery.
+- A program that references a `BPF_MAP_TYPE_INSN_ARRAY` map without an indirect jump fails to load under `inject-run`, even when failing open.
+  The trial load binds the array, so the load that follows gets `EBUSY`.
 - The integration tests use a Go loader built on cilium/ebpf.
   C and libbpf loaders go through the same syscall path but have no integration test.
 
