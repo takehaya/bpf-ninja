@@ -166,6 +166,23 @@ func TestTranslationValidationSubprogramContextPairCorpus(t *testing.T) {
 
 			target := premises.Targets[0]
 			helper := cert.Original[target.Site]
+			if source == "register" {
+				t.Run("matching-premise-is-trusted", func(t *testing.T) {
+					// The checker binds code to trusted plan data. It does not
+					// reconstruct BTF provenance, so a consistently changed
+					// premise and prelude remains a valid conditional proof.
+					forged := append(asm.Instructions(nil), out...)
+					forged[helper-1] = asm.StoreMem(asm.RFP, forged[helper-1].Offset, asm.R7, asm.DWord)
+					forgedPremises := premises
+					forgedPremises.Targets = append([]injectcheck.SiteTarget(nil), premises.Targets...)
+					ctx := *forgedPremises.Targets[0].Ctx
+					ctx.Reg = int(asm.R7)
+					forgedPremises.Targets[0].Ctx = &ctx
+					if _, err := injectcheck.Check(in, forged, cert, forgedPremises); err != nil {
+						t.Fatalf("matching trusted premise rejected: %v", err)
+					}
+				})
+			}
 			for _, mutation := range []string{"wrong-source", "missing-init"} {
 				t.Run(mutation, func(t *testing.T) {
 					bad := append(asm.Instructions(nil), out...)

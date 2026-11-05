@@ -34,7 +34,9 @@ counts, err := injectcheck.Check(original, transformed, injectcheck.Certificate{
 別引数の **premises** は呼び出し側の信頼済み入力である。
 `LowestOffset` は、間接アクセスと callee からの caller-stack pointer の利用を含む stack-alias audit である。
 `Targets` は plan の用語で `{Site, When, Hook, Ctx}`、すなわち元命令 index、`hit`、`miss`、`any`、`error` のいずれか、生成 hook の decoded 開始 index、任意の callee-frame context 由来を対応づける。
-`Ctx` は R6-R9 または audit 済み frame 内の整列 slot を指し、省略時は entry frame を表す。
+`Ctx` は R6-R9 または audit 済み frame 内の整列 slot を指す。
+チェッカーは prelude が指定された由来をコピーすることを検査するが、その由来が意味的に context を保持することまでは証明しない。
+map call では省略時に既存の entry-frame 経路を使うが、従来の P4 tail-call 形式では helper R1 から callee frame を直接初期化する場合もある。
 lookup の `any` は hit と miss の両方の経路で hook を呼ぶことを要求する。
 caller は `inject.BuildLookupTargets` を使うか、同じ情報を変換後 call の reference ではなく plan から作る必要がある。
 `BuildLookupTargets` は、宛先を対応づけられない indirect `callx` に `inject.ErrCheckerNotApplicable` を返す。

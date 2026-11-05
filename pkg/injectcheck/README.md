@@ -33,7 +33,9 @@ An `LDIMM64` is one decoded instruction and two raw slots for relocation.
 The separate **premises** are trusted caller inputs.
 `LowestOffset` is the stack-alias audit, including indirect accesses and callee use of caller-stack pointers.
 `Targets` binds `{Site, When, Hook, Ctx}` in plan terms: the original instruction index, `hit`, `miss`, `any`, or `error`, the decoded index of the generated hook start, and an optional callee-frame context source.
-`Ctx` names either R6-R9 or an aligned slot within the audited frame; omission means the entry frame.
+`Ctx` names either R6-R9 or an aligned slot within the audited frame.
+The checker verifies that the prelude copies the named source; it does not prove that source semantically contains context.
+For map calls, omission selects the existing entry-frame path; the older P4 tail-call shape may instead initialize a callee frame directly from helper R1.
 For a lookup, `any` requires the hook on both the hit and miss paths.
 The caller must use `inject.BuildLookupTargets` or derive the same data from the plan, never from transformed call references.
 `BuildLookupTargets` returns `inject.ErrCheckerNotApplicable` for an indirect `callx`, whose target it cannot pair.
