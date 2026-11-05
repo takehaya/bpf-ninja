@@ -7,7 +7,7 @@ It generates a global BTF function whose pointer types come from the entry funct
 int HOOK(struct xdp_md *ctx, const KEY *key, const VALUE *value);
 ```
 
-In a tc program the hooks take `struct __sk_buff *ctx` instead; the signatures on this page show the XDP form.
+In a tc or cgroup_skb program the hooks take `struct __sk_buff *ctx` instead; the signatures on this page show the XDP form.
 An fentry observer attached to `HOOK` can correlate packet context, the lookup key, and the returned value.
 The hook runs only when the lookup returns a non-null value.
 It uses all three arguments and returns zero; the injected code restores the original lookup result before the program continues.
@@ -367,14 +367,14 @@ The hook retains these types, including typedefs and qualifiers, under `const` p
 A side the map declares only by size, such as `__uint(key_size, 4)`, has no BTF; the hook takes it as an anonymous `struct { u8 bytes[N]; }` of the map's size.
 Types named `struct xdp_md`, `struct __sk_buff` or `struct bpf_dynptr` are refused as map key/value types because the verifier assigns those pointer types special argument semantics.
 Other map kinds are refused by a typed hook rather than assuming their helper return is ordinary value memory; `Auto` observes XSK maps, devmaps, devmap hashes, sockmaps and sockhashes through the generic hook and skips the rest.
-The entry function must have one BTF parameter pointing to `struct xdp_md` (XDP) or `struct __sk_buff` (tc).
+The entry function must have one BTF parameter pointing to `struct xdp_md` (XDP) or `struct __sk_buff` (tc, cgroup_skb).
 The package checks the program type; the cooperative loader owns attachment mode and verifier acceptance.
 The generated hooks read the context's first word (`len` for `__sk_buff`) and call no helper that changes packet data.
 
 For packet capture at a static XDP, tc or cgroup_skb hook, bpf-ninja reads the context with `bpf_probe_read_kernel`.
 A user-supplied static function must pass the translated-instruction context check at attach time.
 A generated function tagged `bpf-ninja:hook` skips that repeated proof because its first argument comes from the context slot placed below the verifier-backed frame floor; [arg-member-filter.md](arg-member-filter.md) lists the cases.
-At tc it reads `sk_buff.data`, `len` and `data_len`, using offsets from kernel BTF, and captures only the linear head, `len - data_len`, as at other tc hooks; fragment bytes are not captured.
+At tc and cgroup_skb it reads `sk_buff.data`, `len` and `data_len`, using offsets from kernel BTF, and captures only the linear head, `len - data_len`, as at other tc hooks; fragment bytes are not captured.
 A failed context read produces no capture, and a filter with `--tc-vlan-reinsert` is refused on this path.
 
 | Transformer validates | Caller must certify |
@@ -610,6 +610,7 @@ A direct run of the target fires both.
 `TestBpfEntryHookWithLookup` combines `Entry` with a lookup hook in one program and observes both.
 `TestBpfDispatch[Static]` attaches one observer to the dispatch hook and checks the entry, lookup and failed tail-call calls in order, with the map id and value bytes each passes; `TestBpfDispatchStackLimit` checks the transform refuses a dispatch tail call in the entry function one slot past the caller-depth limit and loads one slot under it.
 `TestBpfDispatchTC[Static]` repeats `TestBpfDispatch[Static]` on a `SchedCLS` program with an `__sk_buff` context; `TestBpfLookupHooksTC` instruments the same `SchedCLS` program with per-map typed lookup, entry and tail-call hooks, and an fentry on each checks the key, value, `site`, tail-call index and the `sk_buff` length it sees; `TestLookupTC` (unprivileged) checks that every hook kind takes `__sk_buff` in a tc program, in the ELF and raw forms.
+`TestBpfDispatchCGroupSKB[Static]` and `TestBpfLookupHooksCGroupSKB` repeat them on a cgroup_skb egress program, whose packet starts at L3.
 `TestBpfLookupInjectionCallback` checks symbolic and numeric callback loads with an unreached subprogram preceding the `bpf_loop` callback and a stack counter incremented three times by `bpf_loop`; the program returns `XDP_ABORTED` unless those increments occur.
 It repeats the plain/injected comparison and fentry observations (including direct `ctx` pointer dereferencing) for both callback forms.
 `TestBpfMapCallEquivalence` generates XDP programs and compares the plain and rewritten return value, output packet and final map contents under seven request configurations.
@@ -626,7 +627,7 @@ go test -count=1 ./pkg/inject/...
 sudo -E env PATH=$PATH go test -count=1 -run 'TestBpfLookupInjection|TestBpfLookupMiss|TestBpfLookupAny|TestBpfMapCalls|TestBpfTailCall|TestBpfEntryHook|TestBpfStackLimits|TestBpfDispatch|TestBpfSpecialFields|TestBpfSockHash|TestBpfQueue|TestBpfStackOps|TestBpfBloom|TestBpfLookupPercpu' ./pkg/inject/
 ```
 
-All 77 privileged `TestBpf` tests of this package, including the lookup, miss, update, delete, push, pop, peek, special-field, socket-map, entry, tail-call, stack-limit, dispatch and generated equivalence tests, pass across the CI kernel matrix (6.1 to 7.3-rc4) that `make test-bpf` runs, where the tests whose hooks need `arg:untrusted` skip on 6.1-6.15, the callback stack-limit subtests skip on 7.3, which forbids tail calls in callbacks, and the sockhash update tests skip on 7.3, which no longer lets tc update a socket map (see scripts/test/privileged.py).
+All privileged `TestBpf` tests of this package, including the lookup, miss, update, delete, push, pop, peek, special-field, socket-map, entry, tail-call, stack-limit, dispatch and generated equivalence tests, pass across the CI kernel matrix (6.1 to 7.3-rc4) that `make test-bpf` runs, where the tests whose hooks need `arg:untrusted` skip on 6.1-6.15, the cgroup_skb tests skip on 6.1-6.12, whose `BPF_PROG_TEST_RUN` sets no cgroup_skb packet pointers, the callback stack-limit subtests skip on 7.3, which forbids tail calls in callbacks, and the sockhash update tests skip on 7.3, which no longer lets tc update a socket map (see scripts/test/privileged.py).
 This is finite test evidence for the fixture, not a general program-equivalence, concurrency, or kernel-version guarantee.
 
 The independent [instruction translation validator](../../pkg/injectcheck/README.md) checks preservation, relocation and allowed insertion forms without loading BPF.

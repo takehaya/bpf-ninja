@@ -17,7 +17,7 @@ Member filters and echo, scalar-pointee `[0]` reads, pointer NULL comparisons, a
 These features have been measured on kernels 6.1+ in our test matrix; distribution backports may differ.
 The common 5.8+ prerequisite alone does not provide this helper.
 
-Static XDP and tc capture use fault-handled context reads when the direct-read probe fails with a scalar context; static functions that accept direct reads keep them.
+Static XDP, tc and cgroup-skb capture use fault-handled context reads when the direct-read probe fails with a scalar context; static functions that accept direct reads keep them.
 Before taking that path, bpf-ninja checks the target's translated instructions: every direct call chain must have BTF context parameters and pass the program's context as the first target argument, held in a register or an 8-byte stack spill, because a fault-handled read would accept any pointer as the context.
 Hooks tagged `bpf-ninja:hook` by `inject-run` skip this translated-instruction check: their first argument is the saved program context, and its integrity rests on the stack floor selected during injection.
 The tag is the loader's assertion that the function was generated; bpf-ninja does not verify tags added by another loader.
