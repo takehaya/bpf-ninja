@@ -24,11 +24,11 @@ The tag is the loader's assertion that the function was generated; bpf-ninja doe
 The check refuses a caller that does not pass the context, a function without a context parameter, uses of the target as a function pointer, indirect jumps, a context spill that a callee may overwrite, a context spill overlapping or above a stack buffer passed to a helper or kfunc when a call or a store through a non-stack pointer comes before its reload, a context spill made before a helper or kfunc call that gets both a stack pointer and a possible function pointer (a callback that may write the frame), a stack argument stored through r11 (the register Linux 7.2+ uses for arguments past the fifth), translated instructions that hide helper IDs on hosts other than x86-64 (grant CAP_SYSLOG and keep `kernel.kptr_restrict` below 2 to avoid this), and programs over 32,767 instructions; capture at the caller or at a global function instead.
 In a capture with several targets, a refusal skips that target with a warning and the other targets remain attached; if none attach, the command fails.
 It assumes that no extension later replaces a function the entry calls, which needs the same privileges as replacing the program.
-Static tc capture reads `sk_buff.data`, `len` and `data_len` through `bpf_probe_read_kernel`, with offsets resolved from kernel BTF, and captures only the linear head (`len - data_len`).
+Static tc and cgroup-skb capture reads `sk_buff.data`, `len` and `data_len` through `bpf_probe_read_kernel`, with offsets resolved from kernel BTF, and captures only the linear head (`len - data_len`).
 A failed context read produces no capture.
 A filter with `--tc-vlan-reinsert` is refused on this path with `--tc-vlan-reinsert is not supported at static tc function "NAME"`.
 Exit and gated capture on these paths also require `bpf_get_func_ret` (upstream Linux 5.17+) to obtain the action because the kernel may have discarded the BTF prototype.
-These context-read paths do not extend to static cgroup-skb or netfilter hooks.
+These context-read paths do not extend to static netfilter hooks.
 
 ## Discover members before writing a filter
 

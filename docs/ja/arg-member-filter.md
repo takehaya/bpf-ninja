@@ -30,14 +30,14 @@ static XDP と static tc のキャプチャでは、直接読み取りのプロ�
 その場合は呼び出し元か global 関数でキャプチャしてください。
 複数 target のキャプチャでは、拒否された target を警告付きでスキップし、他の target への attach は残します。一つも attach できなければ失敗します。
 エントリが呼ぶ関数を後から extension で置き換える場合は考慮しません。それにはプログラム自体を置き換えるのと同じ権限が要るためです。
-static tc では、カーネル BTF から求めた `sk_buff` のオフセットを使い、`data`、`len`、`data_len` を `bpf_probe_read_kernel` で読みます。
+static tc と cgroup-skb では、カーネル BTF から求めた `sk_buff` のオフセットを使い、`data`、`len`、`data_len` を `bpf_probe_read_kernel` で読みます。
 キャプチャする範囲は線形ヘッドの `len - data_len` bytes に限り、fragment は含めません。
 読み取りに失敗した場合はキャプチャしません。
 この経路でフィルターに `--tc-vlan-reinsert` を付けると、`--tc-vlan-reinsert is not supported at static tc function "NAME"` として拒否します。
 
 これらの経路の exit と gated キャプチャには、action の取得用に `bpf_get_func_ret` も必要です（upstream Linux 5.17 以降）。
 カーネルが BTF プロトタイプを破棄している可能性があるため、引数数から戻り値の位置を推測しません。
-cgroup-skb と netfilter の static フックには、この読み取り経路を適用しません。
+netfilter の static フックには、この読み取り経路を適用しません。
 
 ## 式を書く前にメンバーを調べる
 

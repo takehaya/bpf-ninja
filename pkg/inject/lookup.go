@@ -16,8 +16,8 @@ import (
 	"github.com/takehaya/bpf-ninja/internal/hookabi"
 )
 
-// LookupSite describes a map_lookup_elem helper in a flattened XDP or tc
-// program, or with Op another map helper (DiscoverMapCalls).
+// LookupSite describes a map_lookup_elem helper in a flattened XDP, tc or
+// cgroup_skb program, or with Op another map helper (DiscoverMapCalls).
 // Empty names or zero Line mean the input did not supply that information.
 // Reason explains why a site cannot be injected; discovery still lists it.
 type LookupSite struct {

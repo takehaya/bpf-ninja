@@ -636,7 +636,7 @@ In both modes:
   Compat and x32 calls pass through without injection.
 - `inject-run` can rewrite only XDP, tc (`SchedCLS`, `SchedACT`) and cgroup_skb (`CGroupSKB`) programs loaded with BTF and `func_info`.
   In a cgroup_skb program the packet starts at the network header, so `--func` records have no Ethernet header.
-  An unprivileged cgroup_skb load cannot call functions, so its rewrite fails and the original loads (or the load is refused with `--fail-closed`).
+  A loader without `CAP_BPF` cannot load BTF, so `inject-run` skips its cgroup_skb programs: they load unchanged, or are refused with `--fail-closed`.
 - It instruments map calls in the entry function and in called subprograms whose BTF parameter, callers and held context value can all be proved; callbacks and unproved sites remain skipped. Static hooks repeat the proof on translated instructions before attach.
   One rule applies per program.
 - A function-name selector uses the BTF `inject-run` saw the loader load.

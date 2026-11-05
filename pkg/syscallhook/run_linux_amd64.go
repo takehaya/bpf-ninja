@@ -40,8 +40,8 @@ type Options struct {
 	// transformed program replaced, before the target sees the new fd. It must
 	// not wait on the target.
 	OnInject func(Injection)
-	// OnDiscover, if set, is called on the tracing thread for every XDP or tc
-	// program load whose attr carries BTF, whether or not a rule selects it,
+	// OnDiscover, if set, is called on the tracing thread for every XDP, tc or
+	// cgroup_skb program load whose attr carries BTF, whether or not a rule selects it,
 	// before any transform. Rules may then be empty. It must not wait on the
 	// target.
 	OnDiscover func(Discovery)

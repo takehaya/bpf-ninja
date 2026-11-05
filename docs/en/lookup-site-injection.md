@@ -1,6 +1,6 @@
 # Typed map-lookup observation injection (`pkg/inject`)
 
-`inject.TransformLookup` instruments one or more `bpf_map_lookup_elem` helper calls to the same map in one native XDP or tc (`SchedCLS`, `SchedACT`) program before loading it.
+`inject.TransformLookup` instruments one or more `bpf_map_lookup_elem` helper calls to the same map in one native XDP, tc (`SchedCLS`, `SchedACT`) or cgroup_skb (`CGroupSKB`) program before loading it.
 It generates a global BTF function whose pointer types come from the entry function and the map definition in the ELF:
 
 ```c
@@ -371,7 +371,7 @@ The entry function must have one BTF parameter pointing to `struct xdp_md` (XDP)
 The package checks the program type; the cooperative loader owns attachment mode and verifier acceptance.
 The generated hooks read the context's first word (`len` for `__sk_buff`) and call no helper that changes packet data.
 
-For packet capture at a static XDP or tc hook, bpf-ninja reads the context with `bpf_probe_read_kernel`.
+For packet capture at a static XDP, tc or cgroup_skb hook, bpf-ninja reads the context with `bpf_probe_read_kernel`.
 A user-supplied static function must pass the translated-instruction context check at attach time.
 A generated function tagged `bpf-ninja:hook` skips that repeated proof because its first argument comes from the context slot placed below the verifier-backed frame floor; [arg-member-filter.md](arg-member-filter.md) lists the cases.
 At tc it reads `sk_buff.data`, `len` and `data_len`, using offsets from kernel BTF, and captures only the linear head, `len - data_len`, as at other tc hooks; fragment bytes are not captured.
