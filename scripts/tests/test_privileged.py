@@ -84,6 +84,17 @@ class AuditTests(unittest.TestCase):
                      "TestBpfDispatchStatic", "TestBpfDispatchTCStatic", "TestBpfDispatchStackLimit", "TestBpfTailCallHooks"):
             self.assertFalse(module.allowed_skip(module.INJECT, test, reason, "6.1"))
         self.assertFalse(module.allowed_skip(module.PROGRAM, allowed[0], reason, "6.1"))
+        self.assertTrue(module.allowed_skip(module.INJECT, "TestBpfDispatchCGroupSKB", reason, "6.15"))
+        self.assertFalse(module.allowed_skip(module.INJECT, "TestBpfDispatchCGroupSKB", reason, "6.18"))
+
+    def test_cgroup_skb_packet_pointer_skip_is_specific(self):
+        reason = "BPF_PROG_TEST_RUN sets no cgroup_skb packet pointers on this kernel"
+        for test in ("TestBpfDispatchCGroupSKBStatic", "TestBpfLookupHooksCGroupSKB"):
+            for kernel in ("6.1", "6.6", "6.12"):
+                self.assertTrue(module.allowed_skip(module.INJECT, test, reason, kernel))
+            self.assertFalse(module.allowed_skip(module.INJECT, test, reason, "6.15"))
+            self.assertFalse(module.allowed_skip(module.INJECT, test, "skipping: kernel lacks arg:untrusted", "6.12"))
+        self.assertFalse(module.allowed_skip(module.INJECT, "TestBpfDispatchCGroupSKB", reason, "6.12"))
 
     def test_inject_callback_tail_call_skip_is_specific(self):
         reason = "kernel forbids tail calls in callbacks: cannot tail call within callback"
