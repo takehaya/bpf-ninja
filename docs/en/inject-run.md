@@ -132,7 +132,7 @@ bpf-ninja -p "$PROG_ID" --func ninja_sessions --arg-filter 'value->action==2' -w
   - `filter` (the default) records the arguments and members that `--arg-filter` and `--set` keys read, and records nothing without them;
   - `entry` records whichever of `site`, `status`, the key and the value the hook has, the key and value cut to `--record-max` bytes (default 256); at a generic or dispatch hook it records only `site` and `info`;
   - `none` turns recording off.
-- At a static hook, the capture reads the context with `bpf_probe_read_kernel` when the kernel rejects direct reads.
+- At a static XDP, tc or cgroup_skb hook, the capture reads the context with `bpf_probe_read_kernel` when the kernel rejects direct reads.
   It first checks that the entry function passes the context to every call; [arg-member-filter.md](arg-member-filter.md) lists what that check refuses.
   At a tc or cgroup_skb hook on this path, it captures only the linear packet head.
   At a tc hook it refuses a filter with `--tc-vlan-reinsert`; a cgroup_skb packet has no Ethernet header, so the flag has no effect there.
@@ -425,7 +425,7 @@ If a rewrite fails, `inject-run` reports it on stderr and keeps running the targ
 | `version` | 2. It changes only when a field changes meaning or is removed; new fields can appear. |
 | `programs` | One entry per injected load, in load order; a program loaded twice appears twice. Loads that fell back or were refused are not listed. |
 | `program`, `func` | The kernel program name and the entry function. |
-| `type` | `XDP`, `SchedCLS`, `SchedACT` or `CGroupSKB`. |
+| `type` | `XDP`, `SchedCLS`, `SchedACT`, `CGroupSKB` or `Netfilter`. |
 | `prog_id` | The loaded program's kernel ID, for `-p` or `BPF_PROG_GET_FD_BY_ID`. 0 if `inject-run` could not query it; the diagnostic says why. |
 | `ctx_type` | The struct the hooks' `ctx` points to: `xdp_md`, `__sk_buff` or `bpf_nf_ctx`. |
 | `hook_form.form` | `global` or `static`: the choice for hooks that would take untrusted pointers, even if the program has none. |

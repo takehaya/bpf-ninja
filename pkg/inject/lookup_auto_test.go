@@ -1412,7 +1412,8 @@ func ctxStructName(t *testing.T, insns asm.Instructions, hook string) string {
 }
 
 // A tc program gets __sk_buff hooks of every kind, typed, generic, entry,
-// tail-call and dispatch, in the ELF and raw forms; the entry ctx must match
+// tail-call and dispatch, in the ELF and raw forms, and a netfilter program
+// gets the same with bpf_nf_ctx and 8-byte ctx reads; the entry ctx must match
 // the program type, and an __sk_buff key or value is refused like xdp_md.
 func TestLookupTC(t *testing.T) {
 	type form struct {
@@ -1421,6 +1422,14 @@ func TestLookupTC(t *testing.T) {
 		read asm.Size // of each global hook's first ctx read
 	}
 	sk, nf := form{"__sk_buff", asTC, asm.Word}, form{"bpf_nf_ctx", asNetfilter, asm.DWord}
+	// The width follows the ctx struct through qualifiers, as the entry check does.
+	nfConst := form{"bpf_nf_ctx", func(spec *ebpf.CollectionSpec) *ebpf.CollectionSpec {
+		for _, p := range asNetfilter(spec).Programs {
+			ptr := btf.FuncMetadata(&p.Instructions[0]).Type.(*btf.FuncProto).Params[0].Type.(*btf.Pointer)
+			ptr.Target = &btf.Const{Type: ptr.Target}
+		}
+		return spec
+	}, asm.DWord}
 	for _, tc := range []struct {
 		name string
 		spec func() *ebpf.CollectionSpec
@@ -1442,7 +1451,7 @@ func TestLookupTC(t *testing.T) {
 		for _, mode := range []struct {
 			f   form
 			raw bool
-		}{{sk, false}, {sk, true}, {nf, false}, {nf, true}} {
+		}{{sk, false}, {sk, true}, {nf, false}, {nf, true}, {nfConst, false}} {
 			f, raw := mode.f, mode.raw
 			req := autoReq()
 			req.HookName = "d"

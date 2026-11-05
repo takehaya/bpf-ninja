@@ -11,7 +11,7 @@ tcpdump cannot show what an XDP or tc program did to a packet, and cBPF filters 
 - Filters use a built-in DSL that walks through encapsulations, such as `eth/ipv4/udp/vxlan/eth/ipv4/tcp`.
 - Output is pcap-ng, to stdout or to per-CPU files.
 - The tcpdump syntax (`--cbpf`, through [cbpfc](https://github.com/cloudflare/cbpfc)) is kept for compatibility in an optional libpcap build and is planned for removal.
-- The experimental [`inject-run`](docs/en/inject-run.md) adds hooks to selected XDP, tc or cgroup_skb programs as an unmodified loader loads them (Linux x86-64).
+- The experimental [`inject-run`](docs/en/inject-run.md) adds hooks to selected XDP, tc, cgroup_skb or netfilter programs as an unmodified loader loads them (Linux x86-64).
 
 [Documentation / ドキュメント](docs/README.md) · [日本語の導入](docs/ja/getting-started.md) · [Examples](docs/ja/examples/README.md)
 
@@ -418,7 +418,7 @@ sudo bpf-ninja -i eth0 --mode xdp --set "sids=/sys/fs/bpf/sids" \
 
 ## Load-time hooks
 
-`inject-run` starts an unmodified BPF loader and adds hooks to selected XDP, tc or cgroup_skb programs as it loads them.
+`inject-run` starts an unmodified BPF loader and adds hooks to selected XDP, tc, cgroup_skb or netfilter programs as it loads them.
 It is experimental and runs on Linux x86-64 only.
 `--list-progs --list-maps` shows the map operations of a loaded program.
 

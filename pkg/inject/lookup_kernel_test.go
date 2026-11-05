@@ -173,7 +173,10 @@ func packetLength(t *testing.T, kernel *btf.Spec, target *ebpf.Program, raw bool
 		}
 		base, at = asm.RFP, func(i int) int16 { return int16(-72 - 8*i) }
 	}
-	if nf && !raw { // bpf_nf_ctx->skb (offset 8)->len
+	if nf { // bpf_nf_ctx->skb (offset 8)->len
+		if raw {
+			t.Fatal("packetLength has no raw read for netfilter")
+		}
 		return nil, asm.Instructions{asm.LoadMem(asm.R2, asm.R6, 8, asm.DWord), asm.LoadMem(asm.R2, asm.R2, at(0), size)}
 	}
 	if name == "sk_buff" {

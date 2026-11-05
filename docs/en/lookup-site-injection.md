@@ -1,13 +1,13 @@
 # Typed map-lookup observation injection (`pkg/inject`)
 
-`inject.TransformLookup` instruments one or more `bpf_map_lookup_elem` helper calls to the same map in one native XDP, tc (`SchedCLS`, `SchedACT`) or cgroup_skb (`CGroupSKB`) program before loading it.
+`inject.TransformLookup` instruments one or more `bpf_map_lookup_elem` helper calls to the same map in one native XDP, tc (`SchedCLS`, `SchedACT`), cgroup_skb (`CGroupSKB`) or netfilter (`Netfilter`) program before loading it.
 It generates a global BTF function whose pointer types come from the entry function and the map definition in the ELF:
 
 ```c
 int HOOK(struct xdp_md *ctx, const KEY *key, const VALUE *value);
 ```
 
-In a tc or cgroup_skb program the hooks take `struct __sk_buff *ctx` instead; the signatures on this page show the XDP form.
+In a tc or cgroup_skb program the hooks take `struct __sk_buff *ctx` instead, and in a netfilter program `struct bpf_nf_ctx *ctx`; the signatures on this page show the XDP form.
 An fentry observer attached to `HOOK` can correlate packet context, the lookup key, and the returned value.
 The hook runs only when the lookup returns a non-null value.
 It uses all three arguments and returns zero; the injected code restores the original lookup result before the program continues.
@@ -610,8 +610,9 @@ A direct run of the target fires both.
 `TestBpfStackLimitsAutoRetry` loads what `Auto` keeps when the lookup slots alone would push a tail-calling subprogram's callers to 256 bytes: the tail-call hook without the lookup at `-208`, also as a static `Dispatch` hook, and the typed hook without the copied read-only map's at `-200`.
 `TestBpfEntryHookWithLookup` combines `Entry` with a lookup hook in one program and observes both.
 `TestBpfDispatch[Static]` attaches one observer to the dispatch hook and checks the entry, lookup and failed tail-call calls in order, with the map id and value bytes each passes; `TestBpfDispatchStackLimit` checks the transform refuses a dispatch tail call in the entry function one slot past the caller-depth limit and loads one slot under it.
-`TestBpfDispatchTC[Static]` repeats `TestBpfDispatch[Static]` on a `SchedCLS` program with an `__sk_buff` context; `TestBpfLookupHooksTC` instruments the same `SchedCLS` program with per-map typed lookup, entry and tail-call hooks, and an fentry on each checks the key, value, `site`, tail-call index and the `sk_buff` length it sees; `TestLookupTC` (unprivileged) checks that every hook kind takes `__sk_buff` in a tc program, in the ELF and raw forms.
+`TestBpfDispatchTC[Static]` repeats `TestBpfDispatch[Static]` on a `SchedCLS` program with an `__sk_buff` context; `TestBpfLookupHooksTC` instruments the same `SchedCLS` program with per-map typed lookup, entry and tail-call hooks, and an fentry on each checks the key, value, `site`, tail-call index and the `sk_buff` length it sees; `TestLookupTC` (unprivileged) checks that every hook kind takes `__sk_buff` in a tc program and `bpf_nf_ctx` with an 8-byte first read in a netfilter program, in the ELF and raw forms.
 `TestBpfDispatchCGroupSKB[Static]` and `TestBpfLookupHooksCGroupSKB` repeat them on a cgroup_skb egress program, whose packet starts at L3.
+`TestBpfLookupHooksNetfilter` loads a netfilter program with lookup, entry and tail-call hooks, compares its verdicts with the original's, checks what an fentry on each hook sees, and checks that 4-byte context reads in its hooks fail to load.
 `TestBpfLookupInjectionCallback` checks symbolic and numeric callback loads with an unreached subprogram preceding the `bpf_loop` callback and a stack counter incremented three times by `bpf_loop`; the program returns `XDP_ABORTED` unless those increments occur.
 It repeats the plain/injected comparison and fentry observations (including direct `ctx` pointer dereferencing) for both callback forms.
 `TestBpfMapCallEquivalence` generates XDP programs and compares the plain and rewritten return value, output packet and final map contents under seven request configurations.
