@@ -397,6 +397,29 @@ func subTailCallerFixture() *ebpf.CollectionSpec {
 	return spec
 }
 
+// subTailCallerWithFallthroughCallFixture adds a static call after the tail
+// call helper. The call is reached only when the tail call fails.
+func subTailCallerWithFallthroughCallFixture() *ebpf.CollectionSpec {
+	spec := subTailCallerFixture()
+	insns := spec.Programs["caller"].Instructions
+	for i, ins := range insns {
+		if !ins.IsBuiltinCall() || asm.BuiltinFunc(ins.Constant) != asm.FnTailCall {
+			continue
+		}
+		onFailure := asm.Instructions{asm.Mov.Reg(asm.R1, asm.R6), asm.Call.Label("after_tail")}
+		insns = append(insns[:i+1], append(onFailure, insns[i+1:]...)...)
+		break
+	}
+	afterTail := xdpFunc("after_tail")
+	afterTail.Linkage = btf.StaticFunc
+	insns = append(insns,
+		btf.WithFuncMetadata(asm.Mov.Imm(asm.R0, 0).WithSymbol("after_tail").WithSource(asm.Comment("post-tail call")), afterTail),
+		asm.Return(),
+	)
+	spec.Programs["caller"].Instructions = insns
+	return spec
+}
+
 // paddedSubTailCaller is subTailCallerFixture whose entry frame references
 // R10+bound, so the transform's entry ctx spill lands one slot below it.
 func paddedSubTailCaller(bound int16) *ebpf.CollectionSpec {
@@ -935,6 +958,20 @@ func TestBpfTailCallInSubprogram(t *testing.T) {
 		return c
 	}
 	plain, injected := load(subTailCallerFixture()), load(work)
+	// Injection adds a BPF-to-BPF call on the tail call's fall-through
+	// path. Verify that the kernel executes that native shape correctly
+	// before attributing its result to injection.
+	control := load(subTailCallerWithFallthroughCallFixture())
+	ret, err := control.Programs["caller"].Run(&ebpf.RunOptions{Data: make([]byte, 64), Repeat: 1})
+	if err != nil {
+		t.Fatalf("probe native subprogram tail call with fall-through call: %v", err)
+	}
+	if ret == 2 {
+		t.Skip("kernel loses tail-call reachability when a static BPF subprogram's fall-through path calls another BPF subprogram")
+	}
+	if ret != 3 {
+		t.Fatalf("probe native subprogram tail call with fall-through call: action=%d, want 3", ret)
+	}
 	tail := attachScalarObserver(t, "obs_tail_call", injected.Programs["caller"], 2)
 	for _, tc := range []struct {
 		index  byte
