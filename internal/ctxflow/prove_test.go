@@ -1,0 +1,118 @@
+package ctxflow
+
+import (
+	"strings"
+	"testing"
+
+	"github.com/cilium/ebpf/asm"
+	"github.com/cilium/ebpf/btf"
+)
+
+func TestProve(t *testing.T) {
+	ctx := &btf.Struct{Name: "xdp_md", Size: 24}
+	i32 := &btf.Int{Name: "int", Size: 4, Encoding: btf.Signed}
+	fn := func(name string, linkage btf.FuncLinkage, ctxParam int, head asm.Instruction) asm.Instruction {
+		params := make([]btf.FuncParam, ctxParam+1)
+		for i := range params {
+			params[i] = btf.FuncParam{Name: "n", Type: i32}
+		}
+		params[ctxParam] = btf.FuncParam{Name: "ctx", Type: &btf.Pointer{Target: ctx}}
+		return btf.WithFuncMetadata(head.WithSymbol(name), &btf.Func{Name: name, Linkage: linkage,
+			Type: &btf.FuncProto{Return: i32, Params: params}})
+	}
+	fixture := func(entryHead, midExtra asm.Instructions) asm.Instructions {
+		entry := asm.Instructions{
+			fn("entry", btf.GlobalFunc, 0, asm.Mov.Reg(asm.R2, asm.R1)),
+		}
+		entry = append(entry, entryHead...)
+		entry = append(entry, asm.Call.Label("mid"), asm.Mov.Imm(asm.R0, 0), asm.Return())
+		mid := asm.Instructions{
+			fn("mid", btf.StaticFunc, 1, asm.Mov.Reg(asm.R6, asm.R2)),
+			asm.StoreImm(asm.RFP, -4, 0, asm.Word),
+		}
+		mid = append(mid, midExtra...)
+		mid = append(mid, asm.LoadImm(asm.R1, 0, asm.DWord), asm.Mov.Reg(asm.R2, asm.RFP),
+			asm.Add.Imm(asm.R2, -4), asm.FnMapLookupElem.Call(),
+			asm.Mov.Reg(asm.R1, asm.R6), asm.Call.Label("leaf"), asm.Mov.Imm(asm.R0, 0), asm.Return())
+		leaf := asm.Instructions{
+			fn("leaf", btf.StaticFunc, 0, asm.StoreMem(asm.RFP, -16, asm.R1, asm.DWord)),
+			asm.LoadImm(asm.R1, 0, asm.DWord), asm.Mov.Reg(asm.R2, asm.RFP), asm.Add.Imm(asm.R2, -4),
+			asm.FnMapLookupElem.Call(), asm.Mov.Imm(asm.R0, 0), asm.Return(),
+		}
+		return append(append(entry, mid...), leaf...)
+	}
+	find := func(insns asm.Instructions, function string, nth int) int {
+		inside := ""
+		for it := insns.Iterate(); it.Next(); {
+			if f := btf.FuncMetadata(it.Ins); f != nil {
+				inside = f.Name
+			}
+			if inside == function && it.Ins.IsBuiltinCall() {
+				if nth == 0 {
+					return int(it.Offset)
+				}
+				nth--
+			}
+		}
+		return -1
+	}
+
+	t.Run("call chain and held sources", func(t *testing.T) {
+		insns := fixture(nil, nil)
+		functions := Functions(insns, ctx)
+		if len(functions) != 3 || functions[0].Name != "entry" || functions[1].CtxParam != 1 || functions[2].CtxParam != 0 {
+			t.Fatalf("functions = %+v", functions)
+		}
+		proofs := Prove(insns, ctx)
+		for _, function := range functions {
+			if proof := proofs[function.Start]; !proof.Proven {
+				t.Errorf("%s: %+v", function.Name, proof)
+			}
+		}
+		midPC, leafPC := find(insns, "mid", 0), find(insns, "leaf", 0)
+		if reg, slot, ok := HeldAt(proofs[functions[1].Start].States[midPC]); !ok || reg != asm.R6 || slot != 0 {
+			t.Errorf("mid HeldAt = %v,%d,%v", reg, slot, ok)
+		}
+		if reg, slot, ok := HeldAt(proofs[functions[2].Start].States[leafPC]); !ok || reg != 0 || slot != -16 {
+			t.Errorf("leaf HeldAt = %v,%d,%v", reg, slot, ok)
+		}
+		if got, ok := FunctionAt(functions, leafPC); !ok || got.Name != "leaf" {
+			t.Errorf("FunctionAt = %+v,%v", got, ok)
+		}
+	})
+
+	for _, tc := range []struct {
+		name      string
+		entryHead asm.Instructions
+		midExtra  asm.Instructions
+		function  int
+		want      string
+	}{
+		{"callback", asm.Instructions{(asm.Instruction{OpCode: asm.LoadImmOp(asm.DWord), Dst: asm.R3, Src: asm.PseudoFunc}).WithReference("mid")}, nil, 1, "function is used as a callback"},
+		{"caller without ctx", asm.Instructions{asm.Mov.Reg(asm.R2, asm.RFP)}, nil, 1, "a caller does not pass the context (entry@"},
+		{"r11 stack argument", nil, asm.Instructions{asm.StoreMem(regParams, -8, asm.R1, asm.DWord)}, 1, "function passes a stack argument through r11"},
+		{"indirect jump", nil, asm.Instructions{{OpCode: asm.Ja.Op(asm.RegSource), Dst: asm.R7}}, 1, "indirect jump"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			insns := fixture(tc.entryHead, tc.midExtra)
+			functions := Functions(insns, ctx)
+			proof := Prove(insns, ctx)[functions[tc.function].Start]
+			if proof.Proven || !strings.Contains(proof.Reason, tc.want) {
+				t.Fatalf("proof = %+v, want reason containing %q", proof, tc.want)
+			}
+		})
+	}
+
+	t.Run("context dead at site", func(t *testing.T) {
+		insns := fixture(nil, asm.Instructions{asm.Mov.Imm(asm.R6, 0)})
+		functions := Functions(insns, ctx)
+		proof := Prove(insns, ctx)[functions[1].Start]
+		if !proof.Proven {
+			t.Fatal(proof.Reason)
+		}
+		pc := find(insns, "mid", 0)
+		if _, _, ok := HeldAt(proof.States[pc]); ok {
+			t.Fatal("dead context reported as held")
+		}
+	})
+}
