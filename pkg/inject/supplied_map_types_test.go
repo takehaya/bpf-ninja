@@ -117,6 +117,12 @@ func TestCheckSuppliedMapTypes(t *testing.T) {
 	if err := CheckSuppliedMapTypes(m); err == nil || !strings.Contains(err.Error(), "size") {
 		t.Fatalf("size: %v", err)
 	}
+	for _, typ := range []ebpf.MapType{ebpf.DevMap, ebpf.DevMapHash} {
+		m := RawMap{Type: typ, Key: u32, Value: u32, KeySize: 4, ValueSize: 4}
+		if err := CheckSuppliedMapTypes(m); err == nil || !strings.Contains(err.Error(), "unsupported") {
+			t.Fatalf("%s: %v", typ, err)
+		}
+	}
 }
 
 // Ordinary supplied types change BTF, with identical emitted instructions,

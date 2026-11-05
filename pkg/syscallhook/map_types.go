@@ -90,6 +90,11 @@ func supplyMapTypesFromSpec(p *inject.RawProgram, rule Rule, spec *ebpf.Collecti
 	if live.KeySize != schema.KeySize || live.ValueSize != schema.ValueSize {
 		return fmt.Errorf("map types ELF: map %q sizes mismatch: live %d/%d, ELF %d/%d", name, live.KeySize, live.ValueSize, schema.KeySize, schema.ValueSize)
 	}
+	// The kernel sets BPF_F_RDONLY_PROG on a devmap, so its flags never match a
+	// loadable ELF's; map types are not supplied for devmaps.
+	if live.Type == ebpf.DevMap || live.Type == ebpf.DevMapHash {
+		return fmt.Errorf("map types ELF: map %q: map type %s is unsupported", name, live.Type)
+	}
 	if live.Flags != schema.Flags {
 		return fmt.Errorf("map types ELF: map %q flags mismatch: live %#x, ELF %#x", name, live.Flags, schema.Flags)
 	}

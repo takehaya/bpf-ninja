@@ -1,6 +1,7 @@
 package inject
 
 import (
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"reflect"
@@ -246,8 +247,9 @@ func TestLookupSkipReason(t *testing.T) {
 	}
 }
 
-// A direct lookup on an XSK map, devmap, devmap hash, sockmap or sockhash,
-// which a typed hook refuses, goes to the generic hook under Auto; Auto skips
+// A direct lookup on an XSK map, sockmap or sockhash, which a typed hook
+// refuses since its value is a kernel object, goes to the generic hook under
+// Auto; Auto skips
 // every other kind a typed hook refuses, since no kernel test loads it through
 // the generic hook. Explicit selection refuses them all.
 func TestLookupAutoTypedOnlyGoesGeneric(t *testing.T) {
@@ -258,10 +260,8 @@ func TestLookupAutoTypedOnlyGoesGeneric(t *testing.T) {
 		generic bool
 	}{
 		{"xskmap", func(m *ebpf.MapSpec) { m.Type, m.ValueSize, m.Value = ebpf.XSKMap, 4, nil }, "map type XSKMap is unsupported", true},
-		{"devmap", func(m *ebpf.MapSpec) { m.Type, m.ValueSize, m.Value = ebpf.DevMap, 4, nil }, "map type DevMap is unsupported", true},
 		{"sockmap", func(m *ebpf.MapSpec) { m.Type, m.ValueSize, m.Value = ebpf.SockMap, 8, nil }, "map type SockMap is unsupported", true},
 		{"sockhash", func(m *ebpf.MapSpec) { m.Type, m.ValueSize, m.Value = ebpf.SockHash, 8, nil }, "map type SockHash is unsupported", true},
-		{"devmap-hash", func(m *ebpf.MapSpec) { m.Type, m.ValueSize, m.Value = ebpf.DevMapHash, 4, nil }, "map type DevMapHash is unsupported", true},
 		{"cpumap", func(m *ebpf.MapSpec) { m.Type, m.ValueSize, m.Value = ebpf.CPUMap, 4, nil }, "map type CPUMap is unsupported", false},
 		{"reuseport", func(m *ebpf.MapSpec) { m.Type, m.ValueSize, m.Value = ebpf.ReusePortSockArray, 8, nil }, "map type ReusePortSockArray is unsupported", false},
 		{"special-value", func(m *ebpf.MapSpec) { m.Value.(*btf.Struct).Name = "xdp_md" }, `map value type "xdp_md" has a special global-function pointer ABI`, false},
@@ -325,6 +325,194 @@ func TestLookupAutoTypedOnlyGoesGeneric(t *testing.T) {
 			}
 			if spills != 1 {
 				t.Fatalf("map pointer spilled %d times", spills)
+			}
+		})
+	}
+}
+
+// A devmap or devmap hash lookup returns value memory that programs may only
+// read, so it gets the typed read-only hook: untrusted with size tags, static
+// with StaticUntrusted, or a stack copy with CopyReadOnly.
+func TestLookupAutoDevMapTyped(t *testing.T) {
+	for _, typ := range []ebpf.MapType{ebpf.DevMap, ebpf.DevMapHash} {
+		for _, tc := range []struct {
+			name                      string
+			edit                      func(*LookupRequest)
+			untrusted, static, copied bool
+		}{
+			{"global", func(*LookupRequest) {}, true, false, false},
+			{"static", func(r *LookupRequest) { r.StaticUntrusted = true }, false, true, false},
+			{"copy", func(r *LookupRequest) { r.CopyReadOnly = true }, false, false, true},
+		} {
+			t.Run(typ.String()+"-"+tc.name, func(t *testing.T) {
+				work := multiMapFixture()
+				m := work.Maps["flows"]
+				m.Type, m.ValueSize, m.Value = typ, 8, nil
+				req := autoReq()
+				tc.edit(&req)
+				plan, err := transformLookup(work, req)
+				if err != nil {
+					t.Fatal(err)
+				}
+				var hook *LookupHook
+				for i := range plan.hooks {
+					if plan.hooks[i].MapName == "flows" {
+						hook = &plan.hooks[i]
+					}
+				}
+				if hook == nil || hook.Generic || !hook.ReadOnly || hook.Untrusted != tc.untrusted || hook.Static != tc.static ||
+					hook.Copied != tc.copied || len(plan.skipped) != 0 {
+					t.Fatalf("plan: %+v", plan)
+				}
+				if tc.untrusted && !slices.Contains(hookTags(t, work, hook.Name), "bpf-ninja:value_size=8") {
+					t.Fatalf("tags %v", hookTags(t, work, hook.Name))
+				}
+			})
+		}
+	}
+}
+
+// A pointer into a devmap's value is read-only even without the flag in the
+// ELF, as a devmap inner map's values are: hooks that take one get it untrusted.
+func TestReadOnlyDevMapPointers(t *testing.T) {
+	for _, typ := range []ebpf.MapType{ebpf.DevMap, ebpf.DevMapHash} {
+		work := readOnlyArgFixture()
+		ro := work.Maps["ro"]
+		ro.Type, ro.Flags, ro.Contents = typ, 0, nil
+		req := autoReq()
+		req.Lookups, req.Pushes, req.Updates, req.Stack.LowestOffset = LookupNone, CallAny, CallAny, -8
+		plan, err := transformLookup(work, req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(plan.hooks) != 2 || slices.ContainsFunc(plan.hooks, func(h LookupHook) bool { return !h.Untrusted }) {
+			t.Fatalf("%s hooks: %+v", typ, plan.hooks)
+		}
+		outer := &ebpf.MapSpec{Type: ebpf.HashOfMaps, InnerMap: &ebpf.MapSpec{Type: typ}}
+		ref := asm.LoadMapPtr(asm.R1, 0).WithReference("outer")
+		if _, m := elfLookupMaps(&ebpf.CollectionSpec{Maps: map[string]*ebpf.MapSpec{"outer": outer}})(&ref); m.InnerFlags&bpfFRdonlyProg == 0 {
+			t.Fatalf("%s inner flags %#x", typ, m.InnerFlags)
+		}
+	}
+}
+
+// A devmap reaches value memory only through a lookup: a subprogram that only
+// redirects through one does not make the analysis treat every subprogram
+// call as returning read-only memory, so an unrelated update keeps its typed hook.
+// A subprogram that looks the devmap up still does.
+func TestReadOnlyDevMapRedirectSubprog(t *testing.T) {
+	for _, tc := range []struct {
+		typ       ebpf.MapType
+		fn        asm.BuiltinFunc
+		untrusted bool
+	}{
+		{ebpf.DevMap, asm.FnRedirectMap, false}, {ebpf.DevMapHash, asm.FnRedirectMap, false},
+		{ebpf.DevMap, asm.FnMapLookupElem, true},
+	} {
+		typ := tc.typ
+		u32, u64 := &btf.Int{Name: "u32", Size: 4}, &btf.Int{Name: "u64", Size: 8}
+		miss := asm.JEq.Imm(asm.R0, 0, "")
+		miss.Offset = 12 // to out
+		insns := asm.Instructions{
+			asm.StoreImm(asm.RFP, -4, 0, asm.Word),
+			asm.Mov.Reg(asm.R2, asm.RFP), asm.Add.Imm(asm.R2, -4),
+			asm.LoadMapPtr(asm.R1, 0).WithReference("stats"),
+			asm.FnMapLookupElem.Call(),
+			miss,
+			asm.StoreMem(asm.RFP, -16, asm.R0, asm.DWord), // the value, spilled across the call
+			asm.Mov.Reg(asm.R1, asm.RFP), asm.Add.Imm(asm.R1, -24),
+			asm.Call.Label("parse"),
+			asm.LoadMem(asm.R3, asm.RFP, -16, asm.DWord),
+			asm.Mov.Reg(asm.R2, asm.RFP), asm.Add.Imm(asm.R2, -4),
+			asm.LoadMapPtr(asm.R1, 0).WithReference("stats2"),
+			asm.Mov.Imm(asm.R4, 0),
+			asm.FnMapUpdateElem.Call(),
+			asm.Mov.Imm(asm.R0, 2), // out
+			asm.Return(),
+			btf.WithFuncMetadata(asm.LoadMapPtr(asm.R1, 0).WithReference("tx").WithSymbol("parse").
+				WithSource(asm.Comment("redirecting subprogram")), staticFunc("parse")),
+			asm.Mov.Imm(asm.R2, 0), asm.Mov.Imm(asm.R3, 0),
+			tc.fn.Call(),
+			asm.Return(),
+		}
+		insns[0] = btf.WithFuncMetadata(insns[0].WithSymbol("p").WithSource(asm.Comment("devmap redirect fixture")), xdpFunc("p"))
+		work := &ebpf.CollectionSpec{ByteOrder: binary.LittleEndian,
+			Maps: map[string]*ebpf.MapSpec{
+				"stats":  {Name: "stats", Type: ebpf.Hash, KeySize: 4, ValueSize: 8, MaxEntries: 1, Key: u32, Value: u64},
+				"stats2": {Name: "stats2", Type: ebpf.Hash, KeySize: 4, ValueSize: 8, MaxEntries: 1, Key: u32, Value: u64},
+				"tx":     {Name: "tx", Type: typ, KeySize: 4, ValueSize: 4, MaxEntries: 1},
+			},
+			Programs: map[string]*ebpf.ProgramSpec{"p": {Name: "p", Type: ebpf.XDP, License: "GPL", Instructions: insns}},
+		}
+		req := autoReq()
+		req.Lookups, req.Updates, req.Stack.LowestOffset = LookupNone, CallAny, -24
+		plan, err := transformLookup(work, req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(plan.hooks) != 1 || plan.hooks[0].MapName != "stats2" || plan.hooks[0].Untrusted != tc.untrusted || plan.hooks[0].Static {
+			t.Fatalf("%s %s hooks: %+v", typ, tc.fn, plan.hooks)
+		}
+	}
+}
+
+// A subprogram that loads a devmap pointer and hands it to its caller, by
+// returning it, storing it through a stack argument or storing it into a
+// bpf_loop callback's ctx, makes the caller's lookup through that pointer
+// return read-only memory, so an update taking the value gets it untrusted.
+func TestReadOnlyDevMapPointerFromSubprog(t *testing.T) {
+	tx := func(dst asm.Register) asm.Instruction { return asm.LoadMapPtr(dst, 0).WithReference("tx") }
+	callback := asm.Instruction{OpCode: asm.LoadImmOp(asm.DWord), Dst: asm.R2, Src: asm.PseudoFunc, Constant: -1}.WithReference("sub")
+	for _, tc := range []struct {
+		name      string
+		get, body asm.Instructions // get leaves the devmap pointer in R1
+	}{
+		{"return", asm.Instructions{asm.Call.Label("sub"), asm.Mov.Reg(asm.R1, asm.R0)},
+			asm.Instructions{tx(asm.R0), asm.Return()}},
+		{"stack-arg", asm.Instructions{asm.Mov.Reg(asm.R1, asm.RFP), asm.Add.Imm(asm.R1, -24), asm.Call.Label("sub"),
+			asm.LoadMem(asm.R1, asm.RFP, -24, asm.DWord)},
+			asm.Instructions{tx(asm.R2), asm.StoreMem(asm.R1, 0, asm.R2, asm.DWord), asm.Mov.Imm(asm.R0, 0), asm.Return()}},
+		{"loop-ctx", asm.Instructions{asm.Mov.Imm(asm.R1, 1), callback, asm.Mov.Reg(asm.R3, asm.RFP), asm.Add.Imm(asm.R3, -24),
+			asm.Mov.Imm(asm.R4, 0), asm.FnLoop.Call(), asm.LoadMem(asm.R1, asm.RFP, -24, asm.DWord)},
+			asm.Instructions{tx(asm.R3), asm.StoreMem(asm.R2, 0, asm.R3, asm.DWord), asm.Mov.Imm(asm.R0, 0), asm.Return()}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			u32, u64 := &btf.Int{Name: "u32", Size: 4}, &btf.Int{Name: "u64", Size: 8}
+			miss := asm.JEq.Imm(asm.R0, 0, "")
+			miss.Offset = 7 // to out
+			insns := asm.Instructions{asm.StoreImm(asm.RFP, -4, 0, asm.Word)}
+			insns = append(insns, tc.get...)
+			insns = append(insns,
+				asm.Mov.Reg(asm.R2, asm.RFP), asm.Add.Imm(asm.R2, -4),
+				asm.FnMapLookupElem.Call(),
+				miss,
+				asm.Mov.Reg(asm.R3, asm.R0),
+				asm.Mov.Reg(asm.R2, asm.RFP), asm.Add.Imm(asm.R2, -4),
+				asm.LoadMapPtr(asm.R1, 0).WithReference("stats2"),
+				asm.Mov.Imm(asm.R4, 0),
+				asm.FnMapUpdateElem.Call(),
+				asm.Mov.Imm(asm.R0, 2), // out
+				asm.Return(),
+			)
+			body := slices.Clone(tc.body)
+			body[0] = btf.WithFuncMetadata(body[0].WithSymbol("sub").WithSource(asm.Comment("devmap pointer source")), staticFunc("sub"))
+			insns = append(insns, body...)
+			insns[0] = btf.WithFuncMetadata(insns[0].WithSymbol("p").WithSource(asm.Comment("devmap pointer fixture")), xdpFunc("p"))
+			work := &ebpf.CollectionSpec{ByteOrder: binary.LittleEndian,
+				Maps: map[string]*ebpf.MapSpec{
+					"stats2": {Name: "stats2", Type: ebpf.Hash, KeySize: 4, ValueSize: 8, MaxEntries: 1, Key: u32, Value: u64},
+					"tx":     {Name: "tx", Type: ebpf.DevMap, KeySize: 4, ValueSize: 4, MaxEntries: 1},
+				},
+				Programs: map[string]*ebpf.ProgramSpec{"p": {Name: "p", Type: ebpf.XDP, License: "GPL", Instructions: insns}},
+			}
+			req := autoReq()
+			req.Lookups, req.Updates, req.Stack.LowestOffset = LookupNone, CallAny, -24
+			plan, err := transformLookup(work, req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(plan.hooks) != 1 || plan.hooks[0].MapName != "stats2" || !plan.hooks[0].Untrusted || plan.hooks[0].Static {
+				t.Fatalf("hooks: %+v", plan.hooks)
 			}
 		})
 	}
@@ -1598,5 +1786,52 @@ func TestLookupTC(t *testing.T) {
 	assertRawMetadata(t, p, got)
 	if ctx := ctxStructName(t, got.Instructions, "lookup_hook"); ctx != "__sk_buff" {
 		t.Fatalf("raw hook takes %s", ctx)
+	}
+}
+
+// put(fp-24) stores &tx at *arg (devmap load, no lookup/call); get(fp-24)
+// has no devmap load but loads *arg, looks it up and stores the value at
+// *arg (lookup, no devmap load). Neither alone sets subprogReadOnly. main
+// reloads fp-24 and updates stats2 with it. A second stack-argument call
+// therefore has to treat a reloaded pointer as read-only.
+func TestReadOnlyDevMapRelay(t *testing.T) {
+	u32, u64 := &btf.Int{Name: "u32", Size: 4}, &btf.Int{Name: "u64", Size: 8}
+	miss := asm.JEq.Imm(asm.R3, 0, "")
+	miss.Offset = 6
+	insns := asm.Instructions{asm.StoreImm(asm.RFP, -4, 0, asm.Word),
+		asm.Mov.Reg(asm.R1, asm.RFP), asm.Add.Imm(asm.R1, -24), asm.Call.Label("put"),
+		asm.Mov.Reg(asm.R1, asm.RFP), asm.Add.Imm(asm.R1, -24), asm.Call.Label("get"),
+		asm.LoadMem(asm.R3, asm.RFP, -24, asm.DWord),
+		miss,
+		asm.Mov.Reg(asm.R2, asm.RFP), asm.Add.Imm(asm.R2, -4),
+		asm.LoadMapPtr(asm.R1, 0).WithReference("stats2"), asm.Mov.Imm(asm.R4, 0), asm.FnMapUpdateElem.Call(),
+		asm.Mov.Imm(asm.R0, 2), asm.Return(),
+		btf.WithFuncMetadata(asm.LoadMapPtr(asm.R2, 0).WithReference("tx").WithSymbol("put").WithSource(asm.Comment("put")), staticFunc("put")),
+		asm.StoreMem(asm.R1, 0, asm.R2, asm.DWord), asm.Mov.Imm(asm.R0, 0), asm.Return(),
+		btf.WithFuncMetadata(asm.Mov.Reg(asm.R6, asm.R1).WithSymbol("get").WithSource(asm.Comment("get")), staticFunc("get")),
+		asm.LoadMem(asm.R1, asm.R1, 0, asm.DWord),
+		asm.StoreImm(asm.RFP, -4, 0, asm.Word), asm.Mov.Reg(asm.R2, asm.RFP), asm.Add.Imm(asm.R2, -4),
+		asm.FnMapLookupElem.Call(),
+		asm.StoreMem(asm.R6, 0, asm.R0, asm.DWord), asm.Mov.Imm(asm.R0, 0), asm.Return(),
+	}
+	insns[0] = btf.WithFuncMetadata(insns[0].WithSymbol("p").WithSource(asm.Comment("p")), xdpFunc("p"))
+	work := &ebpf.CollectionSpec{ByteOrder: binary.LittleEndian,
+		Maps: map[string]*ebpf.MapSpec{
+			"stats2": {Name: "stats2", Type: ebpf.Hash, KeySize: 4, ValueSize: 8, MaxEntries: 1, Key: u32, Value: u64},
+			"tx":     {Name: "tx", Type: ebpf.DevMap, KeySize: 4, ValueSize: 4, MaxEntries: 1},
+		},
+		Programs: map[string]*ebpf.ProgramSpec{"p": {Name: "p", Type: ebpf.XDP, License: "GPL", Instructions: insns}},
+	}
+	req := autoReq()
+	req.Lookups, req.Updates, req.Stack.LowestOffset = LookupNone, CallAny, -24
+	plan, err := transformLookup(work, req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.hooks) != 1 || plan.hooks[0].MapName != "stats2" {
+		t.Fatalf("hooks: %+v", plan.hooks)
+	}
+	if !plan.hooks[0].Untrusted {
+		t.Errorf("stats2 update hook is typed: %+v", plan.hooks[0])
 	}
 }

@@ -91,6 +91,13 @@ func TestMapTypesSpec(t *testing.T) {
 		{"key-size", func(_ *inject.RawProgram, s *ebpf.CollectionSpec) { s.Maps["m"].KeySize = 8 }, "sizes mismatch"},
 		{"value-size", func(_ *inject.RawProgram, s *ebpf.CollectionSpec) { s.Maps["m"].ValueSize = 4 }, "sizes mismatch"},
 		{"flags", func(_ *inject.RawProgram, s *ebpf.CollectionSpec) { s.Maps["m"].Flags = 1 }, "flags mismatch"},
+		// The live devmap carries the kernel's BPF_F_RDONLY_PROG; the kind is refused before flags differ.
+		{"devmap", func(p *inject.RawProgram, s *ebpf.CollectionSpec) {
+			m := p.Maps[7]
+			m.Type, m.Flags = ebpf.DevMap, 1<<7
+			p.Maps[7] = m
+			s.Maps["m"].Type = ebpf.DevMap
+		}, "map type DevMap is unsupported"},
 		{"missing-key", func(_ *inject.RawProgram, s *ebpf.CollectionSpec) { s.Maps["m"].Key = nil }, "lacks key BTF"},
 		{"missing-value", func(_ *inject.RawProgram, s *ebpf.CollectionSpec) { s.Maps["m"].Value = nil }, "lacks value BTF"},
 		{"key-BTF-size", func(_ *inject.RawProgram, s *ebpf.CollectionSpec) { s.Maps["m"].Key = &btf.Int{Size: 8} }, "key BTF size mismatch"},

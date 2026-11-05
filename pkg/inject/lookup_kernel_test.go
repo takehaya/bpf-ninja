@@ -114,7 +114,8 @@ func lookupObserver(t *testing.T, hook string, target *ebpf.Program) *ebpf.Colle
 // of the generic hook's map argument at 28. rawCtx reads the packet bounds
 // through bpf_probe_read_kernel, for a static hook whose ctx argument the
 // kernel passes as a u64.
-type observerArgs struct{ site, mapID, rawCtx bool }
+// valueAt0 records the value's first 8 bytes instead of bytes 8 to 15.
+type observerArgs struct{ site, mapID, rawCtx, valueAt0 bool }
 
 // bpfMapIDOffset is the byte offset of struct bpf_map's id in kernel.
 func bpfMapIDOffset(t *testing.T, kernel *btf.Spec) int32 {
@@ -207,6 +208,10 @@ func lookupObserverArgs(t *testing.T, hook string, target *ebpf.Program, args ob
 		asm.Mov.Imm(asm.R0, 0), asm.StoreMem(asm.RFP, -48, asm.R0, asm.DWord),
 	}
 	read, length := packetLength(t, kernel, target, args.rawCtx)
+	valueAt := int32(8)
+	if args.valueAt0 {
+		valueAt = 0
+	}
 	insns = append(insns, read...)
 	insns = append(insns,
 		asm.Mov.Reg(asm.R1, asm.R9),
@@ -223,7 +228,7 @@ func lookupObserverArgs(t *testing.T, hook string, target *ebpf.Program, args ob
 		asm.Mov.Imm(asm.R2, 4), asm.Mov.Reg(asm.R3, asm.R7), asm.FnProbeReadKernel.Call(),
 		asm.JNE.Imm(asm.R0, 0, "done"),
 		asm.Mov.Reg(asm.R1, asm.RFP), asm.Add.Imm(asm.R1, -40),
-		asm.Mov.Imm(asm.R2, 8), asm.Mov.Reg(asm.R3, asm.R8), asm.Add.Imm(asm.R3, 8),
+		asm.Mov.Imm(asm.R2, 8), asm.Mov.Reg(asm.R3, asm.R8), asm.Add.Imm(asm.R3, valueAt),
 		asm.FnProbeReadKernel.Call(),
 		asm.JNE.Imm(asm.R0, 0, "done"),
 		asm.StoreImm(asm.RFP, -4, 0, asm.Word),
@@ -715,6 +720,7 @@ func testGenericKinds(t *testing.T, static bool) {
 		fill func(t *testing.T) any // nil leaves the runtime hit unexercised
 	}{
 		{"xskmap", ebpf.XSKMap, 4, nil},
+		// A devmap has a typed hook (testDevMap), but Dispatch still sends it to the shared one.
 		{"devmap", ebpf.DevMap, 4, func(*testing.T) any { return uint32(lo.Index) }},
 		{"devmap-hash", ebpf.DevMapHash, 4, func(*testing.T) any { return uint32(lo.Index) }},
 		{"sockmap", ebpf.SockMap, 8, func(t *testing.T) any { return boundUDP(t) }},
@@ -724,6 +730,9 @@ func testGenericKinds(t *testing.T, static bool) {
 			suffix       string
 			dispatch, sk bool
 		}{{"", false, false}, {"-dispatch", true, false}, {"-tc", false, true}, {"-tc-dispatch", true, true}} {
+			if !mode.dispatch && (tc.typ == ebpf.DevMap || tc.typ == ebpf.DevMapHash) {
+				continue
+			}
 			t.Run(tc.name+mode.suffix, func(t *testing.T) {
 				testGenericKind(t, tc.typ, tc.size, tc.fill, static, mode.dispatch, mode.sk)
 			})
@@ -751,7 +760,9 @@ func testGenericKind(t *testing.T, typ ebpf.MapType, size uint32, fill func(*tes
 	if dispatch {
 		hook = "obs"
 	}
-	if len(plan.hooks) != 1 || !plan.hooks[0].Generic || plan.hooks[0].Name != hook || plan.hooks[0].Static != static || len(plan.skipped) != 0 {
+	// A devmap site is typed, so the shared Dispatch hook does not count as generic for it.
+	typed := typ == ebpf.DevMap || typ == ebpf.DevMapHash
+	if len(plan.hooks) != 1 || plan.hooks[0].Generic == typed || plan.hooks[0].Name != hook || plan.hooks[0].Static != static || len(plan.skipped) != 0 {
 		t.Fatalf("plan: %+v", plan)
 	}
 	injected := loadHooked(t, work, plan.hooks)
@@ -1014,5 +1025,84 @@ func testMapInMap(t *testing.T, static bool) {
 				t.Fatalf("miss: seen=%d key=%d site=%d id=%d want id %d", seen, key, site, id, outerID)
 			}
 		}
+	}
+}
+
+// A devmap lookup returns the entry's value, which the program may only read.
+// The typed hook gets it read-only: tagged arg:untrusted, static, or, with
+// CopyReadOnly, as a stack copy that needs no arg:untrusted. A value of 8 bytes
+// is struct bpf_devmap_val, whose program id is 0 without a program.
+func TestBpfLookupInjectionDevMap(t *testing.T)       { testDevMap(t, false, false) }
+func TestBpfLookupInjectionDevMapStatic(t *testing.T) { testDevMap(t, true, false) }
+func TestBpfLookupInjectionDevMapCopy(t *testing.T)   { testDevMap(t, false, true) }
+
+func testDevMap(t *testing.T, static, copied bool) {
+	t.Helper()
+	testutil.SkipIfNotRoot(t)
+	lo, err := net.InterfaceByName("lo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name string
+		typ  ebpf.MapType
+		size uint32
+	}{{"devmap", ebpf.DevMap, 4}, {"devmap-8", ebpf.DevMap, 8}, {"devmap-hash", ebpf.DevMapHash, 4}} {
+		t.Run(tc.name, func(t *testing.T) {
+			value := binary.LittleEndian.AppendUint32(nil, uint32(lo.Index))
+			if tc.size == 8 {
+				value = binary.LittleEndian.AppendUint32(value, ^uint32(0)) // no program fd
+			}
+			plain := loadOrSkip(t, kindFixture(tc.typ, tc.size))
+			t.Cleanup(plain.Close)
+			work := kindFixture(tc.typ, tc.size)
+			plan, err := transformLookup(work, LookupRequest{ProgramName: "p", Auto: true, StaticUntrusted: static,
+				CopyReadOnly: copied, HookName: "obs", Stack: StackAudit{LowestOffset: -8}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(plan.hooks) != 1 || plan.hooks[0].Generic || !plan.hooks[0].ReadOnly || plan.hooks[0].Static != static ||
+				plan.hooks[0].Copied != copied || plan.hooks[0].Untrusted != (!static && !copied) || len(plan.skipped) != 0 {
+				t.Fatalf("plan: %+v", plan)
+			}
+			hook := plan.hooks[0]
+			injected := loadHooked(t, work, plan.hooks)
+			t.Cleanup(injected.Close)
+			obs := loadOrSkip(t, lookupObserverArgs(t, hook.Name, injected.Programs["p"], observerArgs{site: true, rawCtx: static, valueAt0: true}))
+			t.Cleanup(obs.Close)
+			l, err := link.AttachTracing(link.TracingOptions{Program: obs.Programs["observe"], AttachType: ebpf.AttachTraceFEntry})
+			if err != nil {
+				if errors.Is(err, unix.EPERM) || errors.Is(err, ebpf.ErrNotSupported) {
+					t.Skipf("fentry unavailable: %v", err)
+				}
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = l.Close() })
+			for _, c := range []*ebpf.Collection{plain, injected} {
+				if ret, _ := runXDP(t, c.Programs["p"]); ret != 2 {
+					t.Fatalf("miss action %d", ret)
+				}
+			}
+			var got [32]byte
+			if err := obs.Maps["obs"].Lookup(uint32(0), &got); err != nil || got != [32]byte{} {
+				t.Fatalf("miss fired the hook: %x %v", got, err)
+			}
+			for _, c := range []*ebpf.Collection{plain, injected} {
+				if err := c.Maps["m"].Put(uint32(0), value); err != nil {
+					t.Fatal(err)
+				}
+				if ret, _ := runXDP(t, c.Programs["p"]); ret != 3 {
+					t.Fatalf("hit action %d", ret)
+				}
+			}
+			if err := obs.Maps["obs"].Lookup(uint32(0), &got); err != nil {
+				t.Fatal(err)
+			}
+			seen, key, site := binary.LittleEndian.Uint64(got[:]), binary.LittleEndian.Uint32(got[12:]), binary.LittleEndian.Uint32(got[24:])
+			ifindex, id := binary.LittleEndian.Uint32(got[16:]), binary.LittleEndian.Uint32(got[20:])
+			if seen != 1 || key != 0 || site != hook.Sites[0].SitePC || ifindex != uint32(lo.Index) || tc.size == 8 && id != 0 {
+				t.Fatalf("seen=%d key=%d site=%d ifindex=%d id=%d, want ifindex %d", seen, key, site, ifindex, id, lo.Index)
+			}
+		})
 	}
 }

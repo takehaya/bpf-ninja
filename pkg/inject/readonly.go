@@ -13,6 +13,7 @@ type pointerState struct {
 	readOnly   bool // may point into the value of a BPF_F_RDONLY_PROG map
 	roMap      bool // is a BPF_F_RDONLY_PROG value map
 	innerROMap bool // is a map-in-map whose inner-map template is BPF_F_RDONLY_PROG
+	devMap     bool // is a devmap or devmap hash, whose lookups return read-only values
 	stack      stackKind
 	off        int64 // the offset from R10 when stack is stackKnown
 }
@@ -40,7 +41,7 @@ func (s readOnlyState) equal(o readOnlyState) bool {
 
 func joinPointer(a, b pointerState) pointerState {
 	p := pointerState{readOnly: a.readOnly || b.readOnly, roMap: a.roMap || b.roMap,
-		innerROMap: a.innerROMap || b.innerROMap, stack: a.stack, off: a.off}
+		innerROMap: a.innerROMap || b.innerROMap, devMap: a.devMap || b.devMap, stack: a.stack, off: a.off}
 	if a.stack != b.stack || a.off != b.off {
 		p.stack, p.off = notStack, 0
 		if a.stack != notStack || b.stack != notStack {
@@ -85,6 +86,15 @@ func (s readOnlyState) join(o readOnlyState) readOnlyState {
 //
 // A map-in-map's inner-map template and cilium/ebpf's unresolved .kconfig
 // map-value loads count too. Without any such load nothing is marked.
+//
+// A devmap's value is read-only to programs too (see progFlags), but its
+// pointer reaches the value only through a lookup: only that lookup's result
+// is marked, kfunc results stay unmarked unless another such map is
+// referenced, and a subprogram makes calls return read-only memory only when
+// it both references a devmap and looks up or calls something it could pass it to,
+// or when a devmap pointer already reaches the call through an argument or the stack.
+// A subprogram that references a devmap may still hand the pointer back, so a
+// call may return a devmap pointer, or store one through a stack argument.
 func readOnlyPointers(insns asm.Instructions, indices map[int]int, resolve lookupMapResolver) (map[int]readOnlyState, error) {
 	mapPointer := func(ins *asm.Instruction) pointerState {
 		_, m := resolve(ins)
@@ -96,21 +106,40 @@ func readOnlyPointers(insns asm.Instructions, indices map[int]int, resolve looku
 			}
 			return pointerState{}
 		}
+		if m.Type == ebpf.DevMap || m.Type == ebpf.DevMapHash {
+			return pointerState{devMap: true}
+		}
 		mapInMap := m.Type == ebpf.HashOfMaps || m.Type == ebpf.ArrayOfMaps
 		return pointerState{roMap: !mapInMap && m.Flags&bpfFRdonlyProg != 0,
 			innerROMap: mapInMap && m.InnerFlags&bpfFRdonlyProg != 0}
 	}
-	// Subprograms follow the entry function.
-	any, inSubprog, subprogReadOnly := false, false, false
+	// Subprograms follow the entry function. devLoad and devUse are whether
+	// the current subprogram loads a devmap pointer and looks something up or
+	// makes a call that could. subprogDevMap is whether any subprogram loads one.
+	roMaps, devMaps, inSubprog, subprogReadOnly, subprogDevMap := false, false, false, false, false
+	devLoad, devUse := false, false
+	endFunc := func() { subprogReadOnly = subprogReadOnly || inSubprog && devLoad && devUse }
 	it := insns.Iterate()
 	for it.Next() {
-		inSubprog = inSubprog || it.Offset > 0 && btf.FuncMetadata(it.Ins) != nil
-		if it.Ins.IsLoadFromMap() && mapPointer(it.Ins) != (pointerState{}) {
-			any, subprogReadOnly = true, subprogReadOnly || inSubprog
+		if it.Offset > 0 && btf.FuncMetadata(it.Ins) != nil {
+			endFunc()
+			inSubprog, devLoad, devUse = true, false, false
 		}
+		if it.Ins.IsLoadFromMap() {
+			switch p := mapPointer(it.Ins); {
+			case p.devMap:
+				devMaps, devLoad, subprogDevMap = true, true, subprogDevMap || inSubprog
+			case p != (pointerState{}):
+				roMaps, subprogReadOnly = true, subprogReadOnly || inSubprog
+			}
+		}
+		fn := asm.BuiltinFunc(it.Ins.Constant)
+		devUse = devUse || it.Ins.IsFunctionCall() ||
+			it.Ins.IsBuiltinCall() && (fn == asm.FnMapLookupElem || fn == asm.FnMapLookupPercpuElem || takesCallback(fn))
 	}
+	endFunc()
 	before := map[int]readOnlyState{}
-	if !any {
+	if !roMaps && !devMaps {
 		return before, nil
 	}
 
@@ -138,7 +167,7 @@ func readOnlyPointers(insns asm.Instructions, indices map[int]int, resolve looku
 		ins := &insns[idx]
 		s := before[pc]
 		s.slots = maps.Clone(s.slots)
-		readOnlyStep(&s, ins, mapPointer, subprogReadOnly)
+		readOnlyStep(&s, ins, mapPointer, subprogReadOnly, subprogDevMap, roMaps)
 		next := pc + int(ins.Size()/asm.InstructionSize)
 		op := ins.OpCode
 		switch {
@@ -162,8 +191,9 @@ func readOnlyPointers(insns asm.Instructions, indices map[int]int, resolve looku
 	return before, nil
 }
 
-// readOnlyStep applies ins to s (see readOnlyPointers).
-func readOnlyStep(s *readOnlyState, ins *asm.Instruction, mapPointer func(*asm.Instruction) pointerState, subprogReadOnly bool) {
+// readOnlyStep applies ins to s (see readOnlyPointers). kfuncReadOnly marks
+// kfunc results.
+func readOnlyStep(s *readOnlyState, ins *asm.Instruction, mapPointer func(*asm.Instruction) pointerState, subprogReadOnly, subprogDevMap, kfuncReadOnly bool) {
 	op, class := ins.OpCode, ins.OpCode.Class()
 	regs := &s.regs
 	clearSlots := func(off int64, size int64) {
@@ -213,9 +243,9 @@ func readOnlyStep(s *readOnlyState, ins *asm.Instruction, mapPointer func(*asm.I
 		fn := asm.BuiltinFunc(ins.Constant)
 		if ins.IsKfuncCall() || takesCallback(fn) {
 			// The callback is a subprogram and may write through a stack argument.
-			subprogCall(s, subprogReadOnly)
+			subprogCall(s, subprogReadOnly, subprogDevMap)
 		}
-		if ins.IsKfuncCall() || (fn == asm.FnMapLookupElem || fn == asm.FnMapLookupPercpuElem) && regs[asm.R1].roMap {
+		if ins.IsKfuncCall() && kfuncReadOnly || (fn == asm.FnMapLookupElem || fn == asm.FnMapLookupPercpuElem) && (regs[asm.R1].roMap || regs[asm.R1].devMap) {
 			ret.readOnly = true
 		}
 		if (fn == asm.FnMapLookupElem || fn == asm.FnMapLookupPercpuElem) && regs[asm.R1].innerROMap {
@@ -226,7 +256,7 @@ func readOnlyStep(s *readOnlyState, ins *asm.Instruction, mapPointer func(*asm.I
 		}
 		regs[asm.R0] = ret
 	case ins.IsFunctionCall():
-		ret := subprogCall(s, subprogReadOnly)
+		ret := subprogCall(s, subprogReadOnly, subprogDevMap)
 		for r := asm.R0; r <= asm.R5; r++ {
 			regs[r] = pointerState{}
 		}
@@ -241,7 +271,9 @@ func readOnlyStep(s *readOnlyState, ins *asm.Instruction, mapPointer func(*asm.I
 		p := pointerState{}
 		switch {
 		case ins.IsLoadFromMap() && ins.Src == asm.PseudoMapValue:
-			p.readOnly = mapPointer(ins).roMap
+			// The verifier refuses a devmap value load; mark one anyway.
+			mp := mapPointer(ins)
+			p.readOnly = mp.roMap || mp.devMap
 		case ins.IsLoadFromMap():
 			p = mapPointer(ins)
 		}
@@ -250,7 +282,7 @@ func readOnlyStep(s *readOnlyState, ins *asm.Instruction, mapPointer func(*asm.I
 		regs[ins.Dst] = regs[ins.Src]
 	case class == asm.ALU64Class && (op.ALUOp() == asm.Add || op.ALUOp() == asm.Sub):
 		p := regs[ins.Dst]
-		p.roMap = false
+		p.roMap, p.devMap = false, false
 		if src := regs[ins.Src]; op.ALUOp() == asm.Add && op.Source() == asm.RegSource {
 			// scalar += pointer makes a pointer.
 			p.readOnly = p.readOnly || src.readOnly
@@ -298,23 +330,24 @@ func readOnlyStep(s *readOnlyState, ins *asm.Instruction, mapPointer func(*asm.I
 
 // subprogCall applies a call to a subprogram, or a callback a helper calls,
 // to s before the call clobbers R0-R5. The subprogram may return what its
-// arguments reach and store it through a stack argument.
-func subprogCall(s *readOnlyState, subprogReadOnly bool) pointerState {
-	ret := pointerState{readOnly: subprogReadOnly, roMap: subprogReadOnly, innerROMap: subprogReadOnly}
+// arguments reach and store it through a stack argument; with subprogDevMap
+// that includes a devmap pointer it loads itself.
+func subprogCall(s *readOnlyState, subprogReadOnly, subprogDevMap bool) pointerState {
+	ret := pointerState{readOnly: subprogReadOnly, roMap: subprogReadOnly, innerROMap: subprogReadOnly, devMap: subprogDevMap}
 	stackArg := false
 	for r := asm.R1; r <= asm.R5; r++ {
 		p := s.regs[r]
 		ret = joinTracked(ret, p)
-		ret.readOnly = ret.readOnly || p.roMap || p.innerROMap
+		ret.readOnly = ret.readOnly || p.roMap || p.innerROMap || p.devMap
 		stackArg = stackArg || p.stack != notStack
 	}
 	if stackArg {
 		for _, p := range s.slots {
 			ret = joinTracked(ret, p)
-			ret.readOnly = ret.readOnly || p.roMap || p.innerROMap
+			ret.readOnly = ret.readOnly || p.roMap || p.innerROMap || p.devMap
 		}
 		ret = joinTracked(ret, s.anySlot)
-		ret.readOnly = ret.readOnly || s.anySlot.roMap || s.anySlot.innerROMap
+		ret.readOnly = ret.readOnly || s.anySlot.roMap || s.anySlot.innerROMap || s.anySlot.devMap
 		s.anySlot = joinTracked(s.anySlot, ret)
 	}
 	return ret
