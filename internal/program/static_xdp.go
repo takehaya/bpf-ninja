@@ -62,7 +62,15 @@ func staticXDPHook(h *hook.Hook, isFexit bool) *hook.Hook {
 			asm.Mov.Reg(asm.R8, asm.R9), // R8 = orig_len, as in hook.xdpPacketPrologue
 		}, nil
 	}
-	clone.Identity = func(dst asm.Register) (asm.Instructions, error) {
+	clone.Identity = probeReadIdentity(isFexit, 24)
+	return &clone
+}
+
+// probeReadIdentity reads the 8-byte pointer at R6+off, the identity a
+// static hook's ctx leads to (xdp_buff.data_hard_start, bpf_nf_ctx.skb), through the
+// fault-handled helper.
+func probeReadIdentity(isFexit bool, off int32) func(asm.Register) (asm.Instructions, error) {
+	return func(dst asm.Register) (asm.Instructions, error) {
 		// Gated exit keeps its expected identity in R2. At entry R2 may
 		// be uninitialized after ktime_get_ns, and must not be spilled.
 		insns := asm.Instructions{asm.StoreMem(asm.R10, -136, asm.R0, asm.DWord)}
@@ -70,7 +78,7 @@ func staticXDPHook(h *hook.Hook, isFexit bool) *hook.Hook {
 			insns = append(insns, asm.StoreMem(asm.R10, -144, asm.R2, asm.DWord))
 		}
 		insns = append(insns,
-			asm.Mov.Reg(asm.R3, asm.R6), asm.Add.Imm(asm.R3, 24),
+			asm.Mov.Reg(asm.R3, asm.R6), asm.Add.Imm(asm.R3, off),
 			asm.Mov.Reg(asm.R1, asm.R10), asm.Add.Imm(asm.R1, argMemberTmp),
 			asm.Mov.Imm(asm.R2, 8), asm.FnProbeReadKernel.Call(),
 			asm.JNE.Imm(asm.R0, 0, "exit"),
@@ -81,7 +89,6 @@ func staticXDPHook(h *hook.Hook, isFexit bool) *hook.Hook {
 		}
 		return append(insns, asm.LoadMem(dst, asm.R10, argMemberTmp, asm.DWord)), nil
 	}
-	return &clone
 }
 
 // staticTCHook reads the sk_buff fields hook.skbPacketPrologue loads through
@@ -89,35 +96,7 @@ func staticXDPHook(h *hook.Hook, isFexit bool) *hook.Hook {
 // The temporary stack is dead before arg/set/packet filtering.
 func staticTCHook(h *hook.Hook, name string) *hook.Hook {
 	clone := *h
-	clone.PacketPrologue = func() (asm.Instructions, error) {
-		data, length, dataLen, err := hook.SkBuffPacketOffsets()
-		if err != nil {
-			return nil, fmt.Errorf("resolving struct sk_buff offsets via BTF: %w", err)
-		}
-		insns := asm.Instructions{
-			asm.StoreMem(asm.R10, -48, asm.R1, asm.DWord),
-			asm.LoadMem(asm.R6, asm.R1, 0, asm.DWord),
-		}
-		for _, field := range []struct {
-			offset uint32
-			slot   int32
-			size   int32
-		}{{data, -160, 8}, {length, -152, 4}, {dataLen, -148, 4}} {
-			insns = append(insns,
-				asm.Mov.Reg(asm.R3, asm.R6), asm.Add.Imm(asm.R3, int32(field.offset)),
-				asm.Mov.Reg(asm.R1, asm.R10), asm.Add.Imm(asm.R1, field.slot),
-				asm.Mov.Imm(asm.R2, field.size), asm.FnProbeReadKernel.Call(),
-				asm.JNE.Imm(asm.R0, 0, "exit"),
-			)
-		}
-		return append(insns,
-			asm.LoadMem(asm.R7, asm.R10, -160, asm.DWord),
-			asm.LoadMem(asm.R9, asm.R10, -152, asm.Word),
-			asm.LoadMem(asm.R8, asm.R10, -148, asm.Word),
-			asm.Sub.Reg(asm.R9, asm.R8), // only the linear head, as in skbPacketPrologue
-			asm.Add.Reg(asm.R8, asm.R9), // R8 = orig_len = skb->len
-		), nil
-	}
+	clone.PacketPrologue = func() (asm.Instructions, error) { return staticSkbPrologue(nil) }
 	// The tag loader reads sk_buff directly; only a wire-frame filter calls it.
 	if h.OuterVlanTag != nil {
 		clone.OuterVlanTag = func() (asm.Instructions, error) {
@@ -125,4 +104,69 @@ func staticTCHook(h *hook.Hook, name string) *hook.Hook {
 		}
 	}
 	return &clone
+}
+
+// staticNFHook is staticTCHook for netfilter: it first reads bpf_nf_ctx.skb,
+// as hook.nfPacketPrologue does, and its identity is that skb pointer.
+func staticNFHook(h *hook.Hook, name string, isFexit bool) *hook.Hook {
+	clone := staticTCHook(h, name)
+	clone.PacketPrologue = func() (asm.Instructions, error) {
+		skb, err := hook.NFCtxSkbOffset()
+		if err != nil {
+			return nil, fmt.Errorf("resolving struct bpf_nf_ctx offsets via BTF: %w", err)
+		}
+		return staticSkbPrologue(&skb)
+	}
+	clone.Identity = func(dst asm.Register) (asm.Instructions, error) {
+		skb, err := hook.NFCtxSkbOffset()
+		if err != nil {
+			return nil, fmt.Errorf("resolving struct bpf_nf_ctx offsets via BTF: %w", err)
+		}
+		return probeReadIdentity(isFexit, int32(skb))(dst)
+	}
+	return clone
+}
+
+// staticSkbPrologue loads R6 = ctx and reads the sk_buff fields with
+// bpf_probe_read_kernel. The sk_buff is the ctx itself, or, with ctxSkb set,
+// the pointer at that ctx offset, held in R7 until the fields are read.
+func staticSkbPrologue(ctxSkb *uint32) (asm.Instructions, error) {
+	data, length, dataLen, err := hook.SkBuffPacketOffsets()
+	if err != nil {
+		return nil, fmt.Errorf("resolving struct sk_buff offsets via BTF: %w", err)
+	}
+	insns := asm.Instructions{
+		asm.StoreMem(asm.R10, -48, asm.R1, asm.DWord),
+		asm.LoadMem(asm.R6, asm.R1, 0, asm.DWord),
+	}
+	skb := asm.R6
+	if ctxSkb != nil {
+		skb = asm.R7
+		insns = append(insns,
+			asm.Mov.Reg(asm.R3, asm.R6), asm.Add.Imm(asm.R3, int32(*ctxSkb)),
+			asm.Mov.Reg(asm.R1, asm.R10), asm.Add.Imm(asm.R1, -160),
+			asm.Mov.Imm(asm.R2, 8), asm.FnProbeReadKernel.Call(),
+			asm.JNE.Imm(asm.R0, 0, "exit"),
+			asm.LoadMem(asm.R7, asm.R10, -160, asm.DWord),
+		)
+	}
+	for _, field := range []struct {
+		offset uint32
+		slot   int32
+		size   int32
+	}{{data, -160, 8}, {length, -152, 4}, {dataLen, -148, 4}} {
+		insns = append(insns,
+			asm.Mov.Reg(asm.R3, skb), asm.Add.Imm(asm.R3, int32(field.offset)),
+			asm.Mov.Reg(asm.R1, asm.R10), asm.Add.Imm(asm.R1, field.slot),
+			asm.Mov.Imm(asm.R2, field.size), asm.FnProbeReadKernel.Call(),
+			asm.JNE.Imm(asm.R0, 0, "exit"),
+		)
+	}
+	return append(insns,
+		asm.LoadMem(asm.R7, asm.R10, -160, asm.DWord),
+		asm.LoadMem(asm.R9, asm.R10, -152, asm.Word),
+		asm.LoadMem(asm.R8, asm.R10, -148, asm.Word),
+		asm.Sub.Reg(asm.R9, asm.R8), // only the linear head, as in skbPacketPrologue
+		asm.Add.Reg(asm.R8, asm.R9), // R8 = orig_len = skb->len
+	), nil
 }

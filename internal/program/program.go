@@ -414,7 +414,7 @@ targetLoop:
 			probe.progs = closeTargetResources(probe.progs, startProgs)
 		}
 		static := false
-		if (h.Kind == hook.KindXDP || h.Kind == hook.KindTC || h.Kind == hook.KindCgroupSKB) && t.FuncName != "" {
+		if (h.Kind == hook.KindXDP || h.Kind == hook.KindTC || h.Kind == hook.KindCgroupSKB || h.Kind == hook.KindNetfilter) && t.FuncName != "" {
 			spec, specErr := probe.extensionGuard.Spec(t.Program)
 			if specErr != nil {
 				results.refused(t, attach.TargetStaticCtxRefused, specErr)
@@ -460,8 +460,12 @@ targetLoop:
 					continue targetLoop
 				}
 				if probeRead {
-					targetHook = staticXDPHook(h, st.IsFexit)
-					if h.Kind != hook.KindXDP {
+					switch h.Kind {
+					case hook.KindXDP:
+						targetHook = staticXDPHook(h, st.IsFexit)
+					case hook.KindNetfilter:
+						targetHook = staticNFHook(h, t.FuncName, st.IsFexit)
+					default:
 						targetHook = staticTCHook(h, t.FuncName)
 					}
 				}

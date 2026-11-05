@@ -71,7 +71,7 @@ def allowed_skip(package, test, output, kernel):
     if kernel == "6.1" and test in {
         "TestBpfEntryWithDSLFilterNetfilter", "TestBpfExitWithDSLFilterNetfilter",
         "TestBpfFexitReturnLayoutNetfilter", "TestBpfMultiPointLoad/netfilter-entry",
-        "TestBpfOrigLen/netfilter-fentry",
+        "TestBpfOrigLen/netfilter-fentry", "TestBpfStaticNetfilterInjectedHook",
     }:
         return "BPF_PROG_TYPE_NETFILTER not supported" in output
     return False

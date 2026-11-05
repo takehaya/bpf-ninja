@@ -34,6 +34,10 @@ class AuditTests(unittest.TestCase):
         self.assertFalse(module.allowed_skip(*key, reason, "6.6"))
         self.assertFalse(module.allowed_skip(*key, reason, None))
         self.assertFalse(module.allowed_skip(*key, "unexpected verifier failure", "6.1"))
+        key = (module.PROGRAM, "TestBpfStaticNetfilterInjectedHook")
+        self.assertTrue(module.allowed_skip(*key, reason, "6.1"))
+        self.assertFalse(module.allowed_skip(*key, reason, "6.6"))
+        self.assertFalse(module.allowed_skip(*key, "unexpected verifier failure", "6.1"))
 
     def test_subtest_skip_is_not_hidden_by_parent_pass(self):
         package, test = module.PROGRAM, "TestBpfFilterSetTC"
