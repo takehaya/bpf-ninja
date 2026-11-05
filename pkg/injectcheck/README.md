@@ -32,6 +32,7 @@ An `LDIMM64` is one decoded instruction and two raw slots for relocation.
 `Label` before transformation and `FromLabels` afterwards extract hints from preserved metadata; `Check` verifies their contents independently.
 The separate **premises** are trusted caller inputs.
 `Frames` gives each function start and its trusted stack floor.
+When present, entries must contain both fields, start at original instruction zero, and cover the whole original stream in increasing order.
 `inject-run` fills it from the verifier's per-subprogram accounting of a trial load, with deeper direct text accesses taking precedence.
 `LowestOffset` remains the library API's single-floor fallback when `Frames` is empty.
 `Targets` binds `{Site, When, Hook, Ctx}` in plan terms: the original instruction index, `hit`, `miss`, `any`, or `error`, the decoded index of the generated hook start, and an optional callee-frame context source.
@@ -119,7 +120,7 @@ Format 3 adds the optional callee context source to the decoded `asm.OpCode` rep
 Format 4 adds per-function floors in `premises.frames`; readers accept versions 2 through 4.
 The format number is not the kernel opcode byte.
 Required, case-sensitive top-level keys are `format`, `original`, `transformed`, `certificate` and `premises`.
-`certificate.original`, `premises.lowest_offset`, and `premises.targets` are also required; format 4 may additionally provide `premises.frames` entries with `start` and `lowest_offset`.
+`certificate.original`, `premises.lowest_offset`, and `premises.targets` are also required; format 4 may additionally provide `premises.frames` entries with both `start` and `lowest_offset`, beginning at zero.
 `certificate.hooks` may be empty or omitted, and `premises.targets` may be empty only when there are no inserted calls.
 Span fields are `start` and `end`; target fields are `site`, `when`, `hook`, and optional `ctx`.
 `ctx` contains either `reg` (6 through 9) or `slot` (an aligned negative frame offset).

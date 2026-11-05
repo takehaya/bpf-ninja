@@ -36,7 +36,7 @@ func (p *Pair) UnmarshalJSON(data []byte) error {
 		return err
 	}
 	if !supportedFormat(next.Format) {
-		return inputError(InputVersion, "format must be 2 or %d, got %d", FormatVersion, next.Format)
+		return inputError(InputVersion, "format must be 2, 3, or %d, got %d", FormatVersion, next.Format)
 	}
 	if next.Format < 3 {
 		for _, target := range next.Premises.Targets {
@@ -57,6 +57,21 @@ func (p *Pair) UnmarshalJSON(data []byte) error {
 	}
 	if err := requiredFields(fields["premises"], "lowest_offset", "targets"); err != nil {
 		return inputError(InputMissing, "premises: %v", err)
+	}
+	var premiseFields map[string]json.RawMessage
+	if err := json.Unmarshal(fields["premises"], &premiseFields); err != nil {
+		return inputError(InputJSON, "premises: %v", err)
+	}
+	if rawFrames, ok := premiseFields["frames"]; ok && string(rawFrames) != "null" {
+		var frames []json.RawMessage
+		if err := json.Unmarshal(rawFrames, &frames); err != nil {
+			return inputError(InputJSON, "premises.frames: %v", err)
+		}
+		for i, frame := range frames {
+			if err := requiredFields(frame, "start", "lowest_offset"); err != nil {
+				return inputError(InputMissing, "premises.frames[%d]: %v", i, err)
+			}
+		}
 	}
 	*p = Pair(next)
 	return nil
@@ -84,7 +99,7 @@ type Verdict struct {
 func (p Pair) Validate() (Verdict, error) {
 	v := Verdict{Premises: p.Premises}
 	if !supportedFormat(p.Format) {
-		err := inputError(InputVersion, "format must be 2 or %d, got %d", FormatVersion, p.Format)
+		err := inputError(InputVersion, "format must be 2, 3, or %d, got %d", FormatVersion, p.Format)
 		v.Kind = InputVersion
 		v.Reason = err.Error()
 		return v, err

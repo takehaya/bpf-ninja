@@ -180,6 +180,9 @@ func Check(in, out asm.Instructions, c Certificate, premises Premises) (Counts, 
 			return counts, inputError(InputStackFloor, "frames must have increasing starts within the original program")
 		}
 	}
+	if len(premises.Frames) != 0 && premises.Frames[0].Start != 0 {
+		return counts, inputError(InputStackFloor, "frames must start at original instruction 0")
+	}
 	for i, a := range in {
 		if a.Dst > asm.RFP || a.Src > asm.RFP {
 			return counts, inputError(InputRegister, "original instruction %d: invalid register dst=%d src=%d", i, a.Dst, a.Src)

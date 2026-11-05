@@ -33,6 +33,7 @@ counts, err := injectcheck.Check(original, transformed, injectcheck.Certificate{
 変換前の `Label` と変換後の `FromLabels` で保持された metadata からヒントを抽出でき、`Check` が内容を別途検査する。
 別引数の **premises** は呼び出し側の信頼済み入力である。
 `Frames` は各関数の開始位置と、信頼済みの stack の床を渡す。
+指定する場合は両 field を持たせ、元命令 0 から始め、開始位置の昇順で元の命令列全体を覆う必要がある。
 `inject-run` は試行ロードに対する verifier の subprogram 別の計上値からこれを作り、より深い直接参照があればそちらを使う。
 `Frames` が空の場合、`LowestOffset` はライブラリ API の単一床 fallback として残る。
 `Targets` は plan の用語で `{Site, When, Hook, Ctx}`、すなわち元命令 index、`hit`、`miss`、`any`、`error` のいずれか、生成 hook の decoded 開始 index、任意の callee-frame context 由来を対応づける。
@@ -123,7 +124,7 @@ format 3 は、format 2 が固定した cilium/ebpf v0.22 の decoded `asm.OpCod
 format 4 は `premises.frames` に関数別の床を追加する。
 reader は format 2 から 4 を受理し、format 番号は kernel の opcode byte とは異なる。
 必須のトップレベルキーは `format`、`original`、`transformed`、`certificate`、`premises` で、大文字小文字を区別する。
-`certificate.original`、`premises.lowest_offset`、`premises.targets` も必須で、format 4 では `start` と `lowest_offset` を持つ `premises.frames` も指定できる。
+`certificate.original`、`premises.lowest_offset`、`premises.targets` も必須で、format 4 では `start` と `lowest_offset` の両方を持ち、0 から始まる `premises.frames` も指定できる。
 `certificate.hooks` は空または省略してよく、`premises.targets` を空にできるのは挿入 call がない場合だけである。
 Span のフィールドは `start` と `end`、target のフィールドは `site`、`when`、`hook`、任意の `ctx` である。
 `ctx` は `reg`（6 から 9）または `slot`（整列した負の frame offset）のどちらかを持つ。

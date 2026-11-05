@@ -47,6 +47,28 @@ func TestPerFrameFloorsApplyToOwningFunction(t *testing.T) {
 	}
 }
 
+func TestPairRequiresCompleteFrameFloors(t *testing.T) {
+	for _, frame := range []string{`{}`, `null`, `{"start":0}`, `{"lowest_offset":-8}`} {
+		b := []byte(fmt.Sprintf(`{"format":4,"original":[],"transformed":[],"certificate":{"original":[]},"premises":{"lowest_offset":-8,"frames":[%s],"targets":[]}}`, frame))
+		var p Pair
+		err := json.Unmarshal(b, &p)
+		var input *InputError
+		if !errors.As(err, &input) || input.Kind != InputMissing {
+			t.Errorf("frame %s: got %v, want %s", frame, err, InputMissing)
+		}
+	}
+}
+
+func TestFrameFloorsMustCoverEntry(t *testing.T) {
+	in := asm.Instructions{asm.StoreImm(asm.RFP, -8, 0, asm.Word), asm.Return()}
+	_, err := Check(in, in, Certificate{Original: []int{0, 1}}, Premises{
+		LowestOffset: -8,
+		Frames:       []FrameFloor{{Start: 1, LowestOffset: -8}},
+		Targets:      []SiteTarget{},
+	})
+	assertInputKind(t, err, InputStackFloor)
+}
+
 func TestPairV1ReportsVersionFirst(t *testing.T) {
 	b := []byte(`{"format":1,"original":[],"transformed":[],"certificate":{"original":[]},"premises":{"lowest_offset":-8}}`)
 	var p Pair
