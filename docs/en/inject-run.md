@@ -134,7 +134,8 @@ bpf-ninja -p "$PROG_ID" --func ninja_sessions --arg-filter 'value->action==2' -w
   - `none` turns recording off.
 - At a static hook, the capture reads the context with `bpf_probe_read_kernel` when the kernel rejects direct reads.
   It first checks that the entry function passes the context to every call; [arg-member-filter.md](arg-member-filter.md) lists what that check refuses.
-  At a tc or cgroup_skb hook on this path, it captures only the linear packet head and refuses a filter with `--tc-vlan-reinsert`.
+  At a tc or cgroup_skb hook on this path, it captures only the linear packet head.
+  At a tc hook it refuses a filter with `--tc-vlan-reinsert`; a cgroup_skb packet has no Ethernet header, so the flag has no effect there.
 
 [The walkthrough](inject-walkthrough.md#6-capture-the-packets-at-a-hook) shows filters, set lookups and recorded state with real output.
 
@@ -636,7 +637,7 @@ In both modes:
   Compat and x32 calls pass through without injection.
 - `inject-run` can rewrite only XDP, tc (`SchedCLS`, `SchedACT`) and cgroup_skb (`CGroupSKB`) programs loaded with BTF and `func_info`.
   In a cgroup_skb program the packet starts at the network header, so `--func` records have no Ethernet header.
-  A loader without `CAP_BPF` cannot load BTF, so `inject-run` skips its cgroup_skb programs: they load unchanged, or are refused with `--fail-closed`.
+  A loader without `CAP_BPF` cannot load BTF, so `inject-run` skips its cgroup_skb programs: they load unchanged, or, when a rule matches the load, are refused with `--fail-closed`.
 - It instruments map calls in the entry function and in called subprograms whose BTF parameter, callers and held context value can all be proved; callbacks and unproved sites remain skipped. Static hooks repeat the proof on translated instructions before attach.
   One rule applies per program.
 - A function-name selector uses the BTF `inject-run` saw the loader load.

@@ -374,8 +374,9 @@ The generated hooks read the context's first word (`len` for `__sk_buff`) and ca
 For packet capture at a static XDP, tc or cgroup_skb hook, bpf-ninja reads the context with `bpf_probe_read_kernel`.
 A user-supplied static function must pass the translated-instruction context check at attach time.
 A generated function tagged `bpf-ninja:hook` skips that repeated proof because its first argument comes from the context slot placed below the verifier-backed frame floor; [arg-member-filter.md](arg-member-filter.md) lists the cases.
-At tc and cgroup_skb it reads `sk_buff.data`, `len` and `data_len`, using offsets from kernel BTF, and captures only the linear head, `len - data_len`, as at other tc hooks; fragment bytes are not captured.
-A failed context read produces no capture, and a filter with `--tc-vlan-reinsert` is refused on this path.
+At tc and cgroup_skb it reads `sk_buff.data`, `len` and `data_len`, using offsets from kernel BTF, and captures only the linear head, `len - data_len`; fragment bytes are not captured.
+A failed context read produces no capture.
+At tc, a filter with `--tc-vlan-reinsert` is refused on this path; at cgroup_skb the flag has no effect.
 
 | Transformer validates | Caller must certify |
 |---|---|

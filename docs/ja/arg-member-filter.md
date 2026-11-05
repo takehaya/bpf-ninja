@@ -33,7 +33,7 @@ static XDP、tc、cgroup-skb のキャプチャでは、直接読み取りのプ
 static tc と cgroup-skb では、カーネル BTF から求めた `sk_buff` のオフセットを使い、`data`、`len`、`data_len` を `bpf_probe_read_kernel` で読みます。
 キャプチャする範囲は線形ヘッドの `len - data_len` bytes に限り、fragment は含めません。
 読み取りに失敗した場合はキャプチャしません。
-この経路でフィルターに `--tc-vlan-reinsert` を付けると、`--tc-vlan-reinsert is not supported at static tc function "NAME"` として拒否します。
+tc では、この経路でフィルターに `--tc-vlan-reinsert` を付けると、`--tc-vlan-reinsert is not supported at static tc function "NAME"` として拒否します。cgroup_skb では、このフラグは効果がありません。
 
 これらの経路の exit と gated キャプチャには、action の取得用に `bpf_get_func_ret` も必要です（upstream Linux 5.17 以降）。
 カーネルが BTF プロトタイプを破棄している可能性があるため、引数数から戻り値の位置を推測しません。

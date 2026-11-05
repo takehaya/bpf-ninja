@@ -26,7 +26,7 @@ In a capture with several targets, a refusal skips that target with a warning an
 It assumes that no extension later replaces a function the entry calls, which needs the same privileges as replacing the program.
 Static tc and cgroup-skb capture reads `sk_buff.data`, `len` and `data_len` through `bpf_probe_read_kernel`, with offsets resolved from kernel BTF, and captures only the linear head (`len - data_len`).
 A failed context read produces no capture.
-A filter with `--tc-vlan-reinsert` is refused on this path with `--tc-vlan-reinsert is not supported at static tc function "NAME"`.
+At tc, a filter with `--tc-vlan-reinsert` is refused on this path with `--tc-vlan-reinsert is not supported at static tc function "NAME"`; at cgroup_skb the flag has no effect.
 Exit and gated capture on these paths also require `bpf_get_func_ret` (upstream Linux 5.17+) to obtain the action because the kernel may have discarded the BTF prototype.
 These context-read paths do not extend to static netfilter hooks.
 
