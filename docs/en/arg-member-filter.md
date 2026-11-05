@@ -40,7 +40,7 @@ sudo bpf-ninja -p <ID> --func classify --list-params
 sudo bpf-ninja -p <ID> --func classify --list-params --members
 ```
 
-The member view adds a tree for every listed struct/union pointer parameter and a `[0]` expression for a supported scalar pointer.
+The member view adds a tree for every listed struct/union pointer parameter and a `[0]` expression for a supported scalar pointer; a pointer to an array shows its first element.
 Here is illustrative output for a query with an embedded target:
 
 ```text
@@ -90,6 +90,7 @@ jq '.. | objects | select(.filterable? == true) | .expression' params.json
 ```
 
 The existing top-level array, `func`, `id`, and parameter fields remain unchanged.
+A generated hook's `status` entry always has a `fields` array holding `status.ret` and `status.flags`, in the same shape as a parameter; they are parts of that one argument.
 With `--members`, pointer parameters gain `type` and a `members` array, including an empty array when the pointee has no members.
 An individual member looks like this:
 
@@ -130,7 +131,7 @@ Use numeric values for enums, not enumerator names.
 Values must fit the member's width and signedness.
 Repeat `--arg-filter` to require all conditions.
 The same operators work on ordinary integer arguments.
-Strict `<`/`>`, array-member indexing, and a second `->` are not supported.
+Strict `<`/`>`, a variable array index, and a second `->` are not supported.
 
 Echo takes member expressions as positional arguments, without comparison operators:
 
@@ -140,6 +141,42 @@ sudo bpf-ninja -p <ID> --func classify --arg-echo -c 10 'q->imsi' 'q->target.pdr
 
 Bare `--arg-echo` prints integer parameters only; it does not automatically expand pointer members.
 Echo supports one target and one mode, and can be gated by ordinary `--arg-filter` expressions.
+
+## Select an array element
+
+A fixed-length array member takes a constant index anywhere in the path, and each dimension of a nested array takes its own:
+
+```sh
+sudo bpf-ninja -p <ID> --func lookup_hook --arg-filter 'value->rules[0].action==2'
+sudo bpf-ninja -p <ID> --func lookup_hook --arg-filter 'value->counts[3]==1'
+sudo bpf-ninja -p <ID> --func lookup_hook --arg-filter 'value->grid[1][2]>=7'
+sudo bpf-ninja -p <ID> --func lookup_hook --arg-echo 'value->rules[1].action'
+```
+
+The offset comes from BTF: the index times the element size, added to the member's offset.
+A pointer to an array, such as the hook's `value` for a map whose value is `__u32[4]` or `struct rule[4]`, starts with `[0]`: `value[0][2]` or `value[0][1].action`.
+The index is a decimal constant, written without leading zeros.
+A negative or variable index, an index at or past the array's length, an index on anything but an array, and any index on a zero-length array are refused when the filter is resolved.
+`--list-params --members` shows an array through its first element, as `value->rules[0].action`, `value->counts[0]` or `value[0][0]`; replace the `0` to reach another element.
+Set keys and `--record filter` accept the same expressions, and the comment names the element, as in `value->rules[0].action=2`.
+
+## Select on a helper's result
+
+The `status` argument of an update, delete, push, pop or peek hook is `(u32)ret | flags << 32`, so comparing the whole word also compares the flags: a successful `BPF_NOEXIST` update has status `0x0000000100000000`, and `status==0` does not select it.
+At these hooks, `status.ret` is the lower 32 bits as a signed integer and `status.flags` the upper 32 bits as an unsigned one:
+
+```sh
+sudo bpf-ninja -p <ID> --func ninja_sessions_update --arg-filter 'status.ret==0'
+sudo bpf-ninja -p <ID> --func ninja_sessions_update --arg-filter 'status.ret==-17'
+sudo bpf-ninja -p <ID> --func ninja_sessions_update --arg-filter 'status.flags==1'
+sudo bpf-ninja -p <ID> --func ninja_sessions_update --arg-echo 'status.ret' 'status.flags'
+```
+
+A hook sees successful calls only under an `:any` op such as `update:any`; plain `update` calls it after failures only, so `status.ret==0` needs `:any` (see [the ops table](inject-run.md#choose-the-maps-and-operations-to-observe)).
+The probe does the shift and sign extension before comparing.
+`status` alone is the whole word.
+`--list-params` lists the two fields under `status`.
+They exist only on a hook `inject-run` generated; `status.ret` on another function's argument is refused, whatever its name.
 
 ## Compare network-order values
 
@@ -224,7 +261,7 @@ For echo, a failed read suppresses the entire record; it is not reported as a ze
 These checks do not modify the target program's return value or drop its packet.
 
 Supported leaves are byte-aligned integers or enums of 1, 2, 4, or 8 bytes, with no bitfield on the selected path.
-Bitfields, arrays, whole structs/unions, and pointer-valued leaves are rejected.
+Bitfields, whole arrays, whole structs/unions, and pointer-valued leaves are rejected; an array element is a leaf like any other member.
 A pointer member is shown but never followed, including a pointer back to the same struct.
 Union discovery describes layout; it does not identify which alternative the caller currently uses.
 Ambiguous promoted names and offsets beyond the resolver's supported range are also rejected.

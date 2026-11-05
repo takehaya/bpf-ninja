@@ -126,7 +126,7 @@ func buildArgEchoInsns(echoRingFD int, argFilters []filter.ArgFilter, params []a
 			insns = append(insns, emitArgMemberLoad(p.Index, p.Offset, p.Size, p.Signed, "discard")...)
 		} else {
 			insns = append(insns, asm.LoadMem(asm.R1, asm.R10, -48, asm.DWord))
-			insns = append(insns, emitArgLoad(asm.R3, asm.R1, int16(p.Index*8), p.Size, p.Signed)...)
+			insns = append(insns, emitIntArgLoad(asm.R1, p.Index, p.Offset, p.Size, p.Signed)...)
 		}
 		insns = append(insns, asm.StoreMem(asm.R6, int16(i*8), asm.R3, asm.DWord))
 	}

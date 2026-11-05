@@ -38,9 +38,14 @@ func ListArgMembers(p FuncParamInfo, depth int) ([]ArgMemberInfo, string) {
 	if !ok {
 		return nil, ""
 	}
-	if resolved, err := ResolveArg(p.Name+"[0]", []FuncParamInfo{p}); err == nil {
+	target, scalar := firstElement(ptr.Target, p.Name+"[0]")
+	if resolved, err := ResolveArg(scalar, []FuncParamInfo{p}); err == nil {
 		size := int(resolved.Size)
-		return []ArgMemberInfo{{Expression: p.Name + "[0]", Type: ArgTypeName(ptr.Target), Size: &size, Signed: &resolved.Signed, Filterable: true}}, ""
+		return []ArgMemberInfo{{Expression: scalar, Type: ArgTypeName(target), Size: &size, Signed: &resolved.Signed, Filterable: true}}, ""
+	}
+	rootPrefix := p.Name + "->"
+	if scalar != p.Name+"[0]" {
+		rootPrefix = scalar + "."
 	}
 	depth = min(max(depth, 1), MaxMembersDepth)
 	remaining := maxMemberRows
@@ -89,7 +94,15 @@ func ListArgMembers(p FuncParamInfo, depth int) ([]ArgMemberInfo, string) {
 			if err != nil {
 				n.Reason = strings.TrimPrefix(err.Error(), fmt.Sprintf("%q: ", n.Expression))
 			}
-			n.Members, n.Truncated = walk(m.Type, n.Expression+".", at, level+1)
+			// An array lists its first element; the rows copy with any index.
+			elem, first := firstElement(m.Type, n.Expression)
+			if r, err := ResolveArg(first, []FuncParamInfo{p}); err == nil && first != n.Expression && remaining > 0 {
+				remaining--
+				size := int(r.Size)
+				n.Members = []ArgMemberInfo{{Expression: first, Type: ArgTypeName(elem), Offset: at / 8, Size: &size, Signed: &r.Signed, Filterable: true}}
+			} else {
+				n.Members, n.Truncated = walk(elem, first+".", at, level+1)
+			}
 			out = append(out, n)
 			return true
 		})
@@ -98,7 +111,19 @@ func ListArgMembers(p FuncParamInfo, depth int) ([]ArgMemberInfo, string) {
 		}
 		return out, truncated
 	}
-	return walk(ptr.Target, p.Name+"->", 0, 1)
+	return walk(target, rootPrefix, 0, 1)
+}
+
+// firstElement follows the array levels of typ to the first element, adding
+// [0] to expr for each. An array without elements stays as it is.
+func firstElement(typ btf.Type, expr string) (btf.Type, string) {
+	for {
+		array, ok := btf.UnderlyingType(typ).(*btf.Array)
+		if !ok || array.Nelems == 0 {
+			return typ, expr
+		}
+		typ, expr = array.Type, expr+"[0]"
+	}
 }
 
 // ArgTypeName retains typedef names instead of flattening them for display.

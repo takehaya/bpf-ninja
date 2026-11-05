@@ -635,7 +635,7 @@ type FuncParamInfo struct {
 	TypeName string   // Pointee name
 	Type     btf.Type // Original parameter type, from the target BTF
 	Deref    bool     // Resolved member expression
-	Offset   uint32   // Byte offset from pointer for a resolved member
+	Offset   uint32   // Byte offset from pointer for a resolved member; within the argument, without Deref, for status.flags
 	// ThroughOpaque is set on a resolved member whose path crosses a
 	// hookabi.Opaque (bpf_*) struct, named or anonymous. It can be filtered
 	// on but is never recorded.
@@ -645,6 +645,9 @@ type FuncParamInfo struct {
 	// internal/hookabi). Zero when the pointee has a BTF type, no tag is
 	// present, or the function is not a generated hook.
 	VoidSize uint32
+	// StatusWord marks a generated hook's u64 status argument, which is
+	// (u32)ret | flags << 32 and so has the fields status.ret and status.flags.
+	StatusWord bool
 }
 
 // IsGeneratedHook reports whether funcName in spec carries the hook tag
@@ -726,10 +729,11 @@ func GetFuncParamsFromSpec(spec *btf.Spec, funcName string) ([]FuncParamInfo, er
 		}
 
 		params = append(params, FuncParamInfo{
-			Name:   p.Name,
-			Index:  i,
-			Size:   intType.Size,
-			Signed: intType.Encoding == btf.Signed,
+			Name:       p.Name,
+			Index:      i,
+			Size:       intType.Size,
+			Signed:     intType.Encoding == btf.Signed,
+			StatusWord: p.Name == "status" && intType.Size == 8 && slices.Contains(fn.Tags, hookabi.HookTag),
 		})
 	}
 

@@ -368,7 +368,8 @@ sudo bpf-ninja -p <ID> --func sdf_classify --arg-echo 'q->imsi' 'q->target.pdr_i
 - Members and integer arguments support `=`/`==`, `!=`, `>=`, `<=` and inclusive `min..max` ranges, with widths of 1, 2, 4 or 8 bytes.
 - `be16(443)`, `be32(...)` and `be64(...)` give network-order equality; the width must match, and ordered comparisons or ranges with them are refused.
 - Scalar pointers use `value[0]`; bare pointers accept `value==null` and `value!=null` without dereferencing.
-- Bitfields, arrays and further pointer dereferences are not supported.
+- A fixed-length array takes a [constant index](docs/en/arg-member-filter.md#select-an-array-element), as in `q->rules[0].action`; a generated hook's `status` has the [fields `status.ret` and `status.flags`](docs/en/arg-member-filter.md#select-on-a-helpers-result).
+- Bitfields, whole arrays and further pointer dereferences are not supported.
 - A null pointer or a failed kernel read rejects the call, or suppresses its echo record.
 - Member reads run in the existing entry or exit probe and add no probe.
   Gated capture still needs two probes; see [Entry and exit together](#entry-and-exit-together).
@@ -456,8 +457,8 @@ Specify exactly one of `-i`, `-p` or `--cgroup`.
 | `--members` | With `--list-params`, show the pointee member tree or scalar `[0]` expression, layout, and filter/echo eligibility | entry, exit |
 | `--members-depth` | Maximum named member levels for `--list-params --members` (default 3, range 1–32); omitted branches are marked | entry, exit |
 | `--json` | Print `--list-progs` (with `--list-maps`) / `--list-funcs` / `--list-params` output as JSON on stdout instead of text on stderr | entry, exit |
-| `--arg-filter` | Filter an integer argument or pointer member (requires `--func` or an EXT entry with filterable parameters); `=`, `==`, `!=`, `>=`, `<=`, and `min..max` for `param`, `param->member.member`, or `param[0]`; `be16/32/64(value)` for equality and `param==null`/`!=null` for pointers | entry, exit |
-| `--set` | Define a named match set backed by a pinned BPF hash map: `NAME=/sys/fs/bpf/path[,key(field=arg:expression,...)]` (including members and `[0]`). Reference it with `--arg-filter @NAME` or the DSL predicate `layer[field in @NAME]`; manage entries at runtime with `bpf-ninja set`. Repeatable | all |
+| `--arg-filter` | Filter an integer argument or pointer member (requires `--func` or an EXT entry with filterable parameters); `=`, `==`, `!=`, `>=`, `<=`, and `min..max` for `param`, `param->member[N].member`, `param[0]`, or `status.ret`/`status.flags` at a generated hook; `be16/32/64(value)` for equality and `param==null`/`!=null` for pointers | entry, exit |
+| `--set` | Define a named match set backed by a pinned BPF hash map: `NAME=/sys/fs/bpf/path[,key(field=arg:expression,...)]` (including members and indexes). Reference it with `--arg-filter @NAME` or the DSL predicate `layer[field in @NAME]`; manage entries at runtime with `bpf-ninja set`. Repeatable | all |
 | `--arg-echo` | Print integer args or positional member/scalar-pointee expressions (e.g. `--arg-echo 'q->imsi' 'value[0]'`) for each call, gated by `--arg-filter`, instead of capturing. Requires `--func` or an EXT entry with filterable parameters, and a single `--mode`; combine with `-c N` | entry, exit |
 | `--record` | At an injected hook, write decision state as each packet's pcapng comment: `filter` (default; the arguments and members `--arg-filter` and `--set` keys read), `entry` (whichever of site, status, key and value the hook has, key and value cut to `--record-max` bytes; only site and info at a generic or dispatch hook) or `none`. See [the walkthrough](docs/en/inject-walkthrough.md#record-the-decision-state-with-each-packet) | entry, exit |
 | `--record-max` | With `--record entry`, record at most N bytes each of the key and the value (default 256, at most 4096) | entry, exit |

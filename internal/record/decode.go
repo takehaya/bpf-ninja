@@ -34,8 +34,8 @@ func (l *Layout) CheckBlock(b []byte) error {
 // Comment renders a block as space-separated NAME=VALUE pairs. Names use
 // --arg-filter expression syntax (value->action, key->dport, value[0]); a
 // field whose read failed shows "?". Integers are decimal, signed ones
-// sign-extended, except status and info, which are 0x%016x so their halves
-// stay readable; byte arrays and unions are hex. Pointers stored inside a
+// sign-extended, except an entry block's status and info, which are 0x%016x so
+// their halves stay readable; byte arrays and unions are hex. Pointers stored inside a
 // key or value are not rendered.
 func (l *Layout) Comment(b []byte) (string, error) {
 	c, err := l.AppendComment(nil, b)

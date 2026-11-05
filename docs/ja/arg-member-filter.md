@@ -43,7 +43,7 @@ cgroup-skb と netfilter の static フックには、この読み取り経路�
 
 まず関数と引数の一覧を確認します。
 `--list-params` に `--members` を追加すると、構造体または共用体へのポインター引数ごとに、参照先のメンバーがツリー表示されます。
-対応するスカラーポインターには `[0]` の式も表示されます。
+対応するスカラーポインターには `[0]` の式も表示されます。配列へのポインターは先頭要素で表示されます。
 
 ```sh
 sudo bpf-ninja -p <ID> --list-funcs
@@ -104,6 +104,7 @@ jq '.. | objects | select(.filterable? == true) | .expression' params.json
 ```
 
 既存の最上位の配列、`func`、`id`、引数の各フィールドは変わりません。
+生成されたフックの `status` の項目には常に `fields` 配列があり、引数と同じ形で `status.ret` と `status.flags` を持ちます。どちらも 1 つの引数の一部です。
 `--members` を付けた場合だけ、ポインター引数に `type` と `members` 配列が追加されます。
 参照先にメンバーがなければ空配列になります。
 個々のメンバーは次の形式です。
@@ -146,7 +147,7 @@ BTF から格納サイズを求められない型の `size` は null になり�
 列挙型には列挙子の名前ではなく数値を指定し、型の幅と符号に収まる値を使います。
 `--arg-filter` を繰り返すと、すべての条件を満たす呼び出しが対象になります。
 同じ演算子を通常の整数引数にも使えます。
-厳密な大小比較の `<` と `>`、配列メンバーの添字、2 回目の `->` には対応していません。
+厳密な大小比較の `<` と `>`、変数の添字、2 回目の `->` には対応していません。
 
 Echo では比較演算子を付けず、メンバー式を位置引数として渡します。
 
@@ -157,6 +158,44 @@ sudo bpf-ninja -p <ID> --func classify --arg-echo -c 10 'q->imsi' 'q->target.pdr
 式を指定しない `--arg-echo` は整数引数だけを表示し、ポインターの参照先を自動では展開しません。
 Echo の対象は 1 つの関数と 1 つのモードに限られます。
 通常の `--arg-filter` 式を組み合わせ、条件を満たした呼び出しだけを表示することもできます。
+
+## 配列の要素を選ぶ
+
+固定長の配列メンバーには、経路のどこでも定数の添字を付けられます。
+入れ子の配列には次元ごとに添字を付けます。
+
+```sh
+sudo bpf-ninja -p <ID> --func lookup_hook --arg-filter 'value->rules[0].action==2'
+sudo bpf-ninja -p <ID> --func lookup_hook --arg-filter 'value->counts[3]==1'
+sudo bpf-ninja -p <ID> --func lookup_hook --arg-filter 'value->grid[1][2]>=7'
+sudo bpf-ninja -p <ID> --func lookup_hook --arg-echo 'value->rules[1].action'
+```
+
+オフセットは BTF から求めます。添字と要素サイズの積をメンバーのオフセットに足します。
+`value` が配列へのポインターのとき（値の型が `__u32[4]` や `struct rule[4]` のマップのフックなど）は、`[0]` から始めて `value[0][2]` や `value[0][1].action` と書きます。
+添字は 10 進数の定数で、先頭に 0 を付けません。
+負の添字、変数の添字、配列の長さ以上の添字、配列以外への添字、長さ 0 の配列への添字は、フィルターを解決する時点で拒否します。
+`--list-params --members` は配列を先頭要素で `value->rules[0].action`、`value->counts[0]`、`value[0][0]` のように表示します。ほかの要素は `0` を置き換えて指定します。
+セットのキーと `--record filter` も同じ式を受け付け、コメントには `value->rules[0].action=2` のように要素の名前が出ます。
+
+## ヘルパーの結果で選ぶ
+
+update、delete、push、pop、peek のフックの引数 `status` は `(u32)ret | flags << 32` です。
+そのため全体を比較するとフラグも比較されます。`BPF_NOEXIST` の update が成功すると status は `0x0000000100000000` になり、`status==0` では選べません。
+これらのフックでは、`status.ret` が下位 32 ビットを符号付き整数として、`status.flags` が上位 32 ビットを符号なし整数として表します。
+
+```sh
+sudo bpf-ninja -p <ID> --func ninja_sessions_update --arg-filter 'status.ret==0'
+sudo bpf-ninja -p <ID> --func ninja_sessions_update --arg-filter 'status.ret==-17'
+sudo bpf-ninja -p <ID> --func ninja_sessions_update --arg-filter 'status.flags==1'
+sudo bpf-ninja -p <ID> --func ninja_sessions_update --arg-echo 'status.ret' 'status.flags'
+```
+
+フックが成功した呼び出しを受け取るのは `update:any` のような `:any` の操作だけです。`update` だけでは失敗時にしか呼ばれないため、`status.ret==0` には `:any` が必要です（[操作の表](../en/inject-run.md#choose-the-maps-and-operations-to-observe)）。
+シフトと符号拡張はプローブが比較の前に行います。
+`status` だけを書くと全体を表します。
+`--list-params` は `status` の下にこの 2 つを表示します。
+どちらも `inject-run` が生成したフックにだけあり、ほかの関数の引数に `status.ret` を指定すると、引数名によらず拒否します。
 
 ## ネットワークバイトオーダーの値を比較する
 
@@ -247,7 +286,7 @@ Echo の読み取りに失敗した場合は、ゼロを表示するのではな
 
 使える末端の型は、バイト境界にある 1、2、4、8 バイトの整数か列挙型です。
 選択した経路にビットフィールドが含まれていても使えません。
-配列、構造体や共用体全体、ポインター値も対象外です。
+配列全体、構造体や共用体全体、ポインター値も対象外です。配列の要素はほかのメンバーと同じように扱います。
 ポインターメンバーは表示されますが、同じ構造体へのポインターも含めて参照先には進みません。
 共用体の一覧はレイアウトを示すもので、呼び出し側が現在どのメンバーを使っているかは判定しません。
 無名メンバー由来の名前が曖昧な場合や、累積オフセットが対応範囲を超えた場合も拒否します。

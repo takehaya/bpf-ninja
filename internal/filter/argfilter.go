@@ -30,7 +30,7 @@ type ArgFilter struct {
 	Signed     bool        // Whether the parameter is signed
 	Pointer    bool        // Compare the pointer itself with NULL, without reading memory
 	Deref      bool        // Read a member through the pointer argument
-	Offset     uint32      // Member byte offset
+	Offset     uint32      // Member byte offset; within the argument, without Deref, for status.flags
 	Op         ArgFilterOp // Comparison operator
 	Value      uint64      // Value for exact/comparison (or min for range)
 	MaxValue   uint64      // Max value for range operator
@@ -76,8 +76,8 @@ type ParsedFilter struct {
 	MaxValue  uint64 // only used for OpRange
 }
 
-// filterPattern accepts integer parameters or param->member.member expressions.
-var filterPattern = regexp.MustCompile(`^([a-zA-Z_][a-zA-Z0-9_]*(?:->[a-zA-Z_][a-zA-Z0-9_]*(?:\.[a-zA-Z_][a-zA-Z0-9_]*)*|\[0\])?)(==|!=|>=|<=|=)(.+)$`)
+// filterPattern accepts any argument expression before the comparison.
+var filterPattern = regexp.MustCompile(`^(` + attach.ArgExpressionPattern + `)(==|!=|>=|<=|=)(.+)$`)
 var networkValuePattern = regexp.MustCompile(`^be(16|32|64)\((.+)\)$`)
 
 // ParseArgFilter parses an integer/member/scalar-pointee comparison or a
@@ -85,7 +85,7 @@ var networkValuePattern = regexp.MustCompile(`^be(16|32|64)\((.+)\)$`)
 func ParseArgFilter(expr string) (ParsedFilter, error) {
 	m := filterPattern.FindStringSubmatch(expr)
 	if m == nil {
-		return ParsedFilter{}, fmt.Errorf("invalid filter expression: %q (expected param=value, param!=value, param>=value, param<=value, or param=min..max)", expr)
+		return ParsedFilter{}, fmt.Errorf("invalid filter expression: %q (expected EXPR=value, EXPR!=value, EXPR>=value, EXPR<=value, or EXPR=min..max, where EXPR is param, param->member[N].member, param[0][N].member, or status.ret/status.flags)", expr)
 	}
 	pf := ParsedFilter{ParamName: m[1]}
 	switch m[2] {

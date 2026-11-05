@@ -31,6 +31,8 @@ func TestParseSetSpec(t *testing.T) {
 		},
 		{in: "=/p", wantErr: "want NAME="},
 		{in: "s=", wantErr: "empty pinned map path"},
+		{in: "s=/p,key(a=arg:value->rules[0].action,b=arg:status.flags)", name: "s", path: "/p",
+			mapping: []MapEntry{{"a", "arg:value->rules[0].action"}, {"b", "arg:status.flags"}}},
 		{in: "s=/p,keys(imsi)", wantErr: "expected key("},
 		{in: "s=/p,key()", wantErr: "empty key"},
 		{in: "s=/p,key(f=pkt:ipv4.src)", wantErr: "must be arg:"},

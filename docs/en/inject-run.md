@@ -127,7 +127,7 @@ bpf-ninja -p "$PROG_ID" --func ninja_sessions --arg-filter 'value->action==2' -w
 ```
 
 - The capture sees a packet only when the program calls the hook, so your rule sets what gets captured.
-- `--arg-filter` can select members of the key and value, and `site` and `status` where the hook has them.
+- `--arg-filter` can select members of the key and value, and `site` and `status` where the hook has them. `status.ret` and `status.flags` select one half of `status`.
 - At a hook that `inject-run` generated, the capture writes decision state as each packet's pcapng comment. `--record` picks it:
   - `filter` (the default) records the arguments and members that `--arg-filter` and `--set` keys read, and records nothing without them;
   - `entry` records whichever of `site`, `status`, the key and the value the hook has, the key and value cut to `--record-max` bytes (default 256); at a generic or dispatch hook it records only `site` and `info`;
@@ -338,7 +338,7 @@ The refusal names the function and the slots or bytes that do not fit.
 `MAP` in a hook name is the map name, with characters outside `[A-Za-z0-9_]` replaced by `_`.
 If that name is empty, invalid, taken or too long, `inject-run` names the hook `HOOK_<index>` instead.
 `site` is the call's load-time instruction index.
-`status` holds the helper's result in the low 32 bits and the update or push flags above them.
+`status` holds the helper's result in the low 32 bits and the update or push flags above them; `--arg-filter` reads them as `status.ret` and `status.flags`.
 `ctx` is `struct xdp_md *` in XDP and `struct __sk_buff *` in tc.
 
 | Rule | Hook | Arguments |

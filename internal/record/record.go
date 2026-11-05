@@ -100,9 +100,9 @@ type Field struct {
 	ParamIndex int
 	Size       uint32
 	Signed     bool
-	Deref      bool // read through the pointer argument (member or [0])
-	Pointer    bool // record whether the pointer argument is NULL
-	Offset     uint32
+	Deref      bool   // read through the pointer argument (member or [0])
+	Pointer    bool   // record whether the pointer argument is NULL
+	Offset     uint32 // from the pointer; within the argument, without Deref, for status.flags
 }
 
 // Scalar is an integer hook argument the entry block records.

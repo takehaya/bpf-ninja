@@ -107,7 +107,7 @@ func rootFlags() []cli.Flag {
 		},
 		&cli.StringSliceFlag{
 			Name:  "arg-filter",
-			Usage: "filter by function argument value (requires --func or an entry function with filterable parameters); format: param=value (or ==), param!=value, param>=val, param<=val, param=min..max; also param->member.member and param[0], be16/32/64(value) for equality, pointer=null/!=null, or @NAME to match against a --set pinned-map set",
+			Usage: "filter by function argument value (requires --func or an entry function with filterable parameters); format: param=value (or ==), param!=value, param>=val, param<=val, param=min..max; also param->member.member with constant array indexes as in param->member[N].member, param[0], status.ret and status.flags at a generated hook, be16/32/64(value) for equality, pointer=null/!=null, or @NAME to match against a --set pinned-map set",
 		},
 		&cli.StringSliceFlag{
 			Name:  "set",
@@ -127,7 +127,7 @@ func rootFlags() []cli.Flag {
 		},
 		&cli.BoolFlag{
 			Name:  "arg-echo",
-			Usage: "diagnostic: print integer args (or positional param->member or param[0] expressions) for each call (gated by --arg-filter if set) instead of capturing packets; requires --func or an entry function with filterable parameters; combine with -c N to stop after N",
+			Usage: "diagnostic: print integer args (or positional argument expressions, as for --arg-filter) for each call (gated by --arg-filter if set) instead of capturing packets; requires --func or an entry function with filterable parameters; combine with -c N to stop after N",
 		},
 		&cli.BoolFlag{
 			Name:  "cbpf",
