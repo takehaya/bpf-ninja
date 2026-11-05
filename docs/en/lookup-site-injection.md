@@ -371,12 +371,12 @@ The entry function must have one BTF parameter pointing to `struct xdp_md` (XDP)
 The package checks the program type; the cooperative loader owns attachment mode and verifier acceptance.
 The generated hooks read the context's first field (`len` for `__sk_buff`; 8-byte `state` for `bpf_nf_ctx`, whose verifier allows only 8-byte reads) and call no helper that changes packet data.
 
-For packet capture at a static XDP, tc or cgroup_skb hook, bpf-ninja reads the context with `bpf_probe_read_kernel`.
+For packet capture at a static XDP, tc, cgroup_skb or netfilter hook, bpf-ninja reads the context with `bpf_probe_read_kernel`.
 A user-supplied static function must pass the translated-instruction context check at attach time.
 A generated function tagged `bpf-ninja:hook` skips that repeated proof because its first argument comes from the context slot placed below the verifier-backed frame floor; [arg-member-filter.md](arg-member-filter.md) lists the cases.
-At tc and cgroup_skb it reads `sk_buff.data`, `len` and `data_len`, using offsets from kernel BTF, and captures only the linear head, `len - data_len`; fragment bytes are not captured.
+At tc and cgroup_skb it reads `sk_buff.data`, `len` and `data_len`, at netfilter it first reads `bpf_nf_ctx.skb`, using offsets from kernel BTF, and captures only the linear head, `len - data_len`; fragment bytes are not captured.
 A failed context read produces no capture.
-At tc, a filter with `--tc-vlan-reinsert` is refused on this path; at cgroup_skb the flag has no effect.
+At tc, a filter with `--tc-vlan-reinsert` is refused on this path; at cgroup_skb and netfilter the flag has no effect.
 
 | Transformer validates | Caller must certify |
 |---|---|

@@ -132,10 +132,10 @@ bpf-ninja -p "$PROG_ID" --func ninja_sessions --arg-filter 'value->action==2' -w
   - `filter` (the default) records the arguments and members that `--arg-filter` and `--set` keys read, and records nothing without them;
   - `entry` records whichever of `site`, `status`, the key and the value the hook has, the key and value cut to `--record-max` bytes (default 256); at a generic or dispatch hook it records only `site` and `info`;
   - `none` turns recording off.
-- At a static XDP, tc or cgroup_skb hook, the capture reads the context with `bpf_probe_read_kernel` when the kernel rejects direct reads.
+- At a static XDP, tc, cgroup_skb or netfilter hook, the capture reads the context with `bpf_probe_read_kernel` when the kernel rejects direct reads.
   It first checks that the entry function passes the context to every call; [arg-member-filter.md](arg-member-filter.md) lists what that check refuses.
-  At a tc or cgroup_skb hook on this path, it captures only the linear packet head.
-  At a tc hook it refuses a filter with `--tc-vlan-reinsert`; a cgroup_skb packet has no Ethernet header, so the flag has no effect there.
+  At a tc, cgroup_skb or netfilter hook on this path, it captures only the linear packet head.
+  At a tc hook it refuses a filter with `--tc-vlan-reinsert`; cgroup_skb and netfilter packets have no Ethernet header, so the flag has no effect there.
 
 [The walkthrough](inject-walkthrough.md#6-capture-the-packets-at-a-hook) shows filters, set lookups and recorded state with real output.
 
