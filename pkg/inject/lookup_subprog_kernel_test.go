@@ -67,7 +67,8 @@ func TestBpfSubprogSiteWrongCtxRejected(t *testing.T) {
 		t.Fatalf("loading wrong-context fixture: %v", err)
 	}
 	log := fmt.Sprintf("%+v", verifier)
-	if !strings.Contains(log, "expects pointer to ctx") || !strings.Contains(log, "Caller passes invalid args") {
+	// Kernels say "expects pointer to ctx" or "expected pointer to ctx".
+	if !strings.Contains(log, "pointer to ctx") || !strings.Contains(log, "Caller passes invalid args") {
 		t.Fatalf("unexpected verifier rejection: %s", log)
 	}
 }
