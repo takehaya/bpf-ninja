@@ -713,30 +713,51 @@ func LookupStackReserve(req LookupRequest) int {
 	return 24
 }
 
-// CheckLookupStack validates an audited LowestOffset against the statically
-// known reservation of req's flags. transformLookupProgram and
-// syscallhook.Validate both call it, so Validate cannot drift from the
-// transform's slot layout.
+// CheckLookupStack validates an audited LowestOffset. Auto can only require
+// the three base lookup slots before discovery; transformLookupProgram checks
+// the actual groups below. Explicit selection remains fixed by its flags.
 func CheckLookupStack(req LookupRequest) error {
+	reserve := LookupStackReserve(req)
+	if req.Auto {
+		reserve = 24
+	}
+	return checkLookupStack(req, reserve)
+}
+
+// checkLookupStackFlags is the preflight used when no program is available,
+// such as syscall interception validation. Auto can only check the base slots
+// here; the transform applies larger reserves to the groups it discovers.
+func checkLookupStackFlags(req LookupRequest) error {
+	return CheckLookupStack(req)
+}
+
+func checkLookupStack(req LookupRequest, reserve int) error {
 	lo := int(req.Stack.LowestOffset)
 	if lo > 0 || lo < -512 {
 		return refuse("StackAudit.LowestOffset must be in [-512, 0]")
+	}
+	if req.Stack.FrameRounding != 0 && req.Stack.FrameRounding != 16 && req.Stack.FrameRounding != 32 {
+		return refuse("StackAudit.FrameRounding must be 16 or 32")
 	}
 	// Every reserved slot is in a frame that calls a hook (the entry hook, a
 	// tail-call or a lookup hook), so the slots must stay within
 	// siteFrameLimit, not the full 512 bytes.
 	floor := lookupSlots(req.Stack.LowestOffset).ctx + 8
-	if reserve := LookupStackReserve(req); floor-reserve < -siteFrameLimit {
+	if floor-reserve < -siteFrameLimit(req.Stack) {
 		return refuse("Stack.LowestOffset %d leaves no room for %d reserved bytes below the audited floor", lo, reserve)
 	}
 	return nil
 }
 
 // siteFrameLimit is how deep a frame holding a lookup site may reach. The
-// site calls its hook, a frame that kernels rounding to 32 bytes count as 32
-// even without stack, so a deeper site frame crosses the 512-byte combined
-// limit checkStackLimits enforces.
-const siteFrameLimit = maxCombinedStack - 32
+// interpreter counts the empty hook as 32 bytes; the 6.9+ JIT rule counts it
+// as zero (Linux v6.12 verifier.c:5991-5999; v7.0:6723-6731).
+func siteFrameLimit(stack StackAudit) int {
+	if stack.FrameRounding == 16 {
+		return maxCombinedStack
+	}
+	return maxCombinedStack - 32
+}
 
 // groupStackReach returns the most-negative stack offset instrumenting group
 // needs. A generic or dispatch hook needs the map slot; a CopyReadOnly value
@@ -1230,7 +1251,7 @@ func transformLookupProgramGuarded(insns asm.Instructions, typ ebpf.ProgramType,
 	// them. Dropping the one generic group means no hook takes the map pointer.
 	var kept []lookupGroup
 	for _, group := range groups {
-		if groupStackReach(group, req) >= -siteFrameLimit {
+		if groupStackReach(group, req) >= -siteFrameLimit(req.Stack) {
 			kept = append(kept, group)
 			continue
 		}
@@ -1372,7 +1393,7 @@ func transformLookupProgramGuarded(insns asm.Instructions, typ ebpf.ProgramType,
 	}
 	// Deeper frames and the hook frames count toward the kernel's limits on
 	// call chains; refuse rather than emit a program the verifier would reject.
-	broken, err := stackLimitsBroken(insns, spliced, req.Stack.LowestOffset)
+	broken, err := stackLimitsBroken(insns, spliced, req.Stack)
 	if err != nil {
 		return nil, plan, err
 	}
@@ -1405,7 +1426,7 @@ func transformLookupProgramGuarded(insns asm.Instructions, typ ebpf.ProgramType,
 		if spliced, hooks, err = emit.splice(groups); err != nil {
 			return nil, plan, err
 		}
-		if broken, err = stackLimitsBroken(insns, spliced, req.Stack.LowestOffset); err != nil {
+		if broken, err = stackLimitsBroken(insns, spliced, req.Stack); err != nil {
 			return nil, plan, err
 		}
 	}

@@ -21,6 +21,8 @@ func fillNonZero(t *testing.T, v reflect.Value) {
 		v.SetUint(7)
 	case reflect.Int16:
 		v.SetInt(-8)
+	case reflect.Int:
+		v.SetInt(16)
 	case reflect.Slice:
 		s := reflect.MakeSlice(v.Type(), 1, 1)
 		fillNonZero(t, s.Index(0))
@@ -70,6 +72,13 @@ func TestValidateStack(t *testing.T) {
 			t.Fatalf("lo=%d rejected: %v", lo, err)
 		}
 	}
+	autoRule := rule(-456)
+	autoRule.Map = ""
+	autoRule.Auto = true
+	autoRule.Ops = []string{"lookup:any", "update:any"}
+	if err := Validate([]Rule{autoRule}); err != nil {
+		t.Fatalf("auto flags rejected before site discovery: %v", err)
+	}
 	for _, lo := range []int16{1, -457, -488, -513} {
 		got := Validate([]Rule{rule(lo)})
 		want := inject.ValidateRaw(rule(lo).request())
@@ -77,10 +86,14 @@ func TestValidateStack(t *testing.T) {
 			t.Fatalf("lo=%d: Validate=%v, CheckLookupStack=%v", lo, got, want)
 		}
 	}
+	invalidRounding := rule(-8)
+	invalidRounding.FrameRounding = 8
+	if err := Validate([]Rule{invalidRounding}); err == nil || !strings.Contains(err.Error(), "FrameRounding must be 16 or 32") {
+		t.Fatalf("invalid frame rounding: %v", err)
+	}
 	// Without a lookup, entry reserves only the ctx slot and tail_calls the
-	// ctx and index slots; auto may find a lookup and reserves all three.
-	// Dispatch adds the map slot to lookup and tail-call sites, not to the
-	// entry call.
+	// ctx and index slots. Auto preflights only the three base lookup slots;
+	// the transform applies operation and dispatch slots to discovered groups.
 	flagged := func(lo int16, set func(*Rule)) Rule {
 		r := Rule{Program: "p", Hook: "h", StackLowestOffset: &lo}
 		set(&r)
@@ -100,7 +113,7 @@ func TestValidateStack(t *testing.T) {
 		{-456, auto, true, ""}, {-464, auto, false, "24 reserved"},
 		{-472, dispatch(entry), true, ""}, {-473, dispatch(entry), false, "8 reserved"},
 		{-448, dispatch(tails), true, ""}, {-449, dispatch(tails), false, "32 reserved"},
-		{-448, dispatch(auto), true, ""}, {-449, dispatch(auto), false, "32 reserved"}, {-456, dispatch(auto), false, "32 reserved"},
+		{-456, dispatch(auto), true, ""}, {-457, dispatch(auto), false, "24 reserved"},
 	} {
 		r := flagged(tc.lo, tc.set)
 		got := Validate([]Rule{r})
@@ -113,6 +126,27 @@ func TestValidateStack(t *testing.T) {
 	r.StackLowestOffset = nil
 	if Validate([]Rule{r}) == nil {
 		t.Fatal("nil stack_lowest_offset accepted")
+	}
+}
+
+func TestParseConfigAppliesFrameRoundingBeforeValidation(t *testing.T) {
+	config := `[{"program":"p","auto":true,"ops":["lookup:any","update:any"],"hook":"h","stack_lowest_offset":-480}]`
+	if _, err := ParseConfig(strings.NewReader(config)); err == nil {
+		t.Fatal("default 32-byte rounding accepted a frame past its limit")
+	}
+	rules, err := ParseConfigWithFrameRounding(strings.NewReader(config), 16)
+	if err != nil || len(rules) != 1 || rules[0].FrameRounding != 16 {
+		t.Fatalf("16-byte default: %+v, %v", rules, err)
+	}
+	explicit := strings.Replace(config, `"hook":"h"`, `"frame_rounding":32,"hook":"h"`, 1)
+	if _, err := ParseConfigWithFrameRounding(strings.NewReader(explicit), 16); err == nil {
+		t.Fatal("kernel default replaced an explicit 32-byte rule")
+	}
+	for _, value := range []string{"0", "null"} {
+		explicit = strings.Replace(config, `"hook":"h"`, `"frame_rounding":`+value+`,"hook":"h"`, 1)
+		if _, err := ParseConfigWithFrameRounding(strings.NewReader(explicit), 16); err == nil || !strings.Contains(err.Error(), "frame_rounding must be 16 or 32") {
+			t.Fatalf("explicit %s: %v", value, err)
+		}
 	}
 }
 
@@ -188,8 +222,6 @@ func TestConfig(t *testing.T) {
 		`[{"program":"p","auto":true,"dispatch":true,"hook":"h","stack_lowest_offset":-481}]`,
 		`[{"program":"p","auto":true,"dispatch":true,"copy_read_only":true,"hook":"h","stack_lowest_offset":-8}]`,
 		`[{"program":"p","auto":true,"ops":["lookup:miss"],"hook":"` + strings.Repeat("h", 121) + `","stack_lowest_offset":-8}]`,
-		`[{"program":"p","auto":true,"ops":["update"],"hook":"h","stack_lowest_offset":-449}]`,
-		`[{"program":"p","auto":true,"dispatch":true,"ops":["delete","update"],"hook":"h","stack_lowest_offset":-441}]`,
 		`[{"program":"p","auto":true,"ops":["update"],"hook":"` + strings.Repeat("h", 119) + `","stack_lowest_offset":-8}]`,
 		`[{"program":"p","map":"m","ops":["update"],"hook":"h","stack_lowest_offset":-8}]`,
 		`[{"program":"p","map":"m","ops":["lookup","delete"],"hook":"h","stack_lowest_offset":-8}]`,

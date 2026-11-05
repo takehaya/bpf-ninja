@@ -14,6 +14,11 @@ import (
 	"github.com/cilium/ebpf"
 )
 
+const (
+	TargetStaticCtxRefused   = "static_context_check_refused"
+	TargetObserverLoadFailed = "observer_load_failed"
+)
+
 // Target is one (program, function) pair to attach a tracing probe to.
 // Params carries the func's filterable integer parameters, resolved once
 // from the program's cached BTF so downstream arg-filter / list-params /
@@ -50,10 +55,15 @@ type TargetDiagnostic struct {
 	ProgID       uint32
 	FuncName     string
 	Availability FuncAvailability
+	Reason       string
+	Detail       string
 	Skipped      bool
 }
 
 func (d TargetDiagnostic) String() string {
+	if d.Reason != "" {
+		return fmt.Sprintf("program (id=%d) function %q: %s: %s", d.ProgID, d.FuncName, d.Reason, d.Detail)
+	}
 	return fmt.Sprintf("program (id=%d) function %q: %s", d.ProgID, d.FuncName, d.Availability)
 }
 

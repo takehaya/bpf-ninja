@@ -89,7 +89,7 @@ func TestRecordOutput(t *testing.T) {
 	targets := []attach.Target{hookTarget("ninja_pol", 7), hookTarget("ninja_pol", 9), hookTarget("other", 7)}
 	layouts := []*record.Layout{{Mode: record.ModeEntry}, {Mode: record.ModeEntry}, {Mode: record.ModeEntry}}
 	cfg := output.Config{IsFexit: true, Actions: []output.ActionName{{Name: "x"}}, MultiPoint: true}
-	recordOutput(&cfg, targets, layouts, true)
+	recordOutput(&cfg, targets, layouts, []int{0, 2}, true)
 	if cfg.IsFexit || cfg.MultiPoint || cfg.Actions != nil || cfg.RawReturn {
 		t.Fatalf("verdict layout not cleared: %+v", cfg)
 	}
@@ -98,7 +98,7 @@ func TestRecordOutput(t *testing.T) {
 		t.Fatal("exit capture drops the return value")
 	}
 	entry := output.Config{}
-	recordOutput(&entry, targets, layouts, false)
+	recordOutput(&entry, targets, layouts, []int{0, 1, 2}, false)
 	if entry.RecordReturn {
 		t.Fatal("entry capture records a return value")
 	}
@@ -106,7 +106,7 @@ func TestRecordOutput(t *testing.T) {
 		t.Fatalf("hooks/records: %+v", cfg)
 	}
 	// Duplicate function names are disambiguated by program id.
-	if cfg.Hooks[0] != "ninja_pol@7" || cfg.Hooks[1] != "ninja_pol@9" || cfg.Hooks[2] != "other" {
+	if cfg.Hooks[0] != "ninja_pol@7" || cfg.Hooks[1] != "SKIPPED:ninja_pol@9" || cfg.Hooks[2] != "other" {
 		t.Fatalf("names %q", cfg.Hooks)
 	}
 }

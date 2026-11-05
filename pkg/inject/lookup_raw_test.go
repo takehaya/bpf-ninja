@@ -24,6 +24,8 @@ func fillNonZero(t *testing.T, v reflect.Value) {
 		v.SetUint(7)
 	case reflect.Int16:
 		v.SetInt(-8)
+	case reflect.Int:
+		v.SetInt(16)
 	case reflect.Slice:
 		s := reflect.MakeSlice(v.Type(), 1, 1)
 		fillNonZero(t, s.Index(0))

@@ -18,6 +18,10 @@ pcap の payload に機密情報が含まれる場合は、そのまま公開 is
 kernel へのロードや attach の問題は、実際の kernel と必要な権限がある環境で再現する。
 `--dump-asm` の成功が示すのは、コンパイルが通ったことだけである。
 
+`inject-run` の stack frame 計算は、Linux 6.9 以降で `net.core.bpf_jit_enable` が `1` または `2` の場合に 16 byte 丸めを使う。
+それ以外、または kernel release や sysctl を確認できない場合は 32 byte 丸めを使う。
+既知の対象を明示する場合だけ、rule の `frame_rounding` を `16` または `32` で上書きできる。
+
 ## fentry/fexit の Subprog エラーを調べる
 
 `Subprog <name> doesn't exist` が出た場合は、program ID と、完全一致する BTF 関数名を確認する。
@@ -60,14 +64,23 @@ BTF に名前があるだけでは、attach できるとは限らない。
 - 共有 BTF が、別の program に本体のある関数を記述している。
   この場合は、その program を対象にする。
 
+ただし、bpf-ninja が前者を証明できる限定的な場合がある。
+`inject-run` は生成した hook を同じロードの `func_info` と照合し、hook がなければ `--hooks-json` に `dead_in_this_load` と `dead_cause` を記録する。
+同じ site を報告する生成 hook がすべてない場合だけ、その site も dead とする。
+照合できない場合は `dead_check_error` を記録し、dead だとは推測しない。
+
 ### 複数の関数や program を指定した場合
 
 - program と関数の組を一つだけ指定した場合、その関数が使えないときは詳しい説明を出して失敗する。同じ `--func` を繰り返した場合も同様である。
 - 異なる複数の `--func` や複数の program を指定した場合は、利用できない対象をスキップする。
-  対象ごとに短い理由を警告する。`func_info` にない関数と外部宣言を分けて、スキップした件数を stderr に出す。
+  static context の証明が拒否した対象や、対象ごとの observer をカーネルが拒否した場合も、その対象だけをスキップし、すでに別の対象へ attach できた observer は残す。
+  対象ごとに短い理由を警告する。`func_info` にない関数、外部宣言、static context の拒否、observer のロード失敗を分けて、スキップした件数を stderr に出す。
+  load 時に対象をスキップした場合は、スクリプトで読める安定した key/value 形式の `PARTIAL COVERAGE: coverage=partial requested=N attached=N skipped=N` も出す。
+  続く `capturing (...)` には attach 済みの対象だけを表示する。
+  `--record` では後続の site ID を変えないために拒否対象の interface slot を残すが、その pcapng interface 名には `SKIPPED:` を付ける。
 - 一部の program の BTF にない関数名は、警告なしでスキップする。
   どの program にもない関数名はエラーにする。
-- attach できる対象が残らない場合は、この資料へのリンクを一度示して失敗する。このとき stdout に JSON は出さない。
+- 一つも attach できない場合は失敗する。拒否された context を安全だと推測したり、observer の検査を弱めたりはしない。
 - `--list-params --json` は attach できる対象の配列を出す。各要素は `func`、`id`、`params` を持つ。
   スキップした対象は stderr の警告にだけ出る。
 - `--json` は一覧表示だけに適用される。capture の出力は packet data のままである。

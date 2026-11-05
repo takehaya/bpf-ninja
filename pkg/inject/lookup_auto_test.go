@@ -597,7 +597,7 @@ func stackLimitCases() []stackLimitCase {
 		{"alias", func() *ebpf.CollectionSpec { return aliasCallee(256) }, entry(-256), []string{"512-byte combined limit", "caller -> sub"}},
 		{"alias-shallow", func() *ebpf.CollectionSpec { return aliasCallee(224) }, entry(-224), nil},
 		// With Dispatch every site also fills the fourth slot.
-		{"dispatch-site-frame", multiMapFixture, dispatchAuto(-456), []string{"leaves no room for 32 reserved bytes"}},
+		{"dispatch-site-frame", multiMapFixture, dispatchAuto(-456), []string{"no lookup site fits the audited stack"}},
 		{"dispatch-site-frame-shallow", multiMapFixture, dispatchAuto(-448), nil},
 	}
 }
@@ -749,10 +749,10 @@ func TestStackLimitsUnchangedChain(t *testing.T) {
 		}
 	}
 	in := program(-8, -304)
-	if err := checkStackLimits(in, program(-16, -304), -304); err != nil {
+	if err := checkStackLimits(in, program(-16, -304), StackAudit{LowestOffset: -304}); err != nil {
 		t.Fatalf("unchanged chain: %v", err)
 	}
-	err := checkStackLimits(in, program(-16, -312), -304)
+	err := checkStackLimits(in, program(-16, -312), StackAudit{LowestOffset: -304})
 	if !errors.Is(err, ErrRefused) || !strings.Contains(err.Error(), "orphan -> deep") {
 		t.Fatalf("deepened chain: want refusal naming orphan -> deep, got %v", err)
 	}
@@ -785,7 +785,7 @@ func TestStackLimitsTimerCallback(t *testing.T) {
 	// The dead-registration shape at the kernel's own boundary: 448 + 32 + 32
 	// loads, the entry's spill (480) breaks it.
 	spec := timerCallee(-448, -16, -16, "dead")
-	if err := checkStackLimits(spec.Programs["caller"].Instructions, spec.Programs["caller"].Instructions, -448); err != nil {
+	if err := checkStackLimits(spec.Programs["caller"].Instructions, spec.Programs["caller"].Instructions, StackAudit{LowestOffset: -448}); err != nil {
 		t.Fatalf("unchanged dead chain at 512: %v", err)
 	}
 	_, err := transformLookup(spec, LookupRequest{ProgramName: "caller", Entry: true, HookName: "obs", Stack: StackAudit{LowestOffset: -448}})
@@ -1205,6 +1205,7 @@ func TestValidateRaw(t *testing.T) {
 		{"dispatch-127", LookupRequestRaw{Auto: true, Entry: true, TailCalls: true, Dispatch: true, HookName: h(MaxHookName), Stack: StackAudit{LowestOffset: -448}}, ""},
 		{"dispatch-copy", LookupRequestRaw{Auto: true, Dispatch: true, CopyReadOnly: true, HookName: "h"}, "does not combine with CopyReadOnly"},
 		{"dispatch-stack", LookupRequestRaw{TailCalls: true, Dispatch: true, HookName: "h", Stack: StackAudit{LowestOffset: -449}}, "32 reserved bytes"},
+		{"auto-flags-deferred", LookupRequestRaw{Auto: true, Updates: CallAny, HookName: "h", Stack: StackAudit{LowestOffset: -456}}, ""},
 		{"stack", LookupRequestRaw{Site: m, HookName: "h", Stack: StackAudit{LowestOffset: -457}}, "Stack.LowestOffset -457 leaves no room"},
 	} {
 		err := ValidateRaw(tc.req)
@@ -1225,6 +1226,21 @@ func TestLookupAutoSkipsOverflowingGeneric(t *testing.T) {
 	if err != nil || len(plan.hooks) != 1 || plan.hooks[0].MapName != "sessions" ||
 		len(plan.skipped) != 1 || plan.skipped[0].SitePC != 18 || !strings.Contains(plan.skipped[0].Reason, "4th spill slot") {
 		t.Fatalf("plan: %+v %v", plan, err)
+	}
+}
+
+// Auto reserves from the operations it actually found. Asking to observe
+// updates must not consume a fourth slot when the program has only lookups.
+func TestAutoLookupOnlyFitsWithoutUpdateReserve(t *testing.T) {
+	req := autoReq()
+	req.Updates = CallAny
+	req.Stack.LowestOffset = -456
+	plan, err := transformLookup(lookupFixture(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.hooks) != 1 || len(plan.sites) != 1 || len(plan.skipped) != 0 {
+		t.Fatalf("plan = %+v", plan)
 	}
 }
 

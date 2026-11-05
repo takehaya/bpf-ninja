@@ -885,22 +885,17 @@ func run(ctx context.Context, cmd *cli.Command) error {
 	if err != nil {
 		return err
 	}
+	printTargetDiagnostics(os.Stderr, probe.TargetDiagnostics)
+	printPartialCoverage(os.Stderr, len(targets), probe.AttachedTargetIndices)
 	printProbeWarnings(probe)
 
-	var label string
+	attached := attachedTargets(targets, probe.AttachedTargetIndices)
+	iface := ""
 	if len(targets) == 1 {
-		label = fmt.Sprintf("prog %q id=%d", targets[0].FuncName, targets[0].ProgID)
-		if infos[0].IfaceName != "" {
-			label = fmt.Sprintf("%s on %s", label, infos[0].IfaceName)
-		}
-	} else {
-		names := make([]string, len(targets))
-		for i, t := range targets {
-			names[i] = fmt.Sprintf("%s@%d", t.FuncName, t.ProgID)
-		}
-		label = fmt.Sprintf("%d attach points: %s", len(targets), strings.Join(names, ", "))
+		iface = infos[0].IfaceName
 	}
-	h, ok := hook.ByProgramType(targets[0].EffectiveHookType())
+	label := captureTargetLabel(attached, iface)
+	h, ok := hook.ByProgramType(attached[0].EffectiveHookType())
 	if !ok {
 		return hook.UnsupportedTypeError(targets[0].Type)
 	}
@@ -913,8 +908,9 @@ func run(ctx context.Context, cmd *cli.Command) error {
 	}
 	cfg.MultiPoint = multiPoint
 	if layouts != nil {
-		recordOutput(&cfg, targets, layouts, isFexit)
-		for i, l := range layouts {
+		recordOutput(&cfg, targets, layouts, probe.AttachedTargetIndices, isFexit)
+		for _, i := range probe.AttachedTargetIndices {
+			l := layouts[i]
 			if l != nil {
 				logVerbose(cmd, "record %s at %s (id=%d)", l.Mode, targets[i].FuncName, targets[i].ProgID)
 			}

@@ -136,7 +136,7 @@ func TestStackBoundUnusedPointerStillCountsSpills(t *testing.T) {
 		asm.Mov.Reg(asm.R2, asm.RFP), asm.Add.Imm(asm.R2, -320), asm.Mov.Imm(asm.R2, 0),
 	}, before[1:]...)...)
 	after := append(before[:1:1], append(asm.Instructions{asm.StoreImm(asm.RFP, -288, 0, asm.Word)}, before[1:]...)...)
-	if err := checkStackLimits(before, after, -248); !errors.Is(err, ErrRefused) || !strings.Contains(err.Error(), "512-byte combined limit") {
+	if err := checkStackLimits(before, after, StackAudit{LowestOffset: -248}); !errors.Is(err, ErrRefused) || !strings.Contains(err.Error(), "512-byte combined limit") {
 		t.Fatalf("want changed entry chain refusal, got %v", err)
 	}
 }

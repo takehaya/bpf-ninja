@@ -7,11 +7,14 @@ package main
 import (
 	"cmp"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
 
+	"github.com/cilium/ebpf"
+	"github.com/takehaya/bpf-ninja/internal/attach"
 	"github.com/takehaya/bpf-ninja/pkg/inject"
 	"github.com/takehaya/bpf-ninja/pkg/syscallhook"
 )
@@ -35,6 +38,9 @@ type injectedProgJSON struct {
 	HookForm syscallhook.HookForm `json:"hook_form"`
 	Hooks    []hookJSON           `json:"hooks"`
 	Skipped  []hookSiteJSON       `json:"skipped"`
+	// DeadCheckError names hook comparisons that failed. Those hooks and any
+	// site they may report stay unmarked; independent known results remain.
+	DeadCheckError string `json:"dead_check_error,omitempty"`
 }
 
 // hookJSON is one hook function. A dispatch hook is one entry carrying every
@@ -43,15 +49,17 @@ type injectedProgJSON struct {
 // any for updates, deletes, pushes, pops and peeks. A dispatch hook's When is
 // its lookups'; its other map call sites carry their own.
 type hookJSON struct {
-	Name      string         `json:"name"`
-	Kind      string         `json:"kind"`
-	When      string         `json:"when,omitempty"`
-	Map       string         `json:"map,omitempty"`
-	Sites     []hookSiteJSON `json:"sites"`
-	Untrusted bool           `json:"untrusted"`
-	Copied    bool           `json:"copied"`
-	Static    bool           `json:"static"`
-	ReadOnly  bool           `json:"read_only"`
+	Name           string         `json:"name"`
+	Kind           string         `json:"kind"`
+	When           string         `json:"when,omitempty"`
+	Map            string         `json:"map,omitempty"`
+	Sites          []hookSiteJSON `json:"sites"`
+	Untrusted      bool           `json:"untrusted"`
+	Copied         bool           `json:"copied"`
+	Static         bool           `json:"static"`
+	ReadOnly       bool           `json:"read_only"`
+	DeadInThisLoad bool           `json:"dead_in_this_load,omitempty"`
+	DeadCause      string         `json:"dead_cause,omitempty"`
 }
 
 // hookSiteJSON is one instrumented (or, with Reason, skipped) helper call.
@@ -66,7 +74,89 @@ type hookSiteJSON struct {
 	When   string `json:"when,omitempty"`
 	// Generic is set only in the lookups file: auto instruments the lookup
 	// through the generic hook despite Reason.
-	Generic bool `json:"generic,omitempty"`
+	Generic        bool   `json:"generic,omitempty"`
+	DeadInThisLoad bool   `json:"dead_in_this_load,omitempty"`
+	DeadCause      string `json:"dead_cause,omitempty"`
+}
+
+const deadHookCause = "the verifier removed this generated hook as unreachable in this load"
+
+func markDeadHooks(out *injectedProgJSON, availability map[string]attach.FuncAvailability) []hookSiteJSON {
+	type siteKey struct {
+		kind, mapName, funcName string
+		pc                      uint32
+	}
+	type siteState struct {
+		refs        []*hookSiteJSON
+		hooks, dead int
+	}
+	sites := map[siteKey]*siteState{}
+	for i := range out.Hooks {
+		hook := &out.Hooks[i]
+		dead := availability[hook.Name].Reason == attach.FuncAbsent
+		if dead {
+			hook.DeadInThisLoad = true
+			hook.DeadCause = deadHookCause
+		}
+		for j := range hook.Sites {
+			site := &hook.Sites[j]
+			key := siteKey{kind: site.Kind, pc: site.PC, mapName: site.Map, funcName: site.Func}
+			state := sites[key]
+			if state == nil {
+				state = &siteState{}
+				sites[key] = state
+			}
+			state.refs = append(state.refs, site)
+			state.hooks++
+			if dead {
+				state.dead++
+			}
+		}
+	}
+	var notices []hookSiteJSON
+	for _, state := range sites {
+		if state.hooks == 0 || state.dead != state.hooks {
+			continue
+		}
+		for _, site := range state.refs {
+			site.DeadInThisLoad = true
+			site.DeadCause = deadHookCause
+		}
+		notices = append(notices, *state.refs[0])
+	}
+	slices.SortFunc(notices, func(a, b hookSiteJSON) int {
+		return cmp.Or(cmp.Compare(a.PC, b.PC), cmp.Compare(a.Kind, b.Kind), cmp.Compare(a.Map, b.Map), cmp.Compare(a.Func, b.Func))
+	})
+	return notices
+}
+
+func applyDeadHookAvailability(out *injectedProgJSON, availability map[string]attach.FuncAvailability, err error) []hookSiteJSON {
+	if err != nil {
+		out.DeadCheckError = err.Error()
+	}
+	return markDeadHooks(out, availability)
+}
+
+func loadedHookAvailabilities(progID uint32, names []string) (map[string]attach.FuncAvailability, error) {
+	prog, err := ebpf.NewProgramFromID(ebpf.ProgramID(progID))
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = prog.Close() }()
+	info := attach.ProgInfo{ProgID: progID, Program: prog}
+	out := make(map[string]attach.FuncAvailability, len(names))
+	var errs []error
+	for _, name := range names {
+		if _, ok := out[name]; ok {
+			continue
+		}
+		a := info.FuncAvailability(name)
+		out[name] = a
+		if a.Reason == attach.FuncUnknown || a.Reason == attach.FuncMissing || a.Reason == attach.FuncNotInTarget {
+			errs = append(errs, fmt.Errorf("hook %s: %s", name, a.Explain()))
+		}
+	}
+	return out, errors.Join(errs...)
 }
 
 func siteJSON(kind inject.HookKind, site inject.LookupSite) hookSiteJSON {
@@ -150,8 +240,9 @@ func injectionJSON(inj syscallhook.Injection) injectedProgJSON {
 
 // hooksWriter rewrites path with every injection so far.
 type hooksWriter struct {
-	path string
-	file hooksFileJSON
+	path     string
+	file     hooksFileJSON
+	lastDead []hookSiteJSON
 }
 
 func newHooksWriter(path string) (*hooksWriter, error) {
@@ -160,7 +251,19 @@ func newHooksWriter(path string) (*hooksWriter, error) {
 }
 
 func (w *hooksWriter) add(inj syscallhook.Injection) error {
-	w.file.Programs = append(w.file.Programs, injectionJSON(inj))
+	out := injectionJSON(inj)
+	w.lastDead = nil
+	if inj.ProgID == 0 {
+		out.DeadCheckError = "program ID unavailable; func_info was not checked"
+	} else {
+		names := make([]string, len(out.Hooks))
+		for i := range out.Hooks {
+			names[i] = out.Hooks[i].Name
+		}
+		availability, err := loadedHookAvailabilities(inj.ProgID, names)
+		w.lastDead = applyDeadHookAvailability(&out, availability, err)
+	}
+	w.file.Programs = append(w.file.Programs, out)
 	return w.write()
 }
 

@@ -17,6 +17,8 @@ func TestTargetDiagnosticsOutput(t *testing.T) {
 		{ProgID: 44, FuncName: "external", Availability: attach.FuncAvailability{Reason: attach.FuncNotInTarget}, Skipped: true},
 		{ProgID: 45, FuncName: "unknown", Availability: attach.FuncAvailability{Reason: attach.FuncUnknown, Detail: "BPF_OBJ_GET_INFO_BY_FD: permission denied"}},
 		{ProgID: 46, FuncName: "unknown", Availability: attach.FuncAvailability{Reason: attach.FuncUnknown}},
+		{ProgID: 47, FuncName: "unsafe", Reason: attach.TargetStaticCtxRefused, Detail: "R1 is not the context", Skipped: true},
+		{ProgID: 48, FuncName: "rejected", Reason: attach.TargetObserverLoadFailed, Detail: "invalid access", Skipped: true},
 	}
 	var out bytes.Buffer
 	printTargetDiagnostics(&out, ds)
@@ -25,7 +27,9 @@ func TestTargetDiagnosticsOutput(t *testing.T) {
 		"warning: skipping program (id=44) function \"external\": not_in_target_program\n" +
 		"warning: program (id=45) function \"unknown\": unknown; could not check func_info: BPF_OBJ_GET_INFO_BY_FD: permission denied; letting the kernel verify it\n" +
 		"warning: program (id=46) function \"unknown\": unknown; could not check func_info; letting the kernel verify it\n" +
-		"Skipped 2 target(s): 1 absent from loaded func_info, 1 external declaration(s).\n"
+		"warning: skipping program (id=47) function \"unsafe\": static_context_check_refused: R1 is not the context\n" +
+		"warning: skipping program (id=48) function \"rejected\": observer_load_failed: invalid access\n" +
+		"Skipped 4 target(s): 1 absent from loaded func_info, 1 external declaration(s), 1 refused by the static context check, 1 observer load failure(s).\n"
 	if out.String() != want {
 		t.Fatalf("got %s want %s", &out, want)
 	}
@@ -33,6 +37,22 @@ func TestTargetDiagnosticsOutput(t *testing.T) {
 	printTargetDiagnostics(&out, nil)
 	if out.Len() != 0 {
 		t.Fatal(out.String())
+	}
+
+	printPartialCoverage(&out, 2, []int{1})
+	if got := out.String(); got != "warning: PARTIAL COVERAGE: coverage=partial requested=2 attached=1 skipped=1\n" {
+		t.Fatalf("coverage = %q", got)
+	}
+	out.Reset()
+	printPartialCoverage(&out, 2, []int{0, 1})
+	if out.Len() != 0 {
+		t.Fatalf("full coverage warning = %q", out.String())
+	}
+
+	targets := []attach.Target{{ProgID: 42, FuncName: "refused"}, {ProgID: 43, FuncName: "live"}}
+	attached := attachedTargets(targets, []int{1})
+	if got := captureTargetLabel(attached, ""); got != `prog "live" id=43` {
+		t.Fatalf("label = %q", got)
 	}
 }
 

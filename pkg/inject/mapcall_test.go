@@ -116,8 +116,8 @@ func TestMapCalls(t *testing.T) {
 // An update keeps its value pointer in the map slot, or with a hook that also
 // takes the map in a fifth slot: those sites need one or two slots more than
 // a lookup, and Auto skips the generic update whose fifth slot passes the
-// limit. CheckLookupStack holds the typed update to the map slot and a
-// dispatch update to the fifth.
+// limit. Auto preflight only requires the three base slots; the transform
+// decides from the discovered groups whether update sites fit.
 func TestMapCallStack(t *testing.T) {
 	req := mixedReq()
 	req.Stack.LowestOffset = -448
@@ -134,12 +134,19 @@ func TestMapCallStack(t *testing.T) {
 	for _, tc := range []struct {
 		dispatch bool
 		lowest   int16
-		ok       bool
-	}{{false, -448, true}, {false, -449, false}, {true, -440, true}, {true, -441, false}} {
+		skipped  bool
+	}{{false, -448, true}, {false, -449, true}, {true, -440, false}, {true, -441, true}} {
 		req := mixedReq()
 		req.Dispatch, req.HookName, req.Stack.LowestOffset = tc.dispatch, "d", tc.lowest
-		if err := CheckLookupStack(req); (err == nil) != tc.ok {
+		if err := CheckLookupStack(req); err != nil {
 			t.Errorf("dispatch=%v lowest=%d: %v", tc.dispatch, tc.lowest, err)
+		}
+		plan, err := transformLookup(mixedFixture(), req)
+		stackSkipped := slices.ContainsFunc(plan.skipped, func(s LookupSite) bool {
+			return strings.Contains(s.Reason, "Stack.LowestOffset")
+		})
+		if err != nil || stackSkipped != tc.skipped {
+			t.Errorf("dispatch=%v lowest=%d: plan=%+v err=%v", tc.dispatch, tc.lowest, plan, err)
 		}
 	}
 	for want, req := range map[int]LookupRequest{
@@ -149,6 +156,21 @@ func TestMapCallStack(t *testing.T) {
 	} {
 		if got := LookupStackReserve(req); got != want {
 			t.Errorf("LookupStackReserve(%+v) = %d, want %d", req, got, want)
+		}
+	}
+}
+
+func TestSiteFrameLimitJIT(t *testing.T) {
+	for _, tc := range []struct {
+		rounding int
+		wantOK   bool
+	}{{16, true}, {32, false}, {0, false}} {
+		req := mixedReq()
+		req.Stack.LowestOffset = -480
+		req.Stack.FrameRounding = tc.rounding
+		_, err := transformLookup(mixedFixture(), req)
+		if (err == nil) != tc.wantOK {
+			t.Errorf("rounding=%d: err=%v, wantOK=%v", tc.rounding, err, tc.wantOK)
 		}
 	}
 }

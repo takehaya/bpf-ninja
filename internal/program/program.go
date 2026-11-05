@@ -38,6 +38,9 @@ type Probe struct {
 	holdMap, holdStop *ebpf.Map
 	IsFexit           bool
 	Warnings          []string // resolver / codegen non-fatal notices; the CLI prints them with WriteWarnings
+	TargetDiagnostics []attach.TargetDiagnostic
+	// AttachedTargetIndices indexes targets accepted by every requested stage.
+	AttachedTargetIndices []int
 
 	// --arg-echo diagnostic mode: non-nil EchoRing means this probe emits
 	// the target function's integer args (EchoParams, in order) to a
@@ -54,6 +57,36 @@ type Probe struct {
 	maps           []*ebpf.Map
 	progs          []*ebpf.Program // one per attached (target prog, func) pair
 	links          []link.Link     // parallel to progs
+}
+
+type targetAttachResults struct {
+	attached    []int
+	diagnostics []attach.TargetDiagnostic
+	errs        []error
+}
+
+func (r *targetAttachResults) didAttach(target int) { r.attached = append(r.attached, target) }
+
+func (r *targetAttachResults) refused(t attach.Target, reason string, err error) {
+	r.diagnostics = append(r.diagnostics, attach.TargetDiagnostic{
+		ProgID: t.ProgID, FuncName: t.FuncName, Availability: t.Availability,
+		Reason: reason, Detail: err.Error(), Skipped: true,
+	})
+	r.errs = append(r.errs, fmt.Errorf("program (id=%d) function %q: %w", t.ProgID, t.FuncName, err))
+}
+
+func (r targetAttachResults) err() error {
+	if len(r.attached) > 0 {
+		return nil
+	}
+	return fmt.Errorf("no target attached: %w", errors.Join(r.errs...))
+}
+
+func closeTargetResources[T interface{ Close() error }](resources []T, start int) []T {
+	for i := len(resources) - 1; i >= start; i-- {
+		_ = resources[i].Close()
+	}
+	return resources[:start]
 }
 
 // Program returns the first underlying tracing program. Exposed so that
@@ -372,18 +405,25 @@ func LoadMultiPointRecord(targets []attach.Target, stages []Stage, filters []fil
 		_ = probe.Close()
 		return nil, err
 	}
+	var results targetAttachResults
+targetLoop:
 	for i, t := range targets {
+		startProgs, startLinks := len(probe.progs), len(probe.links)
+		rollback := func() {
+			probe.links = closeTargetResources(probe.links, startLinks)
+			probe.progs = closeTargetResources(probe.progs, startProgs)
+		}
 		static := false
 		if (h.Kind == hook.KindXDP || h.Kind == hook.KindTC) && t.FuncName != "" {
 			spec, specErr := probe.extensionGuard.Spec(t.Program)
 			if specErr != nil {
-				_ = probe.Close()
-				return nil, specErr
+				results.refused(t, attach.TargetStaticCtxRefused, specErr)
+				continue
 			}
 			var fn *btf.Func
 			if specErr := spec.TypeByName(t.FuncName, &fn); specErr != nil {
-				_ = probe.Close()
-				return nil, specErr
+				results.refused(t, attach.TargetStaticCtxRefused, specErr)
+				continue
 			}
 			static = fn.Linkage == btf.StaticFunc
 		}
@@ -406,8 +446,9 @@ func LoadMultiPointRecord(targets []attach.Target, stages []Stage, filters []fil
 					err = checkStaticCtxArg(t.Program, t.FuncName)
 				}
 				if err != nil {
-					_ = probe.Close()
-					return nil, err
+					rollback()
+					results.refused(t, attach.TargetStaticCtxRefused, err)
+					continue targetLoop
 				}
 				if probeRead {
 					targetHook = staticXDPHook(h, st.IsFexit)
@@ -450,11 +491,20 @@ func LoadMultiPointRecord(targets []attach.Target, stages []Stage, filters []fil
 				_ = probe.Close()
 				return nil, err
 			}
-			if err := attachTracingProbe(probe, t.Program, fmt.Sprintf("bpf_ninja_%s", stLabel), t.FuncName, attachType, insns, t.AllowDispatcherSlot, t.Availability); err != nil {
-				return nil, err
+			if err := tryAttachTracingProbe(probe, t.Program, fmt.Sprintf("bpf_ninja_%s", stLabel), t.FuncName, attachType, insns, t.AllowDispatcherSlot, t.Availability); err != nil {
+				rollback()
+				results.refused(t, attach.TargetObserverLoadFailed, err)
+				continue targetLoop
 			}
 		}
+		results.didAttach(i)
 	}
+	if err := results.err(); err != nil {
+		_ = probe.Close()
+		return nil, err
+	}
+	probe.TargetDiagnostics = results.diagnostics
+	probe.AttachedTargetIndices = results.attached
 	return probe, nil
 }
 
@@ -491,24 +541,30 @@ func tracingLabel(isFexit bool) (string, ebpf.AttachType) {
 // closes probe (unwinding maps and any attaches already made).
 // Shared by loadMulti (capture) and LoadArgEcho (diagnostic).
 func attachTracingProbe(probe *Probe, targetProg *ebpf.Program, name, funcName string, attachType ebpf.AttachType, insns asm.Instructions, allowDispatcherSlot bool, availability attach.FuncAvailability) error {
-	if err := checkObserverHelpers(insns); err != nil {
+	if err := tryAttachTracingProbe(probe, targetProg, name, funcName, attachType, insns, allowDispatcherSlot, availability); err != nil {
 		_ = probe.Close()
 		return err
 	}
+	return nil
+}
+
+// tryAttachTracingProbe leaves existing attachments intact on failure so a
+// multi-target capture can skip only the target the kernel refused.
+func tryAttachTracingProbe(probe *Probe, targetProg *ebpf.Program, name, funcName string, attachType ebpf.AttachType, insns asm.Instructions, allowDispatcherSlot bool, availability attach.FuncAvailability) error {
+	if err := checkObserverHelpers(insns); err != nil {
+		return err
+	}
 	if availability.Unavailable() {
-		_ = probe.Close()
 		return fmt.Errorf("function %q: %s", funcName, availability.Explain())
 	}
 	if probe.extensionGuard == nil {
 		var err error
 		probe.extensionGuard, err = attach.NewExtensionGuard()
 		if err != nil {
-			_ = probe.Close()
 			return err
 		}
 	}
 	if err := probe.extensionGuard.Check(targetProg, funcName, allowDispatcherSlot); err != nil {
-		_ = probe.Close()
 		return err
 	}
 	prog, err := ebpf.NewProgram(&ebpf.ProgramSpec{
@@ -517,16 +573,15 @@ func attachTracingProbe(probe *Probe, targetProg *ebpf.Program, name, funcName s
 		Instructions: insns, License: "GPL",
 	})
 	if err != nil {
-		_ = probe.Close()
 		return tracingLoadError(name, funcName, availability, err)
 	}
-	probe.progs = append(probe.progs, prog)
 
 	l, err := link.AttachTracing(link.TracingOptions{Program: prog, AttachType: attachType})
 	if err != nil {
-		_ = probe.Close()
+		_ = prog.Close()
 		return fmt.Errorf("attaching %s to %s: %w", name, funcName, err)
 	}
+	probe.progs = append(probe.progs, prog)
 	probe.links = append(probe.links, l)
 	return nil
 }

@@ -14,7 +14,28 @@ import (
 
 	"github.com/takehaya/bpf-ninja/pkg/syscallhook"
 	"github.com/urfave/cli/v3"
+	"golang.org/x/sys/unix"
 )
+
+func kernelFrameRounding(release, jit string, readErr error) int {
+	if readErr != nil || strings.TrimSpace(jit) != "1" && strings.TrimSpace(jit) != "2" {
+		return 32
+	}
+	var major, minor int
+	if n, _ := fmt.Sscanf(release, "%d.%d", &major, &minor); n != 2 || major < 6 || major == 6 && minor < 9 {
+		return 32
+	}
+	return 16
+}
+
+func runningKernelFrameRounding() int {
+	var u unix.Utsname
+	if err := unix.Uname(&u); err != nil {
+		return 32
+	}
+	jit, err := os.ReadFile("/proc/sys/net/core/bpf_jit_enable")
+	return kernelFrameRounding(unix.ByteSliceToString(u.Release[:]), string(jit), err)
+}
 
 func newInjectRunCommand() *cli.Command {
 	return &cli.Command{
@@ -45,7 +66,7 @@ func newInjectRunCommand() *cli.Command {
 			var rules []syscallhook.Rule
 			if input != nil {
 				var err error
-				if rules, err = syscallhook.ParseConfig(input); err != nil {
+				if rules, err = syscallhook.ParseConfigWithFrameRounding(input, runningKernelFrameRounding()); err != nil {
 					return err
 				}
 			}
@@ -64,6 +85,10 @@ func newInjectRunCommand() *cli.Command {
 					if err := hooks.add(inj); err != nil {
 						_, _ = fmt.Fprintf(os.Stderr, "inject-run: --hooks-json: %v\n", err)
 						hooksErr = cmp.Or(hooksErr, err)
+						return
+					}
+					for _, site := range hooks.lastDead {
+						_, _ = fmt.Fprintf(os.Stderr, "inject-run: site pc %d (map %s) is dead in this load: %s\n", site.PC, site.Map, site.DeadCause)
 					}
 				}
 			}

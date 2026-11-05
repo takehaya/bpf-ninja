@@ -164,7 +164,7 @@ func ValidateRaw(req LookupRequestRaw) error {
 	if suffix := hookSuffix(r); len(r.HookName)+len(suffix) > MaxHookName {
 		return refuse("HookName %q with the suffix %q exceeds %d bytes", r.HookName, suffix, MaxHookName)
 	}
-	return CheckLookupStack(r)
+	return checkLookupStackFlags(r)
 }
 
 // DiscoverLookupsRaw lists lookup sites using map-fd identity and raw load
