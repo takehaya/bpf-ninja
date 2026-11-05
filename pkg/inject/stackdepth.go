@@ -46,6 +46,7 @@ type stackFunc struct {
 	tailCall bool
 	changed  bool  // new in the transform, or deeper than in the original
 	callees  []int // deduplicated
+	walk     []int // every call/reference in instruction order
 }
 
 // stackCallGraph splits insns into functions at BTF function metadata and
@@ -99,6 +100,7 @@ func stackCallGraph(insns asm.Instructions, lowest int16) ([]stackFunc, error) {
 		if !ok {
 			return nil, refuse("function reference at %d does not target a subprogram", pc)
 		}
+		f.walk = append(f.walk, target)
 		if edges[cur] == nil {
 			edges[cur] = map[int]bool{}
 		}

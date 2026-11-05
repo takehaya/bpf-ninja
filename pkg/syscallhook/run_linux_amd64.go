@@ -78,10 +78,11 @@ type thread struct {
 	newborn bool
 }
 type supervisor struct {
-	probeUntrusted func() error
-	options        Options
-	btf            map[uint32]rememberedBTF
-	cacheBytes     int
+	probeUntrusted            func() error
+	probeTailCallReachability func() error
+	options                   Options
+	btf                       map[uint32]rememberedBTF
+	cacheBytes                int
 }
 
 func (s *supervisor) log(format string, args ...any) {
@@ -99,10 +100,10 @@ func retryOriginalOrRefuse(failClosed bool, retry func() (int64, error)) (int64,
 // 128+signal). A supervisor error terminates the tracee: resuming with uncertain
 // registers is unsafe even in fail-open mode. No network attachments are made.
 func Run(ctx context.Context, argv []string, opts Options) (int, error) {
-	return run(ctx, argv, opts, probeGlobalUntrusted)
+	return run(ctx, argv, opts, probeGlobalUntrusted, probeTailCallReachability)
 }
 
-func run(ctx context.Context, argv []string, opts Options, probeUntrusted func() error) (int, error) {
+func run(ctx context.Context, argv []string, opts Options, probeUntrusted, probeTailCallReachability func() error) (int, error) {
 	if len(argv) == 0 {
 		return 0, fmt.Errorf("target command is required after --")
 	}
@@ -181,7 +182,8 @@ func run(ctx context.Context, argv []string, opts Options, probeUntrusted func()
 	if err := unix.PtraceSyscall(pid, 0); err != nil {
 		return 0, err
 	}
-	s := supervisor{probeUntrusted: sync.OnceValue(probeUntrusted), options: opts, btf: make(map[uint32]rememberedBTF)}
+	s := supervisor{probeUntrusted: sync.OnceValue(probeUntrusted), probeTailCallReachability: sync.OnceValue(probeTailCallReachability),
+		options: opts, btf: make(map[uint32]rememberedBTF)}
 	exitCode := 0
 	for len(threads) > 0 {
 		tid, err := unix.Wait4(-1, &status, unix.WALL|unix.WNOTHREAD, nil)
@@ -585,7 +587,7 @@ func (s *supervisor) transformLoad(r *remote, attr []byte, rule Rule, form HookF
 	request := rule.request()
 	request.StaticUntrusted = form.Form == "static"
 	injectcheck.Label(raw.Instructions)
-	result, err = inject.TransformLookupRaw(raw, request)
+	result, err = inject.TransformLookupRawGuarded(raw, request, s.probeTailCallReachability)
 	if err != nil {
 		return 0, nil, "", err
 	}

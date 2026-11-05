@@ -42,6 +42,11 @@ BTF に名前があるだけでは、attach できるとは限らない。
 `unknown` の対象もカーネルで検証する。ロードに失敗した場合は、元の verifier error とログ全体を残す。
 似た名前の推測や、別の program への付け替えは行わない。
 
+一部のカーネルでは、static または global BPF subprogram が `bpf_tail_call` と別の BPF subprogram 呼び出しを含むと、tail call の到達可能性を示す情報が失われ、ロードに成功しても attach 後の JIT code がクラッシュする。
+以前の `inject-run` は hook 呼び出しの追加によってこの命令構造を作る場合があった。
+現在は、元の program になかったこの構造を rewrite が作る場合だけ、attach しない native program を `BPF_PROG_TEST_RUN` で一度検査し、問題を検出した場合や結果を判定できない場合は該当する hook site を拒否する。
+ほかの site は残し、一つも残らなければ通常の失敗時の方針に従う。
+
 ### func_info にない関数
 
 理由だけでは、次の二つの原因を区別できない。

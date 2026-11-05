@@ -942,11 +942,15 @@ func tailCallSites(insns asm.Instructions) []tailCallSite {
 }
 
 func transformLookup(work *ebpf.CollectionSpec, req LookupRequest) (lookupPlan, error) {
+	return transformLookupGuarded(work, req, nil)
+}
+
+func transformLookupGuarded(work *ebpf.CollectionSpec, req LookupRequest, probe func() error) (lookupPlan, error) {
 	prog := work.Programs[req.ProgramName]
 	if prog == nil {
 		return lookupPlan{}, refuse("program %q not found", req.ProgramName)
 	}
-	out, plan, err := transformLookupProgram(prog.Instructions, prog.Type, work.Types, elfLookupMaps(work), req)
+	out, plan, err := transformLookupProgramGuarded(prog.Instructions, prog.Type, work.Types, elfLookupMaps(work), req, probe)
 	if err != nil {
 		return plan, err
 	}
@@ -1184,7 +1188,7 @@ func autoHookName(prefix, mapName string, index int, used map[string]bool) strin
 	return name
 }
 
-func transformLookupProgram(insns asm.Instructions, typ ebpf.ProgramType, types *btf.Spec, resolve lookupMapResolver, req LookupRequest) (asm.Instructions, lookupPlan, error) {
+func transformLookupProgramGuarded(insns asm.Instructions, typ ebpf.ProgramType, types *btf.Spec, resolve lookupMapResolver, req LookupRequest, probe func() error) (asm.Instructions, lookupPlan, error) {
 	var plan lookupPlan
 	// Missing function metadata would otherwise surface as "not in the entry function".
 	if err := checkExtInfo(insns); err != nil {
@@ -1305,6 +1309,66 @@ func transformLookupProgram(insns asm.Instructions, typ ebpf.ProgramType, types 
 	spliced, hooks, err := emit.splice(groups)
 	if err != nil {
 		return nil, plan, err
+	}
+	introduced, err := introducesTailCallReachabilityLoss(insns, spliced)
+	if err != nil {
+		return nil, plan, err
+	}
+	if probe != nil && introduced {
+		if probeErr := probe(); probeErr != nil {
+			reason := "kernel tail-call reachability probe did not establish safe JIT behavior: " + probeErr.Error()
+			guardedReq := req
+			guardedReq.TailCalls = false
+			guardedEmit := emit
+			guardedEmit.req, guardedEmit.tails = guardedReq, nil
+			var safe []lookupGroup
+			for _, group := range groups {
+				trial := append(slices.Clone(safe), group)
+				out, _, e := guardedEmit.splice(trial)
+				if e != nil {
+					return nil, plan, e
+				}
+				lost, e := introducesTailCallReachabilityLoss(insns, out)
+				if e != nil {
+					return nil, plan, e
+				}
+				if lost {
+					plan.skipped = skipGroup(plan.skipped, group, reason)
+				} else {
+					safe = append(safe, group)
+				}
+			}
+			groups = safe
+			if req.TailCalls {
+				trialEmit := guardedEmit
+				trialEmit.req.TailCalls, trialEmit.tails = true, tails
+				out, _, e := trialEmit.splice(groups)
+				if e != nil {
+					return nil, plan, e
+				}
+				lost, e := introducesTailCallReachabilityLoss(insns, out)
+				if e != nil {
+					return nil, plan, e
+				}
+				if lost {
+					for _, tail := range tails {
+						site := tail.LookupSite
+						site.Reason = reason
+						plan.skipped = append(plan.skipped, site)
+					}
+				} else {
+					guardedEmit = trialEmit
+				}
+			}
+			emit = guardedEmit
+			if len(groups) == 0 && !emit.req.Entry && !emit.req.TailCalls {
+				return nil, plan, refuse("no hook site is safe on this kernel (%d skipped): %s", len(plan.skipped), reason)
+			}
+			spliced, hooks, err = emit.splice(groups)
+			if err != nil {
+				return nil, plan, err
+			}
+		}
 	}
 	// Deeper frames and the hook frames count toward the kernel's limits on
 	// call chains; refuse rather than emit a program the verifier would reject.
