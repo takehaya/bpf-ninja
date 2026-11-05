@@ -133,7 +133,9 @@ bpf-ninja -p "$PROG_ID" --func ninja_sessions --arg-filter 'value->action==2' -w
   - `entry` records whichever of `site`, `status`, the key and the value the hook has, the key and value cut to `--record-max` bytes (default 256); at a generic or dispatch hook it records only `site` and `info`;
   - `none` turns recording off.
 - At a static XDP, tc, cgroup_skb or netfilter hook, the capture reads the context with `bpf_probe_read_kernel` when the kernel rejects direct reads.
+  This is a fallback: a static function that accepts direct reads keeps them.
   It first checks that the entry function passes the context to every call; [arg-member-filter.md](arg-member-filter.md) lists what that check refuses.
+  The hooks inject-run generates, tagged `bpf-ninja:hook`, skip that repeated check: their first argument is the saved program context.
   At a tc, cgroup_skb or netfilter hook on this path, it captures only the linear packet head.
   At a tc hook it refuses a filter with `--tc-vlan-reinsert`; cgroup_skb and netfilter packets have no Ethernet header, so the flag has no effect there.
 
