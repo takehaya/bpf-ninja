@@ -83,8 +83,8 @@ func (s LookupSelector) empty() bool {
 // is known only at run time has no name and is never selected.
 //
 // The hooks take the entry function's context: struct xdp_md * in an XDP
-// program, struct __sk_buff * in a tc program (SchedCLS or SchedACT). The
-// signatures below show the XDP form.
+// program, struct __sk_buff * in a tc (SchedCLS or SchedACT) or CGroupSKB
+// program. The signatures below show the XDP form.
 //
 // Entry also calls int HOOKNAME_entry(struct xdp_md *ctx) once at program
 // entry, which runs when the program is entered through a tail call, unlike an
@@ -366,7 +366,7 @@ func DiscoverLookups(elf []byte, programName string) ([]LookupSite, error) {
 // independent clone. A selected lookup calls
 // int HOOK(CTX *ctx, const KEY *key, const VALUE *value) for non-null results,
 // where CTX is the program's context type: struct xdp_md for XDP, struct
-// __sk_buff for tc (SchedCLS or SchedACT). See LookupRequest for the Auto,
+// __sk_buff for tc (SchedCLS or SchedACT) and CGroupSKB. See LookupRequest for the Auto,
 // Entry, TailCalls and Dispatch hooks. This never loads or attaches BPF.
 func TransformLookup(elf []byte, req LookupRequest) (*LookupResult, error) {
 	// Reuse the existing hash/name/stack validation, without its load contract.
@@ -483,12 +483,12 @@ func ContextType(typ ebpf.ProgramType) string { return lookupContext(typ) }
 
 // lookupContext names the context struct the hooks of a program of type typ
 // take, and whose first word they read: struct xdp_md for XDP, struct
-// __sk_buff (len) for tc. Empty means the type is not supported.
+// __sk_buff (len) for tc and cgroup_skb. Empty means the type is not supported.
 func lookupContext(typ ebpf.ProgramType) string {
 	switch typ {
 	case ebpf.XDP:
 		return "xdp_md"
-	case ebpf.SchedCLS, ebpf.SchedACT:
+	case ebpf.SchedCLS, ebpf.SchedACT, ebpf.CGroupSKB:
 		return "__sk_buff"
 	}
 	return ""
@@ -509,7 +509,7 @@ func discoverLookupProgram(insns asm.Instructions, typ ebpf.ProgramType, resolve
 
 func discoverMapCalls(insns asm.Instructions, typ ebpf.ProgramType, resolve lookupMapResolver) ([]discoveredLookup, error) {
 	if lookupContext(typ) == "" {
-		return nil, refuse("only XDP and tc programs are supported")
+		return nil, refuse("only XDP, tc and cgroup_skb programs are supported")
 	}
 	indices := make(map[int]int)
 	it := insns.Iterate()

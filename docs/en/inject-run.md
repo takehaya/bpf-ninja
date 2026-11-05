@@ -1,6 +1,6 @@
 # Add hooks at load time with inject-run
 
-`bpf-ninja inject-run` starts a BPF loader under ptrace and rewrites selected XDP and tc programs as the loader loads them.
+`bpf-ninja inject-run` starts a BPF loader under ptrace and rewrites selected XDP, tc and cgroup_skb programs as the loader loads them.
 It adds hook functions at map calls, at program entry and after failed tail calls.
 You then capture packets at a hook with `--func`, or attach your own fentry observer.
 Use it to see what a program does with its maps, such as which key a lookup used or which update failed, without changing the loader, its source or its object files.
@@ -250,7 +250,7 @@ bpf-ninja inject-run [--config FILE] [--fail-closed] [--hooks-json FILE] [--look
 | `--config FILE` | Rules file (JSON). Without it, the environment variable `BPF_NINJA_INJECT_CONFIG` holds the JSON itself. |
 | `--fail-closed` | Refuse a matched load with `EPERM` when transformation, checking, or the substituted kernel load fails, or when the checker is not applicable. By default a failed check loads the original program, while a checker-inapplicable transformed program loads without validation. |
 | `--hooks-json FILE` | Write the injected programs and their hooks to FILE. See [Hooks file](#hooks-file). |
-| `--lookups-json FILE` | Write every XDP and tc program the target loads, with its map calls and a suggested rule. Rules are then optional. See [Lookups file](#lookups-file). |
+| `--lookups-json FILE` | Write every XDP, tc and cgroup_skb program the target loads, with its map calls and a suggested rule. Rules are then optional. See [Lookups file](#lookups-file). |
 
 - Flags before `--` belong to `inject-run`; the command and arguments after it belong to the target.
 - `--config` takes precedence over `BPF_NINJA_INJECT_CONFIG`.
@@ -340,7 +340,7 @@ The refusal names the function and the slots or bytes that do not fit.
 If that name is empty, invalid, taken or too long, `inject-run` names the hook `HOOK_<index>` instead.
 `site` is the call's load-time instruction index.
 `status` holds the helper's result in the low 32 bits and the update or push flags above them; `--arg-filter` reads them as `status.ret` and `status.flags`.
-`ctx` is `struct xdp_md *` in XDP and `struct __sk_buff *` in tc.
+`ctx` is `struct xdp_md *` in XDP and `struct __sk_buff *` in tc and cgroup_skb.
 
 | Rule | Hook | Arguments |
 |---|---|---|
@@ -450,7 +450,7 @@ The marks describe this program load only; a configuration change can make the s
 
 ### Lookups file
 
-`--lookups-json FILE` lists every XDP and tc program the target loads with BTF, whether or not a rule selects it.
+`--lookups-json FILE` lists every XDP, tc and cgroup_skb program the target loads with BTF, whether or not a rule selects it.
 Use it to write a rule before a run that injects:
 
 ```sh
@@ -634,7 +634,9 @@ In both modes:
   It does not fully support job-control stops, seccomp tracing and notification, or uncatchable signals during replay; an unexpected stop during replay ends supervision.
 - `inject-run` handles only native x86-64 `bpf(2)` calls.
   Compat and x32 calls pass through without injection.
-- `inject-run` can rewrite only XDP and tc (`SchedCLS`, `SchedACT`) programs loaded with BTF and `func_info`.
+- `inject-run` can rewrite only XDP, tc (`SchedCLS`, `SchedACT`) and cgroup_skb (`CGroupSKB`) programs loaded with BTF and `func_info`.
+  In a cgroup_skb program the packet starts at the network header, so `--func` records have no Ethernet header.
+  An unprivileged cgroup_skb load cannot call functions, so its rewrite fails and the original loads (or the load is refused with `--fail-closed`).
 - It instruments map calls in the entry function and in called subprograms whose BTF parameter, callers and held context value can all be proved; callbacks and unproved sites remain skipped. Static hooks repeat the proof on translated instructions before attach.
   One rule applies per program.
 - A function-name selector uses the BTF `inject-run` saw the loader load.
