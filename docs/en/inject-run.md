@@ -17,8 +17,8 @@ Run as root.
 # 1. List the programs and map calls the loader loads. Nothing is rewritten.
 bpf-ninja inject-run --lookups-json lookups.json -- ./loader
 
-# 2. Take the suggested rule, set the audited stack bound, and load with hooks.
-jq '[.programs[0].rule | .stack_lowest_offset = -64]' lookups.json > rules.json
+# 2. Take the suggested rule and load with hooks.
+jq '[.programs[0].rule]' lookups.json > rules.json
 bpf-ninja inject-run --config rules.json --hooks-json hooks.json -- ./loader
 
 # 3. In another terminal, while the loader runs, capture the packets that reach a hook.
@@ -27,8 +27,7 @@ HOOK=$(jq -r '.programs[0].hooks[0].name' hooks.json)
 bpf-ninja -p "$PROG_ID" --func "$HOOK" -c 10 -w hook.pcap
 ```
 
-- `-64` is a placeholder.
-  Replace it with the deepest stack offset your program reaches; see [Stack bound](#stack-bound).
+- `inject-run` obtains each function's stack floor from a trial verifier load; see [Stack floor](#stack-floor).
 - The suggested rule uses `auto` with the hook prefix `ninja`, so a lookup on the map `sessions` gets the hook `ninja_sessions`.
 - stderr reports each injection, for example `inject-run: program "xdp_ingress": injected hook "ninja_sessions" (lookup map "sessions", site pc 6), tracee fd 9`.
   If `inject-run` cannot rewrite a load, it logs `injection skipped` and lets the original program load.
@@ -39,7 +38,7 @@ bpf-ninja -p "$PROG_ID" --func "$HOOK" -c 10 -w hook.pcap
 
 ```json
 [{"program": "xdp_ingress", "auto": true, "maps": ["sessions"], "ops": ["lookup:any", "update"],
-  "hook": "obs", "stack_lowest_offset": -64}]
+  "hook": "obs"}]
 ```
 
 `auto` instruments every supported call of the observed ops, with one hook per map and op: lookups by default, or exactly the ops that `ops` lists.
@@ -71,9 +70,9 @@ It skips these sites:
 - a call on a map that `maps` does not name (`map not selected by Maps`);
 - a call on a map kind that has no hook;
 - a site whose hook name would be longer than 127 bytes;
-- a site whose spill slots do not fit below the stack bound;
+- a site whose spill slots do not fit below its function's stack floor;
 - sites that would make the rewritten program break a kernel call-chain stack limit.
-  `auto` first drops the sites that need slots below the three base ones (see [Stack bound](#stack-bound); the generic hook, update hooks and copied read-only values), and then, if the program still breaks the limit, every map-call site.
+  `auto` first drops the sites that need slots below the three base ones (see [Stack floor](#stack-floor); the generic hook, update hooks and copied read-only values), and then, if the program still breaks the limit, every map-call site.
   With `dispatch` it drops every map-call site at once.
 
 `auto` keeps the `entry` and `tail_calls` hooks.
@@ -84,7 +83,7 @@ A map call whose op the rule does not observe is left alone and does not appear 
 
 ```json
 [{"program": "xdp_ingress", "map": "sessions", "func": "xdp_ingress", "line": 42,
-  "hook": "lookup_hook", "stack_lowest_offset": -128}]
+  "hook": "lookup_hook"}]
 ```
 
 The rule must match exactly one supported lookup; if it matches several, the injection fails.
@@ -103,7 +102,7 @@ A successful tail call does not return, so it calls no hook.
 Both keys work with a lookup rule or on their own.
 
 ```json
-[{"program": "next_stage", "entry": true, "hook": "obs", "stack_lowest_offset": -64}]
+[{"program": "next_stage", "entry": true, "hook": "obs"}]
 ```
 
 A program that calls `bpf_tail_call` loads with hooks only when the BPF JIT is enabled.
@@ -115,7 +114,7 @@ One observer attach then sees them all.
 This matters on kernels 7.0 to 7.2.5, where a program that tail-calls accepts only one tracing attach.
 The hook has the generic signature: `hook(ctx, u64 info, const void *key, const void *value, const void *map)`.
 The low 32 bits of `info` are the site; [lookup-site-injection.md](lookup-site-injection.md#one-dispatch-hook) gives the other bits and what each caller passes.
-`dispatch` needs a higher stack bound and does not combine with `copy_read_only` or `map_btf`.
+`dispatch` needs one more stack slot and does not combine with `copy_read_only` or `map_btf`.
 
 ### Capture packets at a hook
 
@@ -178,7 +177,7 @@ Without types, the hook passes the key and value as opaque bytes, and member fil
 `map_btf` takes the types from the ELF for one explicit `map` rule:
 
 ```json
-[{"program": "ingress", "map": "sessions", "hook": "observe", "stack_lowest_offset": -4,
+[{"program": "ingress", "map": "sessions", "hook": "observe",
   "map_btf": {"elf": "/path/to/loader-generated.o", "sha256": "REPLACE_WITH_64_HEXADECIMAL_DIGITS"}}]
 ```
 
@@ -277,7 +276,6 @@ A rule whose `program` never loads produces no diagnostic at all.
 |---|---|---|---|---|
 | `program` | string | required | The program to rewrite: its kernel name or its entry function name. | Kernel names have at most 15 characters; a function name can be longer. One rule per program. |
 | `hook` | string | required | The hook name. With `auto`, `entry`, `tail_calls` or `ops`, the prefix of the hook names. With `dispatch`, the name of the one hook. | A C identifier. It must leave room for the longest suffix within 127 bytes; see [Hook names](#hook-names). |
-| `stack_lowest_offset` | integer | required | Your audit of the deepest stack offset the program reaches, including pointer copies and callees. The hook's spill slots go below it. | At most 0; see [Stack bound](#stack-bound). `lookups.json` leaves it `null`, which is refused. |
 | `frame_rounding` | integer | detected | Override the running kernel's stack-frame rule. Omit it to detect Linux 6.9+ with JIT enabled; unknown states use 32. | `16` or `32`. |
 | `map` | string | none | Observe lookups on this map, by exact kernel map name. | Not with `auto`. A rule needs one of `map`, `auto`, `entry` or `tail_calls`. |
 | `func` | string | none | With `map`: only lookups in this BTF function. | Needs `map`. |
@@ -294,18 +292,31 @@ A rule whose `program` never loads produces no diagnostic at all.
 | `static_untrusted` | bool | false (probe) | Make hooks that would take `arg:untrusted` pointers static, without probing. | |
 | `map_btf` | object | none | Key and value types for a map created without BTF. | See [Map types from a loader ELF](#map-types-from-a-loader-elf). |
 
-### Stack bound
+### Stack floor
 
-`stack_lowest_offset` is not inferred.
-Find the deepest stack access of the program, for example the lowest `r10 - N` in `llvm-objdump -d prog.o`, and include callees and copies of `r10`.
-Do not copy a bound from an example.
-The transform rounds the bound down to 8 bytes and puts its spill slots below it.
+`inject-run` places each hook's spill slots below the deepest stack byte accounted to the function that owns the site.
+It obtains that per-function floor by loading the original program once with verifier statistics enabled, reading the loaded function order, and closing the trial file descriptor immediately.
+The verifier's accounting includes stack aliases, helper buffers, variable offsets, and writes through a caller's frame pointer.
+If a direct instruction reaches deeper than the verifier reported, as can happen after fast-call spill removal, the direct access wins.
+The trial uses the original load attributes and adds one verification pass, which can take seconds for a large program.
+
+Linux before 6.8 does not include every variable-offset access in its reported depth.
+On those kernels, `inject-run` skips sites in a function whose instruction scan is not exact.
+If trial loading, statistics parsing, or function matching fails, automatic rules leave the original program unchanged, explicit rules refuse the load, and `--fail-closed` refuses either kind.
+
+The `stack` block in `--lookups-json` and `--hooks-json` records the kernel release, every function's verifier and direct-text depths, the selected floor, source, and reserved slots.
+Each hook site also records its `frame` and `floor`.
+stderr prints the same floors in a compact line before transformation.
+There is no manual override.
+Rules containing `stack_lowest_offset` are rejected with an error that tells you to remove it.
+
+The transform rounds each floor down to 8 bytes and puts that frame's spill slots below it.
 The frame that holds them also calls the hook.
 Kernels that round frames to 32 bytes (6.1-era kernels and the interpreter) count that call as 32 bytes of the 512-byte stack, so the transform keeps the slots within 480 bytes there.
 On Linux 6.9 or newer with `net.core.bpf_jit_enable` set to `1` or `2`, `inject-run` uses the JIT's 16-byte rounding and zero-byte empty hook frame, allowing the site frame to use all 512 bytes.
 If `uname` or the sysctl cannot be read, or the state is not recognized, it keeps the 32-byte rule.
 Set `frame_rounding` only to override this detection for a known target.
-The lowest accepted bound depends on the rule:
+The deepest floor that still leaves room depends on the rule:
 
 | Rule has | Slots | 32-byte / unknown | Linux 6.9+ JIT |
 |---|---:|---:|---:|
@@ -320,7 +331,7 @@ The transform checks the rest, which depends on the program.
 A generic hook takes a fourth slot (bound -448), or a fifth at an update (-440).
 `copy_read_only` puts the value copy below the fourth slot, so a copied value needs a bound of at least -448 plus its size rounded up to 8 bytes.
 `auto` skips a site that does not fit, and an explicit `map` rule fails.
-The refusal names the slots or bytes it needs and the bound you gave.
+The refusal names the function and the slots or bytes that do not fit.
 
 ### Hook names
 
@@ -374,7 +385,7 @@ If a rewrite fails, `inject-run` reports it on stderr and keeps running the targ
 
 ```json
 {
-  "version": 1,
+  "version": 2,
   "programs": [
     {
       "program": "p",
@@ -382,6 +393,10 @@ If a rewrite fails, `inject-run` reports it on stderr and keeps running the targ
       "type": "XDP",
       "prog_id": 2,
       "ctx_type": "xdp_md",
+      "stack": {"source": "verifier", "kernel": "7.0.0", "frame_rounding": 16,
+        "functions": [{"name": "entry_with_long_name", "verified_depth": 8,
+          "text_depth": 4, "text_exact": true, "floor": -8,
+          "slots": {"ctx": -16, "key": -24, "result": -32, "map": -40, "value": -48}}]},
       "hook_form": {"form": "global", "reason": "probe_arg_untrusted_supported"},
       "hooks": [
         {
@@ -389,7 +404,7 @@ If a rewrite fails, `inject-run` reports it on stderr and keeps running the targ
           "kind": "typed",
           "when": "hit",
           "map": "sessions",
-          "sites": [{"kind": "lookup", "pc": 6, "map": "sessions", "func": "entry_with_long_name", "ctx_source": "entry"}],
+          "sites": [{"kind": "lookup", "pc": 6, "map": "sessions", "func": "entry_with_long_name", "ctx_source": "entry", "frame": "entry_with_long_name", "floor": -8}],
           "untrusted": false,
           "copied": false,
           "static": false,
@@ -405,7 +420,7 @@ If a rewrite fails, `inject-run` reports it on stderr and keeps running the targ
 
 | Field | Meaning |
 |---|---|
-| `version` | 1. It changes only when a field changes meaning or is removed; new fields can appear. |
+| `version` | 2. It changes only when a field changes meaning or is removed; new fields can appear. |
 | `programs` | One entry per injected load, in load order; a program loaded twice appears twice. Loads that fell back or were refused are not listed. |
 | `program`, `func` | The kernel program name and the entry function. |
 | `type` | `XDP`, `SchedCLS` or `SchedACT`. |
@@ -417,7 +432,8 @@ If a rewrite fails, `inject-run` reports it on stderr and keeps running the targ
 | `hooks[].kind` | `typed` (one map's hook; its key and value carry the map's types unless `untrusted` is set), `generic` (a `HOOK_any` hook), `entry`, `tail_call` or `dispatch`. |
 | `hooks[].when` | The results that call it: `hit`, `miss` or `any` for lookups; `error` or `any` for other map calls. A dispatch hook's `when` is its lookups'; its other map-call sites carry their own. |
 | `hooks[].map` | The map of a `typed` hook. Generic and dispatch hooks give the map on each site. |
-| `hooks[].sites` | The calls that call the hook, in instruction order: `kind` (`lookup`, `update`, `delete`, `push`, `pop`, `peek`, `tail_call` or `entry`), `pc` (the `site` argument, or the low 32 bits of `info`), and `map`, `func`, `file`, `line` and `ctx_source` where known. `ctx_source` is `entry`, `r6` through `r9`, or an aligned frame slot such as `fp-80`. A dispatch hook lists the entry call first, as `pc` 4294967295. |
+| `stack` | The trial load's verifier accounting and the exact per-function floors used by this injection. |
+| `hooks[].sites` | The calls that call the hook, in instruction order: `kind` (`lookup`, `update`, `delete`, `push`, `pop`, `peek`, `tail_call` or `entry`), `pc` (the `site` argument, or the low 32 bits of `info`), and `map`, `func`, `file`, `line`, `ctx_source`, `frame` and `floor` where known. `ctx_source` is `entry`, `r6` through `r9`, or an aligned frame slot such as `fp-80`. `frame` owns the stack slots and `floor` is the value used for them. A dispatch hook lists the entry call first, as `pc` 4294967295. |
 | `hooks[].untrusted` | The hook takes `arg:untrusted` pointers: its key and value are `const void *`. |
 | `hooks[].copied` | The value is a stack copy. |
 | `hooks[].static` | The hook is static; read every argument as a `u64`. |
@@ -438,7 +454,7 @@ Use it to write a rule before a run that injects:
 
 ```sh
 bpf-ninja inject-run --lookups-json lookups.json -- ./loader
-jq '[.programs[].rule | .stack_lowest_offset = -64 | .dispatch = true | .maps = ["sessions"]]' lookups.json > rules.json
+jq '[.programs[].rule | .dispatch = true | .maps = ["sessions"]]' lookups.json > rules.json
 bpf-ninja inject-run --config rules.json --hooks-json hooks.json -- ./loader
 ```
 
@@ -448,28 +464,39 @@ It writes the file like the hooks file: the file exists before the target starts
 
 ```json
 {
-  "version": 1,
+  "version": 2,
   "programs": [
     {
       "program": "p",
       "func": "entry_with_long_name",
       "type": "XDP",
       "ctx_type": "xdp_md",
+      "stack": {
+        "source": "verifier",
+        "kernel": "7.0.0",
+        "frame_rounding": 16,
+        "functions": [
+          {"name": "entry_with_long_name", "verified_depth": 8, "text_depth": 4,
+           "text_exact": true, "floor": -8,
+           "slots": {"ctx": -16, "key": -24, "result": -32, "map": -40, "value": -48}}
+        ]
+      },
       "maps": [
         {"name": "sessions", "type": "Hash", "sites": [6], "ops": ["lookup"]}
       ],
       "lookups": [
-        {"kind": "lookup", "pc": 6, "map": "sessions", "func": "entry_with_long_name"}
+        {"kind": "lookup", "pc": 6, "map": "sessions", "func": "entry_with_long_name",
+         "frame": "entry_with_long_name", "floor": -8}
       ],
       "calls": [
-        {"kind": "lookup", "pc": 6, "map": "sessions", "func": "entry_with_long_name"}
+        {"kind": "lookup", "pc": 6, "map": "sessions", "func": "entry_with_long_name",
+         "frame": "entry_with_long_name", "floor": -8}
       ],
       "rule": {
         "program": "entry_with_long_name",
         "auto": true,
         "maps": ["sessions"],
-        "hook": "ninja",
-        "stack_lowest_offset": null
+        "hook": "ninja"
       }
     }
   ]
@@ -483,7 +510,9 @@ It writes the file like the hooks file: the file exists before the target starts
 | `calls` | Every lookup, per-CPU lookup, update, delete, push, pop and peek call, with the op as `kind`. |
 | `reason` on a lookup or call | `auto` would skip it, unless it also has `"generic": true`, which means `auto` sends it to the generic hook. |
 | `ctx_source` on a lookup or call | The proven source used to initialize the site's frame: `entry`, `r6` through `r9`, or an aligned slot such as `fp-80`. It is omitted when no source was proven. |
-| `rule` | A rule that instruments the lookups on every named map. Its `program` is the entry function name. Fill in `stack_lowest_offset`, edit `maps`, and add `ops`, `dispatch`, `entry` or `tail_calls` as needed. |
+| `frame`, `floor` on a lookup or call | The function frame that owns the site and the floor used to place its spill slots. |
+| `stack` | The trial load's verifier accounting. A function with `skip_reason` is not instrumented; `dead` means the verifier omitted that function from this load. |
+| `rule` | A rule that instruments the lookups on every named map. Its `program` is the entry function name. Edit `maps`, and add `ops`, `dispatch`, `entry` or `tail_calls` as needed. |
 
 A program loaded twice is listed twice.
 
@@ -571,7 +600,7 @@ After allocating the substituted `bpf_attr` and instruction buffer in the tracee
 It decodes and checks that byte range immediately before resuming the stopped thread for `BPF_PROG_LOAD`.
 No option is needed to enable this check.
 
-The check establishes that the bytes read at that moment satisfy `pkg/injectcheck` under the configured `stack_lowest_offset` and plan-derived site targets.
+The check establishes that the bytes read at that moment satisfy `pkg/injectcheck` under the trial load's per-function floors and plan-derived site targets.
 It does not freeze tracee memory, so a sibling thread can still mutate the instruction buffer after the read and before the kernel copies it.
 It also does not establish kernel acceptance, BTF meaning, fd identity, verifier correctness, JIT correctness, or behavior of externally attached observers.
 
