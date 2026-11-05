@@ -45,10 +45,11 @@ The reason alone cannot tell these two causes apart:
 
 - A request for one distinct program and function fails with the full diagnostic when that function is unavailable, even if the same `--func` name is repeated.
 - With several distinct `--func` names or several programs, bpf-ninja skips unavailable targets.
-  It warns with a short reason for each, and prints separate counts for absent functions and external declarations on stderr.
+  It also skips an individual target when the static-context proof refuses it or the kernel rejects that target's observer, while keeping observers that already attached to other targets.
+  It warns with a short reason for each, and prints separate counts for absent functions, external declarations, static-context refusals and observer-load failures on stderr.
 - A name missing from the BTF of some selected programs is skipped without a warning.
   A name missing from every selected program is an error.
-- If no attachable target remains, the command fails with one link to this page and prints no JSON on stdout.
+- If no target attaches, the command fails; it never weakens an observer or guesses that a refused context is safe.
 - `--list-params --json` prints an array of the attachable entries, each with `func`, `id` and `params`.
   Skipped targets appear only in the stderr warnings.
 - `--json` applies only to listings; capture output stays packet data.

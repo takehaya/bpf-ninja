@@ -885,6 +885,7 @@ func run(ctx context.Context, cmd *cli.Command) error {
 	if err != nil {
 		return err
 	}
+	printTargetDiagnostics(os.Stderr, probe.TargetDiagnostics)
 	printProbeWarnings(probe)
 
 	var label string

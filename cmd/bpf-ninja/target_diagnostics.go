@@ -8,12 +8,17 @@ import (
 )
 
 func printTargetDiagnostics(w io.Writer, diagnostics []attach.TargetDiagnostic) {
-	absent, external := 0, 0
+	absent, external, ctxRefused, loadFailed := 0, 0, 0, 0
 	for _, d := range diagnostics {
 		if d.Skipped {
-			if d.Availability.Reason == attach.FuncNotInTarget {
+			switch {
+			case d.Reason == attach.TargetStaticCtxRefused:
+				ctxRefused++
+			case d.Reason == attach.TargetObserverLoadFailed:
+				loadFailed++
+			case d.Availability.Reason == attach.FuncNotInTarget:
 				external++
-			} else {
+			default:
 				absent++
 			}
 			_, _ = fmt.Fprintf(w, "warning: skipping %s\n", d)
@@ -25,7 +30,7 @@ func printTargetDiagnostics(w io.Writer, diagnostics []attach.TargetDiagnostic) 
 		}
 		_, _ = fmt.Fprintf(w, "warning: %s; could not check func_info%s; letting the kernel verify it\n", d, detail)
 	}
-	if skipped := absent + external; skipped > 0 {
-		_, _ = fmt.Fprintf(w, "Skipped %d target(s): %d absent from loaded func_info, %d external declaration(s).\n", skipped, absent, external)
+	if skipped := absent + external + ctxRefused + loadFailed; skipped > 0 {
+		_, _ = fmt.Fprintf(w, "Skipped %d target(s): %d absent from loaded func_info, %d external declaration(s), %d refused by the static context check, %d observer load failure(s).\n", skipped, absent, external, ctxRefused, loadFailed)
 	}
 }

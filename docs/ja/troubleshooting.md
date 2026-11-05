@@ -64,10 +64,11 @@ BTF に名前があるだけでは、attach できるとは限らない。
 
 - program と関数の組を一つだけ指定した場合、その関数が使えないときは詳しい説明を出して失敗する。同じ `--func` を繰り返した場合も同様である。
 - 異なる複数の `--func` や複数の program を指定した場合は、利用できない対象をスキップする。
-  対象ごとに短い理由を警告する。`func_info` にない関数と外部宣言を分けて、スキップした件数を stderr に出す。
+  static context の証明が拒否した対象や、対象ごとの observer をカーネルが拒否した場合も、その対象だけをスキップし、すでに別の対象へ attach できた observer は残す。
+  対象ごとに短い理由を警告する。`func_info` にない関数、外部宣言、static context の拒否、observer のロード失敗を分けて、スキップした件数を stderr に出す。
 - 一部の program の BTF にない関数名は、警告なしでスキップする。
   どの program にもない関数名はエラーにする。
-- attach できる対象が残らない場合は、この資料へのリンクを一度示して失敗する。このとき stdout に JSON は出さない。
+- 一つも attach できない場合は失敗する。拒否された context を安全だと推測したり、observer の検査を弱めたりはしない。
 - `--list-params --json` は attach できる対象の配列を出す。各要素は `func`、`id`、`params` を持つ。
   スキップした対象は stderr の警告にだけ出る。
 - `--json` は一覧表示だけに適用される。capture の出力は packet data のままである。
