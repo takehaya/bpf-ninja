@@ -153,7 +153,8 @@ func fastcallLookupFixture() *ebpf.CollectionSpec {
 		asm.Mov.Imm(asm.R2, 123),
 		asm.StoreMem(asm.RFP, -16, asm.R2, asm.DWord),
 		asm.FnGetSmpProcessorId.Call(),
-		asm.LoadMem(asm.R6, asm.RFP, -16, asm.DWord),
+		asm.LoadMem(asm.R2, asm.RFP, -16, asm.DWord),
+		asm.Mov.Reg(asm.R6, asm.R2),
 		asm.StoreImm(asm.RFP, -4, 0, asm.Word),
 		asm.Mov.Reg(asm.R2, asm.RFP), asm.Add.Imm(asm.R2, -4),
 		asm.LoadMapPtr(asm.R1, 0).WithReference("sessions"), asm.FnMapLookupElem.Call(),
@@ -162,7 +163,7 @@ func fastcallLookupFixture() *ebpf.CollectionSpec {
 		asm.LoadMem(asm.R0, asm.R0, 0, asm.Word), asm.Return(),
 		asm.Mov.Imm(asm.R0, 1).WithSymbol("bad"), asm.Return(),
 	}
-	insns[0] = btf.WithFuncMetadata(insns[0].WithSymbol("p"), fn)
+	insns[0] = btf.WithFuncMetadata(insns[0].WithSymbol("p").WithSource(asm.Comment("fastcall entry")), fn)
 	return &ebpf.CollectionSpec{
 		ByteOrder: binary.LittleEndian,
 		Maps: map[string]*ebpf.MapSpec{"sessions": {
