@@ -16,13 +16,13 @@ func TestDiscoveryJSON(t *testing.T) {
 	d := syscallhook.Discovery{
 		Program: "tail_lb_ipv4", Func: "tail_lb_ipv4_full", Type: ebpf.SchedCLS,
 		Lookups: []inject.LookupSite{
-			{Op: inject.HookLookup, SitePC: 12, MapName: "services", FuncName: "tail_lb_ipv4_full"},
+			{Op: inject.HookLookup, SitePC: 12, MapName: "services", FuncName: "tail_lb_ipv4_full", CtxSource: "entry"},
 			{Op: inject.HookLookup, SitePC: 30, MapName: "backends", FuncName: "tail_lb_ipv4_full", File: "lb.c", Line: 7},
 			{Op: inject.HookLookup, SitePC: 41, MapName: "services", FuncName: "sub", Reason: "lookup is not in the entry function"},
 			{Op: inject.HookLookup, SitePC: 50, FuncName: "tail_lb_ipv4_full", Reason: "R1 is not a direct map reference", Generic: true},
 		},
 		Calls: []inject.LookupSite{
-			{Op: inject.HookLookup, SitePC: 12, MapName: "services", FuncName: "tail_lb_ipv4_full"},
+			{Op: inject.HookLookup, SitePC: 12, MapName: "services", FuncName: "tail_lb_ipv4_full", CtxSource: "entry"},
 			{Op: inject.HookUpdate, SitePC: 20, MapName: "services", FuncName: "tail_lb_ipv4_full"},
 			{Op: inject.HookLookup, SitePC: 30, MapName: "backends", FuncName: "tail_lb_ipv4_full", File: "lb.c", Line: 7},
 			{Op: inject.HookDelete, SitePC: 35, MapName: "x.bss", FuncName: "tail_lb_ipv4_full"},
@@ -39,11 +39,11 @@ func TestDiscoveryJSON(t *testing.T) {
 		`"maps":[{"name":"services","type":"Hash","sites":[12,41],"ops":["lookup","update"]},{"name":"backends","type":"Hash","sites":[30],"ops":["lookup"]},` +
 		`{"name":"calls","type":"ProgramArray","sites":[],"ops":[]},{"name":"x.bss","type":"Hash","sites":[],"ops":["delete"]},` +
 		`{"name":"x.rodata","type":"Array","sites":[],"ops":[]}],` +
-		`"lookups":[{"kind":"lookup","pc":12,"map":"services","func":"tail_lb_ipv4_full"},` +
+		`"lookups":[{"kind":"lookup","pc":12,"map":"services","func":"tail_lb_ipv4_full","ctx_source":"entry"},` +
 		`{"kind":"lookup","pc":30,"map":"backends","func":"tail_lb_ipv4_full","file":"lb.c","line":7},` +
 		`{"kind":"lookup","pc":41,"map":"services","func":"sub","reason":"lookup is not in the entry function"},` +
 		`{"kind":"lookup","pc":50,"func":"tail_lb_ipv4_full","reason":"R1 is not a direct map reference","generic":true}],` +
-		`"calls":[{"kind":"lookup","pc":12,"map":"services","func":"tail_lb_ipv4_full"},` +
+		`"calls":[{"kind":"lookup","pc":12,"map":"services","func":"tail_lb_ipv4_full","ctx_source":"entry"},` +
 		`{"kind":"update","pc":20,"map":"services","func":"tail_lb_ipv4_full"},` +
 		`{"kind":"lookup","pc":30,"map":"backends","func":"tail_lb_ipv4_full","file":"lb.c","line":7},` +
 		`{"kind":"delete","pc":35,"map":"x.bss","func":"tail_lb_ipv4_full"},` +
