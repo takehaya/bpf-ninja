@@ -241,3 +241,22 @@ func TestCancellation(t *testing.T) {
 		t.Fatalf("cancellation: %v", err)
 	}
 }
+
+// The jump-limit retry runs only when miss-first could change the rewrite:
+// some lookup hook observes hits.
+func TestMissFirstDiffers(t *testing.T) {
+	lookup := &inject.LookupResultRaw{Hooks: []inject.LookupHook{{Kind: inject.HookLookup}}}
+	update := &inject.LookupResultRaw{Hooks: []inject.LookupHook{{Kind: inject.HookUpdate}}}
+	for _, tc := range []struct {
+		when   inject.LookupWhen
+		result *inject.LookupResultRaw
+		want   bool
+	}{
+		{"", lookup, true}, {inject.LookupHit, lookup, true}, {inject.LookupAny, lookup, true},
+		{inject.LookupMiss, lookup, false}, {inject.LookupNone, update, false}, {"", update, false},
+	} {
+		if got := missFirstDiffers(inject.LookupRequestRaw{Lookups: tc.when}, tc.result); got != tc.want {
+			t.Errorf("lookups %q hooks %+v: %v, want %v", tc.when, tc.result.Hooks, got, tc.want)
+		}
+	}
+}

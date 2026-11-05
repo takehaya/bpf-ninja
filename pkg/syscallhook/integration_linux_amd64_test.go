@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"syscall"
 	"testing"
@@ -598,4 +599,172 @@ func loadIndirectJump(t *testing.T, expected string) {
 	if action, _, err := p.Test(make([]byte, 64)); err != nil || action != 40 {
 		t.Fatalf("BPF_PROG_TEST_RUN: action=%d err=%v", action, err)
 	}
+}
+
+// The verifier allows 8192 pending jumps. The chain fixture uses all of them,
+// so one more pending state refuses the load. A rewrite with the default
+// branches keeps one more past a lookup whose program continues on a hit, and
+// the miss-first branches one more past a lookup that continues on a miss.
+func TestIntegrationJumpLimit(t *testing.T) {
+	if os.Geteuid() != 0 {
+		t.Skip("requires root and BPF privileges")
+	}
+	if expected := os.Getenv("SYSCALLHOOK_JUMP_CHILD"); expected != "" {
+		loadJumpChain(t, expected)
+		return
+	}
+	for _, tc := range []struct {
+		name, shape, expected string
+		closed                bool
+		ops                   []string
+		logged                []string
+		absent                []string
+	}{
+		{"retry-hit", "continue-on-hit", "hook", true, nil,
+			[]string{"verifier jump sequence limit", "retrying with lookup misses first", "lookup branches miss-first"}, nil},
+		{"retry-any", "continue-on-hit", "hook", true, []string{"lookup:any"},
+			[]string{"retrying with lookup misses first", "lookup branches miss-first"}, nil},
+		{"default-kept", "continue-on-miss", "hook", true, nil, []string{"injected"}, []string{"retrying", "lookup branches"}},
+		{"both-fail-open", "both", "plain", false, nil, []string{"retrying with lookup misses first", "injection skipped"}, []string{"injected"}},
+		{"both-fail-closed", "both", "refused", true, nil, []string{"retrying with lookup misses first", "injection skipped"}, []string{"injected"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("SYSCALLHOOK_JUMP_CHILD", tc.shape+":"+tc.expected)
+			out, err := os.Create(filepath.Join(t.TempDir(), "loader.out"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = out.Close() }()
+			rule := testRule()
+			rule.Auto, rule.Map, rule.Ops = true, "", tc.ops
+			var logs bytes.Buffer
+			var injected []Injection
+			ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+			defer cancel()
+			code, err := Run(ctx, []string{os.Args[0], "-test.run=^TestIntegrationJumpLimit$"}, Options{Rules: []Rule{rule}, FailClosed: tc.closed,
+				Stdout: out, Stderr: out, Log: &logs, OnInject: func(inj Injection) { injected = append(injected, inj) }})
+			data, _ := os.ReadFile(out.Name())
+			t.Logf("supervisor:\n%sloader:\n%s", &logs, data)
+			if err != nil || code != 0 {
+				t.Fatalf("code=%d err=%v", code, err)
+			}
+			if want := map[bool]int{true: 2}[tc.expected == "hook"]; len(injected) != want {
+				t.Fatalf("OnInject calls: %+v", injected)
+			}
+			for _, text := range tc.logged {
+				if !strings.Contains(logs.String(), text) {
+					t.Errorf("log lacks %q", text)
+				}
+			}
+			for _, text := range tc.absent {
+				if strings.Contains(logs.String(), text) {
+					t.Errorf("log has %q", text)
+				}
+			}
+		})
+	}
+}
+
+// loadJumpChain loads a program of 8192 unknown branches around its lookups and
+// runs it on a hit and a miss, as a loader that knows nothing of the supervisor.
+func loadJumpChain(t *testing.T, expected string) {
+	t.Helper()
+	shape, want, _ := strings.Cut(expected, ":")
+	u32 := &btf.Int{Name: "u32", Size: 4}
+	m, err := ebpf.NewMap(&ebpf.MapSpec{Name: "sessions", Type: ebpf.Hash, KeySize: 4, ValueSize: 4, MaxEntries: 1, Key: u32, Value: u32})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = m.Close() }()
+	fn := &btf.Func{Name: "entry", Linkage: btf.GlobalFunc, Type: &btf.FuncProto{
+		Return: &btf.Int{Name: "int", Size: 4, Encoding: btf.Signed},
+		Params: []btf.FuncParam{{Name: "ctx", Type: &btf.Pointer{Target: &btf.Struct{Name: "xdp_md", Size: 24}}}},
+	}}
+	insns := asm.Instructions{asm.StoreImm(asm.RFP, -4, 0, asm.Word), asm.LoadMem(asm.R7, asm.R1, 16, asm.Word)}
+	next := int32(100)
+	chain := func(n int) {
+		for i := range n {
+			branch := asm.JEq.Imm(asm.R7, next, "")
+			branch.Offset = int16(n - i - 1)
+			insns = append(insns, branch)
+			next++
+		}
+	}
+	lookup := func(guard asm.Instruction) {
+		guard.Offset = 2
+		insns = append(insns, asm.Mov.Reg(asm.R2, asm.RFP), asm.Add.Imm(asm.R2, -4), asm.LoadMapPtr(asm.R1, m.FD()), asm.FnMapLookupElem.Call(),
+			guard, asm.Mov.Imm(asm.R0, 1), asm.Return())
+	}
+	chain(100)
+	if shape != "continue-on-miss" {
+		lookup(asm.JNE.Imm(asm.R0, 0, ""))
+	}
+	chain(100)
+	if shape != "continue-on-hit" {
+		lookup(asm.JEq.Imm(asm.R0, 0, ""))
+	}
+	chain(7992)
+	insns = append(insns, asm.Mov.Imm(asm.R0, 2), asm.Return())
+	insns[0] = btf.WithFuncMetadata(insns[0].WithSymbol(fn.Name).WithSource(asm.Comment("jump chain")), fn)
+	spec := &ebpf.ProgramSpec{Name: "p", Type: ebpf.XDP, License: "GPL", Instructions: insns}
+	p, err := ebpf.NewProgram(spec)
+	if want == "refused" {
+		if !errors.Is(err, unix.EPERM) {
+			t.Fatalf("fail-closed load: %v", err)
+		}
+		return
+	}
+	if err != nil {
+		t.Fatalf("program load: %+v", err)
+	}
+	defer func() { _ = p.Close() }()
+	// The first load also opens what cilium/ebpf caches; a second load of the
+	// same program, retried the same way, adds only the program and the BTF
+	// that cilium/ebpf keeps for it, as the unhooked load in both-fail-open
+	// does. A BTF the supervisor loaded for an attempt would be one more.
+	before := openFiles(t)
+	again, err := ebpf.NewProgram(spec)
+	if err != nil {
+		t.Fatalf("second load: %+v", err)
+	}
+	defer func() { _ = again.Close() }()
+	var added []string
+	for fd, target := range openFiles(t) {
+		if before[fd] != target {
+			added = append(added, target)
+		}
+	}
+	slices.Sort(added)
+	if !slices.Equal(added, []string{"anon_inode:bpf-prog", "anon_inode:btf"}) {
+		t.Fatalf("the second load left %v, want one program and its BTF", added)
+	}
+	for _, tc := range []struct {
+		hit  bool
+		want map[string]uint32
+	}{{false, map[string]uint32{"continue-on-hit": 1, "continue-on-miss": 2, "both": 1}}, {true, map[string]uint32{"continue-on-hit": 2, "continue-on-miss": 1, "both": 1}}} {
+		if tc.hit {
+			if err := m.Put(uint32(0), uint32(9)); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if action, _, err := p.Test(make([]byte, 64)); err != nil || action != tc.want[shape] {
+			t.Fatalf("hit=%v: action=%d err=%v, want %d", tc.hit, action, err, tc.want[shape])
+		}
+	}
+}
+
+// openFiles maps each open descriptor to what it refers to.
+func openFiles(t *testing.T) map[string]string {
+	t.Helper()
+	entries, err := os.ReadDir("/proc/self/fd")
+	if err != nil {
+		t.Fatal(err)
+	}
+	files := map[string]string{}
+	for _, e := range entries {
+		if target, err := os.Readlink("/proc/self/fd/" + e.Name()); err == nil {
+			files[e.Name()] = target
+		}
+	}
+	return files
 }

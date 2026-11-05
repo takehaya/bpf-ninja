@@ -75,7 +75,7 @@ func checkAfter(site int, helper asm.Instruction, before, is, out asm.Instructio
 		}
 	}
 	if isLookup {
-		if calls < 1 || calls > 2 || conditions != 1 || branches != calls || len(is) < 2 || (is[1].OpCode.JumpOp() != asm.JEq && is[1].OpCode.JumpOp() != asm.JNE) {
+		if calls < 1 || calls > 2 || conditions != 1 || branches > 2 || len(is) < 2 || (is[1].OpCode.JumpOp() != asm.JEq && is[1].OpCode.JumpOp() != asm.JNE) {
 			return reject(LookupStructure, "not a lookup branch/call structure")
 		}
 	} else if calls != 1 || branches > 1 || conditions != branches || tail && branches != 0 {
@@ -268,6 +268,12 @@ func checkAfter(site int, helper asm.Instruction, before, is, out asm.Instructio
 			}
 			if op == asm.Ja && (cl != asm.JumpClass || ins.Constant != 0 || ins.Dst != 0 || ins.Src != 0) {
 				return reject(BranchEncoding, "noncanonical site jump")
+			}
+			// The value-copy and argument checks read the instruction before a
+			// store or call, not the one the path ran, so a lookup's jump may
+			// only end the postlude.
+			if op == asm.Ja && isLookup && j < len(is)-1 {
+				return reject(LookupStructure, "lookup jump lands inside the postlude")
 			}
 			if op != asm.Ja {
 				allowed := isLookup && cl == asm.JumpClass && (op == asm.JEq || op == asm.JNE) || !isLookup && cl == asm.Jump32Class && op == asm.JSGE

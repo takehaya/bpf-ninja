@@ -146,7 +146,7 @@ class AuditTests(unittest.TestCase):
 
 class RunnerTests(unittest.TestCase):
     def test_syscallhook_binary_requires_all_tests_and_no_skips(self):
-        passed = "--- PASS: TestBpfAutoStatic (0.01s)\n--- PASS: TestIntegrationMapTypes (0.01s)\n--- PASS: TestIntegrationLoader (0.01s)\n--- PASS: TestIntegrationIndirectJump (0.01s)\n"
+        passed = "--- PASS: TestBpfAutoStatic (0.01s)\n--- PASS: TestIntegrationMapTypes (0.01s)\n--- PASS: TestIntegrationLoader (0.01s)\n--- PASS: TestIntegrationIndirectJump (0.01s)\n--- PASS: TestIntegrationJumpLimit (0.01s)\n"
         for output, code, expected in (
             (passed, 0, 0),
             (passed.replace("PASS: TestIntegrationMapTypes", "SKIP: TestIntegrationMapTypes"), 0, 1),
@@ -154,6 +154,7 @@ class RunnerTests(unittest.TestCase):
             ("--- PASS: TestBpfAutoStatic (0.01s)\n--- PASS: TestIntegrationLoader (0.01s)\n--- PASS: TestIntegrationIndirectJump (0.01s)\n", 0, 1),
             ("--- PASS: TestBpfAutoStatic (0.01s)\n--- PASS: TestIntegrationMapTypes (0.01s)\n--- PASS: TestIntegrationLoader (0.01s)\n", 0, 1),
             (passed.replace("--- PASS: TestBpfAutoStatic (0.01s)\n", ""), 0, 1),
+            (passed.replace("--- PASS: TestIntegrationJumpLimit (0.01s)\n", ""), 0, 1),
             # A loader's echoed result inside another test is not the real test's.
             ("=== RUN   TestBpfAutoStatic\n=== RUN   TestIntegrationLoader\n--- PASS: TestIntegrationLoader (0.01s)\n"
              "    --- PASS: TestIntegrationLoader (0.01s)\n--- PASS: TestBpfAutoStatic (0.01s)\n"
@@ -162,7 +163,8 @@ class RunnerTests(unittest.TestCase):
             ("=== RUN   TestBpfAutoStatic\n=== RUN   TestBpfAutoStatic/dispatch\n    --- PASS: TestBpfAutoStatic/dispatch (0.01s)\n"
              "--- PASS: TestBpfAutoStatic (0.01s)\n=== RUN   TestIntegrationMapTypes\n--- PASS: TestIntegrationMapTypes (0.01s)\n"
              "=== RUN   TestIntegrationLoader\n--- PASS: TestIntegrationLoader (0.01s)\n"
-             "=== RUN   TestIntegrationIndirectJump\n--- PASS: TestIntegrationIndirectJump (0.01s)\n", 0, 0),
+             "=== RUN   TestIntegrationIndirectJump\n--- PASS: TestIntegrationIndirectJump (0.01s)\n"
+             "=== RUN   TestIntegrationJumpLimit\n--- PASS: TestIntegrationJumpLimit (0.01s)\n", 0, 0),
             (passed, 1, 1),
             ("testing: warning: no tests to run\nPASS\n", 0, 1),
         ):
@@ -176,7 +178,7 @@ class RunnerTests(unittest.TestCase):
                 self.assertEqual(module.syscallhook_suite("./syscallhook.test", "unused.log"), expected)
                 command = popen.call_args.args[0]
                 self.assertIn("-test.count=1", command)
-                self.assertIn("-test.run=^(TestIntegration(MapTypes|Loader|IndirectJump)|TestBpfAutoStatic)$", command)
+                self.assertIn("-test.run=^(TestIntegration(MapTypes|Loader|IndirectJump|JumpLimit)|TestBpfAutoStatic)$", command)
 
     def test_libpcap_tag_used_for_listing_and_running(self):
         package, test = module.PROGRAM, "TestBpfLegacy"

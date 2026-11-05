@@ -73,7 +73,8 @@ func TestBpfMapCallEquivalence(t *testing.T) {
 		}
 		shapes[fmt.Sprintf("floor=%d", c.Floor)]++
 		shapes["feature="+c.Feature]++
-		for _, config := range []string{"typed-any", "typed-error", "typed-miss", "static-any", "dispatch-any", "dispatch-static", "copy-readonly"} {
+		for _, config := range []string{"typed-any", "typed-error", "typed-miss", "static-any", "dispatch-any", "dispatch-static", "copy-readonly",
+			"typed-any/miss-first", "typed-error/miss-first", "dispatch-any/miss-first", "copy-readonly/miss-first"} {
 			if selected := os.Getenv("BPF_NINJA_EQUIV_CONFIG"); selected != "" && selected != config {
 				continue
 			}
@@ -269,10 +270,12 @@ func equivRejection(t *testing.T, reasons map[string]int, stage string, seed int
 	}
 }
 
+// request builds config's request; a "/miss-first" suffix sets MissFirst.
 func (c equivCase) request(config string) LookupRequest {
+	config, missFirst := strings.CutSuffix(config, "/miss-first")
 	r := LookupRequest{ProgramName: "p", Auto: true, HookName: "eq", Entry: true, TailCalls: c.Tail,
 		Lookups: LookupAny, Updates: CallAny, Deletes: CallAny, Pushes: CallAny, Pops: CallAny, Peeks: CallAny,
-		Stack: StackAudit{LowestOffset: c.Floor}}
+		MissFirst: missFirst, Stack: StackAudit{LowestOffset: c.Floor}}
 	switch config {
 	case "typed-error":
 		r.Lookups, r.Updates, r.Deletes, r.Pushes, r.Pops, r.Peeks = LookupHit, CallError, CallError, CallError, CallError, CallError

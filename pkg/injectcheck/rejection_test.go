@@ -110,9 +110,9 @@ func TestRejectTwoCallPaths(t *testing.T) {
 	// then observes the hook's R0 instead of the lookup result.
 	in, out, c = twoCallLookup(2, 2)
 	expectPairKind(t, "ja-skips-R0-restore", in, out, c, ResultPath)
-	// ja +0 runs both hooks on one path.
+	// ja +0 would run both hooks on one path; a lookup's jump must end the postlude.
 	in, out, c = twoCallLookup(3, 0)
-	expectPairKind(t, "two-hooks-one-path", in, out, c, MultipleCalls)
+	expectPairKind(t, "two-hooks-one-path", in, out, c, LookupStructure)
 }
 
 func TestRejectTailReadsR0(t *testing.T) {
@@ -282,6 +282,67 @@ func TestPostludeRejectionKinds(t *testing.T) {
 	in, out, c := callingConventionFixture(true)
 	out[10] = asm.JEq.Imm(asm.R0, 0, "")
 	expectPairKind(t, "tail-branch", in, out, c, HelperStructure)
+}
+
+// A hit-only lookup may fall through to a jump over its hook. The walk still
+// decides which result reaches the call.
+func TestLookupHitJumpsOverHook(t *testing.T) {
+	_, base, _ := callingConventionFixture(false)
+	post := func(guard, jump asm.Instruction, jumpOffset int16, more ...asm.Instruction) asm.Instructions {
+		guard.Offset, jump.Offset = 1, jumpOffset
+		p := asm.Instructions{base[8], guard}
+		p = append(p, more...)
+		p = append(p, jump)
+		return append(p, clone(base[10:15])...)
+	}
+	in, out, c := replacePostlude(post(asm.JNE.Imm(asm.R0, 0, ""), asm.Ja.Label(""), 4))
+	if _, err := checkFixture(in, out, c); err != nil {
+		t.Fatalf("hit-only postlude rejected: %v", err)
+	}
+	in, out, c = replacePostlude(post(asm.JEq.Imm(asm.R0, 0, ""), asm.Ja.Label(""), 4))
+	expectPairKind(t, "hook-on-miss", in, out, c, CallTarget)
+	in, out, c = replacePostlude(post(asm.JNE.Imm(asm.R0, 0, ""), asm.Ja.Label(""), 4, asm.Ja.Label("")))
+	expectPairKind(t, "extra-jump", in, out, c, LookupStructure)
+}
+
+// A lookup's jump must reach the R0 restore: landing on a value copy's store
+// would store whatever R1 held as the value, since the copy check reads the
+// instruction before the store, not the one the path ran.
+func TestLookupJumpEndsPostlude(t *testing.T) {
+	ctxLoad := asm.LoadMem(asm.R1, asm.RFP, -16, asm.DWord)
+	copyValue := asm.Instructions{asm.LoadMem(asm.R1, asm.R0, 0, asm.DWord), asm.StoreMem(asm.RFP, -48, asm.R1, asm.DWord)}
+	args := asm.Instructions{ctxLoad, asm.LoadMem(asm.R2, asm.RFP, -24, asm.DWord), asm.Mov.Reg(asm.R3, asm.RFP), asm.Add.Imm(asm.R3, -48), asm.Call.Label("hook")}
+	_, base, _ := callingConventionFixture(false)
+	for _, tc := range []struct {
+		name string
+		post asm.Instructions
+		want Kind
+	}{
+		{"copy-miss-first", asm.Instructions{asm.JNE.Imm(asm.R0, 0, ""), asm.Ja.Label("")}, ""},
+		{"ctx-then-jump-onto-copy-store", asm.Instructions{asm.JEq.Imm(asm.R0, 0, ""), ctxLoad, asm.Ja.Label("")}, LookupStructure},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			post := asm.Instructions{base[8]}
+			post = append(post, tc.post...)
+			post = append(post, copyValue...)
+			post = append(post, args...)
+			post = append(post, base[14])
+			switch tc.name {
+			case "copy-miss-first":
+				post[1].Offset, post[2].Offset = 1, int16(len(copyValue)+len(args))
+			default:
+				post[1].Offset, post[3].Offset = int16(2+len(copyValue)+len(args)), 1
+			}
+			in, out, c := replacePostlude(post)
+			if tc.want == "" {
+				if _, err := checkFixture(in, out, c); err != nil {
+					t.Fatalf("rejected: %v", err)
+				}
+				return
+			}
+			expectPairKind(t, tc.name, in, out, c, tc.want)
+		})
+	}
 }
 
 func TestRegionRejectionKinds(t *testing.T) {
