@@ -67,7 +67,7 @@ cap() {
   if [[ "$name" == member_equal ]]; then cat "$dir/cap.err"; cat "$dir/decoded"; fi
   checks=$((checks+1))
 }
-start policies.o '[{"program":"entry","auto":true,"ops":["lookup:any"],"hook":"ninja","stack_lowest_offset":-16}]'
+start policies.o '[{"program":"entry","auto":true,"ops":["lookup:any"],"hook":"ninja"}]'
 schema ninja_policies 'value->action'
 grep -F 'key->dport' "$work/schema-ninja_policies" > /dev/null
 cap member_equal ninja_policies 443 --arg-filter 'value->action==2'
@@ -87,7 +87,7 @@ cap member_set_dotted ninja_policies 443 --set "flows.prod=$pin/ports,key(dport=
 ./bpf-ninja set del "$pin/ports" dport=47873 > /dev/null
 cap member_set_removed ninja_policies none --set "ports=$pin/ports,key(dport=arg:key->dport)" --arg-filter @ports
 # The walkthrough's scalar value pointers are u32 for bloom, u64 for queue.
-start walkthrough.o '[{"program":"entry","auto":true,"ops":["push:any","pop:any","peek:any"],"hook":"ninja","stack_lowest_offset":-64}]'
+start walkthrough.o '[{"program":"entry","auto":true,"ops":["push:any","pop:any","peek:any"],"hook":"ninja"}]'
 schema ninja_seen_peek 'value[0]'
 cap bloom_scalar ninja_seen_peek 443 --arg-filter 'value[0]==64'
 schema ninja_recent_push 'value[0]'
@@ -96,7 +96,7 @@ cap scalar_not_equal ninja_seen_peek 443 --arg-filter 'value[0]!=80' --arg-filte
 # A typed lookup miss hook has no value arg. Dispatch retains value=NULL.
 # inject-run makes the hook static on kernels without arg:untrusted. Context
 # reads are fault-handled only when a direct-load probe rejects this target.
-start policies.o '[{"program":"entry","auto":true,"dispatch":true,"ops":["lookup:any"],"hook":"observe","stack_lowest_offset":-16}]'
+start policies.o '[{"program":"entry","auto":true,"dispatch":true,"ops":["lookup:any"],"hook":"observe"}]'
 cap dispatch_null observe 22 --arg-filter 'value==null'
 cap dispatch_nonnull observe '80,443' --arg-filter 'value!=null'
 cap dispatch_null_exit observe 22 --mode exit --arg-filter 'value==null'

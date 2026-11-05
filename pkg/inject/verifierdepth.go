@@ -49,11 +49,17 @@ type FrameSlots struct {
 
 // StackReport is the verifier-backed stack accounting for one trial load.
 type StackReport struct {
-	Source        string       `json:"source"`
-	Kernel        string       `json:"kernel,omitempty"`
-	FrameRounding int          `json:"frame_rounding,omitempty"`
-	Functions     []FrameFloor `json:"functions"`
-	Error         string       `json:"error,omitempty"`
+	Source           string            `json:"source"`
+	Kernel           string            `json:"kernel,omitempty"`
+	FrameRounding    int               `json:"frame_rounding,omitempty"`
+	Functions        []FrameFloor      `json:"functions"`
+	SkippedFunctions []SkippedFunction `json:"skipped_functions,omitempty"`
+	Error            string            `json:"error,omitempty"`
+}
+
+type SkippedFunction struct {
+	Name   string `json:"name"`
+	Reason string `json:"reason"`
 }
 
 // Frames returns the usable per-function floors. Dead and unsafe old-kernel
@@ -189,6 +195,7 @@ func FrameFloors(depths []int, loadedFuncs []string, insns asm.Instructions, ker
 		if kernel.Major < 6 || kernel.Major == 6 && kernel.Minor < 8 {
 			if !exact {
 				floor.SkipReason = "kernel before 6.8 does not count variable-offset stack accesses and the text scan is not exact"
+				report.SkippedFunctions = append(report.SkippedFunctions, SkippedFunction{Name: fn.name, Reason: floor.SkipReason})
 			}
 		}
 		report.Functions = append(report.Functions, floor)

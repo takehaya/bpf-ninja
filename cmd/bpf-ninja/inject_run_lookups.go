@@ -14,7 +14,7 @@ import (
 )
 
 // lookupsJSONVersion changes only when a field changes meaning or goes away.
-const lookupsJSONVersion = 1
+const lookupsJSONVersion = 2
 
 // lookupsRuleHook is the hook name the suggested rules use.
 const lookupsRuleHook = "ninja"
@@ -27,9 +27,8 @@ type lookupsFileJSON struct {
 // discoveredProgJSON is one program load. Calls lists every map helper call
 // the transform knows, with the op as kind; Reason and Generic are as for a
 // lookup.
-// Rule instruments every named map with lookups; its stack_lowest_offset is
-// null because only the caller can audit the stack, so the rule is refused
-// until it is filled in.
+// Rule instruments every named map with lookups. The stack block records the
+// trial load's verifier-backed per-function floors.
 type discoveredProgJSON struct {
 	Program string              `json:"program"`
 	Func    string              `json:"func"`
@@ -39,6 +38,7 @@ type discoveredProgJSON struct {
 	Lookups []hookSiteJSON      `json:"lookups"`
 	Calls   []hookSiteJSON      `json:"calls"`
 	Rule    syscallhook.Rule    `json:"rule"`
+	Stack   *inject.StackReport `json:"stack,omitempty"`
 }
 
 // discoveredMapJSON is one map the program references, with the PCs of its
@@ -54,6 +54,20 @@ type discoveredMapJSON struct {
 func discoveryJSON(d syscallhook.Discovery) discoveredProgJSON {
 	out := discoveredProgJSON{Program: d.Program, Func: d.Func, Type: d.Type.String(), CtxType: inject.ContextType(d.Type),
 		Maps: []discoveredMapJSON{}, Lookups: []hookSiteJSON{}, Calls: []hookSiteJSON{}}
+	if d.Stack.Source != "" {
+		out.Stack = &d.Stack
+	}
+	floors := make(map[string]int16, len(d.Stack.Functions))
+	for _, frame := range d.Stack.Functions {
+		floors[frame.Name] = frame.Floor
+	}
+	setFrame := func(site *hookSiteJSON, name string) {
+		floor, ok := floors[name]
+		if out.Stack == nil || name == "" || !ok {
+			return
+		}
+		site.Frame, site.Floor = name, &floor
+	}
 	index := map[string]int{}
 	addMap := func(name string) int {
 		i, ok := index[name]
@@ -65,7 +79,9 @@ func discoveryJSON(d syscallhook.Discovery) discoveredProgJSON {
 		return i
 	}
 	for _, site := range d.Lookups {
-		out.Lookups = append(out.Lookups, discoveredSiteJSON(site))
+		s := discoveredSiteJSON(site)
+		setFrame(&s, site.FuncName)
+		out.Lookups = append(out.Lookups, s)
 		if site.MapName == "" {
 			continue
 		}
@@ -87,7 +103,9 @@ func discoveryJSON(d syscallhook.Discovery) discoveredProgJSON {
 		addMap(name)
 	}
 	for _, site := range d.Calls {
-		out.Calls = append(out.Calls, discoveredSiteJSON(site))
+		s := discoveredSiteJSON(site)
+		setFrame(&s, site.FuncName)
+		out.Calls = append(out.Calls, s)
 		if i, ok := index[site.MapName]; ok && !slices.Contains(out.Maps[i].Ops, string(site.Op)) {
 			out.Maps[i].Ops = append(out.Maps[i].Ops, string(site.Op))
 		}

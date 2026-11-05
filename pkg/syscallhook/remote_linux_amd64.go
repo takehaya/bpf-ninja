@@ -209,6 +209,50 @@ func (r *remote) info(fd uint32, size int) ([]byte, error) {
 	}
 	return readMemory(r.pid, addr, uint64(size))
 }
+
+func (r *remote) progFuncInfo(fd uint32) ([]byte, error) {
+	const (
+		infoSize       = 152
+		funcRecSizeOff = 132
+		funcInfoOff    = 136
+		funcCountOff   = 144
+	)
+	info, err := r.info(fd, infoSize)
+	if err != nil {
+		return nil, err
+	}
+	count := u32(info, funcCountOff)
+	if count == 0 || uint64(count)*8 > maxBuffer {
+		return nil, fmt.Errorf("tracee program fd %d has invalid func_info count %d", fd, count)
+	}
+	recordsAddr, err := r.alloc(make([]byte, int(count)*8))
+	if err != nil {
+		return nil, err
+	}
+	query := make([]byte, infoSize)
+	put32(query, funcRecSizeOff, 8)
+	put64(query, funcInfoOff, recordsAddr)
+	put32(query, funcCountOff, count)
+	queryAddr, err := r.alloc(query)
+	if err != nil {
+		return nil, err
+	}
+	attr := make([]byte, 16)
+	put32(attr, 0, fd)
+	put32(attr, 4, infoSize)
+	put64(attr, 8, queryAddr)
+	if _, err := r.bpf(unix.BPF_OBJ_GET_INFO_BY_FD, attr); err != nil {
+		return nil, fmt.Errorf("tracee program func_info fd %d: %w", fd, err)
+	}
+	updated, err := readMemory(r.pid, queryAddr, infoSize)
+	if err != nil {
+		return nil, err
+	}
+	if got := u32(updated, funcCountOff); got != count {
+		return nil, fmt.Errorf("tracee program func_info count changed from %d to %d", count, got)
+	}
+	return readMemory(r.pid, recordsAddr, uint64(count)*8)
+}
 func (r *remote) finish(ret int64) error {
 	if r.broken != nil {
 		return r.broken

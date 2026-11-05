@@ -27,7 +27,7 @@ func loadCheckPolicy(err error, failClosed bool) (bool, error) {
 }
 
 // Layout hints remain untrusted; injectcheck accounts for every instruction.
-func loadCheckInputs(original asm.Instructions, result *inject.LookupResultRaw, floor int16) (injectcheck.Certificate, injectcheck.Premises, error) {
+func loadCheckInputs(original asm.Instructions, result *inject.LookupResultRaw, audit inject.StackAudit, stack inject.StackReport) (injectcheck.Certificate, injectcheck.Premises, error) {
 	names := map[string]bool{}
 	for _, h := range result.Hooks {
 		names[h.Name] = true
@@ -56,7 +56,11 @@ func loadCheckInputs(original asm.Instructions, result *inject.LookupResultRaw, 
 		}
 		return cert, injectcheck.Premises{}, fmt.Errorf("checker cannot build site targets: %w", err)
 	}
-	return cert, injectcheck.Premises{LowestOffset: floor, Targets: targets}, nil
+	frames := make([]injectcheck.FrameFloor, 0, len(stack.Functions))
+	for _, frame := range stack.Functions {
+		frames = append(frames, injectcheck.FrameFloor{Start: frame.Start, LowestOffset: frame.Floor})
+	}
+	return cert, injectcheck.Premises{LowestOffset: audit.LowestOffset, Frames: frames, Targets: targets}, nil
 }
 
 // checkLoad validates the assembled wire stream, not the transformer's symbolic projection.

@@ -26,7 +26,7 @@ import (
 // site to one hook named Hook (see inject.LookupRequest.Dispatch); a lookup or
 // tail-call site then needs a fourth spill slot in a frame that also calls the
 // hook. Auto checks that larger bound after discovery and skips groups that do
-// not fit; an explicit selection requires stack_lowest_offset of at least -448.
+// not fit; an explicit selection is checked against its function's verifier floor.
 // Ops picks the map operations a rule's hooks observe, as op or op:when:
 // "lookup" or "lookup:hit", "lookup:miss" or "lookup:any" (see
 // inject.LookupRequest.Lookups), "update" or "update:error", "update:any",
@@ -36,27 +36,25 @@ import (
 // needs auto, and an update needs one spill slot more (two with dispatch).
 // MapBTF pins an ELF source for a BTF-less map and optionally selects exact
 // BTF names to fill untyped sides; already typed sides accept only the same type.
-// StackLowestOffset is the caller's audit of all stack accesses, including
-// aliases and callees (see inject.StackAudit).
 type Rule struct {
-	Program           string   `json:"program"`
-	Auto              bool     `json:"auto,omitempty"`
-	Maps              []string `json:"maps,omitempty"`
-	Entry             bool     `json:"entry,omitempty"`
-	TailCalls         bool     `json:"tail_calls,omitempty"`
-	CopyReadOnly      bool     `json:"copy_read_only,omitempty"`
-	StaticUntrusted   bool     `json:"static_untrusted,omitempty"`
-	Dispatch          bool     `json:"dispatch,omitempty"`
-	Ops               []string `json:"ops,omitempty"`
-	MapBTF            *MapBTF  `json:"map_btf,omitempty"`
-	Map               string   `json:"map,omitempty"`
-	Func              string   `json:"func,omitempty"`
-	Line              uint32   `json:"line,omitempty"`
-	AllMatches        bool     `json:"all_matches,omitempty"`
-	SitePCs           []uint32 `json:"site_pcs,omitempty"`
-	Hook              string   `json:"hook"`
-	StackLowestOffset *int16   `json:"stack_lowest_offset"`
-	FrameRounding     int      `json:"frame_rounding,omitempty"`
+	Program           string          `json:"program"`
+	Auto              bool            `json:"auto,omitempty"`
+	Maps              []string        `json:"maps,omitempty"`
+	Entry             bool            `json:"entry,omitempty"`
+	TailCalls         bool            `json:"tail_calls,omitempty"`
+	CopyReadOnly      bool            `json:"copy_read_only,omitempty"`
+	StaticUntrusted   bool            `json:"static_untrusted,omitempty"`
+	Dispatch          bool            `json:"dispatch,omitempty"`
+	Ops               []string        `json:"ops,omitempty"`
+	MapBTF            *MapBTF         `json:"map_btf,omitempty"`
+	Map               string          `json:"map,omitempty"`
+	Func              string          `json:"func,omitempty"`
+	Line              uint32          `json:"line,omitempty"`
+	AllMatches        bool            `json:"all_matches,omitempty"`
+	SitePCs           []uint32        `json:"site_pcs,omitempty"`
+	Hook              string          `json:"hook"`
+	StackLowestOffset json.RawMessage `json:"stack_lowest_offset,omitempty"`
+	FrameRounding     int             `json:"frame_rounding,omitempty"`
 }
 
 // MapBTF pins the ELF supplying missing map BTF types to a SHA-256 digest.
@@ -71,10 +69,6 @@ type MapBTF struct {
 // request forwards the transform options; the supervisor handles Program and
 // the map type source before calling the transform.
 func (r Rule) request() inject.LookupRequestRaw {
-	var lo int16
-	if r.StackLowestOffset != nil {
-		lo = *r.StackLowestOffset
-	}
 	ops, _ := parseOps(r.Ops) // Validate reports the error
 	return inject.LookupRequestRaw{
 		Site:            inject.LookupSelector{MapName: r.Map, FuncName: r.Func, Line: r.Line, AllMatches: r.AllMatches, SitePCs: r.SitePCs},
@@ -92,7 +86,7 @@ func (r Rule) request() inject.LookupRequestRaw {
 		Pops:            ops.pops,
 		Peeks:           ops.peeks,
 		HookName:        r.Hook,
-		Stack:           inject.StackAudit{LowestOffset: lo, FrameRounding: r.FrameRounding},
+		Stack:           inject.StackAudit{FrameRounding: r.FrameRounding},
 	}
 }
 
@@ -178,8 +172,8 @@ func Validate(rules []Rule) error {
 		if r.AllMatches && len(r.SitePCs) > 0 {
 			return fmt.Errorf("rule %d: all_matches and site_pcs are mutually exclusive", i)
 		}
-		if r.StackLowestOffset == nil {
-			return fmt.Errorf("rule %d: audited stack_lowest_offset is required", i)
+		if r.StackLowestOffset != nil {
+			return fmt.Errorf("rule %d: stack_lowest_offset is no longer accepted; inject-run takes the stack floor from the verifier; remove the field", i)
 		}
 		// The hook-name and stack limits come from inject, so Validate cannot
 		// drift from the transform. The generic-hook map slot, a CopyReadOnly

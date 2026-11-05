@@ -77,7 +77,7 @@ func TestFrameFloorsPre68SkipInexactFunction(t *testing.T) {
 	if f.SkipReason == "" || !strings.Contains(f.SkipReason, "before 6.8") {
 		t.Fatalf("floor = %+v", f)
 	}
-	if len(report.Frames()) != 0 {
+	if len(report.Frames()) != 0 || len(report.SkippedFunctions) != 1 || report.SkippedFunctions[0].Name != "entry" {
 		t.Fatalf("frames = %v", report.Frames())
 	}
 }

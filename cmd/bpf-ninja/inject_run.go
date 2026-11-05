@@ -72,7 +72,7 @@ func newInjectRunCommand() *cli.Command {
 			}
 			ctx, cancel := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 			defer cancel()
-			opts := syscallhook.Options{Rules: rules, FailClosed: cmd.Bool("fail-closed")}
+			opts := syscallhook.Options{Rules: rules, FailClosed: cmd.Bool("fail-closed"), FrameRounding: runningKernelFrameRounding()}
 			// The target owns stdout, so the hooks go to a file. It exists,
 			// empty, before the target starts.
 			var hooksErr, lookupsErr error

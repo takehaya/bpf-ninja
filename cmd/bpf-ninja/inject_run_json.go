@@ -20,7 +20,7 @@ import (
 )
 
 // hooksJSONVersion changes only when a field changes meaning or goes away.
-const hooksJSONVersion = 1
+const hooksJSONVersion = 2
 
 type hooksFileJSON struct {
 	Version  int                `json:"version"`
@@ -38,6 +38,7 @@ type injectedProgJSON struct {
 	HookForm syscallhook.HookForm `json:"hook_form"`
 	Hooks    []hookJSON           `json:"hooks"`
 	Skipped  []hookSiteJSON       `json:"skipped"`
+	Stack    *inject.StackReport  `json:"stack,omitempty"`
 	// DeadCheckError names hook comparisons that failed. Those hooks and any
 	// site they may report stay unmarked; independent known results remain.
 	DeadCheckError string `json:"dead_check_error,omitempty"`
@@ -71,6 +72,8 @@ type hookSiteJSON struct {
 	File      string `json:"file,omitempty"`
 	Line      uint32 `json:"line,omitempty"`
 	CtxSource string `json:"ctx_source,omitempty"`
+	Frame     string `json:"frame,omitempty"`
+	Floor     *int16 `json:"floor,omitempty"`
 	Reason    string `json:"reason,omitempty"`
 	When      string `json:"when,omitempty"`
 	// Generic is set only in the lookups file: auto instruments the lookup
@@ -181,14 +184,34 @@ func hookKind(hook inject.LookupHook) string {
 func injectionJSON(inj syscallhook.Injection) injectedProgJSON {
 	out := injectedProgJSON{HookForm: inj.HookForm, Program: inj.Program, Func: inj.Func, Type: inj.Type.String(), ProgID: inj.ProgID,
 		CtxType: inject.ContextType(inj.Type), Hooks: []hookJSON{}, Skipped: []hookSiteJSON{}}
+	floors := make(map[string]int16, len(inj.Stack.Functions))
+	for _, frame := range inj.Stack.Functions {
+		floors[frame.Name] = frame.Floor
+	}
+	if inj.Stack.Source != "" {
+		out.Stack = &inj.Stack
+	}
+	setFrame := func(site *hookSiteJSON, name string) {
+		if out.Stack == nil || name == "" {
+			return
+		}
+		floor, ok := floors[name]
+		if !ok {
+			return
+		}
+		site.Frame, site.Floor = name, &floor
+	}
 	dispatch := -1
 	for _, hook := range inj.Hooks {
 		var sites []hookSiteJSON
 		if hook.Dispatch && hook.Kind == inject.HookEntry {
-			sites = append(sites, hookSiteJSON{Kind: string(inject.HookEntry), PC: inject.DispatchEntrySite})
+			site := hookSiteJSON{Kind: string(inject.HookEntry), PC: inject.DispatchEntrySite}
+			setFrame(&site, inj.Func)
+			sites = append(sites, site)
 		}
 		for _, site := range hook.Sites {
 			s := siteJSON(hook.Kind, site)
+			setFrame(&s, site.FuncName)
 			if hook.Dispatch && hook.Kind.MapCall() {
 				s.When = hook.When
 			}
@@ -234,7 +257,9 @@ func injectionJSON(inj syscallhook.Injection) injectedProgJSON {
 		if kind == "" {
 			kind = inject.HookLookup
 		}
-		out.Skipped = append(out.Skipped, siteJSON(kind, site))
+		s := siteJSON(kind, site)
+		setFrame(&s, site.FuncName)
+		out.Skipped = append(out.Skipped, s)
 	}
 	return out
 }

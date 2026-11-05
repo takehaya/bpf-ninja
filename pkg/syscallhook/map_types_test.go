@@ -254,7 +254,7 @@ func TestMapTypesConfig(t *testing.T) {
 		})
 	}
 	want := &MapBTF{ELF: "loader.o", SHA256: base.MapBTF.SHA256, KeyType: "u32", ValueType: "record"}
-	rules, err := ParseConfig(strings.NewReader(`[{"program":"p","map":"sessions","hook":"h","stack_lowest_offset":-8,"map_btf":{"elf":"loader.o","sha256":"` + want.SHA256 + `","key_type":"u32","value_type":"record"}}]`))
+	rules, err := ParseConfig(strings.NewReader(`[{"program":"p","map":"sessions","hook":"h","map_btf":{"elf":"loader.o","sha256":"` + want.SHA256 + `","key_type":"u32","value_type":"record"}}]`))
 	if err != nil || !reflect.DeepEqual(rules[0].MapBTF, want) {
 		t.Fatalf("parse: %+v %v", rules, err)
 	}
@@ -271,7 +271,7 @@ func TestMapBTFConfigShape(t *testing.T) {
 		{"unknown-nested-key", `,"map_btf":{"elf":"loader.o","sha256":"` + strings.Repeat("a", 64) + `","typo":true}`, `injection config: json: unknown field "typo"`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			input := `[{"program":"p","map":"sessions","hook":"h","stack_lowest_offset":-8` + tc.field + `}]`
+			input := `[{"program":"p","map":"sessions","hook":"h"` + tc.field + `}]`
 			rules, err := ParseConfig(strings.NewReader(input))
 			if tc.want != "" {
 				if err == nil || !strings.Contains(err.Error(), tc.want) {

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/cilium/ebpf"
@@ -108,6 +109,21 @@ func TestInjectionJSON(t *testing.T) {
 	}
 }
 
+func TestInjectionJSONReportsZeroFloor(t *testing.T) {
+	in := syscallhook.Injection{Program: "p", Func: "entry", Type: ebpf.XDP,
+		Stack: inject.StackReport{Source: "verifier", Functions: []inject.FrameFloor{{Name: "entry", Floor: 0}}},
+		Hooks: []inject.LookupHook{{Name: "h", Kind: inject.HookLookup, Sites: []inject.LookupSite{{FuncName: "entry"}}}}}
+	b, err := json.Marshal(injectionJSON(in))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{`"stack":{"source":"verifier"`, `"frame":"entry","floor":0`} {
+		if !strings.Contains(string(b), want) {
+			t.Fatalf("%s does not contain %s", b, want)
+		}
+	}
+}
+
 func TestHooksWriter(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "hooks.json")
 	read := func() hooksFileJSON {
@@ -126,7 +142,7 @@ func TestHooksWriter(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if f := read(); f.Version != 1 || f.Programs == nil || len(f.Programs) != 0 {
+	if f := read(); f.Version != 2 || f.Programs == nil || len(f.Programs) != 0 {
 		t.Fatalf("initial file: %+v", f)
 	}
 	for _, name := range []string{"a", "b"} {

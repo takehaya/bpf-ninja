@@ -49,17 +49,13 @@ func TestDiscoveryJSON(t *testing.T) {
 		`{"kind":"delete","pc":35,"map":"x.bss","func":"tail_lb_ipv4_full"},` +
 		`{"kind":"lookup","pc":41,"map":"services","func":"sub","reason":"lookup is not in the entry function"},` +
 		`{"kind":"lookup","pc":50,"func":"tail_lb_ipv4_full","reason":"R1 is not a direct map reference","generic":true}],` +
-		`"rule":{"program":"tail_lb_ipv4_full","auto":true,"maps":["services","backends"],"hook":"ninja","stack_lowest_offset":null}}`
+		`"rule":{"program":"tail_lb_ipv4_full","auto":true,"maps":["services","backends"],"hook":"ninja"}}`
 	if string(got) != want {
 		t.Fatalf("got\n%s\nwant\n%s", got, want)
 	}
-	// The rule is refused until the stack audit is filled in, and then parses.
+	// Discovery emits a rule that parses without a caller-supplied floor.
 	rule, _ := json.Marshal([]syscallhook.Rule{discoveryJSON(d).Rule})
-	if _, err := syscallhook.ParseConfig(strings.NewReader(string(rule))); err == nil {
-		t.Fatal("accepted a rule without stack_lowest_offset")
-	}
-	filled := strings.Replace(string(rule), `"stack_lowest_offset":null`, `"stack_lowest_offset":-64`, 1)
-	if rules, err := syscallhook.ParseConfig(strings.NewReader(filled)); err != nil || len(rules[0].Maps) != 2 {
-		t.Fatalf("%s: %+v %v", filled, rules, err)
+	if rules, err := syscallhook.ParseConfig(strings.NewReader(string(rule))); err != nil || len(rules[0].Maps) != 2 {
+		t.Fatalf("%s: %+v %v", rule, rules, err)
 	}
 }

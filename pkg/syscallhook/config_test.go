@@ -19,6 +19,8 @@ func fillNonZero(t *testing.T, v reflect.Value) {
 		v.SetString("x")
 	case reflect.Uint32:
 		v.SetUint(7)
+	case reflect.Uint8:
+		v.SetUint(1)
 	case reflect.Int16:
 		v.SetInt(-8)
 	case reflect.Int:
@@ -56,91 +58,30 @@ func TestRuleRequestForwardsOptions(t *testing.T) {
 		r := full
 		f := reflect.ValueOf(&r).Elem().Field(i)
 		f.Set(reflect.Zero(f.Type()))
-		if forwarded := !reflect.DeepEqual(r.request(), want); forwarded != (name != "Program" && name != "MapBTF") {
+		if forwarded := !reflect.DeepEqual(r.request(), want); forwarded != (name != "Program" && name != "MapBTF" && name != "StackLowestOffset") {
 			t.Errorf("%s: forwarded=%v", name, forwarded)
 		}
 	}
 }
 
-// Validate's stack bound comes from inject.ValidateRaw, so the two cannot
-// drift: the base reserve is accepted, a too-low audit is refused with the
-// transform's own message, and a missing audit is refused.
-func TestValidateStack(t *testing.T) {
-	rule := func(lo int16) Rule { return Rule{Program: "p", Map: "sessions", Hook: "h", StackLowestOffset: &lo} }
-	for _, lo := range []int16{0, -8, -456} {
-		if err := Validate([]Rule{rule(lo)}); err != nil {
-			t.Fatalf("lo=%d rejected: %v", lo, err)
+func TestRuleWithStackLowestOffsetRejected(t *testing.T) {
+	for _, value := range []string{"-8", "null"} {
+		_, err := ParseConfig(strings.NewReader(`[{"program":"p","map":"sessions","hook":"h","stack_lowest_offset":` + value + `}]`))
+		if err == nil || !strings.Contains(err.Error(), "stack_lowest_offset is no longer accepted") || !strings.Contains(err.Error(), "remove the field") {
+			t.Fatalf("value %s: error = %v", value, err)
 		}
-	}
-	autoRule := rule(-456)
-	autoRule.Map = ""
-	autoRule.Auto = true
-	autoRule.Ops = []string{"lookup:any", "update:any"}
-	if err := Validate([]Rule{autoRule}); err != nil {
-		t.Fatalf("auto flags rejected before site discovery: %v", err)
-	}
-	for _, lo := range []int16{1, -457, -488, -513} {
-		got := Validate([]Rule{rule(lo)})
-		want := inject.ValidateRaw(rule(lo).request())
-		if got == nil || want == nil || !strings.Contains(got.Error(), want.Error()) {
-			t.Fatalf("lo=%d: Validate=%v, CheckLookupStack=%v", lo, got, want)
-		}
-	}
-	invalidRounding := rule(-8)
-	invalidRounding.FrameRounding = 8
-	if err := Validate([]Rule{invalidRounding}); err == nil || !strings.Contains(err.Error(), "FrameRounding must be 16 or 32") {
-		t.Fatalf("invalid frame rounding: %v", err)
-	}
-	// Without a lookup, entry reserves only the ctx slot and tail_calls the
-	// ctx and index slots. Auto preflights only the three base lookup slots;
-	// the transform applies operation and dispatch slots to discovered groups.
-	flagged := func(lo int16, set func(*Rule)) Rule {
-		r := Rule{Program: "p", Hook: "h", StackLowestOffset: &lo}
-		set(&r)
-		return r
-	}
-	entry := func(r *Rule) { r.Entry = true }
-	tails := func(r *Rule) { r.TailCalls = true }
-	auto := func(r *Rule) { r.Auto, r.Entry = true, true }
-	dispatch := func(set func(*Rule)) func(*Rule) { return func(r *Rule) { set(r); r.Dispatch = true } }
-	for _, tc := range []struct {
-		lo      int16
-		set     func(*Rule)
-		ok      bool
-		reserve string
-	}{
-		{-472, entry, true, ""}, {-473, entry, false, "8 reserved"}, {-464, tails, true, ""}, {-465, tails, false, "16 reserved"},
-		{-456, auto, true, ""}, {-464, auto, false, "24 reserved"},
-		{-472, dispatch(entry), true, ""}, {-473, dispatch(entry), false, "8 reserved"},
-		{-448, dispatch(tails), true, ""}, {-449, dispatch(tails), false, "32 reserved"},
-		{-456, dispatch(auto), true, ""}, {-457, dispatch(auto), false, "24 reserved"},
-	} {
-		r := flagged(tc.lo, tc.set)
-		got := Validate([]Rule{r})
-		want := inject.ValidateRaw(r.request())
-		if (got == nil) != tc.ok || (want == nil) != tc.ok || (got != nil && (!strings.Contains(got.Error(), want.Error()) || !strings.Contains(got.Error(), tc.reserve))) {
-			t.Fatalf("%+v: Validate=%v, CheckLookupStack=%v", r, got, want)
-		}
-	}
-	r := rule(0)
-	r.StackLowestOffset = nil
-	if Validate([]Rule{r}) == nil {
-		t.Fatal("nil stack_lowest_offset accepted")
 	}
 }
 
 func TestParseConfigAppliesFrameRoundingBeforeValidation(t *testing.T) {
-	config := `[{"program":"p","auto":true,"ops":["lookup:any","update:any"],"hook":"h","stack_lowest_offset":-480}]`
-	if _, err := ParseConfig(strings.NewReader(config)); err == nil {
-		t.Fatal("default 32-byte rounding accepted a frame past its limit")
-	}
+	config := `[{"program":"p","auto":true,"ops":["lookup:any","update:any"],"hook":"h"}]`
 	rules, err := ParseConfigWithFrameRounding(strings.NewReader(config), 16)
 	if err != nil || len(rules) != 1 || rules[0].FrameRounding != 16 {
 		t.Fatalf("16-byte default: %+v, %v", rules, err)
 	}
 	explicit := strings.Replace(config, `"hook":"h"`, `"frame_rounding":32,"hook":"h"`, 1)
-	if _, err := ParseConfigWithFrameRounding(strings.NewReader(explicit), 16); err == nil {
-		t.Fatal("kernel default replaced an explicit 32-byte rule")
+	if rules, err := ParseConfigWithFrameRounding(strings.NewReader(explicit), 16); err != nil || rules[0].FrameRounding != 32 {
+		t.Fatalf("explicit rounding: %+v %v", rules, err)
 	}
 	for _, value := range []string{"0", "null"} {
 		explicit = strings.Replace(config, `"hook":"h"`, `"frame_rounding":`+value+`,"hook":"h"`, 1)
@@ -151,49 +92,49 @@ func TestParseConfigAppliesFrameRoundingBeforeValidation(t *testing.T) {
 }
 
 func TestConfig(t *testing.T) {
-	valid := `[{"program":"p","map":"sessions","func":"p","line":42,"hook":"lookup_hook","stack_lowest_offset":-8}]`
+	valid := `[{"program":"p","map":"sessions","func":"p","line":42,"hook":"lookup_hook"}]`
 	rules, err := ParseConfig(strings.NewReader(valid))
-	if err != nil || len(rules) != 1 || rules[0].Line != 42 || *rules[0].StackLowestOffset != -8 {
+	if err != nil || len(rules) != 1 || rules[0].Line != 42 {
 		t.Fatalf("%+v: %v", rules, err)
 	}
 	for input, check := range map[string]func(Rule) bool{
 		strings.Replace(valid, `"line":42`, `"line":42,"all_matches":true`, 1): func(r Rule) bool { return r.AllMatches },
 		strings.Replace(valid, `"line":42`, `"line":42,"site_pcs":[3,9]`, 1):   func(r Rule) bool { return len(r.SitePCs) == 2 && r.SitePCs[1] == 9 },
-		`[{"program":"p","auto":true,"hook":"h","stack_lowest_offset":-8}]`:    func(r Rule) bool { return r.Auto && r.Map == "" },
-		`[{"program":"p","auto":true,"maps":["a","b"],"hook":"h","stack_lowest_offset":-8}]`: func(r Rule) bool {
+		`[{"program":"p","auto":true,"hook":"h"}]`:                             func(r Rule) bool { return r.Auto && r.Map == "" },
+		`[{"program":"p","auto":true,"maps":["a","b"],"hook":"h"}]`: func(r Rule) bool {
 			return r.Auto && slices.Equal(r.Maps, []string{"a", "b"})
 		},
-		`[{"program":"p","entry":true,"tail_calls":true,"hook":"h","stack_lowest_offset":-8}]`: func(r Rule) bool {
+		`[{"program":"p","entry":true,"tail_calls":true,"hook":"h"}]`: func(r Rule) bool {
 			return r.Entry && r.TailCalls && r.Map == ""
 		},
-		`[{"program":"p","auto":true,"ops":["lookup:any"],"hook":"h","stack_lowest_offset":-8}]`: func(r Rule) bool {
+		`[{"program":"p","auto":true,"ops":["lookup:any"],"hook":"h"}]`: func(r Rule) bool {
 			return r.request().Lookups == inject.LookupAny
 		},
 		strings.Replace(valid, `"line":42`, `"line":42,"ops":["lookup:miss"]`, 1): func(r Rule) bool { return r.request().Lookups == inject.LookupMiss },
 		strings.Replace(valid, `"line":42`, `"line":42,"ops":["lookup"]`, 1):      func(r Rule) bool { return r.request().Lookups == inject.LookupHit },
-		`[{"program":"p","auto":true,"ops":["update"],"hook":"h","stack_lowest_offset":-448}]`: func(r Rule) bool {
+		`[{"program":"p","auto":true,"ops":["update"],"hook":"h"}]`: func(r Rule) bool {
 			req := r.request()
 			return req.Lookups == inject.LookupNone && req.Updates == inject.CallError && req.Deletes == ""
 		},
-		`[{"program":"p","auto":true,"ops":["delete:any","lookup","update:any"],"hook":"h","stack_lowest_offset":-8}]`: func(r Rule) bool {
+		`[{"program":"p","auto":true,"ops":["delete:any","lookup","update:any"],"hook":"h"}]`: func(r Rule) bool {
 			req := r.request()
 			return req.Lookups == inject.LookupHit && req.Updates == inject.CallAny && req.Deletes == inject.CallAny
 		},
-		`[{"program":"p","auto":true,"ops":["push","pop:any","peek:error"],"hook":"h","stack_lowest_offset":-8}]`: func(r Rule) bool {
+		`[{"program":"p","auto":true,"ops":["push","pop:any","peek:error"],"hook":"h"}]`: func(r Rule) bool {
 			req := r.request()
 			return req.Lookups == inject.LookupNone && req.Pushes == inject.CallError && req.Pops == inject.CallAny && req.Peeks == inject.CallError
 		},
 		// With dispatch an update keeps its value pointer in a fifth slot.
-		`[{"program":"p","auto":true,"dispatch":true,"ops":["update"],"hook":"h","stack_lowest_offset":-440}]`: func(r Rule) bool { return r.Dispatch },
+		`[{"program":"p","auto":true,"dispatch":true,"ops":["update"],"hook":"h"}]`: func(r Rule) bool { return r.Dispatch },
 		// _0_update counts toward the name limit.
-		`[{"program":"p","auto":true,"ops":["update"],"hook":"` + strings.Repeat("h", 118) + `","stack_lowest_offset":-8}]`: func(r Rule) bool { return r.Auto },
+		`[{"program":"p","auto":true,"ops":["update"],"hook":"` + strings.Repeat("h", 118) + `"}]`: func(r Rule) bool { return r.Auto },
 		// The miss hook's suffix counts toward the name limit: _0_miss.
-		`[{"program":"p","auto":true,"ops":["lookup:miss"],"hook":"` + strings.Repeat("h", 120) + `","stack_lowest_offset":-8}]`: func(r Rule) bool { return r.Auto },
-		strings.Replace(valid, `"line":42`, `"line":42,"entry":true`, 1):                                                         func(r Rule) bool { return r.Entry && r.Map == "sessions" },
-		`[{"program":"p","tail_calls":true,"hook":"` + strings.Repeat("h", 117) + `","stack_lowest_offset":-8}]`:                 func(r Rule) bool { return r.TailCalls },
-		`[{"program":"p","auto":true,"hook":"` + strings.Repeat("h", 125) + `","stack_lowest_offset":-8}]`:                       func(r Rule) bool { return r.Auto },
-		`[{"program":"p","entry":true,"hook":"` + strings.Repeat("h", 121) + `","stack_lowest_offset":-8}]`:                      func(r Rule) bool { return r.Entry },
-		`[{"program":"p","auto":true,"tail_calls":true,"dispatch":true,"hook":"` + strings.Repeat("h", 127) + `","stack_lowest_offset":-448}]`: func(r Rule) bool {
+		`[{"program":"p","auto":true,"ops":["lookup:miss"],"hook":"` + strings.Repeat("h", 120) + `"}]`: func(r Rule) bool { return r.Auto },
+		strings.Replace(valid, `"line":42`, `"line":42,"entry":true`, 1):                                func(r Rule) bool { return r.Entry && r.Map == "sessions" },
+		`[{"program":"p","tail_calls":true,"hook":"` + strings.Repeat("h", 117) + `"}]`:                 func(r Rule) bool { return r.TailCalls },
+		`[{"program":"p","auto":true,"hook":"` + strings.Repeat("h", 125) + `"}]`:                       func(r Rule) bool { return r.Auto },
+		`[{"program":"p","entry":true,"hook":"` + strings.Repeat("h", 121) + `"}]`:                      func(r Rule) bool { return r.Entry },
+		`[{"program":"p","auto":true,"tail_calls":true,"dispatch":true,"hook":"` + strings.Repeat("h", 127) + `"}]`: func(r Rule) bool {
 			return r.Dispatch && r.TailCalls
 		},
 	} {
@@ -203,36 +144,34 @@ func TestConfig(t *testing.T) {
 	}
 	for _, input := range []string{
 		`[]`, `null`, valid + ` {}`, valid + strings.Repeat(" ", 1<<20) + ` {}`, strings.Replace(valid, `"line":42`, `"lines":42`, 1),
-		strings.Replace(valid, `,"stack_lowest_offset":-8`, "", 1), strings.Replace(valid, `:-8`, `:1`, 1),
-		strings.Replace(valid, `:-8`, `:-457`, 1), strings.Replace(valid, `"lookup_hook"`, `"bad-name"`, 1),
+		strings.Replace(valid, `"lookup_hook"`, `"bad-name"`, 1),
 		strings.Replace(valid, `"sessions"`, `""`, 1), `[` + valid[1:len(valid)-1] + `,` + valid[1:len(valid)-1] + `]`,
 		strings.Replace(valid, `"line":42`, `"line":42,"all_matches":true,"site_pcs":[3]`, 1),
 		strings.Replace(valid, `"line":42`, `"line":42,"site_pcs":3`, 1),
 		strings.Replace(valid, `"line":42`, `"line":42,"auto":true`, 1),
-		`[{"program":"p","auto":true,"line":4,"hook":"h","stack_lowest_offset":-8}]`,
-		`[{"program":"p","auto":true,"site_pcs":[1],"hook":"h","stack_lowest_offset":-8}]`,
-		`[{"program":"p","auto":false,"hook":"h","stack_lowest_offset":-8}]`,
+		`[{"program":"p","auto":true,"line":4,"hook":"h"}]`,
+		`[{"program":"p","auto":true,"site_pcs":[1],"hook":"h"}]`,
+		`[{"program":"p","auto":false,"hook":"h"}]`,
 		strings.Replace(valid, `"line":42`, `"line":42,"maps":["sessions"]`, 1),
-		`[{"program":"p","entry":true,"maps":["a"],"hook":"h","stack_lowest_offset":-8}]`,
-		`[{"program":"p","entry":true,"line":3,"hook":"h","stack_lowest_offset":-8}]`,
-		`[{"program":"p","tail_calls":true,"hook":"` + strings.Repeat("h", 118) + `","stack_lowest_offset":-8}]`,
-		`[{"program":"p","auto":true,"hook":"` + strings.Repeat("h", 126) + `","stack_lowest_offset":-8}]`,
-		`[{"program":"p","entry":true,"hook":"` + strings.Repeat("h", 122) + `","stack_lowest_offset":-8}]`,
-		`[{"program":"p","map":"m","hook":"` + strings.Repeat("h", 128) + `","stack_lowest_offset":-8}]`,
-		`[{"program":"p","auto":true,"dispatch":true,"hook":"h","stack_lowest_offset":-481}]`,
-		`[{"program":"p","auto":true,"dispatch":true,"copy_read_only":true,"hook":"h","stack_lowest_offset":-8}]`,
-		`[{"program":"p","auto":true,"ops":["lookup:miss"],"hook":"` + strings.Repeat("h", 121) + `","stack_lowest_offset":-8}]`,
-		`[{"program":"p","auto":true,"ops":["update"],"hook":"` + strings.Repeat("h", 119) + `","stack_lowest_offset":-8}]`,
-		`[{"program":"p","map":"m","ops":["update"],"hook":"h","stack_lowest_offset":-8}]`,
-		`[{"program":"p","map":"m","ops":["lookup","delete"],"hook":"h","stack_lowest_offset":-8}]`,
-		`[{"program":"p","auto":true,"ops":["update:miss"],"hook":"h","stack_lowest_offset":-8}]`,
-		`[{"program":"p","auto":true,"ops":["delete","delete:any"],"hook":"h","stack_lowest_offset":-8}]`,
-		`[{"program":"p","auto":true,"ops":["lookup:sometimes"],"hook":"h","stack_lowest_offset":-8}]`,
-		`[{"program":"p","auto":true,"ops":["lookup","lookup:miss"],"hook":"h","stack_lowest_offset":-8}]`,
-		`[{"program":"p","auto":true,"ops":["splice"],"hook":"h","stack_lowest_offset":-8}]`,
-		`[{"program":"p","auto":true,"ops":["push:miss"],"hook":"h","stack_lowest_offset":-8}]`,
-		`[{"program":"p","map":"m","ops":["pop"],"hook":"h","stack_lowest_offset":-8}]`,
-		`[{"program":"p","entry":true,"ops":["lookup"],"hook":"h","stack_lowest_offset":-8}]`,
+		`[{"program":"p","entry":true,"maps":["a"],"hook":"h"}]`,
+		`[{"program":"p","entry":true,"line":3,"hook":"h"}]`,
+		`[{"program":"p","tail_calls":true,"hook":"` + strings.Repeat("h", 118) + `"}]`,
+		`[{"program":"p","auto":true,"hook":"` + strings.Repeat("h", 126) + `"}]`,
+		`[{"program":"p","entry":true,"hook":"` + strings.Repeat("h", 122) + `"}]`,
+		`[{"program":"p","map":"m","hook":"` + strings.Repeat("h", 128) + `"}]`,
+		`[{"program":"p","auto":true,"dispatch":true,"copy_read_only":true,"hook":"h"}]`,
+		`[{"program":"p","auto":true,"ops":["lookup:miss"],"hook":"` + strings.Repeat("h", 121) + `"}]`,
+		`[{"program":"p","auto":true,"ops":["update"],"hook":"` + strings.Repeat("h", 119) + `"}]`,
+		`[{"program":"p","map":"m","ops":["update"],"hook":"h"}]`,
+		`[{"program":"p","map":"m","ops":["lookup","delete"],"hook":"h"}]`,
+		`[{"program":"p","auto":true,"ops":["update:miss"],"hook":"h"}]`,
+		`[{"program":"p","auto":true,"ops":["delete","delete:any"],"hook":"h"}]`,
+		`[{"program":"p","auto":true,"ops":["lookup:sometimes"],"hook":"h"}]`,
+		`[{"program":"p","auto":true,"ops":["lookup","lookup:miss"],"hook":"h"}]`,
+		`[{"program":"p","auto":true,"ops":["splice"],"hook":"h"}]`,
+		`[{"program":"p","auto":true,"ops":["push:miss"],"hook":"h"}]`,
+		`[{"program":"p","map":"m","ops":["pop"],"hook":"h"}]`,
+		`[{"program":"p","entry":true,"ops":["lookup"],"hook":"h"}]`,
 	} {
 		if _, err := ParseConfig(strings.NewReader(input)); err == nil {
 			t.Errorf("accepted %s", input)
@@ -296,6 +235,5 @@ func TestProgAttr(t *testing.T) {
 }
 
 func testRule() Rule {
-	floor := int16(-8)
-	return Rule{Program: "p", Map: "sessions", Hook: "lookup_hook", StackLowestOffset: &floor}
+	return Rule{Program: "p", Map: "sessions", Hook: "lookup_hook"}
 }
