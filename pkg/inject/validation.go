@@ -13,6 +13,20 @@ import (
 
 var ErrCheckerNotApplicable = errors.New("checker not applicable")
 
+func isIndirectJump(ins *asm.Instruction) bool {
+	return ins.OpCode.Class().IsJump() && ins.OpCode.JumpOp() == asm.Ja && ins.OpCode.Source() == asm.RegSource
+}
+
+// IndirectJump returns the raw slot of the first BPF_JA|BPF_X instruction.
+func IndirectJump(insns asm.Instructions) (int, bool) {
+	for it := insns.Iterate(); it.Next(); {
+		if isIndirectJump(it.Ins) {
+			return int(it.Offset), true
+		}
+	}
+	return 0, false
+}
+
 // BuildLookupTargets builds the checker's trusted target binding from the
 // rewrite plan and generated hook symbols, never from transformed call targets.
 func BuildLookupTargets(out asm.Instructions, hooks []LookupHook) ([]injectcheck.SiteTarget, error) {

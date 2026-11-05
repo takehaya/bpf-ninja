@@ -501,3 +501,23 @@ func assertInputKind(t *testing.T, err error, want Kind) {
 		t.Fatalf("got %v, want input kind %s", err, want)
 	}
 }
+
+func TestRejectIndirectJump(t *testing.T) {
+	gotox := func(r asm.Register) asm.Instruction { return asm.Instruction{OpCode: asm.Ja.Op(asm.RegSource), Dst: r} }
+	in, out, c := callingConventionFixture(false)
+	t.Run("both-streams", func(t *testing.T) {
+		a, b := clone(in), clone(out)
+		a[7], b[c.Original[7]] = gotox(asm.R3), gotox(asm.R3)
+		expectPairKind(t, "both-streams", a, b, c, IndirectJump)
+	})
+	t.Run("original-only", func(t *testing.T) {
+		bad := clone(in)
+		bad[7] = gotox(asm.R3)
+		expectPairKind(t, "original-only", bad, out, c, IndirectJump)
+	})
+	t.Run("transformed-only", func(t *testing.T) {
+		bad := clone(out)
+		bad[12] = gotox(asm.R0)
+		expectPairKind(t, "transformed-only", in, bad, c, IndirectJump)
+	})
+}

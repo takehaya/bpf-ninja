@@ -81,7 +81,7 @@ Both must target a non-entry instruction carrying BTF function metadata.
 Malformed loads, already-resolved symbolic loads, missing or duplicate callback symbols, and targets without subprogram metadata are refused.
 Callback support does not change the load shape, liveness certification, spill layout, or default site behavior of `Transform`.
 
-It **refuses** (returning an error wrapping `inject.ErrRefused`, mutating nothing) on: a symbolic branch, a long (`Jump32` `Ja`) jump, an already-resolved symbolic call, a branch, call, or callback target that is not an instruction boundary, a branch that overflows `int16`, a call or callback offset that overflows `int32`, or an unrecognized instruction reference.
+It **refuses** (returning an error wrapping `inject.ErrRefused`, mutating nothing) on: a symbolic branch, a long (`Jump32` `Ja`) jump, an indirect jump (`BPF_JA|BPF_X`), an already-resolved symbolic call, a branch, call, or callback target that is not an instruction boundary, a branch that overflows `int16`, a call or callback offset that overflows `int32`, or an unrecognized instruction reference.
 
 ## Auditing the output
 

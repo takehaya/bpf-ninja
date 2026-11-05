@@ -13,6 +13,7 @@ const (
 	SymbolAmbiguous        Kind = "symbol_ambiguous"
 	SymbolUnresolved       Kind = "symbol_unresolved"
 	EdgeSlot               Kind = "edge_slot"
+	IndirectJump           Kind = "indirect_jump"
 	OriginalOrder          Kind = "original_order"
 	HookRange              Kind = "hook_range"
 	HookOverlap            Kind = "hook_overlap"

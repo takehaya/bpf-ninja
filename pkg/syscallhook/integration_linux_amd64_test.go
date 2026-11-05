@@ -6,6 +6,8 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/binary"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -475,5 +477,125 @@ func integrationExtractMapBTF(t *testing.T) {
 			t.Logf("extractRaw: map %s BTFID=%d, key=%s, value=%s", m.Name, m.BTFID, m.Key.TypeName(), m.Value.TypeName())
 		}
 		return
+	}
+}
+
+// An ordinary loader's instruction array is usable for one successful load, so
+// the supervisor must leave it to the original program. Both outcomes are checked
+// through the program's behavior: the sled counts how far from its end the jump landed.
+func TestIntegrationIndirectJump(t *testing.T) {
+	if os.Geteuid() != 0 {
+		t.Skip("requires root and BPF privileges")
+	}
+	if expected := os.Getenv("SYSCALLHOOK_GOTOX_CHILD"); expected != "" {
+		loadIndirectJump(t, expected)
+		return
+	}
+	insnArray, err := ebpf.NewMap(&ebpf.MapSpec{Type: ebpf.MapType(34), KeySize: 4, ValueSize: 16, MaxEntries: 1})
+	if errors.Is(err, unix.EINVAL) {
+		t.Skipf("kernel lacks BPF_MAP_TYPE_INSN_ARRAY: %v", err)
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = insnArray.Close()
+	for _, tc := range []struct {
+		name, expected string
+		closed         bool
+		change         func(*Options)
+	}{
+		{"fail-open", "plain", false, func(*Options) {}},
+		{"fail-closed", "refused", true, func(*Options) {}},
+		{"auto", "plain", false, func(o *Options) { o.Rules[0].Auto, o.Rules[0].Map = true, "" }},
+		{"discover-only", "plain", false, func(o *Options) {
+			o.Rules, o.OnDiscover = nil, func(Discovery) { t.Error("discovery of a program it cannot follow") }
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("SYSCALLHOOK_GOTOX_CHILD", tc.expected)
+			out, err := os.Create(filepath.Join(t.TempDir(), "loader.out"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = out.Close() }()
+			var logs bytes.Buffer
+			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+			defer cancel()
+			opts := Options{Rules: []Rule{testRule()}, FailClosed: tc.closed, Stdout: out, Stderr: out, Log: &logs,
+				OnInject: func(inj Injection) { t.Errorf("injected: %+v", inj) }}
+			tc.change(&opts)
+			code, err := Run(ctx, []string{os.Args[0], "-test.run=^TestIntegrationIndirectJump$"}, opts)
+			data, _ := os.ReadFile(out.Name())
+			t.Logf("supervisor:\n%sloader:\n%s", &logs, data)
+			if err != nil || code != 0 {
+				t.Fatalf("code=%d err=%v", code, err)
+			}
+			if !strings.Contains(logs.String(), "indirect jump at") {
+				t.Fatal("no refusal reported")
+			}
+		})
+	}
+}
+
+func loadIndirectJump(t *testing.T, expected string) {
+	t.Helper()
+	u32 := &btf.Int{Name: "u32", Size: 4}
+	sessions, err := ebpf.NewMap(&ebpf.MapSpec{Name: "sessions", Type: ebpf.Hash, KeySize: 4, ValueSize: 4, MaxEntries: 1, Key: u32, Value: u32})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = sessions.Close() }()
+	table, err := ebpf.NewMap(&ebpf.MapSpec{Name: "jt", Type: ebpf.MapType(34), KeySize: 4, ValueSize: 16, MaxEntries: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = table.Close() }()
+	fn := &btf.Func{Name: "entry", Linkage: btf.GlobalFunc, Type: &btf.FuncProto{
+		Return: &btf.Int{Name: "int", Size: 4, Encoding: btf.Signed},
+		Params: []btf.FuncParam{{Name: "ctx", Type: &btf.Pointer{Target: &btf.Struct{Name: "xdp_md", Size: 24}}}},
+	}}
+	enter := asm.JEq.Imm(asm.R7, 0x7fffffff, "")
+	enter.Offset = 4 // reaches the sled's head, which the table skips
+	insns := asm.Instructions{
+		asm.StoreImm(asm.RFP, -4, 0, asm.Word),
+		asm.LoadMem(asm.R7, asm.R1, 12, asm.Word),
+		asm.Mov.Reg(asm.R2, asm.RFP), asm.Add.Imm(asm.R2, -4),
+		asm.LoadMapPtr(asm.R1, sessions.FD()), asm.FnMapLookupElem.Call(),
+		asm.Mov.Imm(asm.R0, 0),
+		enter,
+		asm.LoadMapValue(asm.R3, table.FD(), 0),
+		asm.LoadMem(asm.R3, asm.R3, 0, asm.DWord),
+		{OpCode: asm.Ja.Op(asm.RegSource), Dst: asm.R3},
+	}
+	var head uint32
+	for _, ins := range insns {
+		head += uint32(ins.Size() / asm.InstructionSize)
+	}
+	for range 100 {
+		insns = append(insns, asm.Add.Imm(asm.R0, 1))
+	}
+	insns = append(insns, asm.Return())
+	insns[0] = btf.WithFuncMetadata(insns[0].WithSymbol(fn.Name).WithSource(asm.Comment("gotox loader")), fn)
+	value := make([]byte, 16)
+	binary.LittleEndian.PutUint32(value, head+60) // 40 increments remain
+	if err := table.Put(uint32(0), value); err != nil {
+		t.Fatal(err)
+	}
+	if err := table.Freeze(); err != nil {
+		t.Fatal(err)
+	}
+	p, err := ebpf.NewProgram(&ebpf.ProgramSpec{Name: "p", Type: ebpf.XDP, License: "GPL", Instructions: insns})
+	if expected == "refused" {
+		if !errors.Is(err, unix.EPERM) {
+			t.Fatalf("fail-closed load: %v", err)
+		}
+		return
+	}
+	if err != nil {
+		t.Fatalf("program load: %+v", err)
+	}
+	defer func() { _ = p.Close() }()
+	if action, _, err := p.Test(make([]byte, 64)); err != nil || action != 40 {
+		t.Fatalf("BPF_PROG_TEST_RUN: action=%d err=%v", action, err)
 	}
 }

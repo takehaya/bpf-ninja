@@ -538,7 +538,7 @@ Both forms must target a non-entry instruction carrying BTF function metadata; r
 A nonzero instruction offset, an immediate outside signed `int32`, or a symbolic load whose constant is already resolved is also refused.
 Callback function and source metadata move with the original instructions.
 
-As with the original transform, symbolic branches, long jumps, resolved symbolic calls, unknown references, targets off instruction boundaries, and relocation overflow are refused.
+As with the original transform, symbolic branches, long jumps, indirect jumps, resolved symbolic calls, unknown references, targets off instruction boundaries, and relocation overflow are refused.
 Calls back to the program entry are also refused.
 Hook names must be valid C/BTF identifiers and must not collide with existing symbols or BTF functions or satisfy an existing reference in the selected program.
 Refusals wrap `inject.ErrRefused`, return no result, and leave inputs untouched.

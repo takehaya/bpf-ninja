@@ -45,6 +45,7 @@ caller は `inject.BuildLookupTargets` を使うか、同じ情報を変換後 c
 `BuildLookupTargets` は、宛先を対応づけられない indirect `callx` に `inject.ErrCheckerNotApplicable` を返す。
 `inject-run` は既定では置換後 stream を未検査のままロードし、`--fail-closed` 指定時だけ拒否する。
 チェッカーは値の範囲と直接 RFP アクセスを検査するが、命令 projection から alias audit の正しさは確立できない。
+どちらかの stream に indirect jump (`BPF_JA|BPF_X`) があれば、宛先が両 stream の外の map にあるため `indirect_jump` で拒否する。
 
 ## 検査する形式
 
