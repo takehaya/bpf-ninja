@@ -96,7 +96,16 @@ func TestBpfFastcallSpillKept(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parsing verifier statistics: %v\n%s", err, log)
 	}
-	report, err := FrameFloors(depths, []string{"p"}, work.Programs["p"].Instructions, KernelInfo{Major: 7})
+	var uts unix.Utsname
+	if err := unix.Uname(&uts); err != nil {
+		t.Fatal(err)
+	}
+	release := unix.ByteSliceToString(uts.Release[:])
+	var major, minor int
+	if _, err := fmt.Sscanf(release, "%d.%d", &major, &minor); err != nil {
+		t.Fatalf("release %q: %v", release, err)
+	}
+	report, err := FrameFloors(depths, []string{"p"}, work.Programs["p"].Instructions, KernelInfo{Major: major, Minor: minor})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -105,6 +114,12 @@ func TestBpfFastcallSpillKept(t *testing.T) {
 	}
 	t.Logf("fastcall verifier depth=%d text depth=%d source=%s", report.Functions[0].VerifiedDepth,
 		report.Functions[0].TextDepth, report.Functions[0].Source)
+	if major > 6 || major == 6 && minor >= 12 {
+		f := report.Functions[0]
+		if f.VerifiedDepth >= f.TextDepth || f.Source != "text" {
+			t.Fatalf("kernel %s did not exercise fastcall shrink: %+v", release, f)
+		}
+	}
 	req := autoReq()
 	req.Stack = StackAudit{Frames: report.Frames(), Source: "verifier", FrameRounding: 32}
 	if slots := lookupSlots(req.Stack.floor("p")); slots.ctx >= -16 {
