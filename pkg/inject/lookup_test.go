@@ -168,22 +168,22 @@ func TestLookupTransformCloneAndMetadata(t *testing.T) {
 }
 
 func TestEntrySiteOutputUnchanged(t *testing.T) {
-	// Seed 1 is the generated entry fixture: it contains lookup, update,
-	// delete and queue/stack operations, multiple result arms, an entry hook
+	// Seed 15 is the generated entry fixture: it contains lookup, update,
+	// delete, push, pop, and peek operations, a read-only argument, an entry hook,
 	// and every pre-existing hook form below. Keep callee fixtures out of this
 	// matrix so every digest must remain identical to origin/main.
 	originMain := []struct{ config, hash string }{
-		{"typed-any", "1793a9616e6eda5e2d84f975a05f48b6aa3fdc46f99ee1c5f0628bfc09c08aa0"},
-		{"typed-error", "1df90f1ab1e740a6b02982471e7ef87a070124680acd0b5437844e3e936198a8"},
-		{"typed-miss", "8435498bc59b16dffeda47bb7a57aa55010f7f6a1b0e8276a04e886d2cced8b0"},
-		{"static-any", "02608df6d853de79093ef48be3021eaca4f2d2e70c5c14ad7bbebd1463b11db6"},
-		{"dispatch-any", "5da0adfe0767426a2e64c1efad576cce418fcac4a90f36528a28477225e10da4"},
-		{"dispatch-static", "36b71cbe8e6c67d812f22859b82b484ea748420c487aa82d11dcedf697f71c23"},
-		{"copy-readonly", "2f4101d8e7ed7399588b4fc2b4dab219e76878d2087338feb5da9f024e9a26cf"},
+		{"typed-any", "ba8f0dd427d2d617b7ec574a43dd48eeae3c6cb3e2db258a784a07559d378735"},
+		{"typed-error", "1303dd01ff1fbccf95eb34d30c5a1e932f260018fa242f854248aab5081e7694"},
+		{"typed-miss", "608e05e8357c8e23ace9777332e2252ace0e4f36849816d475905e5a84f2bbdf"},
+		{"static-any", "9dd74725539a35ddba36096ed3bf1fb892b533a9de351a55d1b922895efd6070"},
+		{"dispatch-any", "6123b056c75b3e0b219dfbe717edf73aa7f69f436e21ecaf379fefd081eace8f"},
+		{"dispatch-static", "165e5903ce020aca98b4252c634db61353086de1a9fd0aa27b6a47f53c5e6603"},
+		{"copy-readonly", "fd9e6224419ba56627fd58661ff961239a9cc255d24ac8ad552cf2e107c9c203"},
 	}
 	for _, test := range originMain {
 		t.Run(test.config, func(t *testing.T) {
-			fixture := newEquivCase(1)
+			fixture := newEquivCase(15)
 			spec := fixture.spec()
 			if _, err := transformLookup(spec, fixture.request(test.config)); err != nil {
 				t.Fatal(err)

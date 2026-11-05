@@ -6,8 +6,13 @@ import (
 
 	"github.com/cilium/ebpf/asm"
 	"github.com/cilium/ebpf/btf"
+	"github.com/takehaya/bpf-ninja/internal/ctxflow"
 	"github.com/takehaya/bpf-ninja/internal/hook"
 )
+
+func ctxReachesCalls(insns asm.Instructions, name string) bool {
+	return ctxflow.CallsRefusal(insns, name) == ""
+}
 
 func TestStaticCtxReachesCalls(t *testing.T) {
 	ctx := &btf.Struct{Name: "xdp_md", Size: 24}

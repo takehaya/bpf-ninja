@@ -41,11 +41,6 @@ func checkStaticCtxInsns(insns asm.Instructions, name string) error {
 	return nil
 }
 
-// ctxReachesCalls is kept for the focused data-flow tests in this package.
-func ctxReachesCalls(insns asm.Instructions, name string) bool {
-	return ctxflow.CallsRefusal(insns, name) == ""
-}
-
 // hostArch is the architecture bpf-ninja was built for, which an emulated
 // binary does not share with the kernel; a test pins it to cover both
 // branches of hidesHelperIDs.
