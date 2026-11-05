@@ -140,6 +140,16 @@ func TestBpfStaticXDPGatedContextReadFailure(t *testing.T) {
 // safe's prologue to fail at a gated exit and checks that no hold leaks.
 func testGatedContextReadFailure(t *testing.T, target *ebpf.Program, fn string, entryHook, safe *hook.Hook, read int) {
 	t.Helper()
+	if err := gatedContextReadLeak(t, target, fn, entryHook, safe, read, true); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// gatedContextReadLeak is testGatedContextReadFailure returning the leak it
+// finds. deferPrologue=false runs the prologue before the hold is returned,
+// the order that leaks, so a test can show the check fails.
+func gatedContextReadLeak(t *testing.T, target *ebpf.Program, fn string, entryHook, safe *hook.Hook, read int, deferPrologue bool) error {
+	t.Helper()
 	hold, err := ebpf.NewMap(&ebpf.MapSpec{Type: ebpf.PerCPUArray, KeySize: 4, ValueSize: holdHdr + 64, MaxEntries: uint32(holdSlots)})
 	if err != nil {
 		t.Fatal(err)
@@ -148,7 +158,7 @@ func testGatedContextReadFailure(t *testing.T, target *ebpf.Program, fn string, 
 	defer func() { _ = p.Close() }()
 	var out codegen.Output
 	out.Capture.MaxCapLen = 64
-	insns, err := buildGatedExitInsns(safe, out, filter.TargetFilters{}, 0, hold.FD(), 0, 0, nil, nil, EmitBoth, 64, 8, 0, true)
+	insns, err := buildGatedExitInsns(safe, out, filter.TargetFilters{}, 0, hold.FD(), 0, 0, nil, nil, EmitBoth, 64, 8, 0, deferPrologue)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -161,6 +171,18 @@ func testGatedContextReadFailure(t *testing.T, target *ebpf.Program, fn string, 
 			insns = append(insns[:i], append(asm.Instructions{asm.Mov.Imm(asm.R3, 0)}, insns[i:]...)...)
 			// No output maps are needed: all paths after this read must exit.
 			insns = append(insns[:i+3], asm.Ja.Label("exit"))
+			// The identity read comes after a jump to hold_unpaired; send
+			// every label the cut removed to exit as well.
+			defined := map[string]bool{}
+			for _, in := range insns {
+				defined[in.Symbol()] = true
+			}
+			for _, in := range insns {
+				if ref := in.Reference(); ref != "" && ref != "exit" && !defined[ref] {
+					insns = append(insns, asm.Ja.Label("exit").WithSymbol(ref))
+					defined[ref] = true
+				}
+			}
 			insns = finishProgram(insns, out, 0)
 			injected = true
 			break
@@ -193,10 +215,11 @@ func testGatedContextReadFailure(t *testing.T, target *ebpf.Program, fn string, 
 	}
 	for cpu, value := range values {
 		if depth := binary.NativeEndian.Uint32(value[holdDepth:]); depth != 0 {
-			t.Fatalf("CPU %d leaked depth=%d", cpu, depth)
+			return fmt.Errorf("CPU %d leaked depth=%d", cpu, depth)
 		}
 		if valid := binary.NativeEndian.Uint16(value[holdValid:]); valid != 0 {
-			t.Fatalf("CPU %d retained hold=%d", cpu, valid)
+			return fmt.Errorf("CPU %d retained hold=%d", cpu, valid)
 		}
 	}
+	return nil
 }
