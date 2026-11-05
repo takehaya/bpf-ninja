@@ -53,6 +53,33 @@ func TestBpfSubprogSiteLoads(t *testing.T) {
 	})
 }
 
+func TestBpfPerFrameFloorLoads(t *testing.T) {
+	testutil.SkipIfNotRoot(t)
+	work := subprogramLookupFixture("register")
+	insns := work.Programs["p"].Instructions
+	for i, ins := range insns {
+		if fn := btf.FuncMetadata(&ins); fn != nil && fn.Name == "sub" {
+			insns = append(insns[:i+1], append(asm.Instructions{asm.StoreImm(asm.RFP, -168, 0, asm.Word)}, insns[i+1:]...)...)
+			break
+		}
+	}
+	work.Programs["p"].Instructions = insns
+	req := autoReq()
+	req.Stack = StackAudit{Frames: map[string]int16{"p": -8, "sub": -168}, Source: "verifier", FrameRounding: 16}
+	plan, err := transformLookup(work, req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.sites) != 1 || plan.sites[0].FuncName != "sub" {
+		t.Fatalf("plan = %+v", plan)
+	}
+	coll := loadHooked(t, work, plan.hooks)
+	t.Cleanup(coll.Close)
+	if ret, err := coll.Programs["p"].Run(&ebpf.RunOptions{Data: make([]byte, 64), Repeat: 1}); err != nil || ret != 2 {
+		t.Fatalf("action=%d err=%v", ret, err)
+	}
+}
+
 func TestBpfSubprogSiteWrongCtxRejected(t *testing.T) {
 	testutil.SkipIfNotRoot(t)
 	_, err := ebpf.NewCollection(subprogCtxTarget(btf.GlobalFunc, true))
