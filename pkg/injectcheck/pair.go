@@ -38,6 +38,13 @@ func (p *Pair) UnmarshalJSON(data []byte) error {
 	if !supportedFormat(next.Format) {
 		return inputError(InputVersion, "format must be 2 or %d, got %d", FormatVersion, next.Format)
 	}
+	if next.Format == 2 {
+		for _, target := range next.Premises.Targets {
+			if target.Ctx != nil {
+				return inputError(InputVersion, "format 2 does not support target context provenance")
+			}
+		}
+	}
 	var fields map[string]json.RawMessage
 	if err := json.Unmarshal(data, &fields); err != nil {
 		return inputError(InputJSON, "%v", err)
@@ -78,6 +85,15 @@ func (p Pair) Validate() (Verdict, error) {
 		v.Kind = InputVersion
 		v.Reason = err.Error()
 		return v, err
+	}
+	if p.Format == 2 {
+		for _, target := range p.Premises.Targets {
+			if target.Ctx != nil {
+				err := inputError(InputVersion, "format 2 does not support target context provenance")
+				v.Kind, v.Reason = InputVersion, err.Error()
+				return v, err
+			}
+		}
 	}
 	counts, err := Check(asm.Instructions(p.Original), asm.Instructions(p.Transformed), p.Certificate, p.Premises)
 	v.Counts = counts
