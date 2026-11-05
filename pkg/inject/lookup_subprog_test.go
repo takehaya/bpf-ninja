@@ -43,6 +43,26 @@ func subprogramLookupFixture(source string) *ebpf.CollectionSpec {
 	return spec
 }
 
+// subprogramTailLookupFixture has a lookup and tail call in the same static
+// subprogram. Adding the lookup hook creates a second subprogram call there.
+func subprogramTailLookupFixture() *ebpf.CollectionSpec {
+	spec := subprogramLookupFixture("register")
+	spec.Maps["jmp"] = &ebpf.MapSpec{Name: "jmp", Type: ebpf.ProgramArray, KeySize: 4, ValueSize: 4, MaxEntries: 1}
+	insns := spec.Programs["p"].Instructions
+	for i, ins := range insns {
+		if !ins.IsBuiltinCall() || asm.BuiltinFunc(ins.Constant) != asm.FnMapLookupElem {
+			continue
+		}
+		tail := asm.Instructions{
+			asm.Mov.Reg(asm.R1, asm.R6), asm.LoadMapPtr(asm.R2, 0).WithReference("jmp"),
+			asm.Mov.Imm(asm.R3, 0), asm.FnTailCall.Call(),
+		}
+		spec.Programs["p"].Instructions = append(insns[:i+1], append(tail, insns[i+1:]...)...)
+		return spec
+	}
+	panic("lookup helper not found")
+}
+
 func TestSubprogramSiteCtxRegister(t *testing.T) {
 	testSubprogramSiteCtx(t, "register", "r6")
 }
@@ -105,7 +125,7 @@ func TestSubprogramSiteCtxDeadSkipped(t *testing.T) {
 	spec := subprogramLookupFixture("dead")
 	req := autoReq()
 	req.Stack.LowestOffset = -16
-	_, plan, err := transformLookupProgram(spec.Programs["p"].Instructions, ebpf.XDP, nil, elfLookupMaps(spec), req)
+	_, plan, err := transformLookupProgramGuarded(spec.Programs["p"].Instructions, ebpf.XDP, nil, elfLookupMaps(spec), req, nil)
 	if err == nil || len(plan.skipped) != 1 || !strings.Contains(plan.skipped[0].Reason, "context is not held") {
 		t.Fatalf("plan=%+v err=%v", plan, err)
 	}

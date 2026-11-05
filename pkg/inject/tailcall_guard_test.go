@@ -65,6 +65,18 @@ func TestTailCallReachabilityLossMustBeIntroduced(t *testing.T) {
 
 func TestTailCallReachabilityGuard(t *testing.T) {
 	probeErr := errors.New("native test_run fell through")
+	t.Run("refuses subprogram lookup hook", func(t *testing.T) {
+		work := subprogramTailLookupFixture()
+		req := autoReq()
+		req.Stack.LowestOffset = -16
+		calls := 0
+		plan, err := transformLookupGuarded(work, req, func() error { calls++; return probeErr })
+		if calls != 1 || !errors.Is(err, ErrRefused) || len(plan.skipped) != 1 ||
+			!strings.Contains(plan.skipped[0].Reason, probeErr.Error()) {
+			t.Fatalf("calls=%d plan=%+v err=%v", calls, plan, err)
+		}
+	})
+
 	t.Run("keeps entry and skips unsafe tail hook", func(t *testing.T) {
 		work := subTailCallerFixture()
 		calls := 0
