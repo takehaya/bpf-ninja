@@ -596,6 +596,15 @@ func loadedFunctionNames(records []byte, spec *btf.Spec) ([]string, error) {
 	return names, nil
 }
 
+func withTrialProgram(fd int64, closeFD func(int64) error, work func() error) (err error) {
+	defer func() {
+		if closeErr := closeFD(fd); closeErr != nil {
+			err = errors.Join(err, fmt.Errorf("closing trial program fd: %w", closeErr))
+		}
+	}()
+	return work()
+}
+
 func (s *supervisor) preloadDepths(r *remote, attr []byte, rounding int) (report inject.StackReport, err error) {
 	if len(attr) < 68 || u32(attr, 64) != 0 {
 		return report, fmt.Errorf("offloaded programs do not expose local verifier stack accounting")
@@ -618,12 +627,18 @@ func (s *supervisor) preloadDepths(r *remote, attr []byte, rounding int) (report
 	put32(trial, 28, logSize)
 	put64(trial, 32, logAddr)
 	fd, loadErr := r.bpf(unix.BPF_PROG_LOAD, trial)
-	logBytes, readErr := readMemory(r.pid, logAddr, logSize)
-	log := cstring(logBytes)
-	if readErr != nil {
-		return report, fmt.Errorf("reading verifier stats: %w", readErr)
+	readLog := func() (string, error) {
+		logBytes, readErr := readMemory(r.pid, logAddr, logSize)
+		if readErr != nil {
+			return "", fmt.Errorf("reading verifier stats: %w", readErr)
+		}
+		return cstring(logBytes), nil
 	}
 	if loadErr != nil {
+		log, readErr := readLog()
+		if readErr != nil {
+			return report, readErr
+		}
 		if (errors.Is(loadErr, unix.EACCES) || errors.Is(loadErr, unix.EINVAL)) && !strings.Contains(log, "processed") {
 			return report, fmt.Errorf("%w: %v: %s", errTrialVerifier, loadErr, strings.TrimSpace(log))
 		}
@@ -632,26 +647,30 @@ func (s *supervisor) preloadDepths(r *remote, attr []byte, rounding int) (report
 		}
 		return report, fmt.Errorf("trial PROG_LOAD: %w", loadErr)
 	}
-	defer func() {
+	err = withTrialProgram(fd, func(fd int64) error {
 		closed, closeErr := r.call(unix.SYS_CLOSE, uint64(fd))
-		if closeErr = syscallError(closed, closeErr); closeErr != nil && err == nil {
-			err = fmt.Errorf("closing trial program fd: %w", closeErr)
+		return syscallError(closed, closeErr)
+	}, func() error {
+		log, readErr := readLog()
+		if readErr != nil {
+			return readErr
 		}
-	}()
-	depths, err := inject.ParseStackDepths(log)
-	if err != nil {
-		return report, err
-	}
-	records, err := r.progFuncInfo(uint32(fd))
-	if err != nil {
-		return report, err
-	}
-	names, err := loadedFunctionNames(records, spec)
-	if err != nil {
-		return report, err
-	}
-	report, err = inject.FrameFloors(depths, names, raw.Instructions, runningKernelInfo())
-	report.FrameRounding = rounding
+		depths, parseErr := inject.ParseStackDepths(log)
+		if parseErr != nil {
+			return parseErr
+		}
+		records, infoErr := r.progFuncInfo(uint32(fd))
+		if infoErr != nil {
+			return infoErr
+		}
+		names, namesErr := loadedFunctionNames(records, spec)
+		if namesErr != nil {
+			return namesErr
+		}
+		report, parseErr = inject.FrameFloors(depths, names, raw.Instructions, runningKernelInfo())
+		report.FrameRounding = rounding
+		return parseErr
+	})
 	return report, err
 }
 
