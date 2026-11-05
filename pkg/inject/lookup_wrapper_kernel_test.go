@@ -15,16 +15,20 @@ import (
 // site in ctx[1], 4 key bytes through ctx[2] and, when value, the first 8 value
 // bytes through ctx[3] into seen[0]. A miss hook has no value.
 func wrapperObserver(target *ebpf.Program, hook string, value bool) *ebpf.CollectionSpec {
-	read := func(from int16, size int32, to int16) asm.Instructions {
+	// bpf_get_func_arg, because the verifier refuses a direct ctx load of a
+	// pointer to a struct it cannot type in the target's BTF.
+	read := func(arg int32, size int32, to int16) asm.Instructions {
 		return asm.Instructions{
+			asm.Mov.Reg(asm.R1, asm.R6), asm.Mov.Imm(asm.R2, arg), asm.Mov.Reg(asm.R3, asm.RFP), asm.Add.Imm(asm.R3, -32),
+			asm.FnGetFuncArg.Call(),
 			asm.Mov.Reg(asm.R1, asm.RFP), asm.Add.Imm(asm.R1, int32(to)), asm.Mov.Imm(asm.R2, size),
-			asm.LoadMem(asm.R3, asm.R6, from, asm.DWord), asm.FnProbeReadKernel.Call(),
+			asm.LoadMem(asm.R3, asm.RFP, -32, asm.DWord), asm.FnProbeReadKernel.Call(),
 		}
 	}
 	insns := asm.Instructions{asm.Mov.Reg(asm.R6, asm.R1), asm.StoreImm(asm.RFP, -8, 0, asm.Word), asm.StoreImm(asm.RFP, -4, 0, asm.Word), asm.StoreImm(asm.RFP, -16, 0, asm.Word), asm.StoreImm(asm.RFP, -12, 0, asm.Word)}
-	insns = append(insns, read(16, 4, -8)...)
+	insns = append(insns, read(2, 4, -8)...)
 	if value {
-		insns = append(insns, read(24, 8, -16)...)
+		insns = append(insns, read(3, 8, -16)...)
 	}
 	insns = append(insns,
 		asm.LoadMem(asm.R7, asm.R6, 8, asm.DWord),

@@ -157,7 +157,9 @@ func TestCheckerRejectsBadWrapper(t *testing.T) {
 		{"other-helper", injectcheck.WrapperShape, func(_, out asm.Instructions, w, _ int) { out[w+2] = asm.FnMapDeleteElem.Call() }},
 		{"wrong-key-role", injectcheck.WrapperShape, func(_, out asm.Instructions, w, _ int) { out[w+7] = asm.Mov.Reg(asm.R3, asm.R6) }},
 		{"wrong-ctx-role", injectcheck.WrapperShape, func(_, out asm.Instructions, w, _ int) { out[w+5] = asm.Mov.Reg(asm.R1, asm.R7) }},
-		{"reads-caller-r9", injectcheck.WrapperShape, func(_, out asm.Instructions, w, _ int) { out[w] = asm.Mov.Reg(asm.R6, asm.R9).WithSymbol(out[w].Symbol()) }},
+		{"reads-caller-r9", injectcheck.WrapperShape, func(_, out asm.Instructions, w, _ int) {
+			out[w] = asm.Mov.Reg(asm.R6, asm.R9).WithSymbol(out[w].Symbol())
+		}},
 		{"wrong-prelude-slot", injectcheck.WrapperPrelude, func(_, out asm.Instructions, _, site int) {
 			out[site-1] = asm.LoadMem(asm.R4, asm.RFP, -8, asm.DWord)
 		}},
