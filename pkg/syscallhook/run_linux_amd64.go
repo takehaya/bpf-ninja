@@ -237,8 +237,10 @@ func run(ctx context.Context, argv []string, opts Options, probeUntrusted, probe
 		if err == unix.EINTR {
 			continue
 		}
-		// The entry of a followed thread that lost its tid to exec stays behind.
-		if err == unix.ECHILD && s.filtered {
+		// No tracee is left, but an entry can stay behind: a followed thread that
+		// lost its tid to exec, or a thread reaped before its creator's clone event
+		// was handled, which adds the tid again.
+		if err == unix.ECHILD {
 			break
 		}
 		if err != nil {
