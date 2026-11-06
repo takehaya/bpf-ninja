@@ -56,6 +56,15 @@ type wrapperRecord struct {
 	Count uint64
 }
 
+// skipUnlessFrameRounding16 skips where the product would plan with the
+// 32-byte frame rule: the wrapper's frame fits only under the 16-byte rule.
+func skipUnlessFrameRounding16(t *testing.T) {
+	t.Helper()
+	if r := RunningKernelFrameRounding(); r != 16 {
+		t.Skipf("skipping: kernel uses %d-byte frame rounding; the wrapper needs the 16-byte rule", r)
+	}
+}
+
 func TestBpfLookupWrapper(t *testing.T) {
 	testutil.SkipIfNotRoot(t)
 	const site = 12 // the fixture's helper slot: fixture slot 11 plus the deep store
@@ -67,6 +76,7 @@ func TestBpfLookupWrapper(t *testing.T) {
 	}
 	for _, when := range []LookupWhen{LookupHit, LookupMiss, LookupAny} {
 		t.Run(string(when), func(t *testing.T) {
+			skipUnlessFrameRounding16(t)
 			plain := loadOrSkip(t, deepLookupFixture(-504))
 			t.Cleanup(plain.Close)
 			work := deepLookupFixture(-504)
@@ -141,6 +151,9 @@ func TestBpfLookupWrapperGeneric(t *testing.T) {
 	testutil.SkipIfNotRoot(t)
 	for _, static := range []bool{false, true} {
 		t.Run(fmt.Sprintf("static=%t", static), func(t *testing.T) {
+			if static {
+				skipUnlessFrameRounding16(t)
+			}
 			work := mapInMapDeepFixture()
 			req := deepReq(-504, LookupAny)
 			req.StaticUntrusted = static
@@ -177,6 +190,7 @@ func TestBpfLookupWrapperGeneric(t *testing.T) {
 // With 8 bytes free in a callee frame under a 504-byte chain the same applies.
 func TestBpfLookupWrapperNoSpillInSubprogram(t *testing.T) {
 	testutil.SkipIfNotRoot(t)
+	skipUnlessFrameRounding16(t)
 	work := subprogramLookupFixture("register")
 	insns := work.Programs["p"].Instructions
 	for i := range insns {
