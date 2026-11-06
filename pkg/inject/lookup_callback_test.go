@@ -376,7 +376,7 @@ func TestTranslationValidationCallbackSite(t *testing.T) {
 		if verdict, err := decoded.Validate(); err != nil || !verdict.Accepted {
 			t.Fatalf("%s: serialized pair: verdict=%+v err=%v", form, verdict, err)
 		}
-		old := strings.Replace(string(encoded), `"format":5`, `"format":4`, 1)
+		old := strings.Replace(string(encoded), `"format":6`, `"format":4`, 1)
 		if err := json.Unmarshal([]byte(old), &decoded); err == nil || !strings.Contains(err.Error(), "callback context") {
 			t.Fatalf("%s: format 4 read a callback premise: %v", form, err)
 		}

@@ -138,11 +138,12 @@ go build -o inject-check ./cmd/inject-check
 The writer and reader share the tagged `injectcheck.Pair` type.
 Format 3 adds the optional callee context source to the decoded `asm.OpCode` representation pinned by format 2.
 Format 4 adds per-function floors in `premises.frames`.
-Format 5 adds `param` and `arg` to `ctx`; readers accept versions 2 through 5.
+Format 5 adds `param` and `arg` to `ctx`.
+Format 6 adds `certificate.wrappers` and the target fields `args` and `site_pc`; readers accept versions 2 through 6.
 The format number is not the kernel opcode byte.
 Required, case-sensitive top-level keys are `format`, `original`, `transformed`, `certificate` and `premises`.
 `certificate.original`, `premises.lowest_offset`, and `premises.targets` are also required; format 4 may additionally provide `premises.frames` entries with both `start` and `lowest_offset`, beginning at zero.
-`certificate.hooks` may be empty or omitted, and `premises.targets` may be empty only when there are no inserted calls.
+`certificate.hooks` and `certificate.wrappers` may be empty or omitted, and `premises.targets` may be empty only when there are no inserted calls.
 Span fields are `start` and `end`; target fields are `site`, `when`, `hook`, and optional `ctx`, `args` and `site_pc`.
 `ctx` contains either `reg` (6 through 9) or `slot` (an aligned negative frame offset).
 Instruction fields are `opcode`, `dst`, `src`, `offset`, `constant`, `symbol` and `reference`.

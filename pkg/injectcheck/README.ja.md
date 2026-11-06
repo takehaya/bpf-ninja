@@ -145,10 +145,11 @@ writer と reader はタグ付きの `injectcheck.Pair` 型を共有する。
 format 3 は、format 2 が固定した cilium/ebpf v0.22 の decoded `asm.OpCode` 表現に、任意の callee context 由来を追加する。
 format 4 は `premises.frames` に関数別の床を追加する。
 format 5 は `ctx` に `param` と `arg` を追加する。
-reader は format 2 から 5 を受理し、format 番号は kernel の opcode byte とは異なる。
+format 6 は `certificate.wrappers` と target のフィールド `args`、`site_pc` を追加する。
+reader は format 2 から 6 を受理し、format 番号は kernel の opcode byte とは異なる。
 必須のトップレベルキーは `format`、`original`、`transformed`、`certificate`、`premises` で、大文字小文字を区別する。
 `certificate.original`、`premises.lowest_offset`、`premises.targets` も必須で、format 4 では `start` と `lowest_offset` の両方を持ち、0 から始まる `premises.frames` も指定できる。
-`certificate.hooks` は空または省略してよく、`premises.targets` を空にできるのは挿入 call がない場合だけである。
+`certificate.hooks` と `certificate.wrappers` は空または省略してよく、`premises.targets` を空にできるのは挿入 call がない場合だけである。
 Span のフィールドは `start` と `end`、target のフィールドは `site`、`when`、`hook`、任意の `ctx`、`args`、`site_pc` である。
 `ctx` は `reg`（6 から 9）または `slot`（整列した負の frame offset）のどちらかを持つ。
 命令のフィールドは `opcode`、`dst`、`src`、`offset`、`constant`、`symbol`、`reference` である。
