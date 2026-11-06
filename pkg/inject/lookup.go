@@ -462,8 +462,11 @@ type discoveredLookup struct {
 	generic     bool
 	typedOnly   bool
 	readOnlyArg bool
-	ctxReg      asm.Register
-	ctxSlot     int16
+	// noFloor is set when per-frame audit has no floor for the site's
+	// function. The site is skipped even if the generic hook could take it.
+	noFloor bool
+	ctxReg  asm.Register
+	ctxSlot int16
 	// callback is set for a site in a synchronous callback starting at
 	// callbackStart; it gets its context through the callback's prologue.
 	callback      *ctxflow.Callback
@@ -1216,6 +1219,10 @@ func selectLookups(sites []discoveredLookup, req LookupRequest, reserved []strin
 					continue
 				}
 			}
+			if site.noFloor {
+				skipped = append(skipped, site.LookupSite)
+				continue
+			}
 			if site.generic || site.typedOnly {
 				site.Reason = ""
 				generic = add(generic, "generic", site, true)
@@ -1393,8 +1400,8 @@ func transformLookupProgramGuarded(insns asm.Instructions, typ ebpf.ProgramType,
 	if req.Stack.perFrame() {
 		for i := range sites {
 			sites[i].Floor = req.Stack.floor(sites[i].FuncName)
-			if _, ok := req.Stack.Frames[sites[i].FuncName]; !ok && sites[i].Reason == "" {
-				sites[i].Reason = "stack floor unavailable for this function"
+			if _, ok := req.Stack.Frames[sites[i].FuncName]; !ok {
+				sites[i].Reason, sites[i].noFloor = "stack floor unavailable for this function", true
 			}
 		}
 	}

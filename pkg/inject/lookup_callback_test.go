@@ -10,6 +10,7 @@ import (
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/asm"
 	"github.com/cilium/ebpf/btf"
+	"github.com/takehaya/bpf-ninja/internal/ctxflow"
 	"github.com/takehaya/bpf-ninja/pkg/injectcheck"
 )
 
@@ -840,13 +841,11 @@ func cbGenericBelowFloor(t *testing.T, below bool) {
 	if err != nil {
 		t.Fatalf("transform: %v", err)
 	}
-	for _, h := range plan.hooks {
-		for _, s := range h.Sites {
-			if s.FuncName == "cb" && below {
-				t.Errorf("callback site below the entry floor instrumented in %s", h.Name)
-			}
-		}
+	if below {
+		requireCallbackSkipped(t, plan, "below the entry stack floor")
+		return
 	}
+	requireCallbackSelected(t, plan)
 }
 
 func TestCallbackSiteGenericBelowEntryFloor(t *testing.T) { cbGenericBelowFloor(t, true) }
@@ -867,16 +866,107 @@ func TestCallbackSiteDispatchNotSkippedForSharing(t *testing.T) {
 			break
 		}
 	}
-	req := autoReq()
-	req.Stack.LowestOffset = -32
-	req.Dispatch, req.StaticUntrusted = true, true
-	plan, err := transformLookup(spec, req)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, s := range plan.skipped {
-		if s.FuncName == "cb" && strings.Contains(s.Reason, "untrusted") {
-			t.Errorf("Dispatch: callback site skipped although the dispatch hook is untrusted anyway")
+	for _, dispatch := range []bool{true, false} {
+		spec := spec.Copy()
+		req := autoReq()
+		req.Stack.LowestOffset = -32
+		req.Dispatch, req.StaticUntrusted = dispatch, dispatch
+		plan, err := transformLookup(spec, req)
+		if err != nil {
+			t.Fatal(err)
 		}
+		if dispatch {
+			requireCallbackSelected(t, plan)
+			continue
+		}
+		// Without Dispatch the read-only key would make the entry's typed hook untrusted.
+		requireCallbackSkipped(t, plan, "would make the typed hook it shares untrusted")
+	}
+}
+
+// genericCallbackFixture makes every lookup in callbackSiteFixture a generic
+// site: sessions is a map-in-map whose lookup result is unused.
+func genericCallbackFixture() *ebpf.CollectionSpec {
+	spec := callbackSiteFixture("loop", true)
+	m := spec.Maps["sessions"]
+	m.Type, m.ValueSize = ebpf.HashOfMaps, 4
+	m.Value = &btf.Int{Name: "u32", Size: 4}
+	m.InnerMap = &ebpf.MapSpec{Type: ebpf.Array, KeySize: 4, ValueSize: 4, MaxEntries: 1}
+	return spec
+}
+
+// A generic callback site whose function has no audited stack floor is
+// skipped: the generic hook must not take a site in an unaudited frame, where
+// the context spill would overlap the callback's own stack. The entry site,
+// whose floor is audited, is kept.
+func TestCallbackSiteGenericMissingFloor(t *testing.T) {
+	for _, cbFloor := range []bool{false, true} {
+		spec := genericCallbackFixture()
+		req := autoReq()
+		req.StaticUntrusted = true
+		req.Stack = StackAudit{Frames: map[string]int16{"p": -16}, Source: "verifier"}
+		if cbFloor {
+			req.Stack.Frames["cb"] = -8
+		}
+		plan, err := transformLookup(spec, req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !slices.ContainsFunc(plan.sites, func(s LookupSite) bool { return s.FuncName == "p" }) {
+			t.Fatalf("cb floor %v: entry site lost: %+v", cbFloor, plan.sites)
+		}
+		if cbFloor {
+			requireCallbackSelected(t, plan)
+			continue
+		}
+		requireCallbackSkipped(t, plan, "stack floor unavailable for this function")
+	}
+}
+
+// selectLookups itself honours a missing floor: neither the generic nor the
+// typed-only path revives the site.
+func TestSelectLookupsMissingFloor(t *testing.T) {
+	for _, typedOnly := range []bool{false, true} {
+		site := discoveredLookup{LookupSite: LookupSite{Op: HookLookup, FuncName: "cb", Reason: "stack floor unavailable for this function", Generic: !typedOnly},
+			generic: !typedOnly, typedOnly: typedOnly, noFloor: true, callback: &ctxflow.Callback{Helper: asm.FnLoop, Param: asm.R2, Arg: -16}}
+		groups, skipped, err := selectLookups([]discoveredLookup{site}, autoReq(), nil)
+		if err == nil || len(groups) != 0 || len(skipped) != 1 || skipped[0].Reason != site.Reason {
+			t.Fatalf("typedOnly %v: groups=%+v skipped=%+v err=%v", typedOnly, groups, skipped, err)
+		}
+	}
+}
+
+// requireCallbackSelected fails unless the callback site is in the plan and
+// in a hook, and not skipped.
+func requireCallbackSelected(t *testing.T, plan lookupPlan) {
+	t.Helper()
+	if callbackSite(plan.sites) == nil {
+		t.Fatalf("callback site not selected: skipped=%+v", plan.skipped)
+	}
+	if s := callbackSite(plan.skipped); s != nil {
+		t.Fatalf("callback site skipped: %+v", *s)
+	}
+	for _, h := range plan.hooks {
+		if callbackSite(h.Sites) != nil {
+			return
+		}
+	}
+	t.Fatalf("callback site in no hook: %+v", plan.hooks)
+}
+
+// requireCallbackSkipped fails unless the callback site is absent from the
+// plan and every hook and skipped with a reason containing reason.
+func requireCallbackSkipped(t *testing.T, plan lookupPlan, reason string) {
+	t.Helper()
+	if s := callbackSite(plan.sites); s != nil {
+		t.Fatalf("callback site selected: %+v", *s)
+	}
+	for _, h := range plan.hooks {
+		if s := callbackSite(h.Sites); s != nil {
+			t.Fatalf("callback site in hook %s: %+v", h.Name, *s)
+		}
+	}
+	if s := callbackSite(plan.skipped); s == nil || !strings.Contains(s.Reason, reason) {
+		t.Fatalf("callback site not skipped for %q: %+v", reason, plan.skipped)
 	}
 }
