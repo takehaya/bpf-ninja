@@ -31,6 +31,11 @@ type Proof struct {
 	// is proved through its caller's frame. Proven stays false: nothing passes it
 	// the context as an argument, so a static hook on it cannot read one.
 	Callback *Callback
+	// Pass is set for a function other than the entry when the context can be
+	// passed down to it (see Pass): the function itself first, then every
+	// function between it and the entry. PassReason says why not otherwise.
+	Pass       []Pass
+	PassReason string
 }
 
 // functions returns the BTF function ranges and identifies parameters whose
@@ -200,6 +205,13 @@ func Prove(insns asm.Instructions, ctxStruct btf.Type) map[int]Proof {
 				proof.Reason = why
 			}
 			out[fn.Start] = proof
+		}
+	}
+	chains, why := p.passes(out)
+	for start, proof := range out {
+		if start != 0 {
+			proof.Pass, proof.PassReason = chains[start], why[start]
+			out[start] = proof
 		}
 	}
 	return out

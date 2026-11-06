@@ -8,9 +8,9 @@ import (
 	"github.com/cilium/ebpf/asm"
 )
 
-// FormatVersion adds lookup wrappers and planned lookup arguments. Readers
-// continue to accept v2 through v5 pairs.
-const FormatVersion = 6
+// FormatVersion adds passed context sources. Readers continue to accept v2
+// through v6 pairs.
+const FormatVersion = 7
 
 func supportedFormat(format int) bool { return format >= 2 && format <= FormatVersion }
 
@@ -20,6 +20,10 @@ func wrapperPremise(c Certificate, targets []SiteTarget) bool {
 
 func callbackPremise(targets []SiteTarget) bool {
 	return slices.ContainsFunc(targets, func(t SiteTarget) bool { return t.Ctx != nil && t.Ctx.Param != 0 })
+}
+
+func hasPassPremise(targets []SiteTarget) bool {
+	return slices.ContainsFunc(targets, func(t SiteTarget) bool { return t.Ctx != nil && len(t.Ctx.Pass) != 0 })
 }
 
 // Pair is the shared, versioned input for the offline checker and its CLI.
@@ -56,6 +60,9 @@ func (p *Pair) UnmarshalJSON(data []byte) error {
 	}
 	if next.Format < 5 && callbackPremise(next.Premises.Targets) {
 		return inputError(InputVersion, "format %d does not support callback context sources", next.Format)
+	}
+	if next.Format < 7 && hasPassPremise(next.Premises.Targets) {
+		return inputError(InputVersion, "format %d does not support passed context sources", next.Format)
 	}
 	if next.Format < 4 && len(next.Premises.Frames) != 0 {
 		return inputError(InputVersion, "format %d does not support per-frame stack floors", next.Format)
@@ -140,6 +147,11 @@ func (p Pair) Validate() (Verdict, error) {
 	}
 	if p.Format < 6 && wrapperPremise(p.Certificate, p.Premises.Targets) {
 		err := inputError(InputVersion, "format %d does not support wrappers or planned lookup arguments", p.Format)
+		v.Kind, v.Reason = InputVersion, err.Error()
+		return v, err
+	}
+	if p.Format < 7 && hasPassPremise(p.Premises.Targets) {
+		err := inputError(InputVersion, "format %d does not support passed context sources", p.Format)
 		v.Kind, v.Reason = InputVersion, err.Error()
 		return v, err
 	}

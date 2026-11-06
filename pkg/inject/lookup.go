@@ -31,7 +31,7 @@ type LookupSite struct {
 	SitePC           uint32 // raw BPF slot index; LDIMM64 occupies two slots
 	InstructionIndex int    // index in the decoded instruction slice
 	Reason           string
-	CtxSource        string // entry, r6-r9, fp-N or callback:PARAM:fp-X (see callbackCtxSource)
+	CtxSource        string // entry, r6-r9, fp-N or callback:PARAM:fp-X (see callbackCtxSource) or pass:rN@START,... (see passCtxSource)
 	Floor            int16  // selected floor of FuncName's frame, when known
 	// Generic marks a lookup with a Reason that Auto still instruments,
 	// through the generic hook (see LookupHook.Generic).
@@ -478,6 +478,9 @@ type discoveredLookup struct {
 	// callbackStart; it gets its context through the callback's prologue.
 	callback      *ctxflow.Callback
 	callbackStart int
+	// pass is set for a site whose function gets the context passed down
+	// from the entry; it starts with that function.
+	pass []ctxflow.Pass
 }
 
 func publicLookupSites(sites []discoveredLookup) []LookupSite {
@@ -612,6 +615,7 @@ func discoverMapCalls(insns asm.Instructions, typ ebpf.ProgramType, resolve look
 			var ctxReg asm.Register
 			var ctxSlot int16
 			var callback *ctxflow.Callback
+			var pass []ctxflow.Pass
 			callbackStart := 0
 			switch {
 			case funcStart < 0:
@@ -637,6 +641,16 @@ func discoverMapCalls(insns asm.Instructions, typ ebpf.ProgramType, resolve look
 						site.CtxSource = strings.ToLower(ctxReg.String())
 					} else {
 						site.CtxSource = fmt.Sprintf("fp%d", ctxSlot)
+					}
+				}
+				// Without a context at the site, the function's callers can pass
+				// it down from the entry (see ctxflow.Pass).
+				if site.Reason != "" && callback == nil {
+					if proof.Pass != nil {
+						site.Reason, pass = "", proof.Pass
+						site.CtxSource = passCtxSource(pass)
+					} else {
+						site.Reason += "; " + proof.PassReason
 					}
 				}
 			}
@@ -675,7 +689,7 @@ func discoverMapCalls(insns asm.Instructions, typ ebpf.ProgramType, resolve look
 				readOnlyArg = true
 			}
 			sites = append(sites, discoveredLookup{LookupSite: site, mapID: mapID, mapInfo: m, generic: generic,
-				typedOnly: typedOnly, readOnlyArg: readOnlyArg, ctxReg: ctxReg, ctxSlot: ctxSlot, callback: callback, callbackStart: callbackStart})
+				typedOnly: typedOnly, readOnlyArg: readOnlyArg, ctxReg: ctxReg, ctxSlot: ctxSlot, callback: callback, callbackStart: callbackStart, pass: pass})
 		}
 		// Track direct R1 definitions only; calls also clobber R1. Atomic
 		// operations and legacy packet loads are conservatively barriers.
@@ -1448,6 +1462,23 @@ func transformLookupProgramGuarded(insns asm.Instructions, typ ebpf.ProgramType,
 			}
 		}
 	}
+	// Every function a context is passed through reserves a slot below its
+	// own audited floor.
+	for i, site := range sites {
+		for _, pass := range site.pass {
+			_, audited := req.Stack.Frames[pass.Name]
+			switch {
+			case req.Stack.perFrame() && !audited:
+				sites[i].Reason = fmt.Sprintf("ctx pass: stack floor unavailable for %s", pass.Name)
+			case lookupSlots(req.Stack.floor(pass.Name)).ctx < -siteFrameLimit(req.Stack):
+				sites[i].Reason = fmt.Sprintf("ctx pass: the context slot of %s does not fit below its stack floor %d", pass.Name, req.Stack.floor(pass.Name))
+			default:
+				continue
+			}
+			sites[i].generic, sites[i].typedOnly, sites[i].Generic = false, false, false // not for the generic hook either
+			break
+		}
+	}
 	// A callback_ctx below the entry floor points at the slots the callback
 	// reads its context from, and the callback may write through it.
 	callerFloor := req.Stack.floor(btf.FuncMetadata(&insns[0]).Name)
@@ -1687,8 +1718,8 @@ func transformLookupProgramGuarded(insns asm.Instructions, typ ebpf.ProgramType,
 	if err != nil {
 		return nil, plan, err
 	}
-	// Callback sites go first, all at once: without them the program is the
-	// one that was instrumented before callbacks were supported.
+	// Callback and passed-context sites go first, all at once: without them
+	// the program is the one that was instrumented before either was supported.
 	if before := len(plan.skipped); broken != "" && req.Auto {
 		groups, plan.skipped = dropCallbackSites(groups, plan.skipped, broken)
 		if len(plan.skipped) != before && (len(groups) != 0 || req.Entry || req.TailCalls) {
@@ -1745,13 +1776,14 @@ func transformLookupProgramGuarded(insns asm.Instructions, typ ebpf.ProgramType,
 	return spliced, plan, nil
 }
 
-// dropCallbackSites removes the callback sites from groups, keeping each
-// group's other sites, and lists them as skipped with reason.
+// dropCallbackSites removes the sites in callbacks and those whose context is
+// passed down (see ctxflow.Pass) from groups, keeping each group's other
+// sites, and lists them as skipped with reason.
 func dropCallbackSites(groups []lookupGroup, skipped []LookupSite, reason string) ([]lookupGroup, []LookupSite) {
 	var kept []lookupGroup
 	for _, group := range groups {
 		sites := slices.DeleteFunc(slices.Clone(group.sites), func(site discoveredLookup) bool {
-			if site.callback != nil {
+			if site.callback != nil || site.pass != nil {
 				s := site.LookupSite
 				s.Reason = reason
 				skipped = append(skipped, s)
@@ -1973,16 +2005,31 @@ type ctxSource struct {
 	helperR1      bool
 	callback      *ctxflow.Callback // read once at callbackStart, the callback's entry, not at the site
 	callbackStart int
+	pass          []ctxflow.Pass // stored once at the function's entry, not at the site
 }
 
 func siteCtxSource(site discoveredLookup) ctxSource {
-	return ctxSource{reg: site.ctxReg, slot: site.ctxSlot, callback: site.callback, callbackStart: site.callbackStart}
+	return ctxSource{reg: site.ctxReg, slot: site.ctxSlot, callback: site.callback, callbackStart: site.callbackStart, pass: site.pass}
 }
 
 // callbackCtxSource names a callback's context source: the register holding
 // the caller's stack pointer and that pointer's offset in the entry frame.
 func callbackCtxSource(c ctxflow.Callback) string {
 	return fmt.Sprintf("callback:%s:fp%d", strings.ToLower(c.Param.String()), c.Arg)
+}
+
+// passCtxSource names a passed context: each function from the site's own up
+// to the entry, as its register and decoded start index, prefixed saved- when
+// it saves its own context parameter.
+func passCtxSource(chain []ctxflow.Pass) string {
+	parts := make([]string, len(chain))
+	for i, pass := range chain {
+		parts[i] = fmt.Sprintf("%s@%d", strings.ToLower(pass.Reg.String()), pass.Index)
+		if pass.Saved {
+			parts[i] = "saved-" + parts[i]
+		}
+	}
+	return "pass:" + strings.Join(parts, ",")
 }
 
 // siteCall is the hook a helper site calls, whether it passes its SitePC and
@@ -2157,6 +2204,54 @@ func spliceLookupCalls(input asm.Instructions, calls map[uint32]siteCall, stack 
 			}
 		}
 	}
+	// A function the context is passed down to stores it on entry, and a call
+	// into one that takes it in a free register first sets that register from
+	// the caller's slot, the entry's or the caller's own (see ctxflow.Pass).
+	passes := map[int]ctxflow.Pass{}
+	for _, call := range calls {
+		for _, pass := range call.ctxFrom.pass {
+			passes[pass.Start] = pass
+		}
+	}
+	passSlot := func(name string) int16 { return int16(lookupSlots(stack.floor(name)).ctx) }
+	for start, pass := range passes {
+		callbackPrologue[start] = asm.Instructions{asm.StoreMem(asm.RFP, passSlot(pass.Name), pass.Reg, asm.DWord)}
+	}
+	passLoad := map[int]asm.Instructions{}
+	if len(passes) != 0 {
+		symbols := map[string]int{}
+		for it := input.Iterate(); it.Next(); {
+			if sym := it.Ins.Symbol(); sym != "" {
+				symbols[sym] = int(it.Offset)
+			}
+		}
+		callerStart, callerName := 0, ""
+		for it := input.Iterate(); it.Next(); {
+			old := int(it.Offset)
+			if fn := btf.FuncMetadata(it.Ins); fn != nil {
+				callerStart, callerName = old, fn.Name
+			}
+			if !it.Ins.IsFunctionCall() {
+				continue
+			}
+			target := old + 1 + int(it.Ins.Constant)
+			if ref := it.Ins.Reference(); ref != "" {
+				target = symbols[ref]
+			}
+			pass, ok := passes[target]
+			if !ok || pass.Saved {
+				continue
+			}
+			from := entryCtx
+			if callerStart != 0 {
+				if _, ok := passes[callerStart]; !ok {
+					return nil, refuse("call at %d passes the context to %s, but %s holds none", old, pass.Name, callerName)
+				}
+				from = passSlot(callerName)
+			}
+			passLoad[old] = asm.Instructions{asm.LoadMem(pass.Reg, asm.RFP, from, asm.DWord)}
+		}
+	}
 	hookSlots := int(hook.Size() / asm.InstructionSize)
 	hookAt := -1
 	indices, mapped := map[int]int{}, map[int]int{}
@@ -2170,6 +2265,7 @@ func spliceLookupCalls(input asm.Instructions, calls map[uint32]siteCall, stack 
 		}
 		pc += len(callbackPrologue[old]) // a branch to the first instruction skips it
 		indices[old], mapped[old] = it.Index, pc
+		pc += len(passLoad[old]) // a branch to a call must set the register first
 		call, site := calls[uint32(old)]
 		if site {
 			pc += len(before(call)) // branch to helper must execute the spills first
@@ -2197,6 +2293,14 @@ func spliceLookupCalls(input asm.Instructions, calls map[uint32]siteCall, stack 
 			out = append(out, prologue...)
 		}
 		newPC := mapped[old]
+		if load := passLoad[old]; load != nil {
+			if old > 0 && (ins.Symbol() != "" || btf.FuncMetadata(&ins) != nil) {
+				load[0] = btf.WithFuncMetadata(load[0].WithSymbol(ins.Symbol()).WithSource(ins.Source()), btf.FuncMetadata(&ins))
+				ins = btf.WithFuncMetadata(ins.WithSymbol("").WithSource(nil), nil)
+			}
+			out = append(out, load...)
+			newPC += len(load)
+		}
 		call, site := calls[uint32(old)]
 		if site {
 			spill := before(call)

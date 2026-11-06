@@ -37,6 +37,7 @@ When present, entries must contain both fields, start at original instruction ze
 `LowestOffset` remains the library API's single-floor fallback when `Frames` is empty.
 `Targets` binds `{Site, When, Hook, Ctx}` in plan terms: the original instruction index, `hit`, `miss`, `any`, or `error`, the decoded index of the generated hook start, and an optional callee-frame context source.
 `Ctx` names R6-R9, an aligned slot within the audited frame, or for a site in a synchronous callback `{param, arg}`: the register the callback receives `callback_ctx` in (R2 or R4), and that pointer's offset in the entry frame.
+For a site whose context is passed down from the entry it names `pass`, a list of `{start, reg, saved}`: the site's function first, then every function above it that passes the context on, by decoded original start index and the register (R1-R5) it stores into its context slot on entry.
 The checker verifies that the prelude copies the named source; it does not prove that source semantically contains context.
 For map calls, omission selects the existing entry-frame path; the older P4 tail-call shape may instead initialize a callee frame directly from helper R1.
 For a lookup, `any` requires the hook on both the hit and miss paths.
@@ -61,6 +62,7 @@ They describe insertion shapes, while “original program” refers to the progr
 | --- | --- | --- |
 | P1 | Entry context spill, optionally an entry/dispatch hook and R1 restore | Exact slot, dispatch arguments, hook destination and restore |
 | P1b | Context load at the entry of a synchronous callback holding a site | Exact load through the plan-named register at the offset derived from the entry floor and `arg`, exact store, function edges enter it and branches skip it, and the premise re-derived from the original's references |
+| P1c | Context store at the entry of a function the context is passed through, and the load before each call to it | Exact store of the premise's register into the function's context slot, entered by function edges and skipped by branches; unless `saved`, an exact load of that register from the caller's context slot right before every original call to the function, which branches to the call land on, and the premise re-derived from the original |
 | P1c | Callee-frame context initialization before a map helper | Exact plan-named R6-R9 store, or exact audited-slot load through R0 and context store |
 | P2 | Lookup/per-CPU lookup spill and conditional observer postlude | One result guard, at most two alternative calls, planned result-arm targets, R1 context and generic/dispatch R3-R5 provenance/order, value-copy pairs, full-width R0 restoration on every path |
 | P3 | Map update/delete spill and observer postlude | Helper argument spills, optional signed result guard, planned result target, R1 context and generic/dispatch R3-R5 provenance/order, one call, full-width R0 restoration |
@@ -112,6 +114,10 @@ A callee-frame site must initialize its context slot in the helper prelude from 
 A callback site's function must instead start with `ldx r0, [param + entry_floor - 8 - arg]; stx [floor - 8], r0`, with function references landing on the load and branches landing after the store.
 For such a function the checker re-derives the premise from the original stream: the site is reachable from the function's start without a call, the function is never called directly, and every reference to it is reachable from instruction 0, loaded into R2 with the same `bpf_loop` or `bpf_for_each_map_elem` call as its next call, with R3 formed as `arg` by straight-line code that nothing else writes R3 in, atomics and legacy packet loads included, and that no branch enters.
 The site and the start must have the same frame floor, no frame floor may start inside the entry or a callback after its start, `arg` may not be below the entry floor, entry sites may not name a context source, and the program must have no u32 region, which saves R0 in a context slot.
+A site with a `pass` premise has no context initialization in its prelude; each function in the list must start with `stx [floor - 8], reg`.
+Unless the function is `saved`, every original call to it must be preceded by `ldx reg, [caller_floor - 8]`, where the caller is the entry or another function in a `pass` list, and the checker re-derives the premise: the site is reachable from the first function's start, each function is called directly and never referenced as a callback, and no path in it reads `reg` before writing it (a helper reads its argument registers, a kfunc R1-R5, a subprogram call what the callee reads).
+A `saved` function's register is its own context parameter, which rests on the transformer's proof like `Reg` and `Slot`.
+The site, the call and its caller must have the same frame floor, no frame floor may start inside such a function after its start, nor inside the entry when the entry passes the context, and the program must have no u32 region.
 That the function is static, and that the entry's slot holds the context, rest on the transformer's proof and on the stack floors, which must cover the callback's writes into the entry frame through `callback_ctx`.
 Unreferenced exception callbacks are outside this frame-identification premise.
 
@@ -139,7 +145,8 @@ The writer and reader share the tagged `injectcheck.Pair` type.
 Format 3 adds the optional callee context source to the decoded `asm.OpCode` representation pinned by format 2.
 Format 4 adds per-function floors in `premises.frames`.
 Format 5 adds `param` and `arg` to `ctx`.
-Format 6 adds `certificate.wrappers` and the target fields `args` and `site_pc`; readers accept versions 2 through 6.
+Format 6 adds `certificate.wrappers` and the target fields `args` and `site_pc`.
+Format 7 adds `pass` to `ctx`; readers accept versions 2 through 7.
 The format number is not the kernel opcode byte.
 Required, case-sensitive top-level keys are `format`, `original`, `transformed`, `certificate` and `premises`.
 `certificate.original`, `premises.lowest_offset`, and `premises.targets` are also required; format 4 may additionally provide `premises.frames` entries with both `start` and `lowest_offset`, beginning at zero.
