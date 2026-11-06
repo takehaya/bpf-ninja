@@ -229,6 +229,47 @@ func TestTranslationValidationPassMutations(t *testing.T) {
 			out[symbol(out, "mid")+2].Offset++ // mid's branch, after the prologue and r6 = r1
 			return out
 		}, injectcheck.EdgeTarget, ""},
+		// mid's call to leaf becomes r0 = 0 in both streams; the load before it stays.
+		{"function never called", false, func(in, out asm.Instructions, cert injectcheck.Certificate, _ *injectcheck.Premises) asm.Instructions {
+			at := callTo(in, "leaf")
+			in[at], out[cert.Original[at]] = asm.Mov.Imm(asm.R0, 0), asm.Mov.Imm(asm.R0, 0)
+			return out
+		}, injectcheck.CtxProvenance, "is never called directly"},
+		{"frame floor inside the passing entry", false, func(_, out asm.Instructions, _ injectcheck.Certificate, premises *injectcheck.Premises) asm.Instructions {
+			premises.Frames = []injectcheck.FrameFloor{{Start: 0, LowestOffset: -16}, {Start: 1, LowestOffset: -16}}
+			return out
+		}, injectcheck.CtxProvenance, "a frame floor starts at 1"},
+		{"entry slot never spilled", false, func(_, out asm.Instructions, cert injectcheck.Certificate, premises *injectcheck.Premises) asm.Instructions {
+			at := slices.IndexFunc(out, func(ins asm.Instruction) bool { return sameInstr(ins.WithSymbol(""), asm.StoreMem(asm.RFP, -24, asm.R1, asm.DWord)) })
+			if at != 0 || cert.Original[0] != 1 {
+				t.Fatalf("entry spill at %d, original 0 at %d", at, cert.Original[0])
+			}
+			return deleteOut(out, cert, premises, at)
+		}, injectcheck.CtxProvenance, "loads an entry context slot that is never spilled"},
+		// leaf's floor -512 puts its slot at -520; the prologue stores there.
+		{"context slot below the stack", false, func(in, out asm.Instructions, _ injectcheck.Certificate, premises *injectcheck.Premises) asm.Instructions {
+			premises.Frames = []injectcheck.FrameFloor{{Start: 0, LowestOffset: -16}, {Start: symbol(in, "leaf"), LowestOffset: -512}}
+			out[symbol(out, "leaf")].Offset = -520
+			return out
+		}, injectcheck.CtxProvenance, "does not start by storing r5"},
+		{"premise register out of range", false, func(_, out asm.Instructions, _ injectcheck.Certificate, premises *injectcheck.Premises) asm.Instructions {
+			passTarget(*premises).Ctx.Pass[0].Reg = int(asm.R6)
+			return out
+		}, injectcheck.InputTarget, "invalid context source"},
+		{"premise start at the entry", false, func(_, out asm.Instructions, _ injectcheck.Certificate, premises *injectcheck.Premises) asm.Instructions {
+			passTarget(*premises).Ctx.Pass[1].Start = 0
+			return out
+		}, injectcheck.InputTarget, "invalid context source"},
+		// A second target at the site names another register for leaf.
+		{"targets disagree on the premise", false, func(_, out asm.Instructions, _ injectcheck.Certificate, premises *injectcheck.Premises) asm.Instructions {
+			other := *passTarget(*premises)
+			ctx := *other.Ctx
+			ctx.Pass = slices.Clone(ctx.Pass)
+			ctx.Pass[0].Reg = int(asm.R4)
+			other.Ctx, other.When = &ctx, injectcheck.TargetError
+			premises.Targets = append(premises.Targets, other)
+			return out
+		}, injectcheck.InputTarget, "inconsistent context sources at site"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			in, out, cert, premises := passPair(t, tc.saved)
@@ -237,11 +278,54 @@ func TestTranslationValidationPassMutations(t *testing.T) {
 			}
 			out = tc.mutate(in, out, cert, &premises)
 			_, err := injectcheck.Check(in, out, cert, premises)
+			var kind injectcheck.Kind
 			var rejection *injectcheck.Rejection
-			if !errors.As(err, &rejection) || rejection.Kind != tc.kind || !strings.Contains(err.Error(), tc.want) {
+			var input *injectcheck.InputError
+			if errors.As(err, &rejection) {
+				kind = rejection.Kind
+			} else if errors.As(err, &input) {
+				kind = input.Kind
+			}
+			if kind != tc.kind || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("err = %v, want %s containing %q", err, tc.kind, tc.want)
 			}
 		})
+	}
+}
+
+// With a floor per function, each call loads from its caller's own slot:
+// the entry's at -24 before the call to mid, mid's at -56 before the call to
+// leaf.
+func TestTranslationValidationPassFloors(t *testing.T) {
+	work := passSiteFixture(false)
+	in := append(asm.Instructions(nil), work.Programs["p"].Instructions...)
+	injectcheck.Label(work.Programs["p"].Instructions)
+	req := passRequest()
+	req.Stack.Frames = map[string]int16{"p": -16, "mid": -48, "leaf": -16}
+	plan, err := transformLookup(work, req)
+	if err != nil || len(plan.sites) != 1 {
+		t.Fatalf("plan = %+v err = %v", plan, err)
+	}
+	out := work.Programs["p"].Instructions
+	callTo := func(name string) int {
+		return slices.IndexFunc(out, func(ins asm.Instruction) bool { return ins.IsFunctionCall() && ins.Reference() == name })
+	}
+	start := func(stream asm.Instructions, name string) int {
+		return slices.IndexFunc(stream, func(ins asm.Instruction) bool { return ins.Symbol() == name })
+	}
+	if !sameInstr(out[callTo("mid")-1], asm.LoadMem(asm.R5, asm.RFP, -24, asm.DWord)) || !sameInstr(out[callTo("leaf")-1], asm.LoadMem(asm.R5, asm.RFP, -56, asm.DWord)) {
+		t.Fatalf("loads %v / %v", out[callTo("mid")-1], out[callTo("leaf")-1])
+	}
+	cert, premises := validationCertificate(t, in, out, plan.hooks, -16)
+	premises.Frames = []injectcheck.FrameFloor{{Start: 0, LowestOffset: -16}, {Start: start(in, "mid"), LowestOffset: -48}, {Start: start(in, "leaf"), LowestOffset: -16}}
+	if counts, err := injectcheck.Check(in, out, cert, premises); err != nil || counts.Sites != 1 {
+		t.Fatalf("counts=%+v err=%v", counts, err)
+	}
+	out[callTo("leaf")-1].Offset = -24 // the entry's slot, not mid's
+	_, err = injectcheck.Check(in, out, cert, premises)
+	var rejection *injectcheck.Rejection
+	if !errors.As(err, &rejection) || rejection.Kind != injectcheck.CtxProvenance || !strings.Contains(err.Error(), "does not load the context into r5 first") {
+		t.Fatalf("err = %v", err)
 	}
 }
 
