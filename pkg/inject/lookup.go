@@ -945,7 +945,8 @@ func groupStackReach(group lookupGroup, req LookupRequest) int {
 // copy needs stack and stays refused. An entry-frame site still reads ctx from
 // the entry spill, so that one slot must fit. A callback site is not wrapped:
 // its ctx comes through the callback's prologue, which a wrapper prelude does
-// not read.
+// not read, nor is a passed-context site, whose context the prelude would read
+// from the slot the function's entry fills (see ctxflow.Pass).
 func wrapSites(group lookupGroup, req LookupRequest) lookupGroup {
 	if group.op != HookLookup || req.Stack.FrameRounding != 16 {
 		return group
@@ -961,7 +962,7 @@ func wrapSites(group lookupGroup, req LookupRequest) lookupGroup {
 		if groupStackReach(one, req) >= -siteFrameLimit(req.Stack) {
 			continue
 		}
-		if site.callback != nil {
+		if site.callback != nil || site.pass != nil {
 			continue
 		}
 		if site.CtxSource == "entry" && lookupSlots(req.Stack.floor(site.FuncName)).ctx < -siteFrameLimit(req.Stack) {

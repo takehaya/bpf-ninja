@@ -3,6 +3,7 @@ package inject
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"slices"
 	"strings"
 	"testing"
@@ -349,24 +350,21 @@ func TestPassSiteStackFloors(t *testing.T) {
 	}
 }
 
-// A passed-context site never keeps a lookup wrapper. A wrapper serves a
-// frame whose slots reach past 512 bytes, so the site's frame with its context
-// slot rounds to 512, and the caller that passes the context has a slot of its
-// own: the call chain passes the combined limit, and Auto drops the site as it
-// drops any passed-context site, keeping the program's other sites.
+// A passed-context site never keeps a lookup wrapper: wrapSites leaves it
+// alone, and Auto drops a site whose slots pass the frame limit, keeping the
+// program's other sites.
 func TestPassSiteNotWrapped(t *testing.T) {
-	// wrapSites alone would wrap such a site.
 	site := discoveredLookup{LookupSite: LookupSite{FuncName: "leaf", SitePC: 9, CtxSource: "pass:r5@9,r5@4"}, pass: []ctxflow.Pass{{Name: "leaf"}}}
 	wrapReq := LookupRequest{Stack: StackAudit{Frames: map[string]int16{"leaf": -496}, Source: "verifier", FrameRounding: 16}}
-	if group := wrapSites(lookupGroup{op: HookLookup, sites: []discoveredLookup{site}}, wrapReq); group.sites[0].Wrapper == "" {
-		t.Fatal("wrapSites did not wrap the site")
+	if group := wrapSites(lookupGroup{op: HookLookup, sites: []discoveredLookup{site}}, wrapReq); group.sites[0].Wrapper != "" {
+		t.Fatalf("wrapSites wrapped the site: %q", group.sites[0].Wrapper)
 	}
 	for _, leaf := range []int16{-490, -496, -504} {
 		req := passRequest()
 		req.Entry = true // keep the program instrumented without the site
 		req.Stack = StackAudit{Frames: map[string]int16{"p": -8, "mid": 0, "leaf": leaf}, Source: "verifier", FrameRounding: 16}
 		plan, err := transformLookup(passSiteFixture(false), req)
-		if err != nil || len(plan.sites) != 0 || len(plan.skipped) != 1 || !strings.Contains(plan.skipped[0].Reason, "call chain p -> mid -> leaf uses 544 bytes") {
+		if err != nil || len(plan.sites) != 0 || len(plan.skipped) != 1 || !strings.Contains(plan.skipped[0].Reason, fmt.Sprintf(`function "leaf" stack floor %d too low`, leaf)) {
 			t.Fatalf("leaf floor %d: plan = %+v err = %v", leaf, plan, err)
 		}
 		for _, hook := range plan.hooks {
@@ -376,6 +374,45 @@ func TestPassSiteNotWrapped(t *testing.T) {
 				}
 			}
 		}
+	}
+}
+
+// directPassFixture is p(ctx) -> leaf, with passSiteFixture's leaf called
+// straight from the entry.
+func directPassFixture() *ebpf.CollectionSpec {
+	spec := passSiteFixture(false)
+	insns := spec.Programs["p"].Instructions
+	leaf := slices.IndexFunc(insns, func(ins asm.Instruction) bool { return ins.Symbol() == "leaf" })
+	call := slices.IndexFunc(insns, func(ins asm.Instruction) bool { return ins.IsFunctionCall() })
+	insns[call] = insns[call].WithReference("leaf")
+	spec.Programs["p"].Instructions = append(insns[:call+2:call+2], insns[leaf:]...)
+	return spec
+}
+
+// A map slot or a generic hook makes a frame at floor -488 wrap, while the
+// context slot alone keeps it at 496 bytes: under an entry of 16 the chain
+// stays within 512. The checker's wrapper prelude has no rule for a passed
+// context and would reject the program, so the site is not wrapped; it is
+// dropped with the frame limit's reason and the checker accepts the rest.
+func TestPassSiteNotWrappedDispatch(t *testing.T) {
+	req := passRequest()
+	req.Entry, req.Dispatch = true, true
+	req.Stack = StackAudit{Frames: map[string]int16{"p": 0, "leaf": -488}, Source: "verifier", FrameRounding: 16}
+	plan, err := transformLookup(directPassFixture(), req)
+	if err != nil || len(plan.sites) != 0 || len(plan.skipped) != 1 || !strings.Contains(plan.skipped[0].Reason, `function "leaf" stack floor -488 too low`) {
+		t.Fatalf("plan = %+v err = %v", plan, err)
+	}
+	for _, hook := range plan.hooks {
+		for _, site := range hook.Sites {
+			if site.Wrapper != "" {
+				t.Fatalf("wrapper %q", site.Wrapper)
+			}
+		}
+	}
+	in, out, cert, premises := lookupPair(t, directPassFixture(), req, false)
+	premises.Frames = []injectcheck.FrameFloor{{Start: 0, LowestOffset: 0}, {Start: 4, LowestOffset: -488}}
+	if _, err := injectcheck.Check(in, out, cert, premises); err != nil {
+		t.Fatal(err)
 	}
 }
 
