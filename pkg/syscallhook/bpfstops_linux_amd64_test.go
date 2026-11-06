@@ -178,6 +178,14 @@ func stopsChild(t *testing.T, mode string) {
 	case "own-kill":
 		installOwnFilter(t, unix.SECCOMP_RET_KILL_PROCESS, unix.SYS_BPF)
 		printMapCreate("not reached")
+	case "common-attrs":
+		// An attr over maxAttr makes entry refuse the load under fail-closed,
+		// before it reads anything, so the kernel's answer never shows.
+		attr := make([]byte, maxAttr+1)
+		for _, cmd := range []uintptr{unix.BPF_PROG_LOAD, unix.BPF_BTF_LOAD} {
+			_, _, errno := unix.Syscall6(unix.SYS_BPF, cmd|bpfCommonAttrs, uintptr(unsafe.Pointer(&attr[0])), uintptr(len(attr)), 0, 0, 0)
+			fmt.Printf("cmd %d errno=%d\n", cmd, int(errno))
+		}
 	case "signal":
 		ch := make(chan os.Signal, 1)
 		signal.Notify(ch, syscall.SIGUSR1)
@@ -275,8 +283,9 @@ func TestBPFStopsBehaviour(t *testing.T) {
 				if on := strings.Contains(log, "stopping only on bpf()"); on != filtered {
 					t.Fatalf("filter line present=%t\n%s", on, log)
 				}
-				if own := strings.HasPrefix(tc.mode, "own-"); filtered && own != strings.Contains(log, "target installs a seccomp filter") {
-					t.Fatalf("own-filter log line wrong:\n%s", log)
+				// seccomp(2) and prctl(PR_SET_SECCOMP) are not traced, so nothing is logged for them.
+				if strings.Contains(log, "target installs a seccomp filter") {
+					t.Fatalf("own-filter log line present:\n%s", log)
 				}
 			})
 		}
@@ -297,7 +306,8 @@ func TestBPFStopsCount(t *testing.T) {
 		{"getppid", false, 4000, 1 << 30},
 		{"getppid", true, 0, 500},
 		{"mapupdate", false, 2000, 1 << 30},
-		{"mapupdate", true, 1000, 1500},
+		// Map operations do not stop at all: only loads are traced.
+		{"mapupdate", true, 0, 500},
 	} {
 		code, _, log, n, err := runStops(t, tc.mode, tc.filtered, func(o *Options) { o.Rules = nil; o.OnDiscover = func(Discovery) {} })
 		t.Logf("%s filtered=%t: %d stops", tc.mode, tc.filtered, n)
@@ -478,7 +488,27 @@ func TestBPFStopsTargetListener(t *testing.T) {
 	defer cancel()
 	code, err := Run(ctx, []string{os.Args[0], "-test.run=^TestBPFStopsTargetListener$"},
 		Options{BPFStopsOnly: true, Rules: []Rule{testRule()}, Stdout: out, Stderr: out, Log: &logs, OnInject: func(Injection) { injected++ }})
-	if err != nil || code != 0 || injected != 0 || !strings.Contains(logs.String(), "target installs a seccomp filter") {
+	if err != nil || code != 0 || injected != 0 || !strings.Contains(logs.String(), "stopping only on bpf()") {
 		t.Fatalf("code=%d err=%v injected=%d\n%s", code, err, injected, &logs)
+	}
+}
+
+// Entry strips BPF_COMMON_ATTRS before it compares the command, and the filter
+// traces such a load, so under fail-closed it is refused like any other.
+func TestBPFStopsCommonAttrs(t *testing.T) {
+	if os.Geteuid() != 0 {
+		t.Skip("requires root and BPF privileges")
+	}
+	want := fmt.Sprintf("cmd %d errno=%d\ncmd %d errno=%d", unix.BPF_PROG_LOAD, int(unix.EPERM), unix.BPF_BTF_LOAD, int(unix.EPERM))
+	for _, filtered := range []bool{false, true} {
+		code, out, log, _, err := runStops(t, "common-attrs", filtered, func(o *Options) { o.FailClosed = true })
+		if err != nil || code != 0 || out != want {
+			t.Fatalf("filtered=%t code=%d err=%v\n got %q\nwant %q\nlog: %s", filtered, code, err, out, want, log)
+		}
+		for _, cmd := range []int{unix.BPF_PROG_LOAD, unix.BPF_BTF_LOAD} {
+			if line := fmt.Sprintf("bpf command %d: injection skipped: attr exceeds", cmd|bpfCommonAttrs); !strings.Contains(log, line) {
+				t.Fatalf("filtered=%t: no %q in\n%s", filtered, line, log)
+			}
+		}
 	}
 }

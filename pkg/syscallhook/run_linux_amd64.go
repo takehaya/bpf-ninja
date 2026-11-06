@@ -393,29 +393,32 @@ func seccompMode(tid int) string {
 	return ""
 }
 
-// The action data tells our two stops apart from a target filter's own.
-const (
-	seccompDataBPF   = 0x4250
-	seccompDataWatch = 0x4253
-)
+// The action data tells our stop apart from a target filter's own.
+const seccompDataBPF = 0x4250
+
+// bpfCommonAttrs is the bpf(2) command flag of Linux 7.3 that adds a common
+// attr in the 4th and 5th arguments; __sys_bpf clears it before dispatching.
+const bpfCommonAttrs = 1 << 16
 
 // defaultBPFStopsOnly lets the test suite run on the filtered path.
 var defaultBPFStopsOnly = false
 
-// bpfStopFilter traces native bpf(2), and seccomp(2) and prctl(PR_SET_SECCOMP)
-// to log a target's own filter, which can hide bpf(2) from us. Compat and x32
-// calls stay allowed: inject-run passes them through without injection anyway.
+// bpfStopFilter traces native bpf(2) BPF_PROG_LOAD and BPF_BTF_LOAD, the only
+// commands entry and exit act on, with or without bpfCommonAttrs. The kernel
+// reads the command as an int, so only the low 32 bits of args[0] count. Every
+// other command runs without a stop: the map types, BTF and program info the
+// supervisor needs come from its own calls in the stopped target. Compat and
+// x32 calls stay allowed: inject-run passes them through without injection anyway.
 var bpfStopFilter = []unix.SockFilter{
 	{Code: unix.BPF_LD | unix.BPF_W | unix.BPF_ABS, K: 4},
 	{Code: unix.BPF_JMP | unix.BPF_JEQ | unix.BPF_K, Jf: 6, K: unix.AUDIT_ARCH_X86_64},
 	{Code: unix.BPF_LD | unix.BPF_W | unix.BPF_ABS, K: 0},
-	{Code: unix.BPF_JMP | unix.BPF_JEQ | unix.BPF_K, Jt: 6, K: unix.SYS_BPF},
-	{Code: unix.BPF_JMP | unix.BPF_JEQ | unix.BPF_K, Jt: 4, K: unix.SYS_SECCOMP},
-	{Code: unix.BPF_JMP | unix.BPF_JEQ | unix.BPF_K, Jf: 2, K: unix.SYS_PRCTL},
+	{Code: unix.BPF_JMP | unix.BPF_JEQ | unix.BPF_K, Jf: 4, K: unix.SYS_BPF},
 	{Code: unix.BPF_LD | unix.BPF_W | unix.BPF_ABS, K: 16},
-	{Code: unix.BPF_JMP | unix.BPF_JEQ | unix.BPF_K, Jt: 1, K: unix.PR_SET_SECCOMP},
+	{Code: unix.BPF_ALU | unix.BPF_AND | unix.BPF_K, K: ^uint32(bpfCommonAttrs)},
+	{Code: unix.BPF_JMP | unix.BPF_JEQ | unix.BPF_K, Jt: 2, K: unix.BPF_PROG_LOAD},
+	{Code: unix.BPF_JMP | unix.BPF_JEQ | unix.BPF_K, Jt: 1, K: unix.BPF_BTF_LOAD},
 	{Code: unix.BPF_RET | unix.BPF_K, K: unix.SECCOMP_RET_ALLOW},
-	{Code: unix.BPF_RET | unix.BPF_K, K: unix.SECCOMP_RET_TRACE | seccompDataWatch},
 	{Code: unix.BPF_RET | unix.BPF_K, K: unix.SECCOMP_RET_TRACE | seccompDataBPF},
 }
 
@@ -485,10 +488,6 @@ func (s *supervisor) seccompStop(tid int, t *thread) (regs unix.PtraceRegs, ok b
 		return regs, false, err
 	}
 	switch {
-	case data == seccompDataWatch:
-		if !t.foreign {
-			s.log("target installs a seccomp filter; bpf() calls it denies or hands to a listener bypass the supervisor")
-		}
 	case data != seccompDataBPF:
 		// A target filter's own SECCOMP_RET_TRACE: without PTRACE_O_TRACESECCOMP
 		// the kernel would fail the call with ENOSYS, so keep that.
@@ -519,7 +518,7 @@ func sameThreadGroup(pid, tid int) bool {
 }
 
 func (s *supervisor) entry(pid int, t *thread, regs unix.PtraceRegs) error {
-	command := uint32(regs.Rdi)
+	command := uint32(regs.Rdi) &^ bpfCommonAttrs
 	if command != unix.BPF_BTF_LOAD && command != unix.BPF_PROG_LOAD {
 		return nil
 	}
@@ -608,7 +607,7 @@ func (s *supervisor) entry(pid int, t *thread, regs unix.PtraceRegs) error {
 	}
 	if rule == nil {
 		// Load the original program unchanged.
-		ret, err := r.call(unix.SYS_BPF, regs.Rdi, regs.Rsi, regs.Rdx)
+		ret, err := r.call(unix.SYS_BPF, regs.Rdi, regs.Rsi, regs.Rdx, regs.R10, regs.R8)
 		if err != nil {
 			return err
 		}
@@ -654,7 +653,7 @@ func (s *supervisor) entry(pid int, t *thread, regs unix.PtraceRegs) error {
 			// Substituted attrs and buffers live in scratch memory, so the original
 			// registers, attr and input buffers still describe the unchanged load.
 			// A verifier attempt may have written the caller-owned log buffer.
-			return r.call(unix.SYS_BPF, regs.Rdi, regs.Rsi, regs.Rdx)
+			return r.call(unix.SYS_BPF, regs.Rdi, regs.Rsi, regs.Rdx, regs.R10, regs.R8)
 		})
 		if err != nil {
 			return err
@@ -728,7 +727,7 @@ func readEntryName(pid int, attr []byte, spec *btf.Spec) (string, error) {
 func (s *supervisor) exit(pid int, t *thread, regs unix.PtraceRegs) error {
 	blob := t.btf
 	t.btf = nil
-	if uint32(regs.Rdi) != unix.BPF_BTF_LOAD || int64(regs.Rax) < 0 || len(blob) == 0 {
+	if uint32(regs.Rdi)&^bpfCommonAttrs != unix.BPF_BTF_LOAD || int64(regs.Rax) < 0 || len(blob) == 0 {
 		return nil
 	}
 	r, err := beginRemote(pid, regs, false)
@@ -1030,7 +1029,8 @@ func (s *supervisor) transformLoad(r *remote, attr []byte, rule Rule, form HookF
 			return 0, result, entry, fmt.Errorf("checker rejected the transform: %w; probe was not installed", err)
 		}
 	}
-	ret, err = r.call(unix.SYS_BPF, unix.BPF_PROG_LOAD, addr, uint64(len(patched)))
+	// The original command and common attr keep a 7.3 caller's log request.
+	ret, err = r.call(unix.SYS_BPF, r.saved.Rdi, addr, uint64(len(patched)), r.saved.R10, r.saved.R8)
 	if err != nil {
 		return 0, nil, "", err
 	}
