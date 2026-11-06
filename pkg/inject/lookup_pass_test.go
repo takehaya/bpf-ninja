@@ -416,13 +416,60 @@ func TestPassSiteNotWrappedDispatch(t *testing.T) {
 	}
 }
 
-// When a stack limit breaks, Auto drops passed-context sites with the callback
-// sites, before the program's other sites.
+// When a stack limit breaks, Auto drops passed-context sites first, before
+// callback sites and the program's other sites.
 func TestPassSiteDroppedFirst(t *testing.T) {
-	groups := []lookupGroup{{sites: []discoveredLookup{{LookupSite: LookupSite{SitePC: 1}}, {LookupSite: LookupSite{SitePC: 2}, pass: []ctxflow.Pass{{Name: "leaf"}}}}}}
-	kept, skipped := dropCallbackSites(groups, nil, "limit")
-	if len(kept) != 1 || len(kept[0].sites) != 1 || kept[0].sites[0].SitePC != 1 || len(skipped) != 1 || skipped[0].SitePC != 2 || skipped[0].Reason != "limit" {
+	groups := []lookupGroup{{sites: []discoveredLookup{{LookupSite: LookupSite{SitePC: 1}}, {LookupSite: LookupSite{SitePC: 2}, pass: []ctxflow.Pass{{Name: "leaf"}}},
+		{LookupSite: LookupSite{SitePC: 3}, callback: &ctxflow.Callback{}}}}}
+	kept, skipped := dropSites(groups, nil, "limit", newSiteKinds[0])
+	if len(kept) != 1 || len(kept[0].sites) != 2 || kept[0].sites[0].SitePC != 1 || kept[0].sites[1].SitePC != 3 || len(skipped) != 1 || skipped[0].SitePC != 2 || skipped[0].Reason != "limit" {
 		t.Fatalf("kept = %+v skipped = %+v", kept, skipped)
+	}
+}
+
+// callbackPassFixture is callbackSiteFixture("loop", entrySite) with the entry
+// also calling mid(n) -> leaf(n), where leaf has a lookup and no context.
+func callbackPassFixture(entrySite bool) *ebpf.CollectionSpec {
+	spec := callbackSiteFixture("loop", entrySite)
+	insns := spec.Programs["p"].Instructions
+	i64 := &btf.Int{Name: "long", Size: 8, Encoding: btf.Signed}
+	fn := func(name string) *btf.Func {
+		return &btf.Func{Name: name, Linkage: btf.StaticFunc, Type: &btf.FuncProto{Return: i64, Params: []btf.FuncParam{{Name: "n", Type: i64}}}}
+	}
+	cb := slices.IndexFunc(insns, func(ins asm.Instruction) bool { fn := btf.FuncMetadata(&ins); return fn != nil && fn.Name == "cb" })
+	// r1 = 7; call mid, before the entry's final r0 = [fp-16]; exit.
+	entry := append(append(asm.Instructions(nil), insns[:cb-2]...), asm.Mov.Imm(asm.R1, 7), asm.Call.Label("mid"))
+	entry = append(entry, insns[cb-2:cb]...)
+	mid := asm.Instructions{btf.WithFuncMetadata(asm.Mov.Reg(asm.R6, asm.R1).WithSymbol("mid").WithSource(asm.Comment("mid")), fn("mid")),
+		asm.Mov.Imm(asm.R1, 1), asm.Call.Label("leaf"), asm.Return()}
+	miss := asm.JNE.Imm(asm.R0, 0, "")
+	miss.Offset = 2
+	leaf := asm.Instructions{btf.WithFuncMetadata(asm.StoreImm(asm.RFP, -4, 0, asm.Word).WithSymbol("leaf").WithSource(asm.Comment("leaf")), fn("leaf")),
+		asm.Mov.Reg(asm.R2, asm.RFP), asm.Add.Imm(asm.R2, -4), asm.LoadMapPtr(asm.R1, 0).WithReference("sessions"), asm.FnMapLookupElem.Call(),
+		miss, asm.Mov.Imm(asm.R0, 1), asm.Return(), asm.LoadMem(asm.R0, asm.R0, 0, asm.DWord), asm.Return()}
+	spec.Programs["p"].Instructions = append(append(append(entry, insns[cb:]...), mid...), leaf...)
+	return spec
+}
+
+// A passed-context site that breaks a call-chain limit (mid at -400) or the
+// frame limit of its group (leaf at -464) is dropped alone: the callback site
+// that the release before passed contexts instrumented stays.
+func TestPassSiteDropKeepsCallbackSite(t *testing.T) {
+	for name, frames := range map[string]map[string]int16{
+		"chain": {"p": -16, "cb": -48, "mid": -400, "leaf": -16},
+		"frame": {"p": -16, "cb": -48, "mid": 0, "leaf": -464},
+	} {
+		for _, entrySite := range []bool{false, true} {
+			req := autoReq()
+			req.Stack = StackAudit{Frames: frames, Source: "verifier", FrameRounding: 32}
+			plan, err := transformLookup(callbackPassFixture(entrySite), req)
+			if err != nil {
+				t.Fatalf("%s entrySite=%v: %v", name, entrySite, err)
+			}
+			if callbackSite(plan.sites) == nil || len(plan.skipped) != 1 || plan.skipped[0].FuncName != "leaf" {
+				t.Fatalf("%s entrySite=%v: sites = %+v skipped = %+v", name, entrySite, plan.sites, plan.skipped)
+			}
+		}
 	}
 }
 

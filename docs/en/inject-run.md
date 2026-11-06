@@ -75,7 +75,7 @@ It skips these sites:
 - a site whose hook name would be longer than 127 bytes;
 - a site whose spill slots do not fit below its function's stack floor, unless a [wrapper](#stack-floor) can hold them;
 - sites that would make the rewritten program break a kernel call-chain stack limit.
-  `auto` first drops the sites in callbacks and those whose context is passed down, then the sites that need slots below the three base ones (see [Stack floor](#stack-floor); the generic hook, update hooks and copied read-only values), and then, if the program still breaks the limit, every map-call site.
+  `auto` first drops the sites whose context is passed down, then the sites in callbacks, then the sites that need slots below the three base ones (see [Stack floor](#stack-floor); the generic hook, update hooks and copied read-only values), and then, if the program still breaks the limit, every map-call site.
   With `dispatch` it drops every map-call site at once.
 
 `auto` keeps the `entry` and `tail_calls` hooks.

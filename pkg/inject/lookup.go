@@ -1537,7 +1537,16 @@ func transformLookupProgramGuarded(insns asm.Instructions, typ ebpf.ProgramType,
 		}
 		reason := siteFrameReason(group, req)
 		if req.Auto {
-			if rest, skipped := dropCallbackSites([]lookupGroup{group}, plan.skipped, reason); len(rest) == 1 && groupStackReach(rest[0], req) >= -siteFrameLimit(req.Stack) {
+			// Without its passed-context sites, then without its callback
+			// sites too, the group is the one an earlier release kept.
+			rest, skipped, fits := []lookupGroup{group}, plan.skipped, false
+			for _, drop := range newSiteKinds {
+				if rest, skipped = dropSites(rest, skipped, reason, drop); len(rest) == 1 && groupStackReach(rest[0], req) >= -siteFrameLimit(req.Stack) {
+					fits = true
+					break
+				}
+			}
+			if fits {
 				kept, plan.skipped = append(kept, rest[0]), skipped
 				continue
 			}
@@ -1662,7 +1671,7 @@ func transformLookupProgramGuarded(insns asm.Instructions, typ ebpf.ProgramType,
 			guardedEmit := emit
 			guardedEmit.req, guardedEmit.tails = guardedReq, nil
 			if req.Auto {
-				groups, plan.skipped = dropCallbackSites(groups, plan.skipped, reason)
+				groups, plan.skipped = dropSites(groups, plan.skipped, reason, func(site discoveredLookup) bool { return isPassSite(site) || isCallbackSite(site) })
 			}
 			var safe []lookupGroup
 			for _, group := range groups {
@@ -1719,16 +1728,19 @@ func transformLookupProgramGuarded(insns asm.Instructions, typ ebpf.ProgramType,
 	if err != nil {
 		return nil, plan, err
 	}
-	// Callback and passed-context sites go first, all at once: without them
-	// the program is the one that was instrumented before either was supported.
-	if before := len(plan.skipped); broken != "" && req.Auto {
-		groups, plan.skipped = dropCallbackSites(groups, plan.skipped, broken)
-		if len(plan.skipped) != before && (len(groups) != 0 || req.Entry || req.TailCalls) {
-			if spliced, hooks, err = emit.splice(groups); err != nil {
-				return nil, plan, err
-			}
-			if broken, err = stackLimitsBroken(insns, spliced, req.Stack); err != nil {
-				return nil, plan, err
+	// Passed-context sites go first, then callback sites, each kind at once:
+	// without the first the program is the one instrumented before contexts
+	// were passed down, without both the one before callbacks were supported.
+	for _, drop := range newSiteKinds {
+		if before := len(plan.skipped); broken != "" && req.Auto {
+			groups, plan.skipped = dropSites(groups, plan.skipped, broken, drop)
+			if len(plan.skipped) != before && (len(groups) != 0 || req.Entry || req.TailCalls) {
+				if spliced, hooks, err = emit.splice(groups); err != nil {
+					return nil, plan, err
+				}
+				if broken, err = stackLimitsBroken(insns, spliced, req.Stack); err != nil {
+					return nil, plan, err
+				}
 			}
 		}
 	}
@@ -1777,14 +1789,22 @@ func transformLookupProgramGuarded(insns asm.Instructions, typ ebpf.ProgramType,
 	return spliced, plan, nil
 }
 
-// dropCallbackSites removes the sites in callbacks and those whose context is
-// passed down (see ctxflow.Pass) from groups, keeping each group's other
-// sites, and lists them as skipped with reason.
-func dropCallbackSites(groups []lookupGroup, skipped []LookupSite, reason string) ([]lookupGroup, []LookupSite) {
+// isPassSite reports a site whose context is passed down (see ctxflow.Pass),
+// and isCallbackSite one in a callback.
+func isPassSite(site discoveredLookup) bool     { return site.pass != nil }
+func isCallbackSite(site discoveredLookup) bool { return site.callback != nil }
+
+// newSiteKinds is the order Auto drops sites in when a limit breaks, newest
+// kind first, so that a program keeps every site an earlier release kept.
+var newSiteKinds = []func(discoveredLookup) bool{isPassSite, isCallbackSite}
+
+// dropSites removes the sites drop selects from groups, keeping each group's
+// other sites, and lists them as skipped with reason.
+func dropSites(groups []lookupGroup, skipped []LookupSite, reason string, drop func(discoveredLookup) bool) ([]lookupGroup, []LookupSite) {
 	var kept []lookupGroup
 	for _, group := range groups {
 		sites := slices.DeleteFunc(slices.Clone(group.sites), func(site discoveredLookup) bool {
-			if site.callback != nil || site.pass != nil {
+			if drop(site) {
 				s := site.LookupSite
 				s.Reason = reason
 				skipped = append(skipped, s)

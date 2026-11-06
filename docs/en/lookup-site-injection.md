@@ -327,7 +327,7 @@ The callback then loads the context from the entry's context slot through the po
 Otherwise a site in a static function, not used as a callback, gets the context passed down from the entry: the function stores it into its context slot on entry, either from its proved context parameter (saved) or from the highest argument register in R1-R5 that no path in it reads before writing it, which every direct call to it first loads from the caller's context slot.
 Each such caller is the entry or another function that gets the context passed down the same way. A helper call reads only its argument registers, from libbpf's prototypes; a kfunc call counts as reading R1-R5 and a subprogram call as reading what its callee reads.
 The site reports `CtxSource` `pass:r5@9,saved-r1@3`; a site whose context cannot be passed down keeps its reason with `; ctx pass:` and why appended.
-Every function on the chain reserves its context slot below its own audited stack floor, and when a call-chain stack limit breaks, `Auto` drops these sites together with callback sites first.
+Every function on the chain reserves its context slot below its own audited stack floor, and when a stack limit breaks, `Auto` drops these sites first, before callback sites.
 Each failed stage produces a distinct `Reason`; the transform does not infer a context from naming or instruction proximity.
 The API does not compose transformations on an already transformed spec.
 Only the selected program changes, including when other programs share a linked subprogram or a map.
