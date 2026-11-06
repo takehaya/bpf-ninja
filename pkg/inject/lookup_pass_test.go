@@ -416,6 +416,32 @@ func TestPassSiteNotWrappedDispatch(t *testing.T) {
 	}
 }
 
+// The entry may start with a call that passes the context, inside a loop
+// whose back-edge targets the entry's first instruction. The back-edge must
+// land on the load before the call, not on the call, and the checker must
+// accept that.
+func TestPassSiteEntryStartsWithCall(t *testing.T) {
+	spec := passSiteFixture(false)
+	insns := spec.Programs["p"].Instructions
+	mid := slices.IndexFunc(insns, func(ins asm.Instruction) bool { return ins.Symbol() == "mid" })
+	back := asm.JEq.Imm(asm.R0, 3, "")
+	back.Offset = -3 // to the call at 0
+	call := btf.WithFuncMetadata(asm.Call.Label("mid").WithSymbol("p").WithSource(insns[0].Source()), btf.FuncMetadata(&insns[0]))
+	entry := asm.Instructions{call, asm.Mov.Imm(asm.R0, 0), back, asm.Return()}
+	spec.Programs["p"].Instructions = append(entry, insns[mid:]...)
+	in := append(asm.Instructions(nil), spec.Programs["p"].Instructions...)
+	injectcheck.Label(spec.Programs["p"].Instructions)
+	plan, err := transformLookup(spec, passRequest())
+	if err != nil || len(plan.sites) != 1 {
+		t.Fatalf("plan = %+v err = %v", plan, err)
+	}
+	out := spec.Programs["p"].Instructions
+	cert, premises := validationCertificate(t, in, out, plan.hooks, -16)
+	if _, err := injectcheck.Check(in, out, cert, premises); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // When a stack limit breaks, Auto drops passed-context sites first, before
 // callback sites and the program's other sites.
 func TestPassSiteDroppedFirst(t *testing.T) {

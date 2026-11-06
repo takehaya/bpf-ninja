@@ -487,11 +487,12 @@ func Check(in, out asm.Instructions, c Certificate, premises Premises) (Counts, 
 			}
 		}
 	}
+	// The one-time entry prologue is excluded from backward edges to original 0,
+	// but a branch to a call that passes the context lands on its load.
+	starts[0] = c.Original[0]
 	for at, load := range passLoads {
 		starts[at] = load
 	}
-	// The one-time entry prologue is excluded from backward edges to original 0.
-	starts[0] = c.Original[0]
 	live, err := liveness(in, opcs, oi)
 	if err != nil {
 		return counts, inputError(InputOriginalCFG, "original CFG: %v", err)
