@@ -7,6 +7,7 @@ import (
 
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/asm"
+	"github.com/takehaya/bpf-ninja/internal/ctxflow"
 	"github.com/takehaya/bpf-ninja/pkg/injectcheck"
 )
 
@@ -230,8 +231,18 @@ func TestCheckerAcceptsMissFirstWrapper(t *testing.T) {
 
 // A callback site's ctx comes through its prologue slot, which a wrapper
 // prelude does not read, so a callback frame without room is not wrapped. The
-// combined limit skips such a site too, since the entry frame is never empty.
+// combined limit skips such a site too, since the entry frame is never empty,
+// so wrapSites is also checked on its own.
 func TestCallbackSiteNotWrapped(t *testing.T) {
+	site := discoveredLookup{LookupSite: LookupSite{FuncName: "cb", SitePC: 9, CtxSource: "callback:r2:fp-8"}}
+	stack := LookupRequest{Stack: StackAudit{Frames: map[string]int16{"cb": -504}, Source: "verifier", FrameRounding: 16}}
+	if group := wrapSites(lookupGroup{op: HookLookup, sites: []discoveredLookup{site}}, stack); group.sites[0].Wrapper == "" {
+		t.Fatal("the same site outside a callback is not wrapped")
+	}
+	site.callback = &ctxflow.Callback{Helper: asm.FnLoop, Param: asm.R2, Arg: -8}
+	if group := wrapSites(lookupGroup{op: HookLookup, sites: []discoveredLookup{site}}, stack); group.sites[0].Wrapper != "" {
+		t.Fatalf("callback site wrapped as %q", group.sites[0].Wrapper)
+	}
 	req := autoReq()
 	req.Stack = StackAudit{Frames: map[string]int16{"p": -16, "cb": -472}, Source: "verifier", FrameRounding: 16}
 	plan, err := transformLookup(callbackSiteFixture("loop", true), req)

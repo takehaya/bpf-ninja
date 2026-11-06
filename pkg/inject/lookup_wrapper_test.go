@@ -2,6 +2,8 @@ package inject
 
 import (
 	"errors"
+	"fmt"
+	"slices"
 	"strings"
 	"testing"
 
@@ -52,6 +54,21 @@ func TestDeepFrameWrapperLimits(t *testing.T) {
 	plan, err := transformLookup(deepLookupFixture(-480), deepReq(-480, LookupHit))
 	if err != nil || plan.sites[0].Wrapper != "" {
 		t.Fatalf("plan = %+v, err = %v", plan, err)
+	}
+	// The same two guards, at wrapSites itself: the transform refuses those
+	// inputs again later, so only here does each guard decide alone.
+	wraps := func(floor int16, rounding int, site LookupSite) bool {
+		req := LookupRequest{Stack: StackAudit{Frames: map[string]int16{site.FuncName: floor}, Source: "verifier", FrameRounding: rounding}}
+		group := wrapSites(lookupGroup{op: HookLookup, sites: []discoveredLookup{{LookupSite: site}}}, req)
+		return group.sites[0].Wrapper != ""
+	}
+	sub := LookupSite{FuncName: "sub", SitePC: 9, CtxSource: "r6"}
+	if !wraps(-504, 16, sub) || wraps(-504, 32, sub) {
+		t.Fatal("FrameRounding: only the 16-byte rule wraps")
+	}
+	entry := LookupSite{FuncName: "p", SitePC: 9, CtxSource: "entry"}
+	if !wraps(-504, 16, entry) || wraps(-512, 16, entry) {
+		t.Fatal("entry ctx slot: only a frame with the slot left wraps")
 	}
 	// A value copy needs stack.
 	copied := deepLookupFixture(-504)
@@ -300,3 +317,103 @@ func TestWrapperNameChecked(t *testing.T) {
 		t.Errorf("length: %v", err)
 	}
 }
+
+// subWrapperPair is wrapperPair for subprogramLookupFixture(source) with the
+// subprogram's frame at -496, so its site is wrapped with ctx from source.
+func subWrapperPair(t *testing.T, source string) (asm.Instructions, asm.Instructions, injectcheck.Certificate, injectcheck.Premises, int) {
+	t.Helper()
+	spec := subprogramLookupFixture(source)
+	insns := spec.Programs["p"].Instructions
+	const subStart = 4
+	spec.Programs["p"].Instructions = append(insns[:subStart+1:subStart+1], append(asm.Instructions{asm.StoreImm(asm.RFP, -496, 0, asm.Word)}, insns[subStart+1:]...)...)
+	req := autoReq()
+	req.Stack = StackAudit{Frames: map[string]int16{"p": 0, "sub": -496}, Source: "verifier", FrameRounding: 16}
+	in, out, cert, premises := wrapperPair(t, spec, req)
+	premises.Frames = []injectcheck.FrameFloor{{Start: 0, LowestOffset: 0}, {Start: subStart, LowestOffset: -496}}
+	site := slices.IndexFunc(in, func(ins asm.Instruction) bool { return ins.IsBuiltinCall() })
+	return in, out, cert, premises, cert.Original[site]
+}
+
+// A subprogram site's prelude must load the planned ctx source: never a slot
+// below the frame floor, and never the entry ctx slot, which a subprogram
+// does not have.
+func TestWrapperPreludeSubprogram(t *testing.T) {
+	for _, source := range []string{"register", "slot"} {
+		in, out, cert, premises, _ := subWrapperPair(t, source)
+		if _, err := injectcheck.Check(in, out, cert, premises); err != nil {
+			t.Fatalf("%s: %v", source, err)
+		}
+	}
+	setCtx := func(ctx *injectcheck.CtxSource) func(*injectcheck.Premises) {
+		return func(premises *injectcheck.Premises) {
+			for i := range premises.Targets {
+				premises.Targets[i].Ctx = ctx
+			}
+		}
+	}
+	for name, tc := range map[string]struct {
+		source  string
+		prelude *asm.Instruction
+		edit    func(*injectcheck.Premises)
+	}{
+		"register-wrong-prelude": {"register", ptr(asm.Mov.Reg(asm.R4, asm.R7)), nil},
+		"slot-wrong-prelude":     {"slot", ptr(asm.LoadMem(asm.R4, asm.RFP, -8, asm.DWord)), nil},
+		"no-ctx-source":          {"register", nil, setCtx(nil)},
+		// -504 is where an entry frame at -496 keeps ctx.
+		"no-ctx-source-entry-slot-load": {"register", ptr(asm.LoadMem(asm.R4, asm.RFP, -504, asm.DWord)), setCtx(nil)},
+		"slot-below-floor":              {"slot", ptr(asm.LoadMem(asm.R4, asm.RFP, -504, asm.DWord)), setCtx(&injectcheck.CtxSource{Slot: -504})},
+	} {
+		t.Run(name, func(t *testing.T) {
+			in, out, cert, premises, site := subWrapperPair(t, tc.source)
+			out = slices.Clone(out)
+			premises.Targets = slices.Clone(premises.Targets)
+			if tc.prelude != nil {
+				out[site-1] = *tc.prelude
+			}
+			if tc.edit != nil {
+				tc.edit(&premises)
+			}
+			_, err := injectcheck.Check(in, out, cert, premises)
+			wantRejected(t, err)
+		})
+	}
+}
+
+// p -> s1 -> ... -> s5 -> sub is 7 frames, and the hook makes 8. A wrapper
+// would make 9, past the kernel's 8-frame limit, so the site is refused.
+func TestWrapperFrameLimit(t *testing.T) {
+	for _, floor := range []int16{-8, -496} {
+		spec := subprogramLookupFixture("register")
+		insns := spec.Programs["p"].Instructions
+		entry, sub := slices.Clone(insns[:4]), slices.Clone(insns[4:])
+		subFn := btf.FuncMetadata(&sub[0])
+		sub = append(sub[:1:1], append(asm.Instructions{asm.StoreImm(asm.RFP, floor, 0, asm.Word)}, sub[1:]...)...)
+		entry[1] = entry[1].WithReference("s1")
+		frames := map[string]int16{"p": 0, "sub": floor}
+		for k := 1; k <= 5; k++ {
+			name, next := fmt.Sprintf("s%d", k), fmt.Sprintf("s%d", k+1)
+			if k == 5 {
+				next = "sub"
+			}
+			fn := &btf.Func{Name: name, Linkage: btf.StaticFunc, Type: subFn.Type}
+			entry = append(entry, btf.WithFuncMetadata(asm.Mov.Imm(asm.R2, 1).WithSymbol(name).WithSource(asm.Comment(name)), fn),
+				asm.Call.Label(next), asm.Mov.Imm(asm.R0, 0), asm.Return())
+			frames[name] = 0
+		}
+		spec.Programs["p"].Instructions = append(entry, sub...)
+		req := autoReq()
+		req.Stack = StackAudit{Frames: frames, Source: "verifier", FrameRounding: 16}
+		plan, err := transformLookup(spec, req)
+		if floor == -8 {
+			if err != nil || len(plan.sites) != 1 || plan.sites[0].Wrapper != "" {
+				t.Fatalf("8 frames unwrapped: plan = %+v, err = %v", plan, err)
+			}
+			continue
+		}
+		if !errors.Is(err, ErrRefused) || !strings.Contains(err.Error(), "9 frames deep, past the kernel's 8-frame limit") {
+			t.Fatalf("9 frames: %v", err)
+		}
+	}
+}
+
+func ptr[T any](v T) *T { return &v }
