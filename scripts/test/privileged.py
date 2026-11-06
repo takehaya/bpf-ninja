@@ -115,12 +115,21 @@ def audit(events, expected, kernel):
     return sorted(set(failures))
 
 
+# The supervisor tests that need root: the integration loaders and the
+# syscall-stop modes, including the fallback from the seccomp filter.
+SYSCALLHOOK_TESTS = (
+    "TestIntegrationMapTypes", "TestIntegrationLoader", "TestIntegrationIndirectJump", "TestIntegrationJumpLimit",
+    "TestBpfAutoStatic", "TestBPFStopsBehaviour", "TestBPFStopsCount", "TestBPFStopsDefault", "TestBPFStopsFallback",
+    "TestBPFStopsOutlivingChild", "TestBPFStopsLeaderExit", "TestBPFStopsCancelEndsChild",
+    "TestBPFStopsChildNotInstrumented", "TestBPFStopsTargetListener", "TestBPFStopsCommonAttrs",
+)
+
+
 def syscallhook_suite(binary, log_path):
     # Run the same tagged binary in CI and in VMs without a Go toolchain.
     command = [str(Path(binary).resolve()), "-test.v", "-test.count=1",
-               "-test.timeout=2m", "-test.run=^(TestIntegration(MapTypes|Loader|IndirectJump|JumpLimit)|TestBpfAutoStatic)$"]
-    expected = {(SYSCALLHOOK, "TestIntegration" + name) for name in ("MapTypes", "Loader", "IndirectJump", "JumpLimit")}
-    expected.add((SYSCALLHOOK, "TestBpfAutoStatic"))
+               "-test.timeout=5m", "-test.run=^(" + "|".join(SYSCALLHOOK_TESTS) + ")$"]
+    expected = {(SYSCALLHOOK, name) for name in SYSCALLHOOK_TESTS}
     events = []
     # A test that runs this binary again as a loader may echo the loader's
     # results; while a top-level test runs, only its own results count.

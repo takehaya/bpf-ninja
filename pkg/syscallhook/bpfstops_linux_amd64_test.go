@@ -18,12 +18,13 @@ import (
 	"time"
 	"unsafe"
 
+	"github.com/cilium/ebpf"
 	"golang.org/x/sys/unix"
 )
 
-// SYSCALLHOOK_TEST_BPF_STOPS=1 runs every other test of the package on the filtered path.
+// SYSCALLHOOK_TEST_EVERY_SYSCALL=1 runs every other test of the package on the every-syscall path.
 func init() {
-	defaultBPFStopsOnly = os.Getenv("SYSCALLHOOK_TEST_BPF_STOPS") == "1"
+	testEverySyscall = os.Getenv("SYSCALLHOOK_TEST_EVERY_SYSCALL") == "1"
 	if os.Getenv(stopsChildEnv) == "leader-exit" {
 		leaderExit()
 	}
@@ -156,7 +157,7 @@ func stopsChild(t *testing.T, mode string) {
 		}
 		if pid == 0 {
 			_, errno := rawMapCreate()
-			unix.RawSyscall(unix.SYS_EXIT_GROUP, uintptr(errno), 0, 0)
+			_, _, _ = unix.RawSyscall(unix.SYS_EXIT_GROUP, uintptr(errno), 0, 0)
 		}
 		var status unix.WaitStatus
 		_, err := unix.Wait4(int(pid), &status, 0, nil)
@@ -170,7 +171,7 @@ func stopsChild(t *testing.T, mode string) {
 		}
 		if pid == 0 {
 			_, errno := rawMapCreate()
-			unix.RawSyscall(unix.SYS_EXIT_GROUP, uintptr(errno), 0, 0)
+			_, _, _ = unix.RawSyscall(unix.SYS_EXIT_GROUP, uintptr(errno), 0, 0)
 		}
 		var status unix.WaitStatus
 		_, err := unix.Wait4(int(pid), &status, unix.WALL, nil)
@@ -267,7 +268,7 @@ func runStops(t *testing.T, mode string, filtered bool, extra ...func(*Options))
 	}
 	defer func() { _ = out.Close() }()
 	var logs bytes.Buffer
-	opts := Options{Stdout: out, Stderr: out, Log: &logs, BPFStopsOnly: filtered, stops: &stops, Rules: []Rule{testRule()}}
+	opts := Options{Stdout: out, Stderr: out, Log: &logs, EverySyscall: !filtered, stops: &stops, Rules: []Rule{testRule()}}
 	for _, f := range extra {
 		f(&opts)
 	}
@@ -335,6 +336,10 @@ func TestBPFStopsBehaviour(t *testing.T) {
 				if strings.Contains(log, "target installs a seccomp filter") {
 					t.Fatalf("own-filter log line present:\n%s", log)
 				}
+				// Neither the default nor the override falls back here.
+				if strings.Contains(log, "stopping on every syscall") {
+					t.Fatalf("fallback line present:\n%s", log)
+				}
 			})
 		}
 	}
@@ -365,40 +370,123 @@ func TestBPFStopsCount(t *testing.T) {
 	}
 }
 
-// Without CAP_SYS_ADMIN, or under an inherited filter, the target runs on the
-// every-syscall path and says so. The supervisor is a child so its credentials
-// and filters do not outlive the case.
+// Run with no options installs the filter. Self-contained, so it also runs
+// against trees where every-syscall stops are the only path.
+func TestBPFStopsDefault(t *testing.T) {
+	if os.Geteuid() != 0 {
+		t.Skip("requires root and BPF privileges")
+	}
+	out, err := os.Create(filepath.Join(t.TempDir(), "out"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = out.Close() }()
+	var logs bytes.Buffer
+	code, err := Run(context.Background(), []string{"/bin/sh", "-c", `grep '^Seccomp:' /proc/$$/status`},
+		Options{Stdout: out, Stderr: out, Log: &logs, Rules: []Rule{testRule()}})
+	data, _ := os.ReadFile(out.Name())
+	if err != nil || code != 0 || string(data) != "Seccomp:\t2\n" || !strings.Contains(logs.String(), "stopping only on bpf()") {
+		t.Fatalf("code=%d err=%v target %q\n%s", code, err, data, &logs)
+	}
+}
+
+// Where the filter cannot be installed, the target runs on the every-syscall
+// path, the log says why in one line, and a matched load is still instrumented.
+// The supervisor is a child whose locked thread starts the target, so the
+// filter or dropped capability reaches only that case's target. It checks the
+// loaded program itself, since a loader without CAP_SYS_ADMIN cannot read the
+// program BTF, and reports its stops, which the parent compares with a run
+// that takes the filter.
 func TestBPFStopsFallback(t *testing.T) {
 	how := os.Getenv("SYSCALLHOOK_FALLBACK")
-	if os.Geteuid() != 0 && how == "" {
+	if os.Geteuid() != 0 {
 		t.Skip("requires root and BPF privileges")
 	}
 	if how != "" {
 		runtime.LockOSThread()
-		if how == "inherited" {
-			installOwnFilter(t, unix.SECCOMP_RET_ERRNO|uint32(unix.EACCES), unix.SYS_BPF)
+		loader := "hook"
+		switch how {
+		case "inherited":
+			// A parent filter that refuses seccomp(2) with EPERM.
+			installOwnFilter(t, unix.SECCOMP_RET_ERRNO|uint32(unix.EPERM), unix.SYS_SECCOMP)
+		case "no-cap-sys-admin":
+			// The target loses CAP_SYS_ADMIN at exec; this thread keeps it.
+			if err := unix.Prctl(unix.PR_CAPBSET_DROP, unix.CAP_SYS_ADMIN, 0, 0, 0); err != nil {
+				t.Fatal(err)
+			}
+			hdr := unix.CapUserHeader{Version: unix.LINUX_CAPABILITY_VERSION_3}
+			var data [2]unix.CapUserData
+			if err := unix.Capget(&hdr, &data[0]); err != nil {
+				t.Fatal(err)
+			}
+			data[0].Inheritable &^= 1 << unix.CAP_SYS_ADMIN
+			if err := unix.Capset(&hdr, &data[0]); err != nil {
+				t.Fatal(err)
+			}
+			loader = "hook-nocap"
 		}
-		code, err := Run(context.Background(), []string{"/bin/sh", "-c", "exit 5"}, Options{BPFStopsOnly: true, Log: os.Stdout, Rules: []Rule{testRule()}})
-		fmt.Printf("code=%d err=%v seccomp=%s\n", code, err, statusField("/proc/self/status", "Seccomp"))
+		t.Setenv("SYSCALLHOOK_INTEGRATION_CHILD", loader)
+		var stops int
+		var hooks []string
+		code, err := Run(context.Background(), []string{os.Args[0], "-test.run=^TestIntegrationLoader$"},
+			Options{Log: os.Stdout, Rules: []Rule{testRule()}, stops: &stops, OnInject: func(inj Injection) {
+				hooks = append(hooks, loadedHook(inj.ProgID))
+			}})
+		fmt.Printf("code=%d err=%v hooks=%v\nstops=%d\n", code, err, hooks, stops)
 		return
 	}
+	run := func(t *testing.T, how, line string) (stops int) {
+		cmd := exec.Command(os.Args[0], "-test.run=^TestBPFStopsFallback$")
+		cmd.Env = append(os.Environ(), "SYSCALLHOOK_FALLBACK="+how)
+		out, err := cmd.CombinedOutput()
+		got := string(out)
+		_, serr := fmt.Sscanf(got[strings.LastIndex(got, "stops="):], "stops=%d", &stops)
+		if err != nil || serr != nil || strings.Count(got, line) != 1 || strings.Count(got, "inject-run: stopping ") != 1 ||
+			!strings.Contains(got, "code=0 err=<nil> hooks=[hook=true action=2]") {
+			t.Fatalf("err=%v\n%s", err, got)
+		}
+		t.Logf("%s: %d stops", how, stops)
+		return stops
+	}
+	filtered := run(t, "default", "inject-run: stopping only on bpf()\n")
 	for _, tc := range []struct{ how, line string }{
-		{"no-privilege", "cannot install the seccomp filter: permission denied; stopping on every syscall"},
-		{"inherited", "target inherits a seccomp filter; stopping on every syscall"},
+		{"inherited", "inject-run: stopping on every syscall: the target already runs under a seccomp filter (Seccomp 2)\n"},
+		{"no-cap-sys-admin", "inject-run: stopping on every syscall: seccomp(2) refused the filter: the target lacks CAP_SYS_ADMIN and no_new_privs is not set\n"},
 	} {
 		t.Run(tc.how, func(t *testing.T) {
-			cmd := exec.Command(os.Args[0], "-test.run=^TestBPFStopsFallback$")
-			cmd.Env = append(os.Environ(), "SYSCALLHOOK_FALLBACK="+tc.how)
-			if tc.how == "no-privilege" {
-				cmd.SysProcAttr = &syscall.SysProcAttr{Credential: &syscall.Credential{Uid: 65534, Gid: 65534}}
-			}
-			out, err := cmd.CombinedOutput()
-			if err != nil || !strings.Contains(string(out), tc.line) || !strings.Contains(string(out), "code=5 err=<nil>") ||
-				strings.Contains(string(out), "stopping only on bpf()") {
-				t.Fatalf("err=%v\n%s", err, out)
+			// The loader's own syscalls now stop twice each.
+			if stops := run(t, tc.how, tc.line); stops < 2*filtered {
+				t.Fatalf("%d stops, want at least twice the %d of the filtered run", stops, filtered)
 			}
 		})
 	}
+}
+
+// loadedHook reports whether the program has an injected hook in its
+// func_info, and what it returns for a test packet.
+func loadedHook(id uint32) string {
+	p, err := ebpf.NewProgramFromID(ebpf.ProgramID(id))
+	if err != nil {
+		return err.Error()
+	}
+	defer func() { _ = p.Close() }()
+	info, err := p.Info()
+	if err != nil {
+		return err.Error()
+	}
+	funcs, err := info.FuncInfos()
+	if err != nil {
+		return err.Error()
+	}
+	found := false
+	for _, f := range funcs {
+		found = found || strings.HasPrefix(f.Func.Name, "lookup_hook")
+	}
+	action, _, err := p.Test(make([]byte, 64))
+	if err != nil {
+		return err.Error()
+	}
+	return fmt.Sprintf("hook=%t action=%d", found, action)
 }
 
 // When the target exits, Run kills the followed children and returns its exit
@@ -412,7 +500,7 @@ func TestBPFStopsOutlivingChild(t *testing.T) {
 	for _, filtered := range []bool{false, true} {
 		_ = os.Remove(file)
 		start := time.Now()
-		code, err := Run(context.Background(), []string{"/bin/sh", "-c", script}, Options{BPFStopsOnly: filtered, Rules: []Rule{testRule()}})
+		code, err := Run(context.Background(), []string{"/bin/sh", "-c", script}, Options{EverySyscall: !filtered, Rules: []Rule{testRule()}})
 		took := time.Since(start)
 		if err != nil || code != 3 || took >= time.Second {
 			t.Fatalf("filtered=%t code=%d err=%v after %v", filtered, code, err, took)
@@ -458,7 +546,7 @@ func TestBPFStopsCancelEndsChild(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		time.AfterFunc(500*time.Millisecond, cancel)
 		start := time.Now()
-		_, err := Run(ctx, []string{"/bin/sh", "-c", script}, Options{BPFStopsOnly: filtered, Rules: []Rule{testRule()}})
+		_, err := Run(ctx, []string{"/bin/sh", "-c", script}, Options{EverySyscall: !filtered, Rules: []Rule{testRule()}})
 		cancel()
 		if err != context.Canceled || time.Since(start) > 10*time.Second {
 			t.Fatalf("filtered=%t: %v after %v", filtered, err, time.Since(start))
@@ -501,7 +589,7 @@ func TestBPFStopsChildNotInstrumented(t *testing.T) {
 	}
 	defer func() { _ = f.Close() }()
 	code, err := Run(context.Background(), []string{os.Args[0], "-test.run=^TestBPFStopsChildNotInstrumented$"},
-		Options{BPFStopsOnly: true, Rules: []Rule{testRule()}, Stdout: f, Stderr: f, Log: &logs, OnInject: func(Injection) { injected++ }})
+		Options{Rules: []Rule{testRule()}, Stdout: f, Stderr: f, Log: &logs, OnInject: func(Injection) { injected++ }})
 	data, _ := os.ReadFile(out)
 	if err != nil || code != 0 || injected != 0 || !strings.Contains(logs.String(), "stopping only on bpf()") {
 		t.Fatalf("code=%d err=%v injected=%d\n%s\n%s", code, err, injected, &logs, data)
@@ -556,7 +644,7 @@ func TestBPFStopsTargetListener(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	code, err := Run(ctx, []string{os.Args[0], "-test.run=^TestBPFStopsTargetListener$"},
-		Options{BPFStopsOnly: true, Rules: []Rule{testRule()}, Stdout: out, Stderr: out, Log: &logs, OnInject: func(Injection) { injected++ }})
+		Options{Rules: []Rule{testRule()}, Stdout: out, Stderr: out, Log: &logs, OnInject: func(Injection) { injected++ }})
 	if err != nil || code != 0 || injected != 0 || !strings.Contains(logs.String(), "stopping only on bpf()") {
 		t.Fatalf("code=%d err=%v injected=%d\n%s", code, err, injected, &logs)
 	}

@@ -85,7 +85,8 @@ Loss of ptrace control is fatal in either mode: the supervisor terminates the ta
 
 ## How the supervisor handles a load
 
-The launcher uses Go's fork/exec support with `PTRACE_TRACEME` and keeps ptrace operations on one locked OS thread.
+The launcher uses Go's fork/exec support with `PTRACE_TRACEME`, moves the target to `PTRACE_SEIZE` before it runs, and keeps ptrace operations on one locked OS thread.
+A seccomp filter installed at the target's first syscall limits the stops to program and BTF loads; where it cannot be installed, the target stops on every syscall ([inject-run.md](inject-run.md#syscall-stops)).
 It follows target threads with `PTRACE_O_TRACECLONE` and uses `PTRACE_GET_SYSCALL_INFO` to tell syscall entry from exit.
 It intercepts native x86-64 `SYS_bpf`; compat and x32 calls pass through without injection.
 Every original BPF command other than `BPF_BTF_LOAD` and a matched `BPF_PROG_LOAD` passes through untouched.

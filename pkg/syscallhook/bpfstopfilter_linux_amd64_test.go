@@ -74,3 +74,37 @@ func TestBPFStopFilterCommands(t *testing.T) {
 		}
 	}
 }
+
+// The target takes the filter only from a native, single-threaded state with
+// no filter of its own; every other case falls back with a reason.
+func TestFilterFallback(t *testing.T) {
+	for _, tc := range []struct {
+		mode    string
+		arch    uint32
+		threads int
+		want    string
+	}{
+		{"0", unix.AUDIT_ARCH_X86_64, 1, ""},
+		{"", unix.AUDIT_ARCH_X86_64, 1, "the kernel reports no seccomp mode for the target"},
+		{"2", unix.AUDIT_ARCH_X86_64, 1, "the target already runs under a seccomp filter (Seccomp 2)"},
+		{"1", unix.AUDIT_ARCH_X86_64, 1, "the target already runs under a seccomp filter (Seccomp 1)"},
+		{"0", unix.AUDIT_ARCH_I386, 1, "the target is not a native x86-64 process (arch 0x40000003)"},
+		{"0", unix.AUDIT_ARCH_X86_64, 2, "the target has 2 threads at its first syscall"},
+		// An inherited filter wins: it decides whether seccomp(2) may run at all.
+		{"2", unix.AUDIT_ARCH_I386, 3, "the target already runs under a seccomp filter (Seccomp 2)"},
+	} {
+		if got := filterUnusable(tc.mode, tc.arch, tc.threads); got != tc.want {
+			t.Errorf("filterUnusable(%q, %#x, %d) = %q, want %q", tc.mode, tc.arch, tc.threads, got, tc.want)
+		}
+	}
+	for err, want := range map[error]string{
+		unix.EACCES: "seccomp(2) refused the filter: the target lacks CAP_SYS_ADMIN and no_new_privs is not set",
+		unix.EINVAL: "seccomp(2) failed: invalid argument; the kernel lacks seccomp filter support",
+		unix.ENOSYS: "seccomp(2) failed: function not implemented; the kernel lacks seccomp filter support",
+		unix.EPERM:  "cannot install the seccomp filter: operation not permitted",
+	} {
+		if got := seccompRefusal(err); got != want {
+			t.Errorf("seccompRefusal(%v) = %q, want %q", err, got, want)
+		}
+	}
+}

@@ -47,12 +47,14 @@ type Options struct {
 	// before any transform. Rules may then be empty. It must not wait on the
 	// target.
 	OnDiscover func(Discovery)
-	// BPFStopsOnly stops the target only on bpf(2), through a seccomp filter
-	// installed in the target at its first syscall, and follows every child
-	// process so the filter never meets a process without a tracer. Those still
-	// running when the target process exits are killed. See
-	// docs/en/inject-run.md for what this changes for the target.
-	BPFStopsOnly bool
+	// EverySyscall stops the target at the entry and exit of every syscall.
+	// Otherwise Run installs a seccomp filter in the target at its first
+	// syscall, stops it only on program and BTF loads, and follows every child
+	// process so the filter never meets a process without a tracer; those still
+	// running when the target process exits are killed. Where the filter cannot
+	// be installed, Run logs why and stops on every syscall. See
+	// docs/en/inject-run.md for what each mode changes for the target.
+	EverySyscall bool
 	// stops counts ptrace stops, for tests.
 	stops *int
 }
@@ -227,12 +229,7 @@ func run(ctx context.Context, argv []string, opts Options, probeUntrusted, probe
 		return 0, err
 	}
 	s := supervisor{probeUntrusted: sync.OnceValue(probeUntrusted), probeTailCallReachability: sync.OnceValue(probeTailCallReachability),
-		options: opts, btf: make(map[uint32]rememberedBTF), filterPending: opts.BPFStopsOnly || defaultBPFStopsOnly}
-	// An inherited filter may kill the seccomp call that would add ours.
-	if s.filterPending && seccompMode(pid) != "0" {
-		s.filterPending = false
-		s.log("target inherits a seccomp filter; stopping on every syscall")
-	}
+		options: opts, btf: make(map[uint32]rememberedBTF), filterPending: !opts.EverySyscall && !testEverySyscall}
 	exitCode := 0
 	targetExited := false
 	for len(threads) > 0 {
@@ -481,8 +478,8 @@ const seccompDataBPF = 0x4250
 // attr in the 4th and 5th arguments; __sys_bpf clears it before dispatching.
 const bpfCommonAttrs = 1 << 16
 
-// defaultBPFStopsOnly lets the test suite run on the filtered path.
-var defaultBPFStopsOnly = false
+// testEverySyscall lets the test suite run on the every-syscall path.
+var testEverySyscall = false
 
 // bpfStopFilter traces native bpf(2) BPF_PROG_LOAD and BPF_BTF_LOAD, the only
 // commands entry and exit act on, with or without bpfCommonAttrs. The kernel
@@ -504,9 +501,10 @@ var bpfStopFilter = []unix.SockFilter{
 }
 
 // installFilter runs at the exit stop of the target's first syscall, which went
-// through the every-syscall path, so no bpf(2) comes before the filter. It never
-// sets no_new_privs: without CAP_SYS_ADMIN the kernel returns EACCES and the
-// target stays on the every-syscall path. SPEC_ALLOW keeps
+// through the every-syscall path, so no bpf(2) comes before the filter. Where
+// the filter cannot be used, the target stays on that path and the log says
+// why. It never sets no_new_privs: without CAP_SYS_ADMIN the kernel returns
+// EACCES. SPEC_ALLOW keeps
 // spec_store_bypass_disable=seccomp from slowing the target.
 func (s *supervisor) installFilter(tid, threads int, arch uint32, regs unix.PtraceRegs) error {
 	switch regs.Orig_rax {
@@ -514,8 +512,8 @@ func (s *supervisor) installFilter(tid, threads int, arch uint32, regs unix.Ptra
 		return nil // these return somewhere other than a SYSCALL instruction
 	}
 	s.filterPending = false
-	if arch != 0xc000003e || threads != 1 {
-		s.log("cannot install the seccomp filter (arch %#x, %d threads); stopping on every syscall", arch, threads)
+	if reason := filterUnusable(seccompMode(tid), arch, threads); reason != "" {
+		s.log("stopping on every syscall: %s", reason)
 		return nil
 	}
 	r, err := beginRemote(tid, regs, false)
@@ -542,7 +540,7 @@ func (s *supervisor) installFilter(tid, threads int, arch uint32, regs unix.Ptra
 		return r.broken
 	}
 	if err != nil {
-		s.log("cannot install the seccomp filter: %v; stopping on every syscall", err)
+		s.log("stopping on every syscall: %s", seccompRefusal(err))
 		return r.finish(int64(regs.Rax))
 	}
 	s.filtered = true
@@ -553,6 +551,35 @@ func (s *supervisor) installFilter(tid, threads int, arch uint32, regs unix.Ptra
 	}
 	s.log("stopping only on bpf()")
 	return r.finish(int64(regs.Rax))
+}
+
+// filterUnusable says why the target cannot take the filter at its first
+// syscall, or returns "". mode is the Seccomp field of its status. An inherited
+// filter may kill or trap the seccomp call that would add ours, so any filter
+// already present means the every-syscall path.
+func filterUnusable(mode string, arch uint32, threads int) string {
+	switch {
+	case mode == "":
+		return "the kernel reports no seccomp mode for the target"
+	case mode != "0":
+		return "the target already runs under a seccomp filter (Seccomp " + mode + ")"
+	case arch != unix.AUDIT_ARCH_X86_64:
+		return fmt.Sprintf("the target is not a native x86-64 process (arch %#x)", arch)
+	case threads != 1:
+		return fmt.Sprintf("the target has %d threads at its first syscall", threads)
+	}
+	return ""
+}
+
+// seccompRefusal explains an error of the seccomp call that installs the filter.
+func seccompRefusal(err error) string {
+	switch err {
+	case unix.EACCES:
+		return "seccomp(2) refused the filter: the target lacks CAP_SYS_ADMIN and no_new_privs is not set"
+	case unix.ENOSYS, unix.EINVAL:
+		return fmt.Sprintf("seccomp(2) failed: %v; the kernel lacks seccomp filter support", err)
+	}
+	return fmt.Sprintf("cannot install the seccomp filter: %v", err)
 }
 
 // seccompStop handles a PTRACE_EVENT_SECCOMP stop. ok is false if the thread
