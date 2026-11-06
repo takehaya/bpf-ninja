@@ -7,11 +7,14 @@
 package injectcheck
 
 import (
+	"cmp"
 	"fmt"
+	"maps"
 	"slices"
 	"strings"
 
 	"github.com/cilium/ebpf/asm"
+	"github.com/takehaya/bpf-ninja/internal/ctxflow"
 )
 
 // Span is a half-open range of decoded instruction indices, not raw slots.
@@ -41,10 +44,14 @@ type SiteTarget struct {
 }
 
 // CtxSource is the plan-proved context value used to initialize a callee
-// frame. Reg is R6-R9, or Slot is an aligned offset in the audited frame.
+// frame. Reg is R6-R9, or Slot is an aligned offset in the audited frame. For a
+// synchronous callback, Param (R2 or R4) holds the entry frame's R10+Arg at the
+// callback's entry, and the callback loads the entry's context slot through it.
 type CtxSource struct {
-	Reg  int   `json:"reg,omitempty"`
-	Slot int16 `json:"slot,omitempty"`
+	Reg   int   `json:"reg,omitempty"`
+	Slot  int16 `json:"slot,omitempty"`
+	Param int   `json:"param,omitempty"`
+	Arg   int16 `json:"arg,omitempty"`
 }
 
 // Certificate is untrusted layout metadata. Original[i] locates original
@@ -276,6 +283,43 @@ func Check(in, out asm.Instructions, c Certificate, premises Premises) (Counts, 
 			}
 		}
 	}
+	gather := func(js []int) asm.Instructions {
+		is := make(asm.Instructions, len(js))
+		for i, j := range js {
+			is[i] = out[j]
+		}
+		return is
+	}
+	callbacks, callbackOwner, err := callbackFrames(in, opcs, oi, targets, premises.Frames)
+	if err != nil {
+		return counts, err
+	}
+	for start, ctx := range callbacks {
+		if int(ctx.Arg) < lowestAt(0) {
+			return fail(CtxProvenance, "the callback at %d gets fp%d, below the entry floor %d", start, ctx.Arg, lowestAt(0))
+		}
+	}
+	for site, start := range callbackOwner {
+		if floorAt(site) != floorAt(start) {
+			return fail(CtxProvenance, "callback site %d has floor %d, but the callback at %d stores the context below floor %d", site, floorAt(site), start, floorAt(start))
+		}
+	}
+	functionStarts := map[int]int{}
+	for start, ctx := range callbacks {
+		if len(gaps[0]) == 0 {
+			return fail(CtxProvenance, "callback at %d reads an entry context slot that is never spilled", start)
+		}
+		g := gaps[start]
+		want := asm.Instructions{
+			asm.LoadMem(asm.R0, asm.Register(ctx.Param), int16(floorAt(0)+slotContext-int(ctx.Arg)), asm.DWord),
+			asm.StoreMem(asm.RFP, int16(floorAt(start)+slotContext), asm.R0, asm.DWord),
+		}
+		if len(g) < len(want) || !equal(gather(g[:len(want)]), want) {
+			return fail(CtxProvenance, "callback at %d does not start with the context load its premise names", start)
+		}
+		functionStarts[start] = g[0]
+		gaps[start] = g[len(want):]
+	}
 	// A helper's prelude is the trailing sequence of stack spills before it.
 	starts := slices.Clone(c.Original)
 	before := make([]asm.Instructions, len(in))
@@ -288,7 +332,7 @@ func Check(in, out asm.Instructions, c Certificate, premises Premises) (Counts, 
 		for n > 0 && stackSpill(out[g[n-1]]) {
 			n--
 		}
-		ctx := targets.ctxForSite(i)
+		ctx := siteCtx(targets, i)
 		if n > 0 && ctx != nil && ctx.Slot != 0 && n < len(g) &&
 			same(out[g[n-1]], asm.LoadMem(asm.R0, asm.RFP, ctx.Slot, asm.DWord)) {
 			n--
@@ -337,8 +381,12 @@ func Check(in, out asm.Instructions, c Certificate, premises Premises) (Counts, 
 			if e != nil {
 				return counts, fmt.Errorf("transformed edge: %w", e)
 			}
-			if u != starts[t] {
-				return fail(EdgeTarget, "edge %d targets %d; expected %d (original %d)", i, u, starts[t], t)
+			expected := starts[t]
+			if head, ok := functionStarts[t]; ok && a.IsFunctionReference() {
+				expected = head
+			}
+			if u != expected {
+				return fail(EdgeTarget, "edge %d targets %d; expected %d (original %d)", i, u, expected, t)
 			}
 			if a.IsFunctionReference() {
 				aa.Constant = 0
@@ -360,13 +408,6 @@ func Check(in, out asm.Instructions, c Certificate, premises Premises) (Counts, 
 			return counts, fmt.Errorf("original %d: %w", i, err)
 		}
 	}
-	gather := func(js []int) asm.Instructions {
-		is := make(asm.Instructions, len(js))
-		for i, j := range js {
-			is[i] = out[j]
-		}
-		return is
-	}
 	if len(gaps[0]) > 0 {
 		if err := checkEntry(gather(gaps[0]), out, npcs, ni, gaps[0], hooks, targets, floorAt(0)); err != nil {
 			return counts, fmt.Errorf("entry: %w", err)
@@ -376,11 +417,16 @@ func Check(in, out asm.Instructions, c Certificate, premises Premises) (Counts, 
 		after := gather(gaps[i+1])
 		if len(before[i]) > 0 {
 			if err := checkAfter(i, in[i], before[i], after, out, npcs, ni, gaps[i+1], hooks, targets,
-				floorAt(i), len(gaps[0]) > 0 && i < entryEnd, targets.ctxForSite(i)); err != nil {
+				floorAt(i), len(gaps[0]) > 0 && i < entryEnd || callbackSite(targets, i), siteCtx(targets, i)); err != nil {
 				return counts, fmt.Errorf("site %d: %w", i, err)
 			}
 			counts.Sites++
 		} else if len(after) > 0 {
+			// A u32 region saves R0 in its frame's context slot, which a
+			// callback's prologue reads in the entry and fills in the callback.
+			if len(callbacks) != 0 {
+				return fail(CtxProvenance, "u32 region after %d may overwrite a context slot that a callback reads or fills", i)
+			}
 			if err := checkU32(i, in[i], after, out, npcs, ni, gaps[i+1], hooks, targets, floorAt(i), live[i+1]); err != nil {
 				return counts, fmt.Errorf("gap after %d: %w", i, err)
 			}
@@ -391,6 +437,151 @@ func Check(in, out asm.Instructions, c Certificate, premises Premises) (Counts, 
 		return counts, err
 	}
 	return counts, nil
+}
+
+// siteCtx is the context a site's prelude initializes: none in a callback,
+// whose prologue did so already.
+func siteCtx(targets targetBindings, site int) *CtxSource {
+	ctx := targets.ctxForSite(site)
+	if ctx != nil && ctx.Param != 0 {
+		return nil
+	}
+	return ctx
+}
+
+func callbackSite(targets targetBindings, site int) bool {
+	ctx := targets.ctxForSite(site)
+	return ctx != nil && ctx.Param != 0
+}
+
+// callbackFrames maps the start of each function holding a callback-context
+// site to its premise, and each such site to that start, after re-deriving the
+// premise from the original stream: the site is reachable from the start
+// without a call, the function is never called directly, and every reference
+// to it is reachable from instruction 0 and passes Param's helper R10+Arg,
+// with no branch landing between `r3 = r10` and the helper call. Static
+// linkage rests on the transformer's proof. With a callback, no frame floor
+// may start inside the entry or a callback after its start, and an entry site
+// may not name a context source: either could move or rewrite a context slot
+// a callback reads or fills.
+func callbackFrames(in asm.Instructions, pcs []int, index map[int]int, targets targetBindings, frames []FrameFloor) (map[int]CtxSource, map[int]int, error) {
+	refs, calls, landings := map[int][]int{}, map[int]bool{}, map[int]bool{}
+	functions := []int{}
+	for i, ins := range in {
+		if !edge(ins) {
+			continue
+		}
+		t, err := target(in, pcs, index, i)
+		if err != nil {
+			return nil, nil, inputError(InputOriginalCFG, "original edge: %v", err)
+		}
+		if !ins.IsFunctionReference() {
+			landings[t] = true
+			continue
+		}
+		functions = append(functions, t)
+		if ins.IsLoadOfFunctionPointer() {
+			refs[t] = append(refs[t], i)
+		} else {
+			calls[t] = true
+		}
+	}
+	keys := slices.SortedFunc(maps.Keys(targets), func(a, b targetKey) int { return cmp.Or(cmp.Compare(a.site, b.site), cmp.Compare(a.when, b.when)) })
+	out, owner, bodies := map[int]CtxSource{}, map[int]int{}, map[int]map[int]bool{}
+	entry := body(in, pcs, index, 0)
+	for _, key := range keys {
+		binding := targets[key]
+		if binding.ctx == nil || binding.ctx.Param == 0 {
+			continue
+		}
+		start := -1
+		for _, f := range functions {
+			if f <= key.site && f > start {
+				start = f
+			}
+		}
+		if start < 0 || len(refs[start]) == 0 {
+			return nil, nil, reject(CtxProvenance, "site %d is not in a function used as a callback", key.site)
+		}
+		if bodies[start] == nil {
+			bodies[start] = body(in, pcs, index, start)
+		}
+		if !bodies[start][key.site] {
+			return nil, nil, reject(CtxProvenance, "site %d is not reachable from the callback at %d", key.site, start)
+		}
+		owner[key.site] = start
+		if prior, ok := out[start]; ok {
+			if prior != *binding.ctx {
+				return nil, nil, inputError(InputTarget, "inconsistent callback context premises in the function at %d", start)
+			}
+			continue
+		}
+		out[start] = *binding.ctx
+		if calls[start] {
+			return nil, nil, reject(CtxProvenance, "the callback at %d is also called directly", start)
+		}
+		for _, ref := range refs[start] {
+			if !entry[ref] {
+				return nil, nil, reject(CtxProvenance, "the callback at %d is referenced outside the entry function", start)
+			}
+			use, from, call, why := ctxflow.CallbackCall(in, ref)
+			if why != "" {
+				return nil, nil, reject(CtxProvenance, "the callback at %d: %s", start, why)
+			}
+			if int(use.Param) != binding.ctx.Param || use.Arg != binding.ctx.Arg {
+				return nil, nil, reject(CtxProvenance, "the callback at %d gets r%d = fp%d, not the premise's r%d = fp%d", start, use.Param, use.Arg, binding.ctx.Param, binding.ctx.Arg)
+			}
+			for j := from + 1; j <= call; j++ {
+				if landings[j] {
+					return nil, nil, reject(CtxProvenance, "a branch lands at %d, between the callback context at %d and the helper call at %d", j, from, call)
+				}
+			}
+		}
+	}
+	if len(out) != 0 {
+		// A frame at an unreferenced root, such as an exception callback, is
+		// outside both.
+		for _, frame := range frames {
+			inside := frame.Start != 0 && entry[frame.Start]
+			for start, b := range bodies {
+				inside = inside || frame.Start != start && b[frame.Start]
+			}
+			if inside {
+				return nil, nil, reject(CtxProvenance, "a frame floor starts at %d, inside the entry or a callback", frame.Start)
+			}
+		}
+		for key, binding := range targets {
+			if entry[key.site] && binding.ctx != nil && binding.ctx.Param == 0 {
+				return nil, nil, reject(CtxProvenance, "entry site %d names a context source, which would rewrite the slot callbacks read", key.site)
+			}
+		}
+	}
+	return out, owner, nil
+}
+
+// body returns the instructions reachable from start through jumps and
+// fall-through, without following calls.
+func body(in asm.Instructions, pcs []int, index map[int]int, start int) map[int]bool {
+	seen := map[int]bool{}
+	work := []int{start}
+	for len(work) > 0 {
+		i := work[len(work)-1]
+		work = work[:len(work)-1]
+		if i < 0 || i >= len(in) || seen[i] {
+			continue
+		}
+		seen[i] = true
+		ins := in[i]
+		if ins.OpCode.Class().IsJump() && ins.OpCode.JumpOp() != asm.Call && ins.OpCode.JumpOp() != asm.Exit {
+			if t, err := target(in, pcs, index, i); err == nil {
+				work = append(work, t)
+			}
+		}
+		if !terminal(ins) {
+			work = append(work, i+1)
+		}
+	}
+	return seen
 }
 
 func stackAudit(ins asm.Instruction, floor int) error {
@@ -530,9 +721,11 @@ func newTargetBindings(targets []SiteTarget, sites int, hooks map[int]bool) (tar
 		}
 		if target.Ctx != nil {
 			ctx := target.Ctx
-			validReg := ctx.Reg >= int(asm.R6) && ctx.Reg <= int(asm.R9) && ctx.Slot == 0
-			validSlot := ctx.Reg == 0 && ctx.Slot <= -8 && ctx.Slot >= stackBottom && ctx.Slot%8 == 0
-			if target.Site < 0 || !validReg && !validSlot {
+			plain := ctx.Param == 0 && ctx.Arg == 0
+			validReg := plain && ctx.Reg >= int(asm.R6) && ctx.Reg <= int(asm.R9) && ctx.Slot == 0
+			validSlot := plain && ctx.Reg == 0 && ctx.Slot <= -8 && ctx.Slot >= stackBottom && ctx.Slot%8 == 0
+			validCallback := ctx.Reg == 0 && ctx.Slot == 0 && (ctx.Param == int(asm.R2) || ctx.Param == int(asm.R4)) && ctx.Arg <= -8 && ctx.Arg >= stackBottom
+			if target.Site < 0 || !validReg && !validSlot && !validCallback {
 				return nil, inputError(InputTarget, "invalid context source in site target %+v", target)
 			}
 		}

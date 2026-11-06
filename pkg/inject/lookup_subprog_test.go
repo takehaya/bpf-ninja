@@ -164,7 +164,7 @@ func TestSubprogramCallbackSkipped(t *testing.T) {
 	insns = append(insns[:1], append(asm.Instructions{load}, insns[1:]...)...)
 	spec.Programs["p"].Instructions = insns
 	sites, err := discoverLookups(spec, "p")
-	if err != nil || len(sites) != 1 || sites[0].Reason != "function is used as a callback" {
+	if err != nil || len(sites) != 1 || sites[0].Reason != "callback: the function is also called directly" {
 		t.Fatalf("sites=%+v err=%v", sites, err)
 	}
 }
@@ -187,5 +187,32 @@ func TestSubprogramStaticHookAccepted(t *testing.T) {
 	plan, err := transformLookup(spec, req)
 	if err != nil || len(plan.skipped) != 0 || len(plan.sites) != 1 || len(plan.hooks) != 2 || !plan.hooks[0].Static || !plan.hooks[1].Static {
 		t.Fatalf("plan=%+v err=%v", plan, err)
+	}
+}
+
+// A generic site in a subprogram with no audited stack floor is skipped, as a
+// typed one is: the generic hook does not take a site in an unaudited frame.
+func TestPerFrameGenericMissingFloor(t *testing.T) {
+	for _, subFloor := range []bool{false, true} {
+		spec := subprogramLookupFixture("register")
+		m := spec.Maps["sessions"]
+		m.Type, m.ValueSize = ebpf.HashOfMaps, 4
+		m.Value = &btf.Int{Name: "u32", Size: 4}
+		m.InnerMap = &ebpf.MapSpec{Type: ebpf.Array, KeySize: 4, ValueSize: 4, MaxEntries: 1}
+		req := autoReq()
+		req.Stack = StackAudit{Frames: map[string]int16{"p": -8}, Source: "verifier", FrameRounding: 16}
+		if subFloor {
+			req.Stack.Frames["sub"] = -168
+		}
+		plan, err := transformLookup(spec, req)
+		if subFloor {
+			if err != nil || len(plan.sites) != 1 || !plan.sites[0].Generic {
+				t.Fatalf("audited generic site not selected: %+v %v", plan, err)
+			}
+			continue
+		}
+		if err == nil || len(plan.sites) != 0 || len(plan.skipped) != 1 || plan.skipped[0].Reason != "stack floor unavailable for this function" {
+			t.Fatalf("unaudited generic site not skipped: %+v %v", plan, err)
+		}
 	}
 }

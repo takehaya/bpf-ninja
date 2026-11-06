@@ -71,6 +71,8 @@ func TestBuildLookupTargets(t *testing.T) {
 		{"duplicate-target", out, []LookupHook{hit, {Name: "miss", Kind: HookLookup, Sites: []LookupSite{{InstructionIndex: 7}}}}},
 		{"invalid-lookup-when", out, []LookupHook{{Name: "hit", Kind: HookLookup, When: "error"}}},
 		{"invalid-call-when", out, []LookupHook{{Name: "hit", Kind: HookUpdate, When: "hit"}}},
+		{"callback-source-trailing-text", out, []LookupHook{{Name: "hit", Kind: HookLookup, Sites: []LookupSite{{InstructionIndex: 7, CtxSource: "callback:r2:fp-16x"}}}}},
+		{"callback-source-wraps-int16", out, []LookupHook{{Name: "hit", Kind: HookLookup, Sites: []LookupSite{{InstructionIndex: 7, CtxSource: "callback:r2:fp-65552"}}}}},
 		{"indirect-callx", append(append(asm.Instructions(nil), out...), asm.Instruction{OpCode: asm.OpCode(asm.JumpClass).SetJumpOp(asm.Call).SetSource(asm.RegSource), Src: asm.R3}), []LookupHook{hit}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

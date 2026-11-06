@@ -318,10 +318,12 @@ This API performs no syscalls, BTF/program loads, interception, attachment or pi
 
 ## Supported sites and trust boundary
 
-One transform call instruments selected sites in the program's entry function and in called subprograms whose context provenance is proved.
+One transform call instruments selected sites in the program's entry function, in called subprograms whose context provenance is proved, and in `bpf_loop` and `bpf_for_each_map_elem` callbacks whose context is proved through the entry's frame.
 It saves ctx once in the entry frame and initializes the same relative slot in each supported callee frame, shares three spill slots within each frame, and inserts the generated hooks immediately after the entry function.
 The sites execute sequentially, including on different paths or repeated loop iterations; they do not require nested spill storage.
 Discovery proves a callee site only when its BTF prototype has a context parameter, every direct caller passes the proved context, the function is not used as a callback, and R6-R9 or an aligned slot still holds the context on every path at the site.
+A callback site is proved instead when the callback is static and never called directly, and every reference to it is a load into R2 in the entry function followed, without a branch, by a `bpf_loop` or `bpf_for_each_map_elem` call whose R3 is `R10` plus one constant at or above the entry's stack floor, set by straight-line code that no branch enters and nothing else writes.
+The callback then loads the context from the entry's context slot through the pointer it receives (R2 for `bpf_loop`, R4 for `bpf_for_each_map_elem`) on entry, and its sites report `CtxSource` `callback:r2:fp-16`.
 Each failed stage produces a distinct `Reason`; the transform does not infer a context from naming or instruction proximity.
 The API does not compose transformations on an already transformed spec.
 Only the selected program changes, including when other programs share a linked subprogram or a map.
@@ -362,6 +364,8 @@ inject-run cannot read an inner-map template's flags from the kernel, so it coun
 A store through a stack pointer whose offset it does not follow marks every slot. A subprogram passed a read-only value or map, or a stack pointer that can reach one, may return the value or write it through another stack-pointer argument; so may the callback of `bpf_loop`, `bpf_for_each_map_elem`, `bpf_timer_set_callback`, `bpf_find_vma` and `bpf_user_ringbuf_drain`, and a kfunc. A kfunc result may be such a pointer too.
 A pointer the verifier sees as a scalar, such as one loaded from map memory or cut to 32 bits, does not count.
 At a site whose key or value may be such a pointer, all the hooks of that site's map and op take untrusted pointers, or are static with `StaticUntrusted`, and a lookup's value is not copied.
+This analysis does not enter callbacks, whose arguments can themselves be read-only memory, such as a `bpf_for_each_map_elem` key, so a callback site counts as such a site unless its key, and an update's value, are `R10` plus a constant set in its block.
+`Auto` without `Dispatch` skips a callback site that would make untrusted a hook it shares with sites outside callbacks that would otherwise stay typed.
 A key or value with BTF must have a nonzero size exactly matching the map's key or value size.
 The hook retains these types, including typedefs and qualifiers, under `const` pointer parameters.
 A side the map declares only by size, such as `__uint(key_size, 4)`, has no BTF; the hook takes it as an anonymous `struct { u8 bytes[N]; }` of the map's size.
@@ -570,8 +574,8 @@ The ELF SHA-256 binds the full input.
 
 ## What is not covered
 
-The transform observes lookups (`bpf_map_lookup_percpu_elem` included), updates, deletes, pushes, pops and peeks in the entry function or a context-proved called subprogram, plus failed tail calls, and nothing else.
-It does not observe other map helpers (`bpf_for_each_map_elem`, `bpf_ringbuf_*`, `bpf_sk_storage_get` and the like), LRU eviction, non-map lookups such as `bpf_fib_lookup`, or lookups inside `bpf_for_each_map_elem` callbacks.
+The transform observes lookups (`bpf_map_lookup_percpu_elem` included), updates, deletes, pushes, pops and peeks in the entry function, a context-proved called subprogram or a context-proved `bpf_loop` or `bpf_for_each_map_elem` callback, plus failed tail calls, and nothing else.
+It does not observe other map helpers (`bpf_for_each_map_elem`, `bpf_ringbuf_*`, `bpf_sk_storage_get` and the like), LRU eviction, non-map lookups such as `bpf_fib_lookup`, or map calls inside other callbacks (timers, other helpers and kfuncs, nested callbacks, callbacks a non-entry function passes).
 It does not provide a consistent value version under concurrent control-plane updates or other writers.
 The observer reads the returned object during the hook; the program's later reads may see different contents.
 There is no snapshot, locking, or transaction guarantee, and observation adds execution cost.

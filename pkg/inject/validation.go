@@ -72,6 +72,11 @@ func BuildLookupTargets(out asm.Instructions, hooks []LookupHook) ([]injectcheck
 		return nil
 	}
 	ctxSource := func(site LookupSite) (*injectcheck.CtxSource, error) {
+		var param, arg int
+		if n, err := fmt.Sscanf(site.CtxSource, "callback:r%d:fp%d", &param, &arg); err == nil && n == 2 &&
+			arg >= -512 && arg <= -8 && fmt.Sprintf("callback:r%d:fp%d", param, arg) == site.CtxSource {
+			return &injectcheck.CtxSource{Param: param, Arg: int16(arg)}, nil
+		}
 		switch {
 		case site.CtxSource == "" || site.CtxSource == "entry":
 			return nil, nil

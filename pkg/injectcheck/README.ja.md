@@ -37,7 +37,7 @@ counts, err := injectcheck.Check(original, transformed, injectcheck.Certificate{
 `inject-run` は試行ロードに対する verifier の subprogram 別の計上値からこれを作り、より深い直接参照があればそちらを使う。
 `Frames` が空の場合、`LowestOffset` はライブラリ API の単一床 fallback として残る。
 `Targets` は plan の用語で `{Site, When, Hook, Ctx}`、すなわち元命令 index、`hit`、`miss`、`any`、`error` のいずれか、生成 hook の decoded 開始 index、任意の callee-frame context 由来を対応づける。
-`Ctx` は R6-R9 または audit 済み frame 内の整列 slot を指す。
+`Ctx` は R6-R9、audit 済み frame 内の整列 slot、または同期 callback 内の site では `{param, arg}` を指す。`param` は callback が `callback_ctx` を受け取る register（R2 または R4）、`arg` はそのポインタの entry frame 内 offset である。
 チェッカーは prelude が指定された由来をコピーすることを検査するが、その由来が意味的に context を保持することまでは証明しない。
 map call では省略時に既存の entry-frame 経路を使うが、従来の P4 tail-call 形式では helper R1 から callee frame を直接初期化する場合もある。
 lookup の `any` は hit と miss の両方の経路で hook を呼ぶことを要求する。
@@ -55,6 +55,7 @@ caller は `inject.BuildLookupTargets` を使うか、同じ情報を変換後 c
 | 名前 | 形式 | 検査する内容 |
 | --- | --- | --- |
 | P1 | 入口の context spill、任意の entry/dispatch hook と R1 復元 | スロット、dispatch 引数、hook 宛先、復元の一致 |
+| P1b | site を持つ同期 callback の入口での context load | plan が指名した register を通る load と、entry 床と `arg` から導いた offset、store の完全一致。関数辺はここに入り、分岐は飛ばす。元の参照から premise を導き直す |
 | P1c | map helper 前の callee-frame context 初期化 | plan が指名した R6-R9 からの store、または audit 済み slot から R0 を介した load と context store の完全一致 |
 | P2 | lookup/per-CPU lookup の spill と条件付き observer postlude | 結果分岐 1 個、経路ごとに 1 回の call（分岐先を含め最大 2 個）、plan の結果経路別宛先、R1 context、generic/dispatch の R3-R5 の由来と順序、値コピー対、全経路での 64-bit R0 復元 |
 | P3 | map update/delete の spill と observer postlude | helper 引数 spill、任意の符号付き結果分岐、plan の結果別宛先、R1 context、generic/dispatch の R3-R5 の由来と順序、1 回の call、64-bit R0 復元 |
@@ -98,6 +99,10 @@ u32 load では caller-saved register が読めるため、元 CFG の固定点�
 helper 後の経路検査は最大 4096 ステップとし、超過時は拒否する。
 入口 context spill は function-reference の subprogram/callback 宛先で区切る入口 frame だけを初期化する。
 callee-frame の site は、信頼済み target premise が指名した register または slot から helper prelude 内で context slot を初期化する必要がある。
+callback の site では、その関数の先頭が `ldx r0, [param + entry_floor - 8 - arg]; stx [floor - 8], r0` でなければならない。関数参照は load に、分岐は store の次に着地する必要がある。
+この関数についてチェッカーは元の命令列から premise を導き直す。site が関数の先頭から call を経ずに到達できること、direct call がないこと、すべての参照が命令 0 から到達できること、R2 に load され次の call が同じ `bpf_loop` または `bpf_for_each_map_elem` であること、R3 が直線のコードで `arg` として作られ、その間に atomic や legacy packet load を含め R3 を書く命令がなく、分岐も入ってこないことを確かめる。
+site と関数の先頭は同じ frame 床でなければならない。frame 床は entry の途中や callback の先頭より後で始まってはならず、`arg` は entry の床より下であってはならず、entry の site は context 由来を指定してはならない。program には u32 region があってはならない（u32 region は R0 を context slot に保存する）。
+関数が static であること、entry の slot が context を保持することは、変換側の証明と stack 床に依存する。stack 床は callback が `callback_ctx` を通して entry frame に書く範囲も含まなければならない。
 参照辺を持たない例外 callback は、この frame 識別の前提外である。
 
 受理が対象とする **比較 projection** は decoded instruction のフィールド、reference、解決した辺、検査済みの挿入規則である。
@@ -123,7 +128,8 @@ go build -o inject-check ./cmd/inject-check
 writer と reader はタグ付きの `injectcheck.Pair` 型を共有する。
 format 3 は、format 2 が固定した cilium/ebpf v0.22 の decoded `asm.OpCode` 表現に、任意の callee context 由来を追加する。
 format 4 は `premises.frames` に関数別の床を追加する。
-reader は format 2 から 4 を受理し、format 番号は kernel の opcode byte とは異なる。
+format 5 は `ctx` に `param` と `arg` を追加する。
+reader は format 2 から 5 を受理し、format 番号は kernel の opcode byte とは異なる。
 必須のトップレベルキーは `format`、`original`、`transformed`、`certificate`、`premises` で、大文字小文字を区別する。
 `certificate.original`、`premises.lowest_offset`、`premises.targets` も必須で、format 4 では `start` と `lowest_offset` の両方を持ち、0 から始まる `premises.frames` も指定できる。
 `certificate.hooks` は空または省略してよく、`premises.targets` を空にできるのは挿入 call がない場合だけである。
