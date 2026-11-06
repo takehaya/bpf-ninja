@@ -6,7 +6,6 @@ import (
 	"slices"
 
 	"github.com/cilium/ebpf/asm"
-	"github.com/takehaya/bpf-ninja/internal/ctxflow"
 )
 
 // passCall is a direct call, at original index at, inside the function that
@@ -21,7 +20,7 @@ type passPremise struct {
 // passFrames collects the passed-context premises of the site targets and
 // re-derives each from the original stream: the function is called directly
 // and never used as a callback; unless Saved, it reads its register before
-// writing it on no path, and every call to it lies in the entry or in another
+// writing it on no path (by liveness), and every call to it lies in the entry or in another
 // function with a premise, whose slot the call loads from. It returns the
 // premises by function start and the function start of each site that names
 // one. No frame floor may start inside such a function, or inside the entry
@@ -84,6 +83,11 @@ func passFrames(in asm.Instructions, pcs []int, index map[int]int, targets targe
 		}
 		return best
 	}
+	// Read-before-write comes from the checker's own liveness, not from the
+	// transformer's analysis: a helper reads its prototype's arguments, an
+	// unknown helper or kfunc R1-R5, a legacy packet load every register, a
+	// subprogram call what its callee reads, and an atomic its operands.
+	var live []uint16
 	out, fromEntry := map[int]passPremise{}, false
 	for _, start := range slices.Sorted(maps.Keys(premises)) {
 		frame := premises[start]
@@ -95,11 +99,13 @@ func passFrames(in asm.Instructions, pcs []int, index map[int]int, targets targe
 		}
 		premise := passPremise{frame: frame}
 		if !frame.Saved {
-			reads, err := ctxflow.ArgReads(in, start)
-			if err != nil {
-				return nil, nil, reject(CtxProvenance, "the function at %d: %v", start, err)
+			if live == nil {
+				var err error
+				if live, err = liveness(in, pcs, index); err != nil {
+					return nil, nil, err
+				}
 			}
-			if reads&(1<<frame.Reg) != 0 {
+			if live[start]&(1<<frame.Reg) != 0 {
 				return nil, nil, reject(CtxProvenance, "the function at %d reads r%d before writing it, so it cannot take the context there", start, frame.Reg)
 			}
 			for _, at := range calls[start] {

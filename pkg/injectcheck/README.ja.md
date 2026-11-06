@@ -123,7 +123,7 @@ site と関数の先頭は同じ frame 床でなければならない。frame �
 関数が static であること、entry の slot が context を保持することは、変換側の証明と stack 床に依存する。stack 床は callback が `callback_ctx` を通して entry frame に書く範囲も含まなければならない。
 参照辺を持たない例外 callback は、この frame 識別の前提外である。
 `pass` の premise を持つ site の prelude は context を初期化しない。列の各関数の先頭は `stx [floor - 8], reg` でなければならない。
-`saved` でない関数では、元の各 call の直前が `ldx reg, [caller_floor - 8]` でなければならない。caller は entry か、`pass` の列にある別の関数である。チェッカーは premise を導き直す。site は先頭の関数の開始から到達可能で、各関数は直接 call され callback として参照されず、どの経路も `reg` を書く前に読まない（helper は引数 register、kfunc は R1-R5、subprogram call は callee が読むものを読む）。
+`saved` でない関数では、元の各 call の直前が `ldx reg, [caller_floor - 8]` でなければならない。caller は entry か、`pass` の列にある別の関数である。チェッカーは premise を導き直す。site は先頭の関数の開始から到達可能で、各関数は直接 call され callback として参照されず、どの経路も `reg` を書く前に読まない（transformer の解析ではなくチェッカー自身の liveness による。helper は引数 register、未知の helper と kfunc は R1-R5、legacy packet load はすべての register、subprogram call は callee が読むものを読む）。
 `saved` の関数の register はその関数自身の context 引数であり、`Reg` や `Slot` と同じく変換側の証明に依存する。
 site、call とその caller は同じ frame 床でなければならない。frame 床はそうした関数の先頭より後や、entry が context を渡すときは entry の途中で始まってはならず、program には u32 region があってはならない。
 
