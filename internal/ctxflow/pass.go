@@ -33,10 +33,13 @@ const helperArgs = "0" +
 // ArgReads returns, as a bit set over R1-R5 (bit r for Rr), the argument
 // registers that some path from the function starting at decoded index start
 // reads before writing. A helper call reads its arguments, a kfunc call R1-R5,
-// a bpf-to-bpf call what its callee reads before writing; a call or a legacy
-// packet load writes R0-R5. An atomic counts as reading R0 and its operands and
-// writing nothing. It reads no BTF: the offline checker runs it too. It fails
-// on a jump or call that does not resolve to an instruction.
+// a bpf-to-bpf call what its callee reads before writing, or R1-R5 when the
+// callee's BTF says it is not static: the verifier checks a global callee's
+// arguments against its prototype. A call or a legacy packet load writes
+// R0-R5. An atomic counts as reading R0 and its operands and writing nothing.
+// It needs no other BTF, and an offline checker without function metadata
+// accepts at least what it accepts here. It fails on a jump or call that does
+// not resolve to an instruction.
 func ArgReads(insns asm.Instructions, start int) (uint8, error) {
 	pcs, index, symbols := make([]int, len(insns)), map[int]int{}, map[string]int{}
 	pc := 0
@@ -90,7 +93,9 @@ func ArgReads(insns asm.Instructions, start int) (uint8, error) {
 				if err != nil {
 					return 0, err
 				}
-				if use, err = reads(t); err != nil {
+				if fn := btf.FuncMetadata(&insns[t]); fn != nil && fn.Linkage != btf.StaticFunc {
+					use = 0b111110
+				} else if use, err = reads(t); err != nil {
 					return 0, err
 				}
 			}

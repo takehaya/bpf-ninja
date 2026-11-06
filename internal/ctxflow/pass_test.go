@@ -65,6 +65,14 @@ func TestArgReads(t *testing.T) {
 			t.Errorf("%s: reads = %06b err = %v, want %06b", tc.name, got, err, tc.want)
 		}
 	}
+	// The verifier checks a global callee's arguments against its prototype
+	// whatever its body reads, so a call to one reads R1-R5.
+	i64 := &btf.Int{Name: "long", Size: 8, Encoding: btf.Signed}
+	global := &btf.Func{Name: "g", Linkage: btf.GlobalFunc, Type: &btf.FuncProto{Return: i64}}
+	toGlobal := asm.Instructions{asm.Mov.Imm(asm.R1, 0), call(1), asm.Return(), btf.WithFuncMetadata(asm.Mov.Imm(asm.R0, 0), global), asm.Return()}
+	if got, err := ArgReads(toGlobal, 0); err != nil || got != regs(asm.R2, asm.R3, asm.R4, asm.R5) {
+		t.Errorf("global callee: reads = %06b err = %v", got, err)
+	}
 	if _, err := ArgReads(asm.Instructions{call(-1), asm.Return()}, 0); err == nil || !strings.Contains(err.Error(), "recursive") {
 		t.Errorf("recursion: %v", err)
 	}
