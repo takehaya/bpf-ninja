@@ -41,6 +41,9 @@ func TestArgReads(t *testing.T) {
 		{"load reads its base", asm.Instructions{asm.LoadMem(asm.R0, asm.R4, 0, asm.DWord), asm.Return()}, regs(asm.R4)},
 		{"helper reads its arguments", asm.Instructions{asm.FnMapLookupElem.Call(), asm.Return()}, regs(asm.R1, asm.R2)},
 		{"five-argument helper", asm.Instructions{asm.FnPerfEventOutput.Call(), asm.Return()}, regs(asm.R1, asm.R2, asm.R3, asm.R4, asm.R5)},
+		// bpf_trace_printk is variadic and BPF_CALL_5: it reads R3-R5 whatever
+		// its format uses, and the verifier checks only R1 and R2.
+		{"trace_printk reads all", asm.Instructions{asm.FnTracePrintk.Call(), asm.Return()}, regs(asm.R1, asm.R2, asm.R3, asm.R4, asm.R5)},
 		{"unknown helper reads all", asm.Instructions{asm.BuiltinFunc(9999).Call(), asm.Return()}, regs(asm.R1, asm.R2, asm.R3, asm.R4, asm.R5)},
 		{"kfunc reads all", asm.Instructions{kfunc, asm.Return()}, regs(asm.R1, asm.R2, asm.R3, asm.R4, asm.R5)},
 		{"call clobbers", asm.Instructions{asm.Mov.Imm(asm.R1, 0), asm.Mov.Imm(asm.R2, 0), asm.FnMapLookupElem.Call(), asm.Mov.Reg(asm.R0, asm.R3), asm.Return()}, 0},
