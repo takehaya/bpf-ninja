@@ -440,6 +440,13 @@ func TestPassSiteEntryStartsWithCall(t *testing.T) {
 	if _, err := injectcheck.Check(in, out, cert, premises); err != nil {
 		t.Fatal(err)
 	}
+	// A back-edge that skips the load would pass mid whatever the first
+	// call left in the register.
+	edge := slices.IndexFunc(out, func(ins asm.Instruction) bool { return ins.OpCode.JumpOp() == asm.JEq && ins.Offset < 0 })
+	out[edge].Offset++
+	if _, err := injectcheck.Check(in, out, cert, premises); err == nil {
+		t.Fatal("a back-edge past the load was accepted")
+	}
 }
 
 // When a stack limit breaks, Auto drops passed-context sites first, before
