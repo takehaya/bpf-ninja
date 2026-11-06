@@ -662,11 +662,11 @@ By default the target stops at the entry and exit of every syscall of every thre
 `--bpf-stops-only` installs a seccomp filter in the target at its first syscall, and the target then stops only on native `bpf(2)` with `BPF_PROG_LOAD` or `BPF_BTF_LOAD`, also when the command carries the `BPF_COMMON_ATTRS` flag of Linux 7.3.
 Other `bpf(2)` commands, such as map operations, and every other syscall run without a stop.
 The filter is never removed and child processes inherit it, and a `SECCOMP_RET_TRACE` with no tracer fails `bpf(2)` with `ENOSYS`.
-So with this flag, `inject-run` traces every child process, without instrumenting it, for as long as it runs. This changes what the target sees:
+So with this flag, `inject-run` traces every child process, without instrumenting it, for as long as the target runs. This changes what the target sees:
 
 - `Seccomp` in `/proc/self/status` is 2, `prctl(PR_SET_SECCOMP, SECCOMP_MODE_STRICT)` fails with `EINVAL`, and `no_new_privs` is not set.
 - Child processes have a tracer, so another tracer cannot attach to them.
-- `inject-run` returns only after every child process has exited, and cancelling it or killing it kills them.
+- When the target process exits, `inject-run` kills the child processes still running, reaps them and returns the target's exit status. Cancelling or killing `inject-run` kills them too.
 - A load that a seccomp filter of the target's own denies or sends to a listener does not reach the supervisor, so nothing is logged or injected for it, and `inject-run` does not log when the target installs such a filter.
 
 Without `CAP_SYS_ADMIN`, under an inherited seccomp filter, or if the first syscall comes from a thread that is not alone or is not native, the target stays on the default path and `inject-run` logs why.

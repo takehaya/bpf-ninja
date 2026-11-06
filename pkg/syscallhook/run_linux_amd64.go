@@ -49,7 +49,8 @@ type Options struct {
 	OnDiscover func(Discovery)
 	// BPFStopsOnly stops the target only on bpf(2), through a seccomp filter
 	// installed in the target at its first syscall, and follows every child
-	// process so the filter never meets a process without a tracer. See
+	// process so the filter never meets a process without a tracer. Those still
+	// running when the target process exits are killed. See
 	// docs/en/inject-run.md for what this changes for the target.
 	BPFStopsOnly bool
 	// stops counts ptrace stops, for tests.
@@ -233,6 +234,7 @@ func run(ctx context.Context, argv []string, opts Options, probeUntrusted, probe
 		s.log("target inherits a seccomp filter; stopping on every syscall")
 	}
 	exitCode := 0
+	targetExited := false
 	for len(threads) > 0 {
 		tid, err := unix.Wait4(-1, &status, unix.WALL|unix.WNOTHREAD, nil)
 		if err == unix.EINTR {
@@ -266,10 +268,26 @@ func run(ctx context.Context, argv []string, opts Options, probeUntrusted, probe
 				} else {
 					exitCode = 128 + int(status.Signal())
 				}
+				// Linux reports the leader's exit only after every other thread of
+				// the group has exited, so this is the end of the target process,
+				// not of its leader thread. Followed child processes die with it.
+				if s.filtered {
+					targetExited = true
+					foreignMu.Lock()
+					for child := range foreign {
+						_ = unix.Kill(child, unix.SIGKILL)
+					}
+					foreignMu.Unlock()
+				}
 			}
 			continue
 		}
 		if !status.Stopped() {
+			continue
+		}
+		if targetExited {
+			// A followed child, or a process it just created, still stopped.
+			_ = unix.Kill(tid, unix.SIGKILL)
 			continue
 		}
 		sig := int(status.StopSignal())

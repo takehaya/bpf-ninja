@@ -22,7 +22,32 @@ import (
 )
 
 // SYSCALLHOOK_TEST_BPF_STOPS=1 runs every other test of the package on the filtered path.
-func init() { defaultBPFStopsOnly = os.Getenv("SYSCALLHOOK_TEST_BPF_STOPS") == "1" }
+func init() {
+	defaultBPFStopsOnly = os.Getenv("SYSCALLHOOK_TEST_BPF_STOPS") == "1"
+	if os.Getenv(stopsChildEnv) == "leader-exit" {
+		leaderExit()
+	}
+}
+
+// leaderExit runs in init, on the main thread, which is the thread group
+// leader. It ends that thread alone. Another thread starts a child process,
+// checks that it still runs after the leader is gone, and exits the process.
+func leaderExit() {
+	go func() {
+		child := exec.Command("/bin/sleep", "30")
+		if err := child.Start(); err != nil {
+			fmt.Println(err)
+			os.Exit(1)
+		}
+		time.Sleep(500 * time.Millisecond)
+		leader := statusField(fmt.Sprintf("/proc/%d/status", os.Getpid()), "State")
+		fmt.Printf("child %d alive=%t leader=%s\n", child.Process.Pid, unix.Kill(child.Process.Pid, 0) == nil, leader[:1])
+		os.Exit(4)
+	}()
+	// Syscall, not RawSyscall: the runtime sees this thread in a syscall and
+	// does not wait for it.
+	_, _, _ = unix.Syscall(unix.SYS_EXIT, 0, 0, 0)
+}
 
 const stopsChildEnv = "SYSCALLHOOK_STOPS_CHILD"
 
@@ -376,7 +401,8 @@ func TestBPFStopsFallback(t *testing.T) {
 	}
 }
 
-// Run waits for followed children, since their bpf() would fail once it is gone.
+// When the target exits, Run kills the followed children and returns its exit
+// code at once. The old path neither follows nor waits for them.
 func TestBPFStopsOutlivingChild(t *testing.T) {
 	if os.Geteuid() != 0 {
 		t.Skip("requires root and BPF privileges")
@@ -388,18 +414,38 @@ func TestBPFStopsOutlivingChild(t *testing.T) {
 		start := time.Now()
 		code, err := Run(context.Background(), []string{"/bin/sh", "-c", script}, Options{BPFStopsOnly: filtered, Rules: []Rule{testRule()}})
 		took := time.Since(start)
-		if err != nil || code != 3 {
-			t.Fatalf("filtered=%t code=%d err=%v", filtered, code, err)
+		if err != nil || code != 3 || took >= time.Second {
+			t.Fatalf("filtered=%t code=%d err=%v after %v", filtered, code, err, took)
 		}
-		if filtered != (took >= time.Second) {
-			t.Fatalf("filtered=%t returned after %v", filtered, took)
-		}
-		if !filtered {
-			time.Sleep(1500 * time.Millisecond)
-		}
+		time.Sleep(1500 * time.Millisecond)
 		data, _ := os.ReadFile(file)
-		if !strings.Contains(string(data), "execed child errno=0") {
-			t.Fatalf("filtered=%t late child: %q", filtered, data)
+		if ran := strings.Contains(string(data), "execed child errno=0"); ran == filtered {
+			t.Fatalf("filtered=%t late child ran=%t: %q", filtered, ran, data)
+		}
+	}
+}
+
+// The leader thread can exit before the process does. That is not the end of
+// the target: its child keeps running until the process exits.
+func TestBPFStopsLeaderExit(t *testing.T) {
+	if os.Geteuid() != 0 {
+		t.Skip("requires root and BPF privileges")
+	}
+	for _, filtered := range []bool{false, true} {
+		start := time.Now()
+		code, out, log, _, err := runStops(t, "leader-exit", filtered)
+		took := time.Since(start)
+		var child int
+		var alive bool
+		var leader string
+		if _, serr := fmt.Sscanf(out, "child %d alive=%t leader=%s", &child, &alive, &leader); serr != nil || err != nil || code != 4 || !alive || leader != "Z" || took > 10*time.Second {
+			t.Fatalf("filtered=%t code=%d err=%v after %v: %q\n%s", filtered, code, err, took, out, log)
+		}
+		time.Sleep(100 * time.Millisecond)
+		running := unix.Kill(child, 0) == nil && !strings.HasPrefix(statusField(fmt.Sprintf("/proc/%d/status", child), "State"), "Z")
+		_ = unix.Kill(child, unix.SIGKILL)
+		if running == filtered {
+			t.Fatalf("filtered=%t: child running=%t after the target exited", filtered, running)
 		}
 	}
 }
