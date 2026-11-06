@@ -40,6 +40,10 @@ When present, entries must contain both fields, start at original instruction ze
 The checker verifies that the prelude copies the named source; it does not prove that source semantically contains context.
 For map calls, omission selects the existing entry-frame path; the older P4 tail-call shape may instead initialize a callee frame directly from helper R1.
 For a lookup, `any` requires the hook on both the hit and miss paths.
+For a lookup site, `Args` lists what the planned hook takes from R1 on (`ctx`, then `site`, `key`, `value` and `map` as the hook has them), and `SitePC` the immediate of its `site` argument.
+Only the five lists a lookup hook can have are valid: typed with or without `site`, a typed miss without `value`, and generic `ctx, site, key, value, map`.
+Each lookup hook call must then pass exactly those roles in that order, with no argument register set past the last one; `inject.BuildLookupTargets` fills them from the plan.
+A wrapped site needs `Args`; without them other sites keep only the provenance rules below.
 The caller must use `inject.BuildLookupTargets` or derive the same data from the plan, never from transformed call references.
 `BuildLookupTargets` returns `inject.ErrCheckerNotApplicable` for an indirect `callx`, whose target it cannot pair.
 `inject-run` loads that substituted stream without validation by default and refuses it only with `--fail-closed`.
@@ -61,7 +65,7 @@ They describe insertion shapes, while “original program” refers to the progr
 | P4 | Tail-call prelude and failure postlude | Unchanged helper arguments and target, planned hook, R1 context, dispatch R4/R5 provenance, local or entry-frame context initialization |
 | P5 | Queue/stack push/pop/peek spill and observer postlude | Helper-specific spills, planned result target, R1 context and generic/dispatch R3-R5 provenance/order, one hook, full-width R0 restoration |
 | P6 | A u32 hook after `ldxw R2, [R0+offset]` | Exact six-instruction save/call/restore region, u32 hook body, R1/R3–R5 dead at the original continuation |
-| P8 | A lookup site whose helper moved into a wrapper function (`Certificate.Wrappers`) | Exact prelude loading the planned ctx into R4, one site per wrapper, exact wrapper body, planned result-arm targets |
+| P8 | A lookup site whose helper moved into a wrapper function (`Certificate.Wrappers`) | Exact prelude loading the planned ctx into R4, one site per wrapper, a wrapper body equal to the one built from each result arm's planned target and `Args` (hit or miss first) |
 | P7 | Observer function | No-op return, u32 XOR return, or permitted context/pointer reads followed by zero return; no stores or calls |
 
 The stack layout is independent of the transformer's implementation.
@@ -70,7 +74,7 @@ Slots are relative to `f`: context at `f-8`, key or tail index at `f-16`, helper
 The `f-24` slot intentionally holds update R4/push R3 flags before the postlude reloads them and overwrites it with R0.
 The u32 region instead saves R0 at `f-8` and R2 at `f-16`, overlapping the entry context and key slots.
 Helper hook calls require the saved context in R1. Generic and dispatch map calls additionally check their helper-specific R3-R5 roles, including constant zero for NULL roles; dispatch tail calls check R3-R5.
-R2 (the site id or info word) remains unchecked at every site-tagged hook. Typed and static non-generic key/value roles also remain outside acceptance.
+Without `Args`, R2 (the site id or info word) remains unchecked at every site-tagged hook, and typed and static non-generic key/value roles remain outside acceptance. With `Args` a lookup hook's roles and site immediate are checked; update, delete, push, pop, peek, tail-call and u32 hooks have no `Args`, so their site id or info word stays unchecked.
 Mixed u32/helper streams do not establish that a later observer receives the original context: a u32 region stores R0 in the same slot from which a later helper hook may reload R1.
 All inserted stores must fit below `f` and within the 512-byte frame.
 P1c may read only the premise-named aligned slot at or above its owning frame's floor.
@@ -84,7 +88,7 @@ Inserted code preserves R6–R10 and the original stack; map-value copies use pa
 
 A wrapper is accepted because it is the original helper call in a callee.
 The prelude writes only R4, which a lookup does not read and which is unreadable after a helper.
-The wrapper is one exact body: it copies R4, R2 and sometimes R1 to its own R6, R7 and R9, runs the original helper with its original arguments, copies R0 to R8, calls at most the planned hook on each result arm with arguments from those registers, and returns R8 in R0.
+The wrapper is one exact body, built from the site's targets rather than matched against any allowed template: it copies R4, R2 and, when a planned hook takes the map, R1 to its own R6, R7 and R9, runs the original helper with its original arguments, copies R0 to R8, calls on each result arm the planned hook with exactly the planned `Args` from those registers and the planned site immediate, or nothing on an arm the plan does not name, and returns R8 in R0.
 It never names R10, so the caller's stack is untouched, and the BPF calling convention keeps the caller's R6-R9.
 This is the one case in which an original instruction leaves its position: `Original[i]` then locates the call to the wrapper, and the checker compares the helper in the wrapper with original instruction i.
 `Certificate.Wrappers` is a hint like `Hooks`; a wrapper no site calls, or two sites call, is rejected.
@@ -137,7 +141,7 @@ The format number is not the kernel opcode byte.
 Required, case-sensitive top-level keys are `format`, `original`, `transformed`, `certificate` and `premises`.
 `certificate.original`, `premises.lowest_offset`, and `premises.targets` are also required; format 4 may additionally provide `premises.frames` entries with both `start` and `lowest_offset`, beginning at zero.
 `certificate.hooks` may be empty or omitted, and `premises.targets` may be empty only when there are no inserted calls.
-Span fields are `start` and `end`; target fields are `site`, `when`, `hook`, and optional `ctx`.
+Span fields are `start` and `end`; target fields are `site`, `when`, `hook`, and optional `ctx`, `args` and `site_pc`.
 `ctx` contains either `reg` (6 through 9) or `slot` (an aligned negative frame offset).
 Instruction fields are `opcode`, `dst`, `src`, `offset`, `constant`, `symbol` and `reference`.
 `PseudoMapValue` offsets remain in the upper 32 bits of `constant`, with its pseudo kind in `src`.

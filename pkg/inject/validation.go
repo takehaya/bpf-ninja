@@ -62,14 +62,34 @@ func BuildLookupTargets(out asm.Instructions, hooks []LookupHook) ([]injectcheck
 		when injectcheck.TargetWhen
 	}
 	seen := map[targetKey]bool{}
-	add := func(site int, when injectcheck.TargetWhen, hook int, ctx *injectcheck.CtxSource) error {
-		key := targetKey{site, when}
+	add := func(target injectcheck.SiteTarget) error {
+		key := targetKey{target.Site, target.When}
 		if seen[key] {
-			return fmt.Errorf("inject: duplicate target site=%d when=%s", site, when)
+			return fmt.Errorf("inject: duplicate target site=%d when=%s", target.Site, target.When)
 		}
 		seen[key] = true
-		targets = append(targets, injectcheck.SiteTarget{Site: site, When: when, Hook: hook, Ctx: ctx})
+		targets = append(targets, target)
 		return nil
+	}
+	// args is the argument list a lookup hook takes (see genericHook and
+	// lookupHook): a typed miss hook has no value, a generic or Dispatch one
+	// adds the map.
+	args := func(hook LookupHook, when injectcheck.TargetWhen) []injectcheck.ArgRole {
+		if hook.Kind != HookLookup {
+			return nil
+		}
+		list := []injectcheck.ArgRole{injectcheck.ArgCtx}
+		if hook.SiteArg {
+			list = append(list, injectcheck.ArgSite)
+		}
+		list = append(list, injectcheck.ArgKey)
+		switch {
+		case hook.Generic || hook.Dispatch:
+			list = append(list, injectcheck.ArgValue, injectcheck.ArgMap)
+		case when != injectcheck.TargetMiss:
+			list = append(list, injectcheck.ArgValue)
+		}
+		return list
 	}
 	ctxSource := func(site LookupSite) (*injectcheck.CtxSource, error) {
 		var param, arg int
@@ -106,7 +126,7 @@ func BuildLookupTargets(out asm.Instructions, hooks []LookupHook) ([]injectcheck
 			return nil, fmt.Errorf("inject: invalid target condition %q for %s hook %q", hook.When, hook.Kind, hook.Name)
 		}
 		if hook.Kind == HookEntry {
-			if err := add(-1, when, starts[hook.Name], nil); err != nil {
+			if err := add(injectcheck.SiteTarget{Site: -1, When: when, Hook: starts[hook.Name]}); err != nil {
 				return nil, err
 			}
 			continue
@@ -116,7 +136,11 @@ func BuildLookupTargets(out asm.Instructions, hooks []LookupHook) ([]injectcheck
 			if err != nil {
 				return nil, err
 			}
-			if err := add(site.InstructionIndex, when, starts[hook.Name], ctx); err != nil {
+			target := injectcheck.SiteTarget{Site: site.InstructionIndex, When: when, Hook: starts[hook.Name], Ctx: ctx, Args: args(hook, when)}
+			if hook.SiteArg && target.Args != nil {
+				target.SitePC = int32(site.SitePC)
+			}
+			if err := add(target); err != nil {
 				return nil, err
 			}
 		}

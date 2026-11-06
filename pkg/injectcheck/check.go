@@ -35,12 +35,38 @@ const (
 )
 
 // SiteTarget binds one original helper site and result arm to a planned hook.
-// Site -1 is the entry hook.
+// Site -1 is the entry hook. Args is the planned hook's argument list from R1
+// on for a lookup site, one of the lookupABIs; SitePC is the immediate its
+// ArgSite argument carries. A wrapped site needs Args. Elsewhere nil Args
+// leaves the arguments to the provenance rules alone.
 type SiteTarget struct {
-	Site int        `json:"site"`
-	When TargetWhen `json:"when"`
-	Hook int        `json:"hook"` // Decoded instruction index of the hook start.
-	Ctx  *CtxSource `json:"ctx,omitempty"`
+	Site   int        `json:"site"`
+	When   TargetWhen `json:"when"`
+	Hook   int        `json:"hook"` // Decoded instruction index of the hook start.
+	Ctx    *CtxSource `json:"ctx,omitempty"`
+	Args   []ArgRole  `json:"args,omitempty"`
+	SitePC int32      `json:"site_pc,omitempty"`
+}
+
+// ArgRole is what one hook argument holds.
+type ArgRole string
+
+const (
+	ArgCtx   ArgRole = "ctx"
+	ArgSite  ArgRole = "site"  // SiteTarget.SitePC
+	ArgKey   ArgRole = "key"   // the helper's R2
+	ArgValue ArgRole = "value" // the helper's R0, or a pointer to its stack copy
+	ArgMap   ArgRole = "map"   // the helper's R1
+)
+
+// lookupABIs are the argument lists a lookup hook can have: typed without
+// and with the site, a typed miss without the value, and generic.
+var lookupABIs = [][]ArgRole{
+	{ArgCtx, ArgKey, ArgValue},
+	{ArgCtx, ArgKey},
+	{ArgCtx, ArgSite, ArgKey, ArgValue},
+	{ArgCtx, ArgSite, ArgKey},
+	{ArgCtx, ArgSite, ArgKey, ArgValue, ArgMap},
 }
 
 // CtxSource is the plan-proved context value used to initialize a callee
@@ -789,8 +815,9 @@ func checkWrapperPrelude(ins asm.Instruction, ctx *CtxSource, lowest, f int, ent
 	return nil
 }
 
-// checkWrapper accepts exactly the functions pkg/inject generates in place of
-// a lookup helper. A wrapped site is the original helper call in a callee:
+// checkWrapper accepts exactly the function pkg/inject generates in place of
+// this site's lookup helper, built from the site's plan. A wrapped site is the
+// original helper call in a callee:
 //   - The helper is the original's, with the original's R1, R2 and R3: nothing
 //     writes them between the site and the helper.
 //   - R0 returns to the caller unchanged on every path: it goes to R8 at once
@@ -798,93 +825,110 @@ func checkWrapperPrelude(ins asm.Instruction, ctx *CtxSource, lowest, f int, ent
 //     it read after the helper, since R1-R5 are unreadable either way.
 //   - The caller's R6-R10 and stack stay intact: the wrapper names no R10, and
 //     the BPF calling convention gives a callee its own R6-R9.
-//   - It uses only R0-R9, one helper, and at most one hook on a path, which the
-//     plan binds per result arm. Hook arguments have exact provenance: R6 is
-//     R4 on entry, the ctx of checkWrapperPrelude; R7 is the key; R9 the map.
+//   - Each result arm the plan names calls its hook with the planned arguments
+//     and no others: R6 is R4 on entry, the ctx of checkWrapperPrelude; R7 the
+//     key; R0 the value; R9 the map, kept only when a hook takes it; the site
+//     is the planned immediate. An arm the plan does not name calls nothing.
 //
-// The match is on the whole body; anything else fails closed.
+// The guard may test for a hit or a miss first; anything else fails closed.
 func checkWrapper(site int, helper asm.Instruction, out asm.Instructions, pcs []int, idx map[int]int, w Span, hooks map[int]bool, targets targetBindings) error {
 	if c := asm.BuiltinFunc(helper.Constant); !helper.IsBuiltinCall() || c != asm.FnMapLookupElem && c != asm.FnMapLookupPercpuElem {
 		return reject(WrapperShape, "only a lookup helper can move into a wrapper")
 	}
+	hit, miss := targets.arm(site, TargetHit), targets.arm(site, TargetMiss)
+	if hit == nil && miss == nil {
+		return reject(CallTarget, "wrapped site %d has no planned hook", site)
+	}
+	withMap := false
+	for _, b := range []*targetBinding{hit, miss} {
+		if b != nil && b.args == nil {
+			return inputError(InputTarget, "wrapped site %d target has no planned arguments", site)
+		}
+		withMap = withMap || b != nil && slices.Contains(b.args, ArgMap)
+	}
+	from := map[ArgRole]asm.Register{ArgCtx: asm.R6, ArgKey: asm.R7, ArgValue: asm.R0, ArgMap: asm.R9}
+	// An arm's argument moves and its call, whose target hookCall checks.
+	arm := func(b *targetBinding) asm.Instructions {
+		var is asm.Instructions
+		for i, role := range b.args {
+			if role == ArgSite {
+				is = append(is, asm.Mov.Imm32(asm.R1+asm.Register(i), b.sitePC))
+			} else {
+				is = append(is, asm.Mov.Reg(asm.R1+asm.Register(i), from[role]))
+			}
+		}
+		return append(is, asm.Call.Label(""))
+	}
+	guard := func(j asm.JumpOp, offset int) asm.Instruction {
+		ins := asm.JEq.Imm(asm.R0, 0, "")
+		if j == asm.JNE {
+			ins = asm.JNE.Imm(asm.R0, 0, "")
+		}
+		ins.Offset = int16(offset)
+		return ins
+	}
+	var bodies []asm.Instructions
+	switch {
+	case hit != nil && miss != nil:
+		onHit, onMiss := arm(hit), arm(miss)
+		bodies = append(bodies,
+			slices.Concat(asm.Instructions{guard(asm.JEq, len(onHit)+1)}, onHit, asm.Instructions{jaBy(len(onMiss))}, onMiss),
+			slices.Concat(asm.Instructions{guard(asm.JNE, len(onMiss)+1)}, onMiss, asm.Instructions{jaBy(len(onHit))}, onHit))
+	case hit != nil:
+		onHit := arm(hit)
+		bodies = append(bodies,
+			slices.Concat(asm.Instructions{guard(asm.JEq, len(onHit))}, onHit),
+			slices.Concat(asm.Instructions{guard(asm.JNE, 1), jaBy(len(onHit))}, onHit))
+	default:
+		onMiss := arm(miss)
+		bodies = append(bodies, slices.Concat(asm.Instructions{guard(asm.JNE, len(onMiss))}, onMiss))
+	}
+	head := asm.Instructions{asm.Mov.Reg(asm.R6, asm.R4), asm.Mov.Reg(asm.R7, asm.R2)}
+	if withMap {
+		head = append(head, asm.Mov.Reg(asm.R9, asm.R1))
+	}
+	head = append(head, helper, asm.Mov.Reg(asm.R8, asm.R0))
+	tail := asm.Instructions{asm.Mov.Reg(asm.R0, asm.R8), asm.Return()}
 	is := out[w.Start:w.End]
 	call := asm.Call.Label("")
-	isCall := func(ins asm.Instruction) bool { return ins.IsFunctionCall() && ins.OpCode == call.OpCode }
-	for withMap := range 2 {
-		head := asm.Instructions{asm.Mov.Reg(asm.R6, asm.R4), asm.Mov.Reg(asm.R7, asm.R2)}
-		if withMap == 1 {
-			head = append(head, asm.Mov.Reg(asm.R9, asm.R1))
-		}
-		head = append(head, helper, asm.Mov.Reg(asm.R8, asm.R0))
-		tail := asm.Instructions{asm.Mov.Reg(asm.R0, asm.R8), asm.Return()}
-		if len(is) < len(head)+len(tail)+1 || !equal(is[:len(head)], head) || !equal(is[len(is)-2:], tail) {
+	for _, body := range bodies {
+		want := slices.Concat(head, body, tail)
+		if len(want) != len(is) || !slices.EqualFunc(is, want, func(a, b asm.Instruction) bool {
+			if b.OpCode == call.OpCode && b.Src == call.Src {
+				return a.IsFunctionCall() && a.OpCode == call.OpCode
+			}
+			return same(a, b)
+		}) {
 			continue
 		}
-		body := is[len(head) : len(is)-2]
-		at := w.Start + len(head)
-		arm := func(from int, value bool) (int, bool) {
-			// R1 ctx, then either R2 site, R3 key, R4 R0, R5 map or R2 key, R3 R0;
-			// without value a typed miss, which has no R4 (or R3).
-			args := asm.Instructions{asm.Mov.Reg(asm.R1, asm.R6)}
-			if from+1 < len(body) && body[from+1].OpCode == asm.Mov.Imm32(asm.R2, 0).OpCode && body[from+1].Dst == asm.R2 {
-				args = append(args, body[from+1], asm.Mov.Reg(asm.R3, asm.R7))
-				if value {
-					args = append(args, asm.Mov.Reg(asm.R4, asm.R0))
-					if withMap == 1 {
-						args = append(args, asm.Mov.Reg(asm.R5, asm.R9))
-					}
-				}
-			} else {
-				if withMap == 1 {
-					return 0, false
-				}
-				args = append(args, asm.Mov.Reg(asm.R2, asm.R7))
-				if value {
-					args = append(args, asm.Mov.Reg(asm.R3, asm.R0))
-				}
-			}
-			end := from + len(args)
-			if end >= len(body) || !equal(body[from:end], args) || !isCall(body[end]) {
-				return 0, false
-			}
-			return end + 1, true
+		// The arm that runs on a hit is the one after a JEq guard.
+		first, second := TargetHit, TargetMiss
+		if body[0].OpCode.JumpOp() == asm.JNE {
+			first, second = TargetMiss, TargetHit
 		}
-		bind := func(j int, when TargetWhen) error {
-			return hookCall(out, pcs, idx, at+j, hooks, targets, site, when, true)
-		}
-		missValue := withMap == 1 // a generic miss passes the NULL in R0 as its value
-		guard := func(j asm.JumpOp, offset int) bool {
-			want := asm.JEq.Imm(asm.R0, 0, "")
-			if j == asm.JNE {
-				want = asm.JNE.Imm(asm.R0, 0, "")
-			}
-			want.Offset = int16(offset)
-			return same(body[0], want)
-		}
-		if end, ok := arm(1, true); ok {
-			if end == len(body) && guard(asm.JEq, end-1) {
-				if targets.planned(site, TargetMiss, true) {
-					return reject(CallTarget, "site %d planned miss hook is not called", site)
-				}
-				return bind(end-1, TargetHit)
-			}
-			if end < len(body) && same(body[end], jaBy(len(body)-end-1)) && guard(asm.JEq, end) {
-				if e2, ok := arm(end+1, missValue); ok && e2 == len(body) {
-					if err := bind(end-1, TargetHit); err != nil {
-						return err
-					}
-					return bind(e2-1, TargetMiss)
-				}
+		if hit == nil || miss == nil {
+			first, second = TargetMiss, TargetMiss
+			if miss == nil {
+				first, second = TargetHit, TargetHit
 			}
 		}
-		if end, ok := arm(1, missValue); ok && end == len(body) && guard(asm.JNE, end-1) {
-			if targets.planned(site, TargetHit, true) {
-				return reject(CallTarget, "site %d planned hit hook is not called", site)
+		n := 0
+		for j := range body {
+			if !body[j].IsFunctionCall() {
+				continue
 			}
-			return bind(end-1, TargetMiss)
+			when := first
+			if n > 0 {
+				when = second
+			}
+			n++
+			if _, err := hookCall(out, pcs, idx, w.Start+len(head)+j, hooks, targets, site, when, true); err != nil {
+				return err
+			}
 		}
+		return nil
 	}
-	return reject(WrapperShape, "not a lookup wrapper body")
+	return reject(WrapperShape, "not the planned lookup wrapper body")
 }
 
 func jaBy(n int) asm.Instruction {
@@ -899,9 +943,11 @@ type targetKey struct {
 }
 
 type targetBinding struct {
-	hook int
-	used bool
-	ctx  *CtxSource
+	hook   int
+	used   bool
+	ctx    *CtxSource
+	args   []ArgRole
+	sitePC int32
 }
 
 type targetBindings map[targetKey]*targetBinding
@@ -938,11 +984,17 @@ func newTargetBindings(targets []SiteTarget, sites int, hooks map[int]bool) (tar
 		default:
 			return nil, inputError(InputTarget, "invalid site target condition %q", target.When)
 		}
+		if target.Args != nil && (target.Site < 0 || !slices.ContainsFunc(lookupABIs, func(abi []ArgRole) bool { return slices.Equal(abi, target.Args) })) {
+			return nil, inputError(InputTarget, "invalid hook arguments in site target %+v", target)
+		}
+		if target.SitePC != 0 && !slices.Contains(target.Args, ArgSite) || target.SitePC < 0 {
+			return nil, inputError(InputTarget, "site PC without a site argument in site target %+v", target)
+		}
 		key := targetKey{target.Site, target.When}
 		if _, ok := b[key]; ok {
 			return nil, inputError(InputTarget, "duplicate site target site=%d when=%s", target.Site, target.When)
 		}
-		b[key] = &targetBinding{hook: target.Hook, ctx: target.Ctx}
+		b[key] = &targetBinding{hook: target.Hook, ctx: target.Ctx, args: target.Args, sitePC: target.SitePC}
 	}
 	return b, nil
 }
@@ -961,29 +1013,35 @@ func (b targetBindings) ctxForSite(site int) *CtxSource {
 	return found
 }
 
-func (b targetBindings) consume(site int, when TargetWhen, hook int, lookupArm bool) error {
-	key := targetKey{site, when}
-	target := b[key]
+// arm is the target of a lookup result arm: its own, or the site's any.
+func (b targetBindings) arm(site int, when TargetWhen) *targetBinding {
+	if target := b[targetKey{site, when}]; target != nil {
+		return target
+	}
+	return b[targetKey{site, TargetAny}]
+}
+
+func (b targetBindings) consume(site int, when TargetWhen, hook int, lookupArm bool) (*targetBinding, error) {
+	target := b[targetKey{site, when}]
 	if target == nil && lookupArm {
-		key.when = TargetAny
-		target = b[key]
+		target = b.arm(site, when)
 	}
 	if target == nil {
 		for planned := range b {
 			if planned.site == site {
-				return reject(CallTarget, "site %d has no target for %s", site, when)
+				return nil, reject(CallTarget, "site %d has no target for %s", site, when)
 			}
 		}
 		if len(b) != 0 {
-			return reject(CallTarget, "call at unplanned site %d", site)
+			return nil, reject(CallTarget, "call at unplanned site %d", site)
 		}
-		return inputError(InputTargetMissing, "site %d has no target binding", site)
+		return nil, inputError(InputTargetMissing, "site %d has no target binding", site)
 	}
 	if hook != target.hook {
-		return reject(CallTarget, "site %d %s call targets hook %d; expected %d", site, when, hook, target.hook)
+		return nil, reject(CallTarget, "site %d %s call targets hook %d; expected %d", site, when, hook, target.hook)
 	}
 	target.used = true
-	return nil
+	return target, nil
 }
 
 // planned reports whether the plan expects a hook on this result arm.
@@ -1003,22 +1061,19 @@ func (b targetBindings) checkUsed() error {
 	return nil
 }
 
-func hookCall(out asm.Instructions, pcs []int, idx map[int]int, j int, hooks map[int]bool, targets targetBindings, site int, when TargetWhen, lookupArm bool) error {
+func hookCall(out asm.Instructions, pcs []int, idx map[int]int, j int, hooks map[int]bool, targets targetBindings, site int, when TargetWhen, lookupArm bool) (*targetBinding, error) {
 	ins := out[j]
 	if !ins.IsFunctionCall() {
-		return reject(CallKind, "inserted call is not bpf-to-bpf")
+		return nil, reject(CallKind, "inserted call is not bpf-to-bpf")
 	}
 	t, e := target(out, pcs, idx, j)
 	if e != nil {
-		return e
+		return nil, e
 	}
 	if !hooks[t] {
-		return reject(CallTarget, "inserted call targets non-hook %d", t)
+		return nil, reject(CallTarget, "inserted call targets non-hook %d", t)
 	}
-	if err := targets.consume(site, when, t, lookupArm); err != nil {
-		return err
-	}
-	return nil
+	return targets.consume(site, when, t, lookupArm)
 }
 func checkEntry(is, out asm.Instructions, pcs []int, idx map[int]int, js []int, hooks map[int]bool, targets targetBindings, f int) error {
 	if !same(is[0], asm.StoreMem(asm.RFP, int16(f+slotContext), asm.R1, asm.DWord)) || f+slotContext < stackBottom {
@@ -1037,7 +1092,8 @@ func checkEntry(is, out asm.Instructions, pcs []int, idx map[int]int, js []int, 
 	if len(is) != call+2 || !same(is[len(is)-1], asm.LoadMem(asm.R1, asm.RFP, int16(f+slotContext), asm.DWord)) {
 		return reject(EntryRestore, "not entry call/restore")
 	}
-	return hookCall(out, pcs, idx, js[call], hooks, targets, -1, TargetAny, false)
+	_, err := hookCall(out, pcs, idx, js[call], hooks, targets, -1, TargetAny, false)
+	return err
 }
 
 func terminal(ins asm.Instruction) bool {

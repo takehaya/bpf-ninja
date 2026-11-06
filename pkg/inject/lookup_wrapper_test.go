@@ -65,6 +65,12 @@ func TestDeepFrameWrapperLimits(t *testing.T) {
 // wrapperPair transforms spec and returns what the checker needs.
 func wrapperPair(t *testing.T, spec *ebpf.CollectionSpec, req LookupRequest) (asm.Instructions, asm.Instructions, injectcheck.Certificate, injectcheck.Premises) {
 	t.Helper()
+	return lookupPair(t, spec, req, true)
+}
+
+// lookupPair is wrapperPair with every site wrapped or none.
+func lookupPair(t *testing.T, spec *ebpf.CollectionSpec, req LookupRequest, wrap bool) (asm.Instructions, asm.Instructions, injectcheck.Certificate, injectcheck.Premises) {
+	t.Helper()
 	in := append(asm.Instructions(nil), spec.Programs["p"].Instructions...)
 	injectcheck.Label(spec.Programs["p"].Instructions)
 	plan, err := transformLookup(spec, req)
@@ -76,10 +82,12 @@ func wrapperPair(t *testing.T, spec *ebpf.CollectionSpec, req LookupRequest) (as
 	for _, hook := range plan.hooks {
 		names[hook.Name] = true
 		for _, site := range hook.Sites {
-			if site.Wrapper == "" {
-				t.Fatalf("site %d has no wrapper", site.SitePC)
+			if (site.Wrapper != "") != wrap {
+				t.Fatalf("site %d wrapper %q, want wrapped %v", site.SitePC, site.Wrapper, wrap)
 			}
-			wrappers[site.Wrapper] = true
+			if site.Wrapper != "" {
+				wrappers[site.Wrapper] = true
+			}
 		}
 	}
 	var hooks, wrapped []injectcheck.Span
@@ -257,8 +265,10 @@ func TestCheckerRejectsBadWrapper(t *testing.T) {
 		in, out, cert, premises := wrapperPair(t, deepLookupFixture(-504), deepReq(-504, LookupHit))
 		premises.Targets[0].When = injectcheck.TargetMiss
 		_, err := injectcheck.Check(in, out, cert, premises)
+		// The expected body comes from the plan, so a hit arm where the plan
+		// names only a miss is not the planned body.
 		var rejection *injectcheck.Rejection
-		if !errors.As(err, &rejection) || rejection.Kind != injectcheck.CallTarget {
+		if !errors.As(err, &rejection) || rejection.Kind != injectcheck.WrapperShape {
 			t.Fatalf("got %v", err)
 		}
 	})

@@ -332,6 +332,9 @@ func (k HookKind) keyless() bool { return k == HookPush || k == HookPop || k == 
 // the one hook's Untrusted and Static flags; Kind, MapName and Sites still
 // group the sites, so an observer maps a site to its kind, map and key and
 // value types from them.
+//
+// SiteArg is set when a lookup hook takes the site's SitePC after ctx: a
+// generic or Dispatch hook, and a typed one with Auto.
 type LookupHook struct {
 	Name      string
 	Kind      HookKind
@@ -344,6 +347,7 @@ type LookupHook struct {
 	ReadOnly  bool
 	Generic   bool
 	Dispatch  bool
+	SiteArg   bool
 	TypeID    btf.TypeID
 	FuncInfo  []byte
 }
@@ -1793,7 +1797,7 @@ func (e lookupEmitter) splice(groups []lookupGroup) (asm.Instructions, []LookupH
 		}
 		return hook
 	}
-	shared := LookupHook{Untrusted: !req.StaticUntrusted, Static: req.StaticUntrusted, Dispatch: req.Dispatch}
+	shared := LookupHook{Untrusted: !req.StaticUntrusted, Static: req.StaticUntrusted, Dispatch: req.Dispatch, SiteArg: true}
 	if req.Dispatch {
 		hooks = untrustedABI(req.HookName)
 	}
@@ -1891,7 +1895,7 @@ func (e lookupEmitter) splice(groups []lookupGroup) (asm.Instructions, []LookupH
 			}
 			hooks = append(hooks, body...)
 			plan = append(plan, LookupHook{Name: group.name, Kind: HookLookup, When: string(LookupHit), MapName: group.sites[0].MapName, Sites: publicLookupSites(group.sites),
-				Untrusted: untrusted, Copied: copied, Static: static, ReadOnly: readOnly})
+				Untrusted: untrusted, Copied: copied, Static: static, ReadOnly: readOnly, SiteArg: req.Auto})
 		}
 		if group.missName != "" {
 			// The key is usually program memory, never the map's, so the
@@ -1907,7 +1911,7 @@ func (e lookupEmitter) splice(groups []lookupGroup) (asm.Instructions, []LookupH
 			}
 			hooks = append(hooks, miss...)
 			plan = append(plan, LookupHook{Name: group.missName, Kind: HookLookup, When: string(LookupMiss), MapName: group.sites[0].MapName,
-				Sites: publicLookupSites(group.sites), ReadOnly: readOnly, Untrusted: missUntrusted, Static: missStatic})
+				Sites: publicLookupSites(group.sites), ReadOnly: readOnly, Untrusted: missUntrusted, Static: missStatic, SiteArg: req.Auto})
 		}
 		for _, site := range group.sites {
 			calls[site.SitePC] = siteCall{hook: group.name, missHook: group.missName, when: req.Lookups, missFirst: req.MissFirst,
