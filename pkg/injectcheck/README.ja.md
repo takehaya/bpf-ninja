@@ -44,6 +44,8 @@ lookup の `any` は hit と miss の両方の経路で hook を呼ぶことを�
 lookup site の `Args` は、計画した hook が R1 から順に受け取るもの（`ctx`、続いて hook が持つ順に `site`、`key`、`value`、`map`）を、`SitePC` は `site` 引数の即値を表す。
 有効なのは lookup hook が持ちうる 5 通りだけである。`site` の有無による typed の 2 通り、`value` のない typed miss の 2 通り、generic の `ctx, site, key, value, map` である。
 lookup hook の各 call は、この役割をこの順で渡し、最後の引数より後の引数 register を設定してはならない。`inject.BuildLookupTargets` は plan からこれを埋める。
+wrapper ではすべての役割を厳密に束縛し、`value` は helper の R0 である。
+wrapper を使わない site の `value` の束縛は緩い。helper の R0 か、site の map slot より下の任意の stack pointer であればよく、plan が作ったコピーそのものとは限らない。
 wrapper を使う site には `Args` が必須である。`Args` のない他の site には、下記の由来の規則だけを適用する。
 caller は `inject.BuildLookupTargets` を使うか、同じ情報を変換後 call の reference ではなく plan から作る必要がある。
 `BuildLookupTargets` は、宛先を対応づけられない indirect `callx` に `inject.ErrCheckerNotApplicable` を返す。

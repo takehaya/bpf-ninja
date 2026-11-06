@@ -42,7 +42,9 @@ For map calls, omission selects the existing entry-frame path; the older P4 tail
 For a lookup, `any` requires the hook on both the hit and miss paths.
 For a lookup site, `Args` lists what the planned hook takes from R1 on (`ctx`, then `site`, `key`, `value` and `map` as the hook has them), and `SitePC` the immediate of its `site` argument.
 Only the five lists a lookup hook can have are valid: typed with or without `site`, a typed miss without `value`, and generic `ctx, site, key, value, map`.
-Each lookup hook call must then pass exactly those roles in that order, with no argument register set past the last one; `inject.BuildLookupTargets` fills them from the plan.
+Each lookup hook call must then pass those roles in that order, with no argument register set past the last one; `inject.BuildLookupTargets` fills them from the plan.
+In a wrapper every role is bound exactly, `value` to the helper's R0.
+At an unwrapped site `value` is bound less tightly: it may be the helper's R0 or any stack pointer below the site's map slot, not exactly the copy the plan made.
 A wrapped site needs `Args`; without them other sites keep only the provenance rules below.
 The caller must use `inject.BuildLookupTargets` or derive the same data from the plan, never from transformed call references.
 `BuildLookupTargets` returns `inject.ErrCheckerNotApplicable` for an indirect `callx`, whose target it cannot pair.

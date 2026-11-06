@@ -55,7 +55,7 @@ const (
 	ArgCtx   ArgRole = "ctx"
 	ArgSite  ArgRole = "site"  // SiteTarget.SitePC
 	ArgKey   ArgRole = "key"   // the helper's R2
-	ArgValue ArgRole = "value" // the helper's R0, or a pointer to its stack copy
+	ArgValue ArgRole = "value" // the helper's R0; unwrapped, any stack pointer below the map slot
 	ArgMap   ArgRole = "map"   // the helper's R1
 )
 
