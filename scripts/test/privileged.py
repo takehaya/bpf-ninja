@@ -34,6 +34,13 @@ def allowed_skip(package, test, output, kernel):
         # BPF_PROG_TEST_RUN sets cgroup_skb packet pointers from 6.15 on.
         if test in {"TestBpfDispatchCGroupSKBStatic", "TestBpfLookupHooksCGroupSKB"}:
             return kernel in {"6.1", "6.6", "6.12"} and "sets no cgroup_skb packet pointers" in output
+        # The lookup wrapper's frame fits only under the 16-byte frame rule of
+        # 6.9 and later JIT kernels.
+        if test in {
+            "TestBpfLookupWrapper/hit", "TestBpfLookupWrapper/miss", "TestBpfLookupWrapper/any",
+            "TestBpfLookupWrapperGeneric/static=true", "TestBpfLookupWrapperNoSpillInSubprogram",
+        }:
+            return kernel in {"6.1", "6.6"} and "kernel uses 32-byte frame rounding" in output
         # Hooks for read-only and runtime-resolved maps and the dispatch hook
         # tag their parameters arg:untrusted, which 6.15 and older reject.
         # GenericKinds skips per map-kind subtest, so match the base test name.
@@ -44,7 +51,7 @@ def allowed_skip(package, test, output, kernel):
             "TestBpfMapCallsDispatch", "TestBpfMapCallsInnerUpdate",
             "TestBpfSpecialFieldsLookup", "TestBpfSockHashUpdateTC", "TestBpfQueueOpsDispatch",
             "TestBpfQueueOpsInner", "TestBpfReadOnlyArg", "TestBpfReadOnlyArgShapes", "TestBpfReadOnlyArgCalls",
-            "TestBpfReadOnlyKconfigArg",
+            "TestBpfReadOnlyKconfigArg", "TestBpfLookupWrapperGeneric",
         } and "kernel lacks arg:untrusted" in output
     # The record tests at untrusted and non-static dispatch hooks need
     # arg:untrusted, which 6.15 and older reject; the static dispatch case

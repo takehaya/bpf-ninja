@@ -72,7 +72,7 @@ It skips these sites:
 - a call on a map that `maps` does not name (`map not selected by Maps`);
 - a call on a map kind that has no hook;
 - a site whose hook name would be longer than 127 bytes;
-- a site whose spill slots do not fit below its function's stack floor;
+- a site whose spill slots do not fit below its function's stack floor, unless a [wrapper](#stack-floor) can hold them;
 - sites that would make the rewritten program break a kernel call-chain stack limit.
   `auto` first drops the sites in callbacks, then the sites that need slots below the three base ones (see [Stack floor](#stack-floor); the generic hook, update hooks and copied read-only values), and then, if the program still breaks the limit, every map-call site.
   With `dispatch` it drops every map-call site at once.
@@ -339,6 +339,16 @@ A generic hook takes a fourth slot (bound -448), or a fifth at an update (-440).
 `copy_read_only` puts the value copy below the fourth slot, so a copied value needs a bound of at least -448 plus its size rounded up to 8 bytes.
 `auto` skips a site that does not fit, and an explicit `map` rule fails.
 The refusal names the function and the slots or bytes that do not fit.
+
+A lookup site that does not fit is not refused under the 6.9+ JIT rule when it needs no stack of its own:
+the transform moves its helper into a small static function, `HOOK__siteN` for the site at slot N.
+That function keeps ctx, the key, the result and the map in its own R6-R9, calls the helper and the hook, and returns the helper's result.
+It uses no stack, so it counts as zero bytes and adds one frame to the 8-frame limit.
+The site loads ctx into R4 from the entry frame's spill slot, or from the register or slot that holds it in a subprogram.
+An entry-frame site therefore still needs that one slot, so `-504` is the deepest entry floor.
+The 32-byte rule charges the function 32 bytes, so it does not apply there.
+Only `lookup` sites take this form; a copied read-only value still needs stack.
+Each hook site records the function in its `wrapper` field.
 
 ### Hook names
 

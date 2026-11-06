@@ -28,27 +28,37 @@ func loadCheckPolicy(err error, failClosed bool) (bool, error) {
 
 // Layout hints remain untrusted; injectcheck accounts for every instruction.
 func loadCheckInputs(original asm.Instructions, result *inject.LookupResultRaw, audit inject.StackAudit, stack inject.StackReport) (injectcheck.Certificate, injectcheck.Premises, error) {
-	names := map[string]bool{}
+	names, wrappers := map[string]bool{}, map[string]bool{}
 	for _, h := range result.Hooks {
 		names[h.Name] = true
+		for _, site := range h.Sites {
+			if site.Wrapper != "" {
+				wrappers[site.Wrapper] = true
+			}
+		}
 	}
-	var spans []injectcheck.Span
+	var spans, wrapped []injectcheck.Span
 	for i := 0; i < len(result.Instructions); i++ {
 		fn := btf.FuncMetadata(&result.Instructions[i])
-		if fn == nil || !names[fn.Name] {
+		if fn == nil || !names[fn.Name] && !wrappers[fn.Name] {
 			continue
 		}
 		end := i + 1
 		for end < len(result.Instructions) && btf.FuncMetadata(&result.Instructions[end]) == nil {
 			end++
 		}
-		spans = append(spans, injectcheck.Span{Start: i, End: end})
+		if wrappers[fn.Name] {
+			wrapped = append(wrapped, injectcheck.Span{Start: i, End: end})
+		} else {
+			spans = append(spans, injectcheck.Span{Start: i, End: end})
+		}
 		i = end - 1
 	}
 	cert, err := injectcheck.FromLabels(result.Instructions, len(original), spans)
 	if err != nil {
 		return cert, injectcheck.Premises{}, fmt.Errorf("checker cannot build instruction correspondence: %w", err)
 	}
+	cert.Wrappers = wrapped
 	targets, err := inject.BuildLookupTargets(result.Instructions, result.Hooks)
 	if err != nil {
 		if errors.Is(err, inject.ErrCheckerNotApplicable) {

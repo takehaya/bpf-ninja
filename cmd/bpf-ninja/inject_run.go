@@ -12,30 +12,10 @@ import (
 	"strings"
 	"syscall"
 
+	"github.com/takehaya/bpf-ninja/pkg/inject"
 	"github.com/takehaya/bpf-ninja/pkg/syscallhook"
 	"github.com/urfave/cli/v3"
-	"golang.org/x/sys/unix"
 )
-
-func kernelFrameRounding(release, jit string, readErr error) int {
-	if readErr != nil || strings.TrimSpace(jit) != "1" && strings.TrimSpace(jit) != "2" {
-		return 32
-	}
-	var major, minor int
-	if n, _ := fmt.Sscanf(release, "%d.%d", &major, &minor); n != 2 || major < 6 || major == 6 && minor < 9 {
-		return 32
-	}
-	return 16
-}
-
-func runningKernelFrameRounding() int {
-	var u unix.Utsname
-	if err := unix.Uname(&u); err != nil {
-		return 32
-	}
-	jit, err := os.ReadFile("/proc/sys/net/core/bpf_jit_enable")
-	return kernelFrameRounding(unix.ByteSliceToString(u.Release[:]), string(jit), err)
-}
 
 func newInjectRunCommand() *cli.Command {
 	return &cli.Command{
@@ -72,7 +52,7 @@ func newInjectRunCommand() *cli.Command {
 			}
 			ctx, cancel := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 			defer cancel()
-			opts := syscallhook.Options{Rules: rules, FailClosed: cmd.Bool("fail-closed"), FrameRounding: runningKernelFrameRounding()}
+			opts := syscallhook.Options{Rules: rules, FailClosed: cmd.Bool("fail-closed"), FrameRounding: inject.RunningKernelFrameRounding()}
 			// The target owns stdout, so the hooks go to a file. It exists,
 			// empty, before the target starts.
 			var hooksErr, lookupsErr error

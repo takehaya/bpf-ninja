@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strings"
 	"testing"
@@ -58,7 +59,9 @@ func TestBuildLookupTargets(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(targets) != 1 || targets[0] != (injectcheck.SiteTarget{Site: 7, When: injectcheck.TargetHit, Hook: 0}) {
+	want := injectcheck.SiteTarget{Site: 7, When: injectcheck.TargetHit, Hook: 0,
+		Args: []injectcheck.ArgRole{injectcheck.ArgCtx, injectcheck.ArgKey, injectcheck.ArgValue}}
+	if len(targets) != 1 || !reflect.DeepEqual(targets[0], want) {
 		t.Fatalf("empty LookupWhen must mean hit: %+v", targets)
 	}
 	for _, tc := range []struct {

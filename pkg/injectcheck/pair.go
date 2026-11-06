@@ -8,11 +8,15 @@ import (
 	"github.com/cilium/ebpf/asm"
 )
 
-// FormatVersion adds callback context sources. Readers continue to accept v2
-// through v4 pairs.
-const FormatVersion = 5
+// FormatVersion adds lookup wrappers and planned lookup arguments. Readers
+// continue to accept v2 through v5 pairs.
+const FormatVersion = 6
 
 func supportedFormat(format int) bool { return format >= 2 && format <= FormatVersion }
+
+func wrapperPremise(c Certificate, targets []SiteTarget) bool {
+	return len(c.Wrappers) != 0 || slices.ContainsFunc(targets, func(t SiteTarget) bool { return len(t.Args) != 0 || t.SitePC != 0 })
+}
 
 func callbackPremise(targets []SiteTarget) bool {
 	return slices.ContainsFunc(targets, func(t SiteTarget) bool { return t.Ctx != nil && t.Ctx.Param != 0 })
@@ -55,6 +59,9 @@ func (p *Pair) UnmarshalJSON(data []byte) error {
 	}
 	if next.Format < 4 && len(next.Premises.Frames) != 0 {
 		return inputError(InputVersion, "format %d does not support per-frame stack floors", next.Format)
+	}
+	if next.Format < 6 && wrapperPremise(next.Certificate, next.Premises.Targets) {
+		return inputError(InputVersion, "format %d does not support wrappers or planned lookup arguments", next.Format)
 	}
 	var fields map[string]json.RawMessage
 	if err := json.Unmarshal(data, &fields); err != nil {
@@ -128,6 +135,11 @@ func (p Pair) Validate() (Verdict, error) {
 	}
 	if p.Format < 4 && len(p.Premises.Frames) != 0 {
 		err := inputError(InputVersion, "format %d does not support per-frame stack floors", p.Format)
+		v.Kind, v.Reason = InputVersion, err.Error()
+		return v, err
+	}
+	if p.Format < 6 && wrapperPremise(p.Certificate, p.Premises.Targets) {
+		err := inputError(InputVersion, "format %d does not support wrappers or planned lookup arguments", p.Format)
 		v.Kind, v.Reason = InputVersion, err.Error()
 		return v, err
 	}

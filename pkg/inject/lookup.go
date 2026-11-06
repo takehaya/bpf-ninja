@@ -36,6 +36,9 @@ type LookupSite struct {
 	// Generic marks a lookup with a Reason that Auto still instruments,
 	// through the generic hook (see LookupHook.Generic).
 	Generic bool
+	// Wrapper names the function that holds this lookup's helper and hook call,
+	// when its frame has no room for the slots (see lookupWrapper).
+	Wrapper string
 }
 
 // LookupSelector identifies lookups of one map. FuncName and Line optionally
@@ -329,6 +332,9 @@ func (k HookKind) keyless() bool { return k == HookPush || k == HookPop || k == 
 // the one hook's Untrusted and Static flags; Kind, MapName and Sites still
 // group the sites, so an observer maps a site to its kind, map and key and
 // value types from them.
+//
+// SiteArg is set when a lookup hook takes the site's SitePC after ctx: a
+// generic or Dispatch hook, and a typed one with Auto.
 type LookupHook struct {
 	Name      string
 	Kind      HookKind
@@ -341,6 +347,7 @@ type LookupHook struct {
 	ReadOnly  bool
 	Generic   bool
 	Dispatch  bool
+	SiteArg   bool
 	TypeID    btf.TypeID
 	FuncInfo  []byte
 }
@@ -898,6 +905,9 @@ func groupStackReach(group lookupGroup, req LookupRequest) int {
 	withMap := group.generic || req.Dispatch
 	reach := 0
 	for _, site := range group.sites {
+		if site.Wrapper != "" {
+			continue // only the entry ctx slot, which wrapSites checked
+		}
 		slots := lookupSlots(req.Stack.floor(site.FuncName))
 		at := slots.result
 		switch {
@@ -913,6 +923,39 @@ func groupStackReach(group lookupGroup, req LookupRequest) int {
 		}
 	}
 	return reach
+}
+
+// wrapSites moves each lookup whose slots pass siteFrameLimit into a wrapper,
+// where the kernel's rounding allows it. A wrapper has no frame only under the
+// 6.9+ JIT rule (FrameRounding 16); the 32-byte rule charges it 32 bytes. A value
+// copy needs stack and stays refused. An entry-frame site still reads ctx from
+// the entry spill, so that one slot must fit. A callback site is not wrapped:
+// its ctx comes through the callback's prologue, which a wrapper prelude does
+// not read.
+func wrapSites(group lookupGroup, req LookupRequest) lookupGroup {
+	if group.op != HookLookup || req.Stack.FrameRounding != 16 {
+		return group
+	}
+	withMap := group.generic || req.Dispatch
+	if !withMap && group.copies(req) {
+		return group
+	}
+	group.sites = slices.Clone(group.sites)
+	for i := range group.sites {
+		site := &group.sites[i]
+		one := lookupGroup{generic: group.generic, op: group.op, sites: []discoveredLookup{*site}}
+		if groupStackReach(one, req) >= -siteFrameLimit(req.Stack) {
+			continue
+		}
+		if site.callback != nil {
+			continue
+		}
+		if site.CtxSource == "entry" && lookupSlots(req.Stack.floor(site.FuncName)).ctx < -siteFrameLimit(req.Stack) {
+			continue
+		}
+		site.Wrapper = fmt.Sprintf("%s__site%d", req.HookName, site.SitePC)
+	}
+	return group
 }
 
 // siteFrameReason says why group's slots pass siteFrameLimit. Only the map
@@ -1455,6 +1498,7 @@ func transformLookupProgramGuarded(insns asm.Instructions, typ ebpf.ProgramType,
 	// them. Dropping the one generic group means no hook takes the map pointer.
 	var kept []lookupGroup
 	for _, group := range groups {
+		group = wrapSites(group, req)
 		if groupStackReach(group, req) >= -siteFrameLimit(req.Stack) {
 			kept = append(kept, group)
 			continue
@@ -1509,11 +1553,20 @@ func transformLookupProgramGuarded(insns asm.Instructions, typ ebpf.ProgramType,
 	names := map[string]bool{}
 	for _, group := range groups {
 		names[group.name] = true
-		if group.missName != "" {
-			if names[group.missName] || !validIdent(group.missName) {
-				return nil, plan, refuse("hook name %q is invalid or used twice", group.missName)
+	}
+	for _, group := range groups {
+		extra := []string{group.missName}
+		for _, site := range group.sites {
+			extra = append(extra, site.Wrapper)
+		}
+		for _, name := range extra {
+			if name == "" {
+				continue
 			}
-			names[group.missName] = true
+			if names[name] || !validIdent(name) {
+				return nil, plan, refuse("hook name %q is invalid or used twice", name)
+			}
+			names[name] = true
 		}
 	}
 	if req.Dispatch {
@@ -1748,7 +1801,7 @@ func (e lookupEmitter) splice(groups []lookupGroup) (asm.Instructions, []LookupH
 		}
 		return hook
 	}
-	shared := LookupHook{Untrusted: !req.StaticUntrusted, Static: req.StaticUntrusted, Dispatch: req.Dispatch}
+	shared := LookupHook{Untrusted: !req.StaticUntrusted, Static: req.StaticUntrusted, Dispatch: req.Dispatch, SiteArg: true}
 	if req.Dispatch {
 		hooks = untrustedABI(req.HookName)
 	}
@@ -1771,7 +1824,10 @@ func (e lookupEmitter) splice(groups []lookupGroup) (asm.Instructions, []LookupH
 			plan = append(plan, hook)
 			for _, site := range group.sites {
 				calls[site.SitePC] = siteCall{hook: group.name, op: group.op, withSite: true, withMap: true,
-					dispatch: req.Dispatch, when: req.Lookups, missFirst: req.MissFirst, results: results, ctxFrom: siteCtxSource(site), frameFloor: req.Stack.floor(site.FuncName)}
+					dispatch: req.Dispatch, when: req.Lookups, missFirst: req.MissFirst, results: results, ctxFrom: siteCtxSource(site), frameFloor: req.Stack.floor(site.FuncName), wrapper: site.Wrapper}
+				if site.Wrapper != "" {
+					hooks = append(hooks, lookupWrapper(site, e.insns[site.InstructionIndex], calls[site.SitePC], e.ctxType)...)
+				}
 			}
 			continue
 		}
@@ -1843,7 +1899,7 @@ func (e lookupEmitter) splice(groups []lookupGroup) (asm.Instructions, []LookupH
 			}
 			hooks = append(hooks, body...)
 			plan = append(plan, LookupHook{Name: group.name, Kind: HookLookup, When: string(LookupHit), MapName: group.sites[0].MapName, Sites: publicLookupSites(group.sites),
-				Untrusted: untrusted, Copied: copied, Static: static, ReadOnly: readOnly})
+				Untrusted: untrusted, Copied: copied, Static: static, ReadOnly: readOnly, SiteArg: req.Auto})
 		}
 		if group.missName != "" {
 			// The key is usually program memory, never the map's, so the
@@ -1859,11 +1915,14 @@ func (e lookupEmitter) splice(groups []lookupGroup) (asm.Instructions, []LookupH
 			}
 			hooks = append(hooks, miss...)
 			plan = append(plan, LookupHook{Name: group.missName, Kind: HookLookup, When: string(LookupMiss), MapName: group.sites[0].MapName,
-				Sites: publicLookupSites(group.sites), ReadOnly: readOnly, Untrusted: missUntrusted, Static: missStatic})
+				Sites: publicLookupSites(group.sites), ReadOnly: readOnly, Untrusted: missUntrusted, Static: missStatic, SiteArg: req.Auto})
 		}
 		for _, site := range group.sites {
 			calls[site.SitePC] = siteCall{hook: group.name, missHook: group.missName, when: req.Lookups, missFirst: req.MissFirst,
-				withSite: req.Auto, copySize: copySize, ctxFrom: siteCtxSource(site), frameFloor: req.Stack.floor(site.FuncName)}
+				withSite: req.Auto, copySize: copySize, ctxFrom: siteCtxSource(site), frameFloor: req.Stack.floor(site.FuncName), wrapper: site.Wrapper}
+			if site.Wrapper != "" {
+				hooks = append(hooks, lookupWrapper(site, e.insns[site.InstructionIndex], calls[site.SitePC], e.ctxType)...)
+			}
 		}
 	}
 	// With Dispatch the entry and tail-call hooks are the shared hook; otherwise
@@ -1949,6 +2008,7 @@ type siteCall struct {
 	ctxFrom    ctxSource
 	copySize   uint32
 	frameFloor int16
+	wrapper    string // the helper and its hook call live in this function
 }
 
 // spliceLookup splices one plain typed hook's calls, the narrow entry point
@@ -1979,6 +2039,9 @@ func spliceLookupCalls(input asm.Instructions, calls map[uint32]siteCall, stack 
 		slots := lookupSlots(call.frameFloor)
 		ctx, key, spillR0, mapSlot := int16(slots.ctx), int16(slots.key), int16(slots.result), int16(slots.mapSlot)
 		copyAt := func() int { return slots.copyAt(call.copySize) }
+		if call.wrapper != "" {
+			return nil
+		}
 		if call.op.MapCall() {
 			return mapCallAfter(pc, call, slots)
 		}
@@ -2004,84 +2067,24 @@ func spliceLookupCalls(input asm.Instructions, calls map[uint32]siteCall, stack 
 				asm.Call.Label(call.hook),
 			}
 		}
-		// hit calls the hook with the value in R0; on a miss a generic hook
-		// gets R0 too, which is then NULL, and a typed one its miss hook.
-		hit := func(copySize uint32) asm.Instructions {
-			var args asm.Instructions
-			if copySize > 0 {
-				args = copyValue(asm.R0, int16(copyAt()), copySize)
-			}
-			args = append(args, asm.LoadMem(asm.R1, asm.RFP, ctx, asm.DWord))
-			if call.withSite {
-				args = append(args, asm.Mov.Imm32(asm.R2, int32(pc)),
-					asm.LoadMem(asm.R3, asm.RFP, key, asm.DWord), asm.Mov.Reg(asm.R4, asm.R0))
-				if call.withMap {
-					args = append(args, asm.LoadMem(asm.R5, asm.RFP, mapSlot, asm.DWord))
-				}
-			} else {
-				args = append(args, asm.LoadMem(asm.R2, asm.RFP, key, asm.DWord), asm.Mov.Reg(asm.R3, asm.R0))
-			}
-			if copySize > 0 {
-				value := args[len(args)-1].Dst // the register given R0
-				args = append(args, asm.Mov.Reg(value, asm.RFP), asm.Add.Imm(value, int32(copyAt())))
-			}
-			return append(args, asm.Call.Label(call.hook))
+		load := func(off int16) func(asm.Register) asm.Instruction {
+			return func(dst asm.Register) asm.Instruction { return asm.LoadMem(dst, asm.RFP, off, asm.DWord) }
 		}
-		miss := func() asm.Instructions {
-			if call.withMap {
-				return hit(0)
-			}
-			args := asm.Instructions{asm.LoadMem(asm.R1, asm.RFP, ctx, asm.DWord)}
-			if call.withSite {
-				args = append(args, asm.Mov.Imm32(asm.R2, int32(pc)), asm.LoadMem(asm.R3, asm.RFP, key, asm.DWord))
-			} else {
-				args = append(args, asm.LoadMem(asm.R2, asm.RFP, key, asm.DWord))
-			}
-			return append(args, asm.Call.Label(call.missHook))
-		}
-		// Each path tests R0 first, so a hook gets a value the verifier knows
-		// to be either a map value or zero. Both paths end by restoring R0.
-		out := asm.Instructions{asm.StoreMem(asm.RFP, spillR0, asm.R0, asm.DWord)}
-		switch {
-		case call.when.hit() && call.when.miss():
-			onHit, onMiss := hit(call.copySize), miss()
-			if call.missFirst {
-				found := asm.JNE.Imm(asm.R0, 0, "")
-				found.Offset = int16(len(onMiss) + 1)
-				done := asm.Ja.Label("")
-				done.Offset = int16(len(onHit))
-				out = append(append(append(append(out, found), onMiss...), done), onHit...)
-				break
-			}
-			null := asm.JEq.Imm(asm.R0, 0, "")
-			null.Offset = int16(len(onHit) + 1)
-			done := asm.Ja.Label("")
-			done.Offset = int16(len(onMiss))
-			out = append(append(append(append(out, null), onHit...), done), onMiss...)
-		case call.when.miss():
-			onMiss := miss()
-			found := asm.JNE.Imm(asm.R0, 0, "")
-			found.Offset = int16(len(onMiss))
-			out = append(append(out, found), onMiss...)
-		default:
-			onHit := hit(call.copySize)
-			if call.missFirst {
-				found := asm.JNE.Imm(asm.R0, 0, "")
-				found.Offset = 1
-				skip := asm.Ja.Label("")
-				skip.Offset = int16(len(onHit))
-				out = append(append(append(out, found), skip), onHit...)
-				break
-			}
-			null := asm.JEq.Imm(asm.R0, 0, "")
-			null.Offset = int16(len(onHit))
-			out = append(append(out, null), onHit...)
-		}
-		return append(out, asm.LoadMem(asm.R0, asm.RFP, spillR0, asm.DWord))
+		return lookupRegion(pc, call, load(ctx), load(key), load(mapSlot), copyAt,
+			asm.StoreMem(asm.RFP, spillR0, asm.R0, asm.DWord), asm.LoadMem(asm.R0, asm.RFP, spillR0, asm.DWord))
 	}
 	before := func(call siteCall) asm.Instructions {
 		slots := lookupSlots(call.frameFloor)
 		ctx, key, spillR0, mapSlot := int16(slots.ctx), int16(slots.key), int16(slots.result), int16(slots.mapSlot)
+		if call.wrapper != "" {
+			switch {
+			case call.ctxFrom.reg != 0:
+				return asm.Instructions{asm.Mov.Reg(asm.R4, call.ctxFrom.reg)}
+			case call.ctxFrom.slot != 0:
+				return asm.Instructions{asm.LoadMem(asm.R4, asm.RFP, call.ctxFrom.slot, asm.DWord)}
+			}
+			return asm.Instructions{asm.LoadMem(asm.R4, asm.RFP, ctx, asm.DWord)}
+		}
 		initCtx := func(spill asm.Instructions) asm.Instructions {
 			switch {
 			case call.ctxFrom.helperR1:
@@ -2225,6 +2228,11 @@ func spliceLookupCalls(input asm.Instructions, calls map[uint32]siteCall, stack 
 		if old == 0 {
 			ins = btf.WithFuncMetadata(ins.WithSymbol(""), nil)
 		}
+		if site && call.wrapper != "" {
+			c := asm.Call.Label(call.wrapper)
+			ins.OpCode, ins.Src, ins.Constant = c.OpCode, c.Src, c.Constant
+			ins = ins.WithReference(call.wrapper)
+		}
 		out = append(out, ins)
 		if site {
 			out = append(out, after[uint32(old)]...)
@@ -2234,6 +2242,110 @@ func spliceLookupCalls(input asm.Instructions, calls map[uint32]siteCall, stack 
 		out = append(out, hook...)
 	}
 	return out, nil
+}
+
+// lookupRegion calls a lookup site's hook after the helper, reading what it
+// keeps across the helper through ctxOf, keyOf and mapOf. save and restore keep
+// R0 across the hook.
+func lookupRegion(pc uint32, call siteCall, ctxOf, keyOf, mapOf func(asm.Register) asm.Instruction, copyAt func() int, save, restore asm.Instruction) asm.Instructions {
+	// hit calls the hook with the value in R0; on a miss a generic hook
+	// gets R0 too, which is then NULL, and a typed one its miss hook.
+	hit := func(copySize uint32) asm.Instructions {
+		var args asm.Instructions
+		if copySize > 0 {
+			args = copyValue(asm.R0, int16(copyAt()), copySize)
+		}
+		args = append(args, ctxOf(asm.R1))
+		if call.withSite {
+			args = append(args, asm.Mov.Imm32(asm.R2, int32(pc)), keyOf(asm.R3), asm.Mov.Reg(asm.R4, asm.R0))
+			if call.withMap {
+				args = append(args, mapOf(asm.R5))
+			}
+		} else {
+			args = append(args, keyOf(asm.R2), asm.Mov.Reg(asm.R3, asm.R0))
+		}
+		if copySize > 0 {
+			value := args[len(args)-1].Dst // the register given R0
+			args = append(args, asm.Mov.Reg(value, asm.RFP), asm.Add.Imm(value, int32(copyAt())))
+		}
+		return append(args, asm.Call.Label(call.hook))
+	}
+	miss := func() asm.Instructions {
+		if call.withMap {
+			return hit(0)
+		}
+		args := asm.Instructions{ctxOf(asm.R1)}
+		if call.withSite {
+			args = append(args, asm.Mov.Imm32(asm.R2, int32(pc)), keyOf(asm.R3))
+		} else {
+			args = append(args, keyOf(asm.R2))
+		}
+		return append(args, asm.Call.Label(call.missHook))
+	}
+	// Each path tests R0 first, so a hook gets a value the verifier knows
+	// to be either a map value or zero. Both paths end by restoring R0.
+	out := asm.Instructions{save}
+	switch {
+	case call.when.hit() && call.when.miss():
+		onHit, onMiss := hit(call.copySize), miss()
+		if call.missFirst {
+			found := asm.JNE.Imm(asm.R0, 0, "")
+			found.Offset = int16(len(onMiss) + 1)
+			done := asm.Ja.Label("")
+			done.Offset = int16(len(onHit))
+			out = append(append(append(append(out, found), onMiss...), done), onHit...)
+			break
+		}
+		null := asm.JEq.Imm(asm.R0, 0, "")
+		null.Offset = int16(len(onHit) + 1)
+		done := asm.Ja.Label("")
+		done.Offset = int16(len(onMiss))
+		out = append(append(append(append(out, null), onHit...), done), onMiss...)
+	case call.when.miss():
+		onMiss := miss()
+		found := asm.JNE.Imm(asm.R0, 0, "")
+		found.Offset = int16(len(onMiss))
+		out = append(append(out, found), onMiss...)
+	default:
+		onHit := hit(call.copySize)
+		if call.missFirst {
+			found := asm.JNE.Imm(asm.R0, 0, "")
+			found.Offset = 1
+			skip := asm.Ja.Label("")
+			skip.Offset = int16(len(onHit))
+			out = append(append(append(out, found), skip), onHit...)
+			break
+		}
+		null := asm.JEq.Imm(asm.R0, 0, "")
+		null.Offset = int16(len(onHit))
+		out = append(append(out, null), onHit...)
+	}
+	return append(out, restore)
+}
+
+// lookupWrapper is the function a site without room for its slots calls in
+// place of the lookup helper: void *NAME(map, key, cpu, ctx). It keeps ctx, the
+// key, the map and the result in its own R6-R9, which the kernel saves and
+// restores for the caller, runs the helper and the lookup region, and returns
+// the helper's R0. It touches no stack, so with its zero frame the chain stays
+// within the kernel's limit under the 6.9+ JIT rule. Ctx comes in R4: a lookup
+// reads only R1 and R2, a per-CPU lookup R3 too, and all are unreadable after.
+func lookupWrapper(site discoveredLookup, helper asm.Instruction, call siteCall, ctx btf.Type) asm.Instructions {
+	regOf := func(reg asm.Register) func(asm.Register) asm.Instruction {
+		return func(dst asm.Register) asm.Instruction { return asm.Mov.Reg(dst, reg) }
+	}
+	void := &btf.Pointer{Target: &btf.Void{}}
+	fn := &btf.Func{Name: site.Wrapper, Linkage: btf.StaticFunc, Type: &btf.FuncProto{Return: void, Params: []btf.FuncParam{
+		{Name: "map", Type: void}, {Name: "key", Type: void}, {Name: "cpu", Type: &btf.Int{Name: "u64", Size: 8}}, {Name: "ctx", Type: ctx}}}}
+	head := btf.WithFuncMetadata(asm.Mov.Reg(asm.R6, asm.R4).WithSymbol(site.Wrapper).
+		WithSource(asm.Comment("generated wrapper of lookup "+site.Wrapper)), fn)
+	out := asm.Instructions{head, asm.Mov.Reg(asm.R7, asm.R2)}
+	if call.withMap {
+		out = append(out, asm.Mov.Reg(asm.R9, asm.R1))
+	}
+	out = append(out, asm.BuiltinFunc(helper.Constant).Call())
+	region := lookupRegion(site.SitePC, call, regOf(asm.R6), regOf(asm.R7), regOf(asm.R9), nil, asm.Mov.Reg(asm.R8, asm.R0), asm.Mov.Reg(asm.R0, asm.R8))
+	return append(append(out, region...), asm.Return())
 }
 
 // InfoOpUpdate, InfoOpDelete, InfoOpPush, InfoOpPop and InfoOpPeek are the

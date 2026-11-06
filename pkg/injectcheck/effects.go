@@ -186,6 +186,9 @@ func checkAfter(site int, helper asm.Instruction, before, is, out asm.Instructio
 			if cl == asm.ALU64Class && op == asm.Mov && ins.OpCode.Source() == asm.ImmSource && ins.Constant == 0 {
 				src = value{id: idZero}
 			}
+			if cl == asm.ALUClass && op == asm.Mov && ins.OpCode.Source() == asm.ImmSource {
+				src = value{id: idImm32, ptr: int(int32(ins.Constant))}
+			}
 			if ins.OpCode.Source() == asm.RegSource {
 				if err := read(ins.Src); err != nil {
 					return err
@@ -200,7 +203,7 @@ func checkAfter(site int, helper asm.Instruction, before, is, out asm.Instructio
 			switch op {
 			case asm.Mov:
 				s.regs[ins.Dst] = src
-				if cl == asm.ALUClass {
+				if cl == asm.ALUClass && src.id != idImm32 {
 					s.regs[ins.Dst] = value{id: idOpaque}
 				}
 			case asm.Add:
@@ -220,7 +223,8 @@ func checkAfter(site int, helper asm.Instruction, before, is, out asm.Instructio
 			}
 		case ins.IsFunctionCall():
 			lookupArm := isLookup && (s.when == TargetHit || s.when == TargetMiss)
-			if err := hookCall(out, pcs, idx, js[i], hooks, targets, site, s.when, lookupArm); err != nil {
+			binding, err := hookCall(out, pcs, idx, js[i], hooks, targets, site, s.when, lookupArm)
+			if err != nil {
 				return err
 			}
 			s.calls++
@@ -229,6 +233,11 @@ func checkAfter(site int, helper asm.Instruction, before, is, out asm.Instructio
 			}
 			if ctx, ok := s.stack[f+slotContext]; !ok || s.regs[asm.R1] != ctx.v {
 				return reject(HookArguments, "R1 is not the saved context")
+			}
+			if binding.args != nil {
+				if err := plannedArgs(s, f, binding); err != nil {
+					return err
+				}
 			}
 			mp, hasMap := s.stack[f+slotMap]
 			if tail && hasMap {
@@ -306,6 +315,45 @@ func checkAfter(site int, helper asm.Instruction, before, is, out asm.Instructio
 	return walk(0, s)
 }
 
+// plannedArgs checks a hook call's argument registers against the roles the
+// plan gives them, and that no register past the last argument is set.
+func plannedArgs(s state, f int, b *targetBinding) error {
+	slot := func(at int) (value, bool) { c, ok := s.stack[at]; return c.v, ok }
+	for i, role := range b.args {
+		r := asm.R1 + asm.Register(i)
+		got := s.regs[r]
+		var ok bool
+		switch role {
+		case ArgCtx:
+			var v value
+			v, ok = slot(f + slotContext)
+			ok = ok && got == v
+		case ArgSite:
+			ok = got == value{id: idImm32, ptr: int(b.sitePC)}
+		case ArgKey:
+			var v value
+			v, ok = slot(f + slotKey)
+			ok = ok && got == v
+		case ArgValue:
+			// The result, or a pointer to its copy below the fixed slots.
+			ok = got.id == idResult || got.frame && got.ptr < f+slotMap
+		case ArgMap:
+			var v value
+			v, ok = slot(f + slotMap)
+			ok = ok && got == v
+		}
+		if !ok {
+			return reject(HookArguments, "R%d is not the planned %s argument", r, role)
+		}
+	}
+	for r := asm.R1 + asm.Register(len(b.args)); r <= asm.R5; r++ {
+		if s.regs[r].id != idUndefined {
+			return reject(HookArguments, "R%d is set past the planned %d arguments", r, len(b.args))
+		}
+	}
+	return nil
+}
+
 func checkU32(site int, load asm.Instruction, is, out asm.Instructions, pcs []int, idx map[int]int, js []int, hooks map[int]bool, targets targetBindings, f int, live uint16) error {
 	if !same(load, asm.LoadMem(asm.R2, asm.R0, load.Offset, asm.Word)) {
 		return reject(U32Placement, "insertion is not at a u32 load")
@@ -320,7 +368,7 @@ func checkU32(site int, load asm.Instruction, is, out asm.Instructions, pcs []in
 	if !equal(is, want) {
 		return reject(U32Shape, "not a u32 save/call/restore sequence")
 	}
-	if err := hookCall(out, pcs, idx, js[3], hooks, targets, site, TargetAny, false); err != nil {
+	if _, err := hookCall(out, pcs, idx, js[3], hooks, targets, site, TargetAny, false); err != nil {
 		return err
 	}
 	start, err := target(out, pcs, idx, js[3])

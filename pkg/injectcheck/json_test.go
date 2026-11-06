@@ -85,3 +85,30 @@ func TestMapOperandMutations(t *testing.T) {
 		}
 	}
 }
+
+// Wrappers, args and site_pc came with format 6; older formats refuse them
+// on decode and in Validate.
+func TestFormatGatesWrapperFields(t *testing.T) {
+	if FormatVersion < 6 {
+		t.Errorf("FormatVersion = %d, want at least 6", FormatVersion)
+	}
+	for name, pair := range map[string]string{
+		"wrappers": `"certificate":{"original":[],"wrappers":[{"start":1,"end":2}]},"premises":{"lowest_offset":-8,"targets":[]}`,
+		"args":     `"certificate":{"original":[]},"premises":{"lowest_offset":-8,"targets":[{"site":0,"when":"hit","hook":1,"args":["ctx","key","value"]}]}`,
+		"site_pc":  `"certificate":{"original":[]},"premises":{"lowest_offset":-8,"targets":[{"site":0,"when":"hit","hook":1,"site_pc":12}]}`,
+	} {
+		data := `{"format":5,"original":[],"transformed":[],` + pair + `}`
+		var p Pair
+		if err := json.Unmarshal([]byte(data), &p); err == nil || !strings.Contains(err.Error(), "wrapper") {
+			t.Errorf("%s: format 5 decoded: %v", name, err)
+		}
+		if err := json.Unmarshal([]byte(strings.Replace(data, `"format":5`, `"format":6`, 1)), &p); err != nil {
+			t.Errorf("%s: format 6: %v", name, err)
+			continue
+		}
+		p.Format = 5
+		if v, err := p.Validate(); err == nil || v.Kind != InputVersion {
+			t.Errorf("%s: format 5 validated: %+v %v", name, v, err)
+		}
+	}
+}

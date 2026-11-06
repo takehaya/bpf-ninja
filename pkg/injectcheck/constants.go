@@ -13,6 +13,7 @@ const (
 	idUndefined           = 0
 	idOpaque              = -1
 	idZero                = -2
+	idImm32               = -3 // a 32-bit immediate, kept in value.ptr
 	idFrame               = 11
 	idContext             = 100
 	idResult              = 200

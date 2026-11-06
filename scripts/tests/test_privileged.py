@@ -100,6 +100,20 @@ class AuditTests(unittest.TestCase):
         self.assertTrue(module.allowed_skip(module.INJECT, "TestBpfDispatchCGroupSKB", reason, "6.15"))
         self.assertFalse(module.allowed_skip(module.INJECT, "TestBpfDispatchCGroupSKB", reason, "6.18"))
 
+    def test_lookup_wrapper_frame_rounding_skip_is_specific(self):
+        reason = "skipping: kernel uses 32-byte frame rounding; the wrapper needs the 16-byte rule"
+        for test in ("TestBpfLookupWrapper/hit", "TestBpfLookupWrapperGeneric/static=true",
+                     "TestBpfLookupWrapperNoSpillInSubprogram"):
+            for kernel in ("6.1", "6.6"):
+                self.assertTrue(module.allowed_skip(module.INJECT, test, reason, kernel))
+            self.assertFalse(module.allowed_skip(module.INJECT, test, reason, "6.12"))
+            self.assertFalse(module.allowed_skip(module.INJECT, test, "combined stack size of 2 calls is 544. Too large", "6.1"))
+        self.assertFalse(module.allowed_skip(module.INJECT, "TestBpfLookupWrapperGeneric/static=false", reason, "6.1"))
+        untrusted = "skipping: kernel lacks arg:untrusted: program p: load program"
+        for kernel in ("6.1", "6.6", "6.12", "6.15"):
+            self.assertTrue(module.allowed_skip(module.INJECT, "TestBpfLookupWrapperGeneric/static=false", untrusted, kernel))
+        self.assertFalse(module.allowed_skip(module.INJECT, "TestBpfLookupWrapperGeneric/static=false", untrusted, "6.18"))
+
     def test_cgroup_skb_packet_pointer_skip_is_specific(self):
         reason = "BPF_PROG_TEST_RUN sets no cgroup_skb packet pointers on this kernel"
         for test in ("TestBpfDispatchCGroupSKBStatic", "TestBpfLookupHooksCGroupSKB"):

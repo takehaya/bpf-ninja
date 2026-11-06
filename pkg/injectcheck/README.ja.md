@@ -41,6 +41,12 @@ counts, err := injectcheck.Check(original, transformed, injectcheck.Certificate{
 チェッカーは prelude が指定された由来をコピーすることを検査するが、その由来が意味的に context を保持することまでは証明しない。
 map call では省略時に既存の entry-frame 経路を使うが、従来の P4 tail-call 形式では helper R1 から callee frame を直接初期化する場合もある。
 lookup の `any` は hit と miss の両方の経路で hook を呼ぶことを要求する。
+lookup site の `Args` は、計画した hook が R1 から順に受け取るもの（`ctx`、続いて hook が持つ順に `site`、`key`、`value`、`map`）を、`SitePC` は `site` 引数の即値を表す。
+有効なのは lookup hook が持ちうる 5 通りだけである。`site` の有無による typed の 2 通り、`value` のない typed miss の 2 通り、generic の `ctx, site, key, value, map` である。
+lookup hook の各 call は、この役割をこの順で渡し、最後の引数より後の引数 register を設定してはならない。`inject.BuildLookupTargets` は plan からこれを埋める。
+wrapper ではすべての役割を厳密に束縛し、`value` は helper の R0 である。
+wrapper を使わない site の `value` の束縛は緩い。helper の R0 か、site の map slot より下の任意の stack pointer であればよく、plan が作ったコピーそのものとは限らない。
+wrapper を使う site には `Args` が必須である。`Args` のない他の site には、下記の由来の規則だけを適用する。
 caller は `inject.BuildLookupTargets` を使うか、同じ情報を変換後 call の reference ではなく plan から作る必要がある。
 `BuildLookupTargets` は、宛先を対応づけられない indirect `callx` に `inject.ErrCheckerNotApplicable` を返す。
 `inject-run` は既定では置換後 stream を未検査のままロードし、`--fail-closed` 指定時だけ拒否する。
@@ -62,6 +68,7 @@ caller は `inject.BuildLookupTargets` を使うか、同じ情報を変換後 c
 | P4 | tail call 前の spill と失敗時の postlude | helper 引数と宛先の保存、plan の hook、R1 context、dispatch の R4/R5 の由来、local または入口 frame での context 初期化 |
 | P5 | queue/stack の push/pop/peek の spill と observer postlude | helper ごとの spill、plan の結果別宛先、R1 context、generic/dispatch の R3-R5 の由来と順序、1 回の hook、64-bit R0 復元 |
 | P6 | `ldxw R2, [R0+offset]` の後の u32 hook | 保存・call・復元の 6 命令、u32 hook 本体、元の継続位置での R1/R3–R5 の死 |
+| P8 | helper を wrapper 関数へ移した lookup site（`Certificate.Wrappers`） | 計画どおりの ctx を R4 へ読む 1 命令の prelude、wrapper と site の 1 対 1、結果経路ごとの計画した宛先と `Args` から組み立てた本体との完全一致（hit 先と miss 先のどちらの配置も可） |
 | P7 | observer 関数 | no-op return、u32 XOR return、または許可された context/pointer 読み出しとゼロ return。store と call を拒否 |
 
 スタックスロットの定義は変換器の実装と独立している。
@@ -71,7 +78,7 @@ caller は `inject.BuildLookupTargets` を使うか、同じ情報を変換後 c
 u32 領域は R0 を `f-8`、R2 を `f-16` に保存するため、入口 context と key のスロットに重なる。
 helper hook call は保存済み context を R1 に要求する。
 generic と dispatch の map call は NULL 役の定数 0 を含む helper ごとの R3-R5 の役割を検査し、dispatch tail call は R3-R5 を検査する。
-R2 の site id または info word は、site tag を持つすべての hook で未検査である。
+`Args` がなければ、R2 の site id または info word は site tag を持つすべての hook で未検査である。`Args` があれば lookup hook の役割と site 即値を検査する。update、delete、push、pop、peek、tail call、u32 の hook には `Args` がないので、それらの site id と info word は未検査のままである。
 typed hook と static non-generic hook の key/value の役割も受理条件の範囲外である。
 u32 と helper が混在する stream では、後続 observer が元の context を受け取ることまでは確立しない。
 u32 領域は、後続 helper hook が R1 を reload する slot と同じ場所へ R0 を保存するためである。
@@ -84,6 +91,15 @@ P1c が読めるのは、その関数の床以上にある premise 指名の整�
 元の入口への後退辺は一度だけ実行する入口 spill を飛ばす。
 hook による元命令との重なり、挿入領域の分断、hook への fall-through は拒否する。
 挿入命令は R6–R10 と元のスタックを保存し、map 値のコピーは R0 から R1 を介して予約領域へ書く load/store 対に限る。
+
+wrapper は、callee 内に置いた元の helper call として受理する。
+prelude が書くのは R4 だけで、lookup は R4 を読まず、helper の後は R4 を読めない。
+wrapper 本体は、許容テンプレートのどれかとの一致ではなく、site の target から組み立てた 1 つの本体との完全一致で検査する。
+本体は R4、R2、および map を受け取る hook が計画されている場合の R1 を自分の R6、R7、R9 へ写し、元の引数のまま元の helper を実行し、R0 を R8 へ写す。
+結果経路ごとに、計画した hook を計画した `Args` と site 即値で呼ぶ。計画にない経路では何も呼ばない。最後に R8 を R0 に戻して返る。
+R10 を使わないので caller の stack は変わらず、BPF の呼び出し規約により caller の R6-R9 も保たれる。
+元命令が位置を離れるのはこの場合だけである。`Original[i]` は wrapper への call を指し、チェッカーは wrapper 内の helper と元命令 i を比較する。
+`Certificate.Wrappers` は `Hooks` と同じくヒントであり、どの site からも呼ばれない wrapper と、2 つの site から呼ばれる wrapper は拒否する。
 
 ## 呼び出し規約と保証の範囲
 
@@ -129,11 +145,12 @@ writer と reader はタグ付きの `injectcheck.Pair` 型を共有する。
 format 3 は、format 2 が固定した cilium/ebpf v0.22 の decoded `asm.OpCode` 表現に、任意の callee context 由来を追加する。
 format 4 は `premises.frames` に関数別の床を追加する。
 format 5 は `ctx` に `param` と `arg` を追加する。
-reader は format 2 から 5 を受理し、format 番号は kernel の opcode byte とは異なる。
+format 6 は `certificate.wrappers` と target のフィールド `args`、`site_pc` を追加する。
+reader は format 2 から 6 を受理し、format 番号は kernel の opcode byte とは異なる。
 必須のトップレベルキーは `format`、`original`、`transformed`、`certificate`、`premises` で、大文字小文字を区別する。
 `certificate.original`、`premises.lowest_offset`、`premises.targets` も必須で、format 4 では `start` と `lowest_offset` の両方を持ち、0 から始まる `premises.frames` も指定できる。
-`certificate.hooks` は空または省略してよく、`premises.targets` を空にできるのは挿入 call がない場合だけである。
-Span のフィールドは `start` と `end`、target のフィールドは `site`、`when`、`hook`、任意の `ctx` である。
+`certificate.hooks` と `certificate.wrappers` は空または省略してよく、`premises.targets` を空にできるのは挿入 call がない場合だけである。
+Span のフィールドは `start` と `end`、target のフィールドは `site`、`when`、`hook`、任意の `ctx`、`args`、`site_pc` である。
 `ctx` は `reg`（6 から 9）または `slot`（整列した負の frame offset）のどちらかを持つ。
 命令のフィールドは `opcode`、`dst`、`src`、`offset`、`constant`、`symbol`、`reference` である。
 `PseudoMapValue` の offset は `constant` の上位 32-bit、pseudo kind は `src` に保持する。
