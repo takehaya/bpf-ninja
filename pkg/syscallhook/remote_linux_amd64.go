@@ -117,7 +117,9 @@ func (r *remote) step(want byte) error {
 	}
 	status, err := waitThread(r.pid)
 	// A replayed bpf(2) passes the filter again on its way to the exit stop.
-	for err == nil && status.Stopped() && status.TrapCause() == unix.PTRACE_EVENT_SECCOMP {
+	// SIGCONT traps every seized thread once, and a group stop is not kept
+	// during replay: both stops are PTRACE_EVENT_STOP.
+	for err == nil && status.Stopped() && (status.TrapCause() == unix.PTRACE_EVENT_SECCOMP || uint32(status)>>16 == unix.PTRACE_EVENT_STOP) {
 		if err = unix.PtraceSyscall(r.pid, 0); err == nil {
 			status, err = waitThread(r.pid)
 		}

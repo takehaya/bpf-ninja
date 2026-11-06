@@ -126,7 +126,7 @@ func retryOriginalOrRefuse(failClosed bool, retry func() (int64, error)) (int64,
 	return retry()
 }
 
-// Run starts argv with PTRACE_TRACEME and returns the child's exit status (or
+// Run starts argv under PTRACE_SEIZE (see seize) and returns the child's exit status (or
 // 128+signal). A supervisor error terminates the tracee: resuming with uncertain
 // registers is unsafe even in fail-open mode. No network attachments are made.
 func Run(ctx context.Context, argv []string, opts Options) (int, error) {
@@ -219,7 +219,7 @@ func run(ctx context.Context, argv []string, opts Options, probeUntrusted, probe
 	// TODO: follow FORK/VFORK with per-process caches before supporting loaders
 	// which delegate BPF loads to child processes.
 	flags := unix.PTRACE_O_TRACESYSGOOD | unix.PTRACE_O_TRACECLONE | unix.PTRACE_O_TRACEEXEC | unix.PTRACE_O_EXITKILL
-	if err := unix.PtraceSetOptions(pid, flags); err != nil {
+	if err := seize(pid, flags); err != nil {
 		return 0, err
 	}
 	if err := unix.PtraceSyscall(pid, 0); err != nil {
@@ -274,6 +274,10 @@ func run(ctx context.Context, argv []string, opts Options, probeUntrusted, probe
 		}
 		sig := int(status.StopSignal())
 		event := status.TrapCause()
+		// PTRACE_EVENT_STOP comes with SIGTRAP for a newborn or an interrupt and
+		// with the stop signal for a group stop, which only PTRACE_LISTEN keeps.
+		stopEvent := uint32(status)>>16 == unix.PTRACE_EVENT_STOP
+		listen := stopEvent && status.StopSignal() != unix.SIGTRAP
 		switch {
 		case event == unix.PTRACE_EVENT_CLONE || event == unix.PTRACE_EVENT_FORK || event == unix.PTRACE_EVENT_VFORK:
 			child, err := unix.PtraceGetEventMsg(tid)
@@ -307,7 +311,7 @@ func run(ctx context.Context, argv []string, opts Options, probeUntrusted, probe
 				continue
 			}
 			t.traceExit = t.btf != nil && !t.foreign && regs.Orig_rax == unix.SYS_BPF
-		case t.newborn && status.StopSignal() == unix.SIGSTOP:
+		case t.newborn && stopEvent:
 			t.newborn = false
 			// TRACECLONE can also report clone without CLONE_THREAD. Those separate
 			// processes are outside this prototype; detach without changing them.
@@ -327,6 +331,8 @@ func run(ctx context.Context, argv []string, opts Options, probeUntrusted, probe
 					_ = unix.Kill(tid, unix.SIGKILL)
 				}
 			}
+			sig = 0
+		case stopEvent:
 			sig = 0
 		case status.StopSignal() == unix.SIGTRAP|0x80:
 			op, arch, err := syscallStop(tid)
@@ -368,6 +374,9 @@ func run(ctx context.Context, argv []string, opts Options, probeUntrusted, probe
 		if s.filtered && !t.traceExit {
 			resume = unix.PtraceCont
 		}
+		if listen {
+			resume = func(tid, _ int) error { return ptrace(unix.PTRACE_LISTEN, tid, 0) }
+		}
 		if err := resume(tid, sig); err != nil && err != unix.ESRCH {
 			return 0, err
 		}
@@ -377,6 +386,60 @@ func run(ctx context.Context, argv []string, opts Options, probeUntrusted, probe
 		return exitCode, ctx.Err()
 	}
 	return exitCode, nil
+}
+
+func ptrace(request, pid int, data uintptr) error {
+	if _, _, errno := unix.Syscall6(unix.SYS_PTRACE, uintptr(request), uintptr(pid), 0, data, 0, 0); errno != 0 {
+		return errno
+	}
+	return nil
+}
+
+// seize moves the PTRACE_TRACEME attach of the target, stopped after its exec,
+// to PTRACE_SEIZE, which group stops need. The target runs none of its code in
+// between: it leaves the exec stop for a SIGSTOP group stop and is seized there.
+// SIGCONT then ends the group stop, and seize returns at its signal-delivery
+// stop, for the caller to resume without the signal.
+func seize(pid, flags int) error {
+	if err := ptrace(unix.PTRACE_DETACH, pid, uintptr(unix.SIGSTOP)); err != nil {
+		return err
+	}
+	var status unix.WaitStatus
+	for {
+		_, err := unix.Wait4(pid, &status, unix.WUNTRACED|unix.WCONTINUED, nil)
+		if err == unix.EINTR {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		break
+	}
+	if !status.Stopped() {
+		return fmt.Errorf("target did not stop for PTRACE_SEIZE: %#x", uint32(status))
+	}
+	if err := ptrace(unix.PTRACE_SEIZE, pid, uintptr(flags)); err != nil {
+		return err
+	}
+	if err := unix.Kill(pid, unix.SIGCONT); err != nil {
+		return err
+	}
+	for {
+		status, err := waitThread(pid)
+		if err != nil {
+			return err
+		}
+		switch {
+		case status.Stopped() && status.StopSignal() == unix.SIGCONT && uint32(status)>>16 == 0:
+			return nil
+		case status.Stopped() && uint32(status)>>16 == unix.PTRACE_EVENT_STOP:
+			if err := unix.PtraceSyscall(pid, 0); err != nil {
+				return err
+			}
+		default:
+			return fmt.Errorf("unexpected stop while seizing the target: %#x", uint32(status))
+		}
+	}
 }
 
 // seccompMode returns the Seccomp field of the thread's status.

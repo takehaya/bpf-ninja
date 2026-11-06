@@ -665,7 +665,7 @@ The filter is never removed and child processes inherit it, and a `SECCOMP_RET_T
 So with this flag, `inject-run` traces every child process, without instrumenting it, for as long as it runs. This changes what the target sees:
 
 - `Seccomp` in `/proc/self/status` is 2, `prctl(PR_SET_SECCOMP, SECCOMP_MODE_STRICT)` fails with `EINVAL`, and `no_new_privs` is not set.
-- Child processes have a tracer, so another tracer cannot attach to them, and they do not stay stopped on `SIGSTOP`.
+- Child processes have a tracer, so another tracer cannot attach to them.
 - `inject-run` returns only after every child process has exited, and cancelling it or killing it kills them.
 - A load that a seccomp filter of the target's own denies or sends to a listener does not reach the supervisor, so nothing is logged or injected for it, and `inject-run` does not log when the target installs such a filter.
 
@@ -680,7 +680,8 @@ Without `CAP_SYS_ADMIN`, under an inherited seccomp filter, or if the first sysc
   The checker reads the substituted stream immediately before resuming the loading thread, but it does not stop a sibling from changing that buffer afterward.
   Do not use `inject-run` with loaders that change load buffers, replace referenced fds, unshare fd tables or exec while another thread loads a program.
 - `inject-run` forwards ordinary signals outside syscall replay.
-  It does not fully support job-control stops, seccomp tracing and notification, or uncatchable signals during replay; an unexpected stop during replay ends supervision.
+  The target and followed child processes stay stopped on `SIGSTOP` (`State` shows `t`, tracing stop) until `SIGCONT`, except a thread in syscall replay, which finishes the replay and runs on.
+  It does not fully support seccomp tracing and notification, or uncatchable signals during replay; another unexpected stop during replay ends supervision.
 - `inject-run` handles only native x86-64 `bpf(2)` calls.
   Compat and x32 calls pass through without injection.
 - `inject-run` can rewrite only XDP, tc (`SchedCLS`, `SchedACT`), cgroup_skb (`CGroupSKB`) and netfilter (`Netfilter`) programs loaded with BTF and `func_info`.

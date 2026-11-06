@@ -202,13 +202,35 @@ func stopsChild(t *testing.T, mode string) {
 		}
 		defer func() { _ = cmd.Process.Kill() }()
 		time.Sleep(200 * time.Millisecond)
-		_ = cmd.Process.Signal(syscall.SIGSTOP)
-		time.Sleep(300 * time.Millisecond)
-		stat := statusField(fmt.Sprintf("/proc/%d/status", cmd.Process.Pid), "State")
-		fmt.Printf("child state=%s\n", stat[:1])
+		stopped, continued := stopAndContinue(cmd.Process.Pid)
+		fmt.Printf("child stopped=%t continued=%t\n", stopped, continued)
+	case "group-stop-self":
+		// A helper stops and continues the target itself.
+		cmd := exec.Command(os.Args[0], os.Args[1:]...)
+		cmd.Env = append(os.Environ(), stopsChildEnv+"=stop-parent")
+		out, err := cmd.CombinedOutput()
+		fmt.Printf("%s err=%v\n", bytes.TrimSuffix(out, []byte("\n")), err)
+	case "stop-parent":
+		stopped, continued := stopAndContinue(os.Getppid())
+		fmt.Printf("target stopped=%t continued=%t\n", stopped, continued)
+		os.Exit(0)
 	default:
 		t.Fatalf("unknown child mode %q", mode)
 	}
+}
+
+// stopAndContinue reports whether pid stops on SIGSTOP and runs again on
+// SIGCONT. A group stop under a tracer shows as "t" in State, else as "T".
+func stopAndContinue(pid int) (stopped, continued bool) {
+	stoppedState := func() bool {
+		return strings.ContainsAny(statusField(fmt.Sprintf("/proc/%d/status", pid), "State")[:1], "tT")
+	}
+	_ = unix.Kill(pid, unix.SIGSTOP)
+	time.Sleep(300 * time.Millisecond)
+	stopped = stoppedState()
+	_ = unix.Kill(pid, unix.SIGCONT)
+	time.Sleep(300 * time.Millisecond)
+	return stopped, !stoppedState()
 }
 
 func runStops(t *testing.T, mode string, filtered bool, extra ...func(*Options)) (code int, stdout, log string, stops int, err error) {
@@ -267,8 +289,9 @@ func TestBPFStopsBehaviour(t *testing.T) {
 		{mode: "own-allow", want: "after own filter errno=0"},
 		{mode: "own-kill", want: "", code: 128 + int(unix.SIGSYS)},
 		{mode: "signal", want: "got user defined signal 1\nafter signal errno=0"},
-		// A traced child does not stay in a group stop on the launcher's PTRACE_TRACEME path.
-		{mode: "group-stop", want: "child state=T", wantFiltered: "child state=S"},
+		// The followed child and the target stay in a group stop until SIGCONT.
+		{mode: "group-stop", want: "child stopped=true continued=true"},
+		{mode: "group-stop-self", want: "target stopped=true continued=true err=<nil>"},
 	} {
 		for _, filtered := range []bool{false, true} {
 			t.Run(fmt.Sprintf("%s/%t", tc.mode, filtered), func(t *testing.T) {
