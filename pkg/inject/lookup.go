@@ -1553,16 +1553,20 @@ func transformLookupProgramGuarded(insns asm.Instructions, typ ebpf.ProgramType,
 	names := map[string]bool{}
 	for _, group := range groups {
 		names[group.name] = true
+	}
+	for _, group := range groups {
+		extra := []string{group.missName}
 		for _, site := range group.sites {
-			if site.Wrapper != "" {
-				names[site.Wrapper] = true
-			}
+			extra = append(extra, site.Wrapper)
 		}
-		if group.missName != "" {
-			if names[group.missName] || !validIdent(group.missName) {
-				return nil, plan, refuse("hook name %q is invalid or used twice", group.missName)
+		for _, name := range extra {
+			if name == "" {
+				continue
 			}
-			names[group.missName] = true
+			if names[name] || !validIdent(name) {
+				return nil, plan, refuse("hook name %q is invalid or used twice", name)
+			}
+			names[name] = true
 		}
 	}
 	if req.Dispatch {

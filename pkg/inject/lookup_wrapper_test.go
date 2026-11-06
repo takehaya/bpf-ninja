@@ -2,6 +2,7 @@ package inject
 
 import (
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/cilium/ebpf"
@@ -272,4 +273,30 @@ func TestCheckerRejectsBadWrapper(t *testing.T) {
 			t.Fatalf("got %v", err)
 		}
 	})
+}
+
+// Wrapper names pass the same checks as other hook names.
+func TestWrapperNameChecked(t *testing.T) {
+	// The Auto hook of a map named _site12 is lookup_hook__site12, which is
+	// also the wrapper of site 12.
+	spec := deepLookupFixture(-504)
+	m := spec.Maps["sessions"]
+	delete(spec.Maps, "sessions")
+	m.Name = "_site12"
+	spec.Maps["_site12"] = m
+	for i, ins := range spec.Programs["p"].Instructions {
+		if ins.Reference() == "sessions" {
+			spec.Programs["p"].Instructions[i] = ins.WithReference("_site12")
+		}
+	}
+	if _, err := transformLookup(spec, deepReq(-504, LookupHit)); !errors.Is(err, ErrRefused) || !strings.Contains(err.Error(), `hook name "lookup_hook__site12" is invalid or used twice`) {
+		t.Errorf("collision: %v", err)
+	}
+	// A 127-byte Dispatch hook name gives a wrapper name past MaxHookName.
+	req := deepReq(-504, LookupHit)
+	req.Dispatch = true
+	req.HookName = strings.Repeat("h", MaxHookName)
+	if _, err := transformLookup(deepLookupFixture(-504), req); !errors.Is(err, ErrRefused) || !strings.Contains(err.Error(), "is invalid or used twice") {
+		t.Errorf("length: %v", err)
+	}
 }
