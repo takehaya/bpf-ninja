@@ -50,7 +50,7 @@ func TestMapCallDiscovery(t *testing.T) {
 	want := []got{
 		{HookUpdate, 2, "sessions", "", false}, {HookDelete, 5, "sessions", "", false}, {HookLookup, 8, "sessions", "", false},
 		{HookUpdate, 9, "", indirect, true}, {HookLookup, 10, "", indirect, true},
-		{HookDelete, 14, "sessions", "context is not held in a callee-saved register or an 8-byte slot at the site", false},
+		{HookDelete, 14, "sessions", "context is not held in a callee-saved register or an 8-byte slot at the site; ctx pass: not a static function", false},
 	}
 	if !reflect.DeepEqual(have, want) {
 		t.Fatalf("map calls = %+v\nwant %+v", have, want)

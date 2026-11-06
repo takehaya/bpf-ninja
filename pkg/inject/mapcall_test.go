@@ -81,7 +81,7 @@ func TestMapCalls(t *testing.T) {
 	}) {
 		t.Fatalf("hooks = %+v\nwant %+v", hooks, want)
 	}
-	if len(plan.skipped) != 1 || plan.skipped[0].SitePC != 25 || plan.skipped[0].Reason != "function has no context parameter" {
+	if len(plan.skipped) != 1 || plan.skipped[0].SitePC != 25 || plan.skipped[0].Reason != "function has no context parameter; ctx pass: the function has no direct caller" {
 		t.Fatalf("skipped = %+v", plan.skipped)
 	}
 	insns := spec.Programs["p"].Instructions

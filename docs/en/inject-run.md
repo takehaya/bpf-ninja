@@ -66,7 +66,8 @@ Each op appears once, so use `lookup:any`, not `lookup:hit` together with `looku
 `auto` skips a site it cannot instrument, leaves it unchanged, and lists it with the reason in the diagnostic and in the `skipped` list of the [hooks file](#hooks-file).
 It skips these sites:
 
-- a function without a context parameter, a caller that does not pass the context, or a site where no callee-saved register or aligned stack slot still holds it;
+- a function without a context parameter, a caller that does not pass the context, or a site where no callee-saved register or aligned stack slot still holds it, unless the context can be passed down to the function (see [Limits](#limits)); the reason then ends with `; ctx pass:` and why not, for example a function that is not static, is used as a callback, reads every argument register before writing it, or has a caller that cannot pass the context either;
+- a site whose context would be passed through a function without an audited stack floor, or whose context slot does not fit below it;
 - a callback, unless its context can be proved through its caller (see [Limits](#limits)), for example a timer callback, a callback passed to another helper or a kfunc, a callback that is not static, a callback passed by a function other than the entry, a NULL or non-stack `callback_ctx`, a `callback_ctx` below the entry's stack floor, different `callback_ctx` values at different calls, an atomic, a legacy packet load or a branch between the function pointer or `callback_ctx` and the helper call, or a callback that is also called directly;
 - a callback site whose key or value may be read-only memory, when it shares a hook with sites outside callbacks that would otherwise stay typed;
 - a call on a map that `maps` does not name (`map not selected by Maps`);
@@ -74,7 +75,7 @@ It skips these sites:
 - a site whose hook name would be longer than 127 bytes;
 - a site whose spill slots do not fit below its function's stack floor, unless a [wrapper](#stack-floor) can hold them;
 - sites that would make the rewritten program break a kernel call-chain stack limit.
-  `auto` first drops the sites in callbacks, then the sites that need slots below the three base ones (see [Stack floor](#stack-floor); the generic hook, update hooks and copied read-only values), and then, if the program still breaks the limit, every map-call site.
+  `auto` first drops the sites whose context is passed down, then the sites in callbacks, then the sites that need slots below the three base ones (see [Stack floor](#stack-floor); the generic hook, update hooks and copied read-only values), and then, if the program still breaks the limit, every map-call site.
   With `dispatch` it drops every map-call site at once.
 
 `auto` keeps the `entry` and `tail_calls` hooks.
@@ -672,6 +673,8 @@ In both modes:
   Such a callback loads the context from the entry's context slot through that pointer on entry, and its sites report `ctx_source` `callback:r2:fp-104`: the register the callback receives the pointer in, and the pointer's offset in the entry frame.
   A callback site's hook takes untrusted pointers unless its key, and an update's value, are the callback's own stack (see [Load on kernels without `arg:untrusted`](#load-on-kernels-without-arguntrusted)).
   Other callbacks and unproved sites remain skipped.
+  A static function without a held context gets one passed down from the entry: it stores the context into its context slot on entry, from its own proved context parameter, or from an argument register that it never reads before writing it and that every direct call to it first loads from the caller's context slot, the entry's or that of another such function.
+  Its sites report `ctx_source` `pass:r5@120,saved-r1@40`: the register and decoded start index of the site's function and of each function above it, `saved-` marking one that saves its own parameter.
   The kernel does not check the context a generated static hook receives, so these proofs and the checker are what stand behind it.
   One rule applies per program.
 - A function-name selector uses the BTF `inject-run` saw the loader load.

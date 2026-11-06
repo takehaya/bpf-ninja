@@ -97,6 +97,9 @@ func BuildLookupTargets(out asm.Instructions, hooks []LookupHook) ([]injectcheck
 			arg >= -512 && arg <= -8 && fmt.Sprintf("callback:r%d:fp%d", param, arg) == site.CtxSource {
 			return &injectcheck.CtxSource{Param: param, Arg: int16(arg)}, nil
 		}
+		if chain, ok := strings.CutPrefix(site.CtxSource, "pass:"); ok {
+			return passCtxPremise(site, chain)
+		}
 		switch {
 		case site.CtxSource == "" || site.CtxSource == "entry":
 			return nil, nil
@@ -152,4 +155,21 @@ func BuildLookupTargets(out asm.Instructions, hooks []LookupHook) ([]injectcheck
 		return targets[i].When < targets[j].When
 	})
 	return targets, nil
+}
+
+// passCtxPremise parses a passCtxSource chain: rN@START, or saved-rN@START for
+// a function that saves its own context parameter.
+func passCtxPremise(site LookupSite, chain string) (*injectcheck.CtxSource, error) {
+	ctx := &injectcheck.CtxSource{}
+	for _, part := range strings.Split(chain, ",") {
+		var frame injectcheck.PassFrame
+		text, saved := strings.CutPrefix(part, "saved-")
+		n, err := fmt.Sscanf(text, "r%d@%d", &frame.Reg, &frame.Start)
+		frame.Saved = saved
+		if err != nil || n != 2 || fmt.Sprintf("r%d@%d", frame.Reg, frame.Start) != text || frame.Reg < int(asm.R1) || frame.Reg > int(asm.R5) || frame.Start <= 0 {
+			return nil, fmt.Errorf("inject: invalid context source %q at site %d", site.CtxSource, site.InstructionIndex)
+		}
+		ctx.Pass = append(ctx.Pass, frame)
+	}
+	return ctx, nil
 }

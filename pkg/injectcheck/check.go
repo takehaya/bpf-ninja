@@ -73,11 +73,30 @@ var lookupABIs = [][]ArgRole{
 // frame. Reg is R6-R9, or Slot is an aligned offset in the audited frame. For a
 // synchronous callback, Param (R2 or R4) holds the entry frame's R10+Arg at the
 // callback's entry, and the callback loads the entry's context slot through it.
+// Pass is set when the context is passed down from the entry: Pass[0] is the
+// site's function, and the rest the functions above it that pass it on.
 type CtxSource struct {
-	Reg   int   `json:"reg,omitempty"`
-	Slot  int16 `json:"slot,omitempty"`
-	Param int   `json:"param,omitempty"`
-	Arg   int16 `json:"arg,omitempty"`
+	Reg   int         `json:"reg,omitempty"`
+	Slot  int16       `json:"slot,omitempty"`
+	Param int         `json:"param,omitempty"`
+	Arg   int16       `json:"arg,omitempty"`
+	Pass  []PassFrame `json:"pass,omitempty"`
+}
+
+// PassFrame is a function, at decoded original index Start, that stores Reg
+// (R1-R5) into its context slot on entry. Unless Saved, Reg is a register the
+// function never reads before writing it, and every direct call to it loads
+// the context into Reg from the caller's slot right before the call. If Saved,
+// Reg is the function's own context parameter; that rests on the
+// transformer's proof, like Reg and Slot.
+type PassFrame struct {
+	Start int  `json:"start"`
+	Reg   int  `json:"reg"`
+	Saved bool `json:"saved,omitempty"`
+}
+
+func (c CtxSource) equal(o CtxSource) bool {
+	return c.Reg == o.Reg && c.Slot == o.Slot && c.Param == o.Param && c.Arg == o.Arg && slices.Equal(c.Pass, o.Pass)
 }
 
 // Certificate is untrusted layout metadata. Original[i] locates original
@@ -345,7 +364,47 @@ func Check(in, out asm.Instructions, c Certificate, premises Premises) (Counts, 
 			return fail(CtxProvenance, "callback site %d has floor %d, but the callback at %d stores the context below floor %d", site, floorAt(site), start, floorAt(start))
 		}
 	}
+	passes, passOwner, err := passFrames(in, opcs, oi, targets, premises.Frames)
+	if err != nil {
+		return counts, err
+	}
+	for site, start := range passOwner {
+		if floorAt(site) != floorAt(start) {
+			return fail(CtxProvenance, "site %d has floor %d, but its function at %d stores the context below floor %d", site, floorAt(site), start, floorAt(start))
+		}
+	}
 	functionStarts := map[int]int{}
+	// A function the context is passed through stores it on entry. Each call
+	// to one that takes it in a free register first loads it from the
+	// caller's slot; a branch to the call lands on that load.
+	passLoads := map[int]int{}
+	for _, start := range slices.Sorted(maps.Keys(passes)) {
+		pass := passes[start]
+		g := gaps[start]
+		if len(g) == 0 || !same(out[g[0]], asm.StoreMem(asm.RFP, int16(floorAt(start)+slotContext), asm.Register(pass.frame.Reg), asm.DWord)) || floorAt(start)+slotContext < stackBottom {
+			return fail(CtxProvenance, "the function at %d does not start by storing r%d in its context slot", start, pass.frame.Reg)
+		}
+		functionStarts[start] = g[0]
+		gaps[start] = g[1:]
+	}
+	for _, start := range slices.Sorted(maps.Keys(passes)) {
+		pass := passes[start]
+		for _, call := range pass.calls {
+			from := floorAt(call.caller) + slotContext
+			if call.caller == 0 && len(gaps[0]) == 0 {
+				return fail(CtxProvenance, "the call at %d loads an entry context slot that is never spilled", call.at)
+			}
+			if floorAt(call.at) != floorAt(call.caller) {
+				return fail(CtxProvenance, "the call at %d has floor %d, but its function at %d keeps the context below floor %d", call.at, floorAt(call.at), call.caller, floorAt(call.caller))
+			}
+			g := gaps[call.at]
+			if len(g) == 0 || !same(out[g[len(g)-1]], asm.LoadMem(asm.Register(pass.frame.Reg), asm.RFP, int16(from), asm.DWord)) {
+				return fail(CtxProvenance, "the call at %d to the function at %d does not load the context into r%d first", call.at, start, pass.frame.Reg)
+			}
+			passLoads[call.at] = g[len(g)-1]
+			gaps[call.at] = g[:len(g)-1]
+		}
+	}
 	for start, ctx := range callbacks {
 		if len(gaps[0]) == 0 {
 			return fail(CtxProvenance, "callback at %d reads an entry context slot that is never spilled", start)
@@ -428,8 +487,12 @@ func Check(in, out asm.Instructions, c Certificate, premises Premises) (Counts, 
 			}
 		}
 	}
-	// The one-time entry prologue is excluded from backward edges to original 0.
+	// The one-time entry prologue is excluded from backward edges to original 0,
+	// but a branch to a call that passes the context lands on its load.
 	starts[0] = c.Original[0]
+	for at, load := range passLoads {
+		starts[at] = load
+	}
 	live, err := liveness(in, opcs, oi)
 	if err != nil {
 		return counts, inputError(InputOriginalCFG, "original CFG: %v", err)
@@ -517,8 +580,8 @@ func Check(in, out asm.Instructions, c Certificate, premises Premises) (Counts, 
 		} else if len(after) > 0 {
 			// A u32 region saves R0 in its frame's context slot, which a
 			// callback's prologue reads in the entry and fills in the callback.
-			if len(callbacks) != 0 {
-				return fail(CtxProvenance, "u32 region after %d may overwrite a context slot that a callback reads or fills", i)
+			if len(callbacks) != 0 || len(passes) != 0 {
+				return fail(CtxProvenance, "u32 region after %d may overwrite a context slot that a callback or a passed context reads or fills", i)
 			}
 			if err := checkU32(i, in[i], after, out, npcs, ni, gaps[i+1], hooks, targets, floorAt(i), live[i+1]); err != nil {
 				return counts, fmt.Errorf("gap after %d: %w", i, err)
@@ -532,19 +595,19 @@ func Check(in, out asm.Instructions, c Certificate, premises Premises) (Counts, 
 	return counts, nil
 }
 
-// siteCtx is the context a site's prelude initializes: none in a callback,
-// whose prologue did so already.
+// siteCtx is the context a site's prelude initializes: none in a callback or
+// a function the context is passed to, whose prologue did so already.
 func siteCtx(targets targetBindings, site int) *CtxSource {
-	ctx := targets.ctxForSite(site)
-	if ctx != nil && ctx.Param != 0 {
+	if callbackSite(targets, site) {
 		return nil
 	}
-	return ctx
+	return targets.ctxForSite(site)
 }
 
+// callbackSite reports a site whose function's prologue fills its context slot.
 func callbackSite(targets targetBindings, site int) bool {
 	ctx := targets.ctxForSite(site)
-	return ctx != nil && ctx.Param != 0
+	return ctx != nil && (ctx.Param != 0 || len(ctx.Pass) != 0)
 }
 
 // callbackFrames maps the start of each function holding a callback-context
@@ -604,7 +667,7 @@ func callbackFrames(in asm.Instructions, pcs []int, index map[int]int, targets t
 		}
 		owner[key.site] = start
 		if prior, ok := out[start]; ok {
-			if prior != *binding.ctx {
+			if !prior.equal(*binding.ctx) {
 				return nil, nil, inputError(InputTarget, "inconsistent callback context premises in the function at %d", start)
 			}
 			continue
@@ -644,7 +707,7 @@ func callbackFrames(in asm.Instructions, pcs []int, index map[int]int, targets t
 			}
 		}
 		for key, binding := range targets {
-			if entry[key.site] && binding.ctx != nil && binding.ctx.Param == 0 {
+			if entry[key.site] && binding.ctx != nil && binding.ctx.Param == 0 && len(binding.ctx.Pass) == 0 {
 				return nil, nil, reject(CtxProvenance, "entry site %d names a context source, which would rewrite the slot callbacks read", key.site)
 			}
 		}
@@ -962,11 +1025,15 @@ func newTargetBindings(targets []SiteTarget, sites int, hooks map[int]bool) (tar
 		}
 		if target.Ctx != nil {
 			ctx := target.Ctx
-			plain := ctx.Param == 0 && ctx.Arg == 0
+			plain := ctx.Param == 0 && ctx.Arg == 0 && len(ctx.Pass) == 0
 			validReg := plain && ctx.Reg >= int(asm.R6) && ctx.Reg <= int(asm.R9) && ctx.Slot == 0
 			validSlot := plain && ctx.Reg == 0 && ctx.Slot <= -8 && ctx.Slot >= stackBottom && ctx.Slot%8 == 0
-			validCallback := ctx.Reg == 0 && ctx.Slot == 0 && (ctx.Param == int(asm.R2) || ctx.Param == int(asm.R4)) && ctx.Arg <= -8 && ctx.Arg >= stackBottom
-			if target.Site < 0 || !validReg && !validSlot && !validCallback {
+			validCallback := ctx.Reg == 0 && ctx.Slot == 0 && len(ctx.Pass) == 0 && (ctx.Param == int(asm.R2) || ctx.Param == int(asm.R4)) && ctx.Arg <= -8 && ctx.Arg >= stackBottom
+			validPass := ctx.Reg == 0 && ctx.Slot == 0 && ctx.Param == 0 && ctx.Arg == 0 && len(ctx.Pass) != 0
+			for _, frame := range ctx.Pass {
+				validPass = validPass && frame.Start > 0 && frame.Start < sites && frame.Reg >= int(asm.R1) && frame.Reg <= int(asm.R5)
+			}
+			if target.Site < 0 || !validReg && !validSlot && !validCallback && !validPass {
 				return nil, inputError(InputTarget, "invalid context source in site target %+v", target)
 			}
 		}
@@ -974,7 +1041,7 @@ func newTargetBindings(targets []SiteTarget, sites int, hooks map[int]bool) (tar
 		if target.Ctx != nil {
 			ctx = *target.Ctx
 		}
-		if prior, ok := ctxBySite[target.Site]; ok && (prior != ctx || ctxSet[target.Site] != (target.Ctx != nil)) {
+		if prior, ok := ctxBySite[target.Site]; ok && (!prior.equal(ctx) || ctxSet[target.Site] != (target.Ctx != nil)) {
 			return nil, inputError(InputTarget, "inconsistent context sources at site %d", target.Site)
 		}
 		ctxBySite[target.Site] = ctx

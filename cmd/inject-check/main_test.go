@@ -116,10 +116,10 @@ func TestStrictJSONCLI(t *testing.T) {
 	}
 	valid := string(b)
 	for _, tc := range []struct{ name, input string }{
-		{"top-unknown", strings.Replace(valid, `"format":6`, `"format":6,"extra":0`, 1)},
+		{"top-unknown", strings.Replace(valid, `"format":7`, `"format":7,"extra":0`, 1)},
 		{"top-case", strings.Replace(valid, `"certificate":`, `"Certificate":`, 1)},
-		{"top-duplicate", strings.Replace(valid, `"format":6`, `"format":6,"format":6`, 1)},
-		{"merged-certificates", strings.Replace(valid, `"format":6`, `"format":6,"Certificate":{"original":[0,1]}`, 1)},
+		{"top-duplicate", strings.Replace(valid, `"format":7`, `"format":7,"format":7`, 1)},
+		{"merged-certificates", strings.Replace(valid, `"format":7`, `"format":7,"Certificate":{"original":[0,1]}`, 1)},
 		{"certificate-unknown", strings.Replace(valid, `"original":[0,1]`, `"original":[0,1],"hook":[]`, 1)},
 		{"certificate-duplicate", strings.Replace(valid, `"original":[0,1]`, `"original":[0,1],"original":[0,1]`, 1)},
 		{"premise-duplicate", strings.Replace(valid, `"lowest_offset":-8`, `"lowest_offset":-8,"lowest_offset":-8`, 1)},
@@ -128,9 +128,9 @@ func TestStrictJSONCLI(t *testing.T) {
 		{"instruction-metadata", strings.Replace(valid, `"dst":0`, `"dst":0,"Metadata":{}`, 1)},
 		{"span-duplicate", strings.Replace(valid, `"hooks":null`, `"hooks":[{"start":2,"end":4,"end":4}]`, 1)},
 		{"span-case", strings.Replace(valid, `"hooks":null`, `"hooks":[{"Start":2,"end":4}]`, 1)},
-		{"artefact-nested-duplicate", strings.Replace(valid, `"format":6`, `"format":6,"request":{"a":{"x":1,"x":2}}`, 1)},
+		{"artefact-nested-duplicate", strings.Replace(valid, `"format":7`, `"format":7,"request":{"a":{"x":1,"x":2}}`, 1)},
 		{"null-instruction", strings.Replace(valid, `"original":[`, `"original":[null,`, 1)},
-		{"version", strings.Replace(valid, `"format":6`, `"format":1`, 1)},
+		{"version", strings.Replace(valid, `"format":7`, `"format":1`, 1)},
 		{"trailing", valid + `{}`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -141,7 +141,7 @@ func TestStrictJSONCLI(t *testing.T) {
 		})
 	}
 	for _, field := range []string{"request", "result", "reason"} {
-		input := strings.Replace(valid, `"format":6`, `"format":6,"`+field+`":"evidence"`, 1)
+		input := strings.Replace(valid, `"format":7`, `"format":7,"`+field+`":"evidence"`, 1)
 		checkFile(t, []byte(input), 0)
 	}
 }

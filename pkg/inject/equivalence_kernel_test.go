@@ -219,21 +219,29 @@ func equivPinCPU(t *testing.T, cpu int) {
 	})
 }
 
+// leaf gets the context passed down, so its site is selected first and
+// dropped, with the callback and passed-context sites, when the chain through
+// its hook breaks the limit.
 func equivHasExpectedSkips(c equivCase, skipped []LookupSite) bool {
 	const (
-		noContext = "function has no context parameter"
 		stack     = "after the transform the call chain p -> leaf uses 544 bytes of stack, past the kernel's 512-byte combined limit (frames rounded to 32 bytes)"
+		leafStack = "after the transform the call chain p -> leaf -> "
+		leafUses  = " uses 608 bytes of stack, past the kernel's 512-byte combined limit (frames rounded to 32 bytes)"
 	)
 	want := []LookupSite{{Op: HookUpdate, MapName: "sessions", FuncName: "p", Reason: stack}}
 	if c.Feature == "stack-lookup-fallback" {
-		want = append(want, LookupSite{Op: HookLookup, MapName: "sessions", FuncName: "leaf", Reason: noContext})
+		want = append(want, LookupSite{Op: HookLookup, MapName: "sessions", FuncName: "leaf", Reason: leafStack})
 	}
 	if len(skipped) != len(want) {
 		return false
 	}
 	for _, expected := range want {
 		if !slices.ContainsFunc(skipped, func(site LookupSite) bool {
-			return site.Op == expected.Op && site.MapName == expected.MapName && site.FuncName == expected.FuncName && site.Reason == expected.Reason
+			reason := site.Reason == expected.Reason
+			if expected.Reason == leafStack {
+				reason = strings.HasPrefix(site.Reason, leafStack) && strings.HasSuffix(site.Reason, leafUses) && strings.HasPrefix(site.CtxSource, "pass:")
+			}
+			return site.Op == expected.Op && site.MapName == expected.MapName && site.FuncName == expected.FuncName && reason
 		}) {
 			return false
 		}

@@ -146,12 +146,14 @@ func testSubprogramSiteCtx(t *testing.T, source, wantSource string) {
 	t.Fatal("lookup helper not found")
 }
 
-func TestSubprogramSiteCtxDeadSkipped(t *testing.T) {
+// A static function whose context is dead at the site saves the context it
+// receives on entry.
+func TestSubprogramSiteCtxDeadSaved(t *testing.T) {
 	spec := subprogramLookupFixture("dead")
 	req := autoReq()
 	req.Stack.LowestOffset = -16
 	_, plan, err := transformLookupProgramGuarded(spec.Programs["p"].Instructions, ebpf.XDP, nil, elfLookupMaps(spec), req, nil)
-	if err == nil || len(plan.skipped) != 1 || !strings.Contains(plan.skipped[0].Reason, "context is not held") {
+	if err != nil || len(plan.sites) != 1 || len(plan.skipped) != 0 || !strings.HasPrefix(plan.sites[0].CtxSource, "pass:saved-r1@") {
 		t.Fatalf("plan=%+v err=%v", plan, err)
 	}
 }
@@ -164,18 +166,20 @@ func TestSubprogramCallbackSkipped(t *testing.T) {
 	insns = append(insns[:1], append(asm.Instructions{load}, insns[1:]...)...)
 	spec.Programs["p"].Instructions = insns
 	sites, err := discoverLookups(spec, "p")
-	if err != nil || len(sites) != 1 || sites[0].Reason != "callback: the function is also called directly" {
+	if err != nil || len(sites) != 1 || sites[0].Reason != "callback: the function is also called directly; ctx pass: the function is used as a callback" {
 		t.Fatalf("sites=%+v err=%v", sites, err)
 	}
 }
 
-func TestSubprogramCallerWithoutCtxSkipped(t *testing.T) {
+// A caller that passes no context in the context parameter passes it in a
+// register the function never reads instead.
+func TestSubprogramCallerWithoutCtxPassed(t *testing.T) {
 	spec := subprogramLookupFixture("register")
 	insns := spec.Programs["p"].Instructions
 	insns = append(insns[:1], append(asm.Instructions{asm.Mov.Reg(asm.R1, asm.RFP), asm.Add.Imm(asm.R1, -8)}, insns[1:]...)...)
 	spec.Programs["p"].Instructions = insns
 	sites, err := discoverLookups(spec, "p")
-	if err != nil || len(sites) != 1 || !strings.HasPrefix(sites[0].Reason, "a caller does not pass the context") {
+	if err != nil || len(sites) != 1 || sites[0].Reason != "" || !strings.HasPrefix(sites[0].CtxSource, "pass:r5@") {
 		t.Fatalf("sites=%+v err=%v", sites, err)
 	}
 }
