@@ -159,7 +159,7 @@ func TestRunLeavesUnrelatedChildWaitable(t *testing.T) {
 
 const childPidfdFailureHelper = "SYSCALLHOOK_CHILD_PIDFD_FAILURE_HELPER"
 
-func TestChildPidfdFailureStopsUnregisteredChild(t *testing.T) {
+func TestBPFStopsChildPidfdFailureStopsUnregisteredChild(t *testing.T) {
 	if os.Getenv(childPidfdFailureHelper) == "1" {
 		if seccompMode(os.Getpid()) != "0" {
 			t.Fatal("helper requires initial seccomp mode 0")
@@ -186,7 +186,7 @@ func TestChildPidfdFailureStopsUnregisteredChild(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestChildPidfdFailureStopsUnregisteredChild$")
+	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestBPFStopsChildPidfdFailureStopsUnregisteredChild$")
 	cmd.Env = append(os.Environ(), childPidfdFailureHelper+"=1")
 	out, err := cmd.CombinedOutput()
 	if ctx.Err() != nil {
