@@ -1,5 +1,58 @@
 # Changelog
 
+## [0.33.0](https://github.com/takehaya/bpf-ninja/compare/v0.32.0...v0.33.0) (2026-11-07)
+
+
+### 🎉 Features
+
+* **arg-filter:** select array elements and the halves of status ([#314](https://github.com/takehaya/bpf-ninja/issues/314)) ([8277294](https://github.com/takehaya/bpf-ninja/commit/8277294524e187354a5d3af1d9f0127b0664a4b2))
+* **capture:** record hook decision state in pcapng comments ([#296](https://github.com/takehaya/bpf-ninja/issues/296)) ([959acc3](https://github.com/takehaya/bpf-ninja/commit/959acc36ec0005e9c9d4992b179a0d03345a8e2c))
+* **filter:** select calls by pointer members and scalar pointees ([#281](https://github.com/takehaya/bpf-ninja/issues/281)) ([43900b4](https://github.com/takehaya/bpf-ninja/commit/43900b413f20b33e78571ce780ebdbbfbde3a743))
+* **inject-run:** derive stack floors from the verifier and remove manual stack inputs ([#313](https://github.com/takehaya/bpf-ninja/issues/313)) ([bbbc52a](https://github.com/takehaya/bpf-ninja/commit/bbbc52a3114f20aaa92626e3cd93ee034f77cd4b))
+* **inject-run:** select static hooks when untrusted args are unsupported ([#293](https://github.com/takehaya/bpf-ninja/issues/293)) ([5d2c83d](https://github.com/takehaya/bpf-ninja/commit/5d2c83d0cfeacc88fd11c1101d3df01499f3e837))
+* **inject-run:** stop only on program and BTF loads by default ([#324](https://github.com/takehaya/bpf-ninja/issues/324)) ([fe2128d](https://github.com/takehaya/bpf-ninja/commit/fe2128d8198436b5ee2907f58d1e19ab179db1c0))
+* **inject:** check substituted loads and restrict observers ([#307](https://github.com/takehaya/bpf-ninja/issues/307)) ([2977519](https://github.com/takehaya/bpf-ninja/commit/29775198532c997a2ab5e9b480fe2b63314e374a))
+* **injectcheck:** independently validate injected instruction diffs ([#286](https://github.com/takehaya/bpf-ninja/issues/286)) ([67dd943](https://github.com/takehaya/bpf-ninja/commit/67dd94362a2069891997b6623b639010cf03f075))
+* **inject:** devmap lookups went to the generic hook; give them the read-only typed hook ([#319](https://github.com/takehaya/bpf-ninja/issues/319)) ([cf067dd](https://github.com/takehaya/bpf-ninja/commit/cf067dd94a5eec0534c4d8c658ebbb1a1d79dc82))
+* **inject:** instrument lookups in frames with no room for slots ([#321](https://github.com/takehaya/bpf-ninja/issues/321)) ([3da054c](https://github.com/takehaya/bpf-ninja/commit/3da054c297a5d37016616f1f61c38127a7cecffa))
+* **inject:** observe map sites in bpf_loop and for_each callbacks ([#320](https://github.com/takehaya/bpf-ninja/issues/320)) ([c56f928](https://github.com/takehaya/bpf-ninja/commit/c56f9281f296b0cb0e5cdbac3a8e941286a1ee89))
+* **inject:** observe map sites in subprograms with a proven context ([#311](https://github.com/takehaya/bpf-ninja/issues/311)) ([96e421c](https://github.com/takehaya/bpf-ninja/commit/96e421ce49f7e05ff8ed084a09f10d78a4800560))
+* **inject:** pass the context down to static callees that lack one ([#322](https://github.com/takehaya/bpf-ninja/issues/322)) ([0c6cd93](https://github.com/takehaya/bpf-ninja/commit/0c6cd9332bc430c3e81fab4d3f647206077589a2))
+* **inject:** rewrite cgroup_skb programs ([#316](https://github.com/takehaya/bpf-ninja/issues/316)) ([e8fb76d](https://github.com/takehaya/bpf-ninja/commit/e8fb76d3e99e668741e5fe0a3e76d43523a078b7))
+* **inject:** rewrite netfilter programs ([#317](https://github.com/takehaya/bpf-ninja/issues/317)) ([5446c6b](https://github.com/takehaya/bpf-ninja/commit/5446c6b263fdcc369a8a0b990a58d49ddbd0a1a8))
+* **inject:** supply missing map types from a hash-pinned ELF ([#287](https://github.com/takehaya/bpf-ninja/issues/287)) ([ec2b5eb](https://github.com/takehaya/bpf-ninja/commit/ec2b5eb0ae833d7b58b20da9f4a225ba3961a4a4))
+* **list:** show loaded function availability ([#289](https://github.com/takehaya/bpf-ninja/issues/289)) ([d2399fb](https://github.com/takehaya/bpf-ninja/commit/d2399fbdec8ce2bf5aa1d90bcaed2424dfa6bf6f))
+* **output:** preserve hook interfaces and run ids in pcapng ([#291](https://github.com/takehaya/bpf-ninja/issues/291)) ([a64cce8](https://github.com/takehaya/bpf-ninja/commit/a64cce8f5b9b604fc3aa618b75da24f209501c5e))
+
+
+### 🐛 Bug Fixes
+
+* **attach:** explain functions absent from loaded func_info ([#288](https://github.com/takehaya/bpf-ninja/issues/288)) ([4bc8bb3](https://github.com/takehaya/bpf-ninja/commit/4bc8bb3c49965f2b1db102fbb03bebf17d413744))
+* **capture:** accept static tc hooks in programs that use callbacks ([#297](https://github.com/takehaya/bpf-ninja/issues/297)) ([b2dba63](https://github.com/takehaya/bpf-ninja/commit/b2dba6370027e4d931607120c900cc5ea2377f8e))
+* **capture:** block idle fast-reader shards until data or stop ([#301](https://github.com/takehaya/bpf-ninja/issues/301)) ([6ddc48a](https://github.com/takehaya/bpf-ninja/commit/6ddc48a5919b93e69ee6e476f9dd80dab43bab0b))
+* **capture:** block idle shard readers and wake them on stop ([#284](https://github.com/takehaya/bpf-ninja/issues/284)) ([092c7dd](https://github.com/takehaya/bpf-ninja/commit/092c7dd7b579a1c82bd265f08b88ab2cdf5d8fd8))
+* **capture:** keep attachable targets and size stack checks from the program ([#308](https://github.com/takehaya/bpf-ninja/issues/308)) ([68d3d2b](https://github.com/takehaya/bpf-ninja/commit/68d3d2bf04afe225f6b474f08396521b360488cc))
+* **capture:** keep cBPF scratch memory off the host stack slots ([#303](https://github.com/takehaya/bpf-ninja/issues/303)) ([6e943cd](https://github.com/takehaya/bpf-ninja/commit/6e943cd491e9dd8c72aa0c92c575be3542a6fcfe))
+* **capture:** read packet context at static tc hooks ([#294](https://github.com/takehaya/bpf-ninja/issues/294)) ([fba6ce7](https://github.com/takehaya/bpf-ninja/commit/fba6ce7991fbd512cbab7a21c11e949c0ab18582))
+* **capture:** wake the reader once per quarter ring, not per record ([#306](https://github.com/takehaya/bpf-ninja/issues/306)) ([25b4440](https://github.com/takehaya/bpf-ninja/commit/25b44407f3311381b5e9353636f2eff4934b9cd9))
+* **capture:** write the original packet length to pcapng ([#302](https://github.com/takehaya/bpf-ninja/issues/302)) ([1baaa24](https://github.com/takehaya/bpf-ninja/commit/1baaa24293d0587c2bf33372dd3985de4f1d40c0))
+* **inject-run:** lookup guards pushed programs past the verifier jump limit ([#318](https://github.com/takehaya/bpf-ninja/issues/318)) ([d70b448](https://github.com/takehaya/bpf-ninja/commit/d70b448bd831ad099799a94e6672b36ae35b882c))
+* **injectcheck:** validate planned site calls ([#305](https://github.com/takehaya/bpf-ninja/issues/305)) ([c709c3e](https://github.com/takehaya/bpf-ninja/commit/c709c3ec1cfb7bc1d292f8838e049f43bc8218c2))
+* **inject:** rebuild declaration tags while preserving original BTF IDs ([#283](https://github.com/takehaya/bpf-ninja/issues/283)) ([5c58a4d](https://github.com/takehaya/bpf-ninja/commit/5c58a4d0379d3c804c24aa1f9c1665f55b394723))
+* **inject:** refuse hook calls that create a kernel-crashing tail-call shape ([#309](https://github.com/takehaya/bpf-ninja/issues/309)) ([7698742](https://github.com/takehaya/bpf-ninja/commit/76987422b710a337ebeffd7b7a4dfb7ec04f3d1b))
+* **inject:** refuse programs with an indirect jump ([#315](https://github.com/takehaya/bpf-ninja/issues/315)) ([37874ac](https://github.com/takehaya/bpf-ninja/commit/37874acd9048a194474d2fd49e5581a65da8d952))
+* **inject:** small follow-ups from the callback-floor, stack-wrapper and ctx-pass reviews ([#323](https://github.com/takehaya/bpf-ninja/issues/323)) ([cf2715c](https://github.com/takehaya/bpf-ninja/commit/cf2715c4550f22db6ae445a55f334a8d2d046620))
+
+
+### 📝 Documentation
+
+* **architecture:** show how capture and inject-run fit together ([#298](https://github.com/takehaya/bpf-ninja/issues/298)) ([246d50f](https://github.com/takehaya/bpf-ninja/commit/246d50f73489902e535a7fe299f639532d4f2661))
+* **dsl:** explain where GTP-U extension types live ([#295](https://github.com/takehaya/bpf-ninja/issues/295)) ([50a232c](https://github.com/takehaya/bpf-ninja/commit/50a232cc70ba9da8b2a0d3027e346c10ea1294c2))
+* fix the entry points and CLI guides ([#299](https://github.com/takehaya/bpf-ninja/issues/299)) ([45b6f5d](https://github.com/takehaya/bpf-ninja/commit/45b6f5ddfec9ae779d866c12f5262782893a544e))
+* **inject-run:** lead with tasks and reference tables ([#300](https://github.com/takehaya/bpf-ninja/issues/300)) ([f94046c](https://github.com/takehaya/bpf-ninja/commit/f94046c1770706ff7a662944403d0609af0a8d51))
+* **inject:** add focused observer examples and separate capture from echo ([#282](https://github.com/takehaya/bpf-ninja/issues/282)) ([6045521](https://github.com/takehaya/bpf-ninja/commit/6045521ebb522e98fafe6d8e6769266efce8ab59))
+* **record:** clarify hook-dependent entry fields ([#304](https://github.com/takehaya/bpf-ninja/issues/304)) ([b71a8ca](https://github.com/takehaya/bpf-ninja/commit/b71a8ca73a6158526c94e450da3ea7d347d882a0))
+
 ## [0.32.0](https://github.com/takehaya/bpf-ninja/compare/v0.31.0...v0.32.0) (2026-10-28)
 
 
