@@ -291,3 +291,25 @@ func TestTargetInputs(t *testing.T) {
 	_, err := Check(in, bad, cert, Premises{LowestOffset: fixture.LowestOffset, Targets: []SiteTarget{valid}})
 	assertKind(t, err, CallTarget)
 }
+
+// A wrapper prelude loads a register or an 8-byte slot below r10. A callback
+// or passed context comes through the function's prologue, which a wrapped
+// site never has, and r10+0 is past the frame: both are refused even when the
+// load matches the premise's zero Slot.
+func TestWrapperPreludeRejectsSlotZero(t *testing.T) {
+	load := asm.LoadMem(asm.R4, asm.RFP, 0, asm.DWord)
+	for name, ctx := range map[string]*CtxSource{
+		"callback": {Param: int(asm.R2), Arg: -16},
+		"pass":     {Pass: []PassFrame{{Start: 4, Reg: int(asm.R2)}}},
+		"r10+0":    {},
+	} {
+		err := checkWrapperPrelude(load, ctx, -512, -16, false)
+		var rejection *Rejection
+		if !errors.As(err, &rejection) {
+			t.Errorf("%s: r4 = *(r10+0) accepted: %v", name, err)
+		}
+	}
+	if err := checkWrapperPrelude(asm.LoadMem(asm.R4, asm.RFP, -8, asm.DWord), &CtxSource{Slot: -8}, -512, -16, false); err != nil {
+		t.Fatalf("planned slot load rejected: %v", err)
+	}
+}
