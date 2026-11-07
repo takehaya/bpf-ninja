@@ -634,7 +634,8 @@ func TestBPFStopsChildPidfdFailure(t *testing.T) {
 	var calls int
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	code, err := Run(ctx, []string{"/bin/sh", "-c", "sleep 30 & wait"}, Options{
+	script := fmt.Sprintf(`%s=bpf-only %q -test.run=^TestBPFStopsBehaviour$ >/dev/null 2>&1 & wait`, stopsChildEnv, os.Args[0])
+	code, err := Run(ctx, []string{"/bin/sh", "-c", script}, Options{
 		Rules: []Rule{testRule()},
 		pidfdOpen: func(pid, flags int) (int, error) {
 			calls++
