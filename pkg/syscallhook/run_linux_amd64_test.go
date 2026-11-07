@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -258,5 +259,35 @@ func TestMissFirstDiffers(t *testing.T) {
 		if got := missFirstDiffers(inject.LookupRequestRaw{Lookups: tc.when}, tc.result); got != tc.want {
 			t.Errorf("lookups %q hooks %+v: %v, want %v", tc.when, tc.result.Hooks, got, tc.want)
 		}
+	}
+}
+
+// A SIGCONT blocked when the supervisor starts is blocked in the target too.
+// The launcher must still seize it, and the target keeps its mask. The test
+// binary re-executes itself with SIGCONT blocked, since exec.Command resets the
+// mask to the one the process started with.
+func TestBlockedSIGCONT(t *testing.T) {
+	const env = "SYSCALLHOOK_TEST_SIGCONT"
+	switch os.Getenv(env) {
+	case "block":
+		runtime.LockOSThread()
+		set := unix.Sigset_t{Val: [16]uint64{1 << (unix.SIGCONT - 1)}}
+		if err := unix.PthreadSigmask(unix.SIG_BLOCK, &set, nil); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Setenv(env, "run"); err != nil {
+			t.Fatal(err)
+		}
+		t.Fatal(unix.Exec(os.Args[0], os.Args, os.Environ()))
+	case "run":
+		code, err := Run(context.Background(), []string{"grep", "^SigBlk:", "/proc/self/status"}, Options{OnDiscover: func(Discovery) {}})
+		fmt.Printf("code=%d err=%v\n", code, err)
+		return
+	}
+	cmd := exec.Command(os.Args[0], "-test.run=^TestBlockedSIGCONT$")
+	cmd.Env = append(os.Environ(), env+"=block")
+	out, err := cmd.CombinedOutput()
+	if err != nil || !strings.Contains(string(out), "SigBlk:\t0000000000020000\n") || !strings.Contains(string(out), "code=0 err=<nil>\n") {
+		t.Fatalf("err=%v\n%s", err, out)
 	}
 }

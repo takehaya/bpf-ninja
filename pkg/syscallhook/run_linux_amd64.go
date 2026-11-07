@@ -416,7 +416,8 @@ func ptrace(request, pid int, data uintptr) error {
 // to PTRACE_SEIZE, which group stops need. The target runs none of its code in
 // between: it leaves the exec stop for a SIGSTOP group stop and is seized there.
 // SIGCONT then ends the group stop, and seize returns at its signal-delivery
-// stop, for the caller to resume without the signal.
+// stop, for the caller to resume without the signal. A SIGCONT blocked across
+// exec is unblocked until that stop, so the target never sees the signal.
 func seize(pid, flags int) error {
 	if err := ptrace(unix.PTRACE_DETACH, pid, uintptr(unix.SIGSTOP)); err != nil {
 		return err
@@ -441,6 +442,8 @@ func seize(pid, flags int) error {
 	if err := unix.Kill(pid, unix.SIGCONT); err != nil {
 		return err
 	}
+	var mask uint64
+	masked := false
 	for {
 		status, err := waitThread(pid)
 		if err != nil {
@@ -448,8 +451,21 @@ func seize(pid, flags int) error {
 		}
 		switch {
 		case status.Stopped() && status.StopSignal() == unix.SIGCONT && uint32(status)>>16 == 0:
+			if masked {
+				return signalMask(pid, unix.PTRACE_SETSIGMASK, &mask)
+			}
 			return nil
 		case status.Stopped() && uint32(status)>>16 == unix.PTRACE_EVENT_STOP:
+			if !masked {
+				if err := signalMask(pid, unix.PTRACE_GETSIGMASK, &mask); err != nil {
+					return err
+				}
+				unblocked := mask &^ (1 << (unix.SIGCONT - 1))
+				if err := signalMask(pid, unix.PTRACE_SETSIGMASK, &unblocked); err != nil {
+					return err
+				}
+				masked = true
+			}
 			if err := unix.PtraceSyscall(pid, 0); err != nil {
 				return err
 			}
