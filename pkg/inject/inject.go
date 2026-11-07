@@ -67,6 +67,7 @@ import (
 	"fmt"
 	"math"
 	"regexp"
+	"slices"
 
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/asm"
@@ -159,6 +160,28 @@ func (s StackAudit) floor(name string) int16 {
 }
 
 func (s StackAudit) perFrame() bool { return s.Source == "verifier" || len(s.Frames) != 0 }
+
+// markNoFloor gives site the Reason Auto skips it for when a per-frame audit
+// has no floor for its function, and clears Generic: not even the generic
+// hook takes it. It reports whether the site was marked.
+func (s StackAudit) markNoFloor(site *LookupSite) bool {
+	if _, ok := s.Frames[site.FuncName]; ok || !s.perFrame() {
+		return false
+	}
+	site.Reason, site.Generic = "stack floor unavailable for this function", false
+	return true
+}
+
+// MarkUnaudited returns a copy of sites in which every site whose function
+// has no audited floor carries the Reason and Generic Auto gives it. A
+// listing of discovered sites uses it to say what Auto would do.
+func (s StackAudit) MarkUnaudited(sites []LookupSite) []LookupSite {
+	sites = slices.Clone(sites)
+	for i := range sites {
+		s.markNoFloor(&sites[i])
+	}
+	return sites
+}
 
 // Request is the hash-bound description of one transformation. Every field is
 // required; there is no path-based entry point, so the supported API cannot

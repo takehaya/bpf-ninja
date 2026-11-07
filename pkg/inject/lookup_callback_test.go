@@ -923,6 +923,36 @@ func TestCallbackSiteGenericMissingFloor(t *testing.T) {
 	}
 }
 
+// A typed callback site whose function has no audited floor is skipped too.
+func TestCallbackSiteTypedMissingFloor(t *testing.T) {
+	req := autoReq()
+	req.Stack = StackAudit{Frames: map[string]int16{"p": -16}, Source: "verifier"}
+	plan, err := transformLookup(callbackSiteFixture("loop", true), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	requireCallbackSkipped(t, plan, "stack floor unavailable for this function")
+}
+
+// A callback site with no audited floor whose callback_ctx is also below the
+// entry floor is skipped for the callback_ctx, which no floor of its own
+// would cure.
+func TestCallbackSiteMissingFloorBelowEntryFloor(t *testing.T) {
+	spec := callbackSiteFixture("loop", true)
+	for i, ins := range spec.Programs["p"].Instructions {
+		if ins.OpCode == asm.Add.Imm(asm.R3, 0).OpCode && ins.Dst == asm.R3 {
+			spec.Programs["p"].Instructions[i].Constant = -24
+		}
+	}
+	req := autoReq()
+	req.Stack = StackAudit{Frames: map[string]int16{"p": -16}, Source: "verifier"}
+	plan, err := transformLookup(spec, req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	requireCallbackSkipped(t, plan, "callback: callback_ctx fp-24 is below the entry stack floor -16")
+}
+
 // selectLookups itself honours a missing floor: neither the generic nor the
 // typed-only path revives the site.
 func TestSelectLookupsMissingFloor(t *testing.T) {

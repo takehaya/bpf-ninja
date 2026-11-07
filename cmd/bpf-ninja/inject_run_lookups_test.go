@@ -4,6 +4,8 @@ package main
 
 import (
 	"encoding/json"
+	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -57,5 +59,82 @@ func TestDiscoveryJSON(t *testing.T) {
 	rule, _ := json.Marshal([]syscallhook.Rule{discoveryJSON(d).Rule})
 	if rules, err := syscallhook.ParseConfig(strings.NewReader(string(rule))); err != nil || len(rules[0].Maps) != 2 {
 		t.Fatalf("%s: %+v %v", rule, rules, err)
+	}
+}
+
+// A site in a function the trial load gives no usable floor (dead, a
+// skip_reason, or not listed) is listed as auto skips it: with the floor
+// reason and not generic, whether its hook would be typed or generic.
+func TestDiscoveryJSONUnauditedFrame(t *testing.T) {
+	sites := []inject.LookupSite{
+		{Op: inject.HookLookup, SitePC: 5, MapName: "services", FuncName: "p"},
+		{Op: inject.HookLookup, SitePC: 20, MapName: "services", FuncName: "dead"},
+		{Op: inject.HookLookup, SitePC: 30, FuncName: "dead", Reason: "R1 is not a direct map reference", Generic: true},
+		{Op: inject.HookLookup, SitePC: 40, FuncName: "old", Reason: "R1 is not a direct map reference", Generic: true},
+		{Op: inject.HookLookup, SitePC: 50, MapName: "services", FuncName: "unlisted"},
+	}
+	d := syscallhook.Discovery{Program: "p", Func: "p", Type: ebpf.XDP, Lookups: sites, Calls: sites,
+		Maps: map[string]ebpf.MapType{"services": ebpf.Hash},
+		Stack: inject.StackReport{Source: "verifier", Functions: []inject.FrameFloor{
+			{Name: "p", Floor: -16}, {Name: "dead", Dead: true}, {Name: "old", Floor: -8, SkipReason: "kernel before 6.8"}}}}
+	out := discoveryJSON(d)
+	for _, list := range [][]hookSiteJSON{out.Lookups, out.Calls} {
+		for _, s := range list {
+			want := "stack floor unavailable for this function"
+			if s.Func == "p" {
+				want = ""
+			}
+			if s.Reason != want || s.Generic {
+				t.Errorf("pc %d in %s: reason %q generic %v, want reason %q and not generic", s.PC, s.Func, s.Reason, s.Generic, want)
+			}
+		}
+	}
+	if !sites[2].Generic || sites[1].Reason != "" {
+		t.Fatal("discoveryJSON changed the caller's sites")
+	}
+}
+
+// inject-run does not transform a load whose trial load failed, so the
+// listing marks every site of such a load as skipped.
+func TestDiscoveryJSONUnavailableStack(t *testing.T) {
+	sites := []inject.LookupSite{
+		{Op: inject.HookLookup, SitePC: 5, MapName: "services", FuncName: "p"},
+		{Op: inject.HookLookup, SitePC: 30, FuncName: "p", Reason: "R1 is not a direct map reference", Generic: true},
+	}
+	d := syscallhook.Discovery{Program: "p", Func: "p", Type: ebpf.XDP, Lookups: sites, Calls: sites,
+		Maps:  map[string]ebpf.MapType{"services": ebpf.Hash},
+		Stack: inject.StackReport{Source: "unavailable", Error: "trial load failed"}}
+	out := discoveryJSON(d)
+	for _, list := range [][]hookSiteJSON{out.Lookups, out.Calls} {
+		for _, s := range list {
+			if s.Reason != "stack audit unavailable" || s.Generic {
+				t.Errorf("pc %d: reason %q generic %v, want the audit reason and not generic", s.PC, s.Reason, s.Generic)
+			}
+		}
+	}
+	if !sites[1].Generic || sites[0].Reason != "" {
+		t.Fatal("discoveryJSON changed the caller's sites")
+	}
+}
+
+// The listing reads the file inject-run writes.
+func TestLookupsFileRoundTrip(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "lookups.json")
+	w, err := newLookupsWriter(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	site := inject.LookupSite{Op: inject.HookLookup, SitePC: 5, MapName: "services", FuncName: "p", File: "p.c", Line: 3}
+	if err := w.add(syscallhook.Discovery{Program: "p", Func: "p", Type: ebpf.XDP, Lookups: []inject.LookupSite{site}, Calls: []inject.LookupSite{site},
+		Maps: map[string]ebpf.MapType{"services": ebpf.Hash}}); err != nil {
+		t.Fatal(err)
+	}
+	calls, err := readLoadCalls(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []loadCall{{Kind: "lookup", PC: 5, Map: "services", Func: "p", File: "p.c", Line: 3}}
+	if !reflect.DeepEqual(calls["p"], want) {
+		t.Fatalf("calls = %+v, want %+v", calls, want)
 	}
 }

@@ -527,10 +527,10 @@ It writes the file like the hooks file: the file exists before the target starts
 | `maps` | Every map the program references. Maps with lookups come first, in the order of their first lookup, with each lookup's `pc` in `sites`. The others follow by name. `ops` lists the ops called on each map. |
 | `lookups` | The lookup calls, with the fields of a hooks-file site. |
 | `calls` | Every lookup, per-CPU lookup, update, delete, push, pop and peek call, with the op as `kind`. |
-| `reason` on a lookup or call | `auto` would skip it, unless it also has `"generic": true`, which means `auto` sends it to the generic hook. |
+| `reason` on a lookup or call | `auto` would skip it, unless it also has `"generic": true`, which means `auto` sends it to the generic hook. A site without a reason passed discovery and has a usable frame floor; whether its slots fit is decided only when `auto` selects (see [Map listing of a running program](#map-listing-of-a-running-program)). |
 | `ctx_source` on a lookup or call | The proven source used to initialize the site's frame: `entry`, `r6` through `r9`, or an aligned slot such as `fp-80`. It is omitted when no source was proven. |
 | `frame`, `floor` on a lookup or call | The function frame that owns the site and the floor used to place its spill slots. |
-| `stack` | The trial load's verifier accounting. A function with `skip_reason` is not instrumented; `dead` means the verifier omitted that function from this load. |
+| `stack` | The trial load's verifier accounting. A function with `skip_reason` is not instrumented; `dead` means the verifier omitted that function from this load. When `source` is `verifier`, every lookup or call in a function with either mark, or missing from `functions`, has the reason `stack floor unavailable for this function` and no `generic`: `auto` skips it, even where the generic hook could take it. When the trial load failed, `source` is `unavailable` and `error` gives the cause; `inject-run` then loads the program unchanged, and every lookup and call has the reason `stack audit unavailable` and no `generic`. |
 | `rule` | A rule that instruments the lookups on every named map. Its `program` is the entry function name. Edit `maps`, and add `ops`, `dispatch`, `entry` or `tail_calls` as needed. |
 
 A program loaded twice is listed twice.
@@ -538,7 +538,7 @@ A program loaded twice is listed twice.
 ### Map listing of a running program
 
 `bpf-ninja -p ID --list-progs --list-maps` shows the functions of a loaded program, the functions each one calls, and every map it uses, with the op and source line.
-With `--lookups-json`, it also reads the file `inject-run` wrote for the same load and marks whether `auto` can instrument each call:
+With `--lookups-json`, it also reads the file `inject-run` wrote for the same load and marks, for each call, whether `auto` skips it before checking stack capacity:
 
 ```sh
 bpf-ninja inject-run --lookups-json lookups.json -- ./loader &
@@ -562,9 +562,11 @@ prog 2  entry
 ```
 
 - Each `map` line gives the map's name and type, the op, and the source line of the call, or of the map load when the op is unknown.
-- `✓ injectable` marks a call `auto` can instrument, with `(generic hook)` when it goes to the generic hook.
-  `✗` gives the reason `auto` skips it, and `? not in the lookups file` means no load-time call matched.
+- `✓ injectable` marks a call `auto` does not skip at discovery or for a missing floor, with `(generic hook)` when it goes to the generic hook.
+  `✗` gives the reason `auto` skips it, such as `✗ stack floor unavailable for this function` for a call in a function the trial load gives no usable floor, or `✗ stack audit unavailable` when the trial load failed, and `? not in the lookups file` means no load-time call matched.
   Without `--lookups-json` there is no status column and no `pc`.
+- The status reports discovery and the frame floors of the trial load. It does not check stack capacity, such as whether a site's spill slots or the entry's context slot fit below the floor, so `✓ injectable` is not a promise.
+  The final selection is `auto`'s, which can still skip a site for stack capacity, listed in the hooks file's `skipped`, or refuse the whole program, logged as `injection skipped`.
 - In parentheses, `inlined` marks an array lookup the verifier inlined, and `pc` is the load-time index the lookups and hooks files use.
 - A tail call or redirect shows the program it reaches (`→ prog 3`), with or without `--lookups-json`.
   A reached program's line names the maps and keys that reach it, such as `(tail call: jmp[0-1], alt[7])`.

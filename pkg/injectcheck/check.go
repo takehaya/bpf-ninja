@@ -860,9 +860,16 @@ func checkHook(is asm.Instructions) error {
 func checkWrapperPrelude(ins asm.Instruction, ctx *CtxSource, lowest, f int, entryCtx bool) error {
 	var want asm.Instruction
 	switch {
+	case ctx != nil && (ctx.Param != 0 || len(ctx.Pass) != 0):
+		// Its Slot is zero: the context reaches the site through the
+		// function's prologue, which a wrapped site never has.
+		return reject(WrapperPrelude, "a callback or passed context has no wrapper prelude")
 	case ctx != nil && ctx.Reg != 0:
 		want = asm.Mov.Reg(asm.R4, asm.Register(ctx.Reg))
 	case ctx != nil:
+		if ctx.Slot >= 0 {
+			return reject(WrapperPrelude, "wrapper context slot %d is not below r10", ctx.Slot)
+		}
 		if int(ctx.Slot) < lowest {
 			return reject(CtxProvenance, "wrapper context slot %d is below the frame floor", ctx.Slot)
 		}

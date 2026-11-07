@@ -69,7 +69,8 @@ func readLoadCalls(path string) (map[string][]loadCall, error) {
 	if err := json.Unmarshal(data, &file); err != nil {
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
-	if file.Version != 1 {
+	// Version 2 changed only the rule; the fields read here are the same in both.
+	if file.Version != 1 && file.Version != 2 {
 		return nil, fmt.Errorf("%s: unsupported version %d", path, file.Version)
 	}
 	calls := map[string][]loadCall{}

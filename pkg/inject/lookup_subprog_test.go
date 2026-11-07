@@ -1,6 +1,7 @@
 package inject
 
 import (
+	"errors"
 	"strings"
 	"testing"
 
@@ -218,5 +219,44 @@ func TestPerFrameGenericMissingFloor(t *testing.T) {
 		if err == nil || len(plan.sites) != 0 || len(plan.skipped) != 1 || plan.skipped[0].Reason != "stack floor unavailable for this function" {
 			t.Fatalf("unaudited generic site not skipped: %+v %v", plan, err)
 		}
+		// Generic would say Auto still instruments it.
+		if plan.skipped[0].Generic {
+			t.Fatalf("skipped unaudited site keeps Generic: %+v", plan.skipped[0])
+		}
+	}
+}
+
+// An entry function with no audited floor is refused as such, not as a
+// program whose sites were all skipped or as an unusable site.
+func TestPerFrameEntryMissingFloor(t *testing.T) {
+	for _, auto := range []bool{true, false} {
+		spec := lookupFixture()
+		req := lookupReq()
+		if auto {
+			req = autoReq()
+		}
+		req.Stack = StackAudit{Frames: map[string]int16{}, Source: "verifier", FrameRounding: 16}
+		_, err := transformLookup(spec, req)
+		if !errors.Is(err, ErrRefused) || !strings.Contains(err.Error(), `entry function "p" has no usable stack floor`) {
+			t.Fatalf("auto %v: %v", auto, err)
+		}
+	}
+}
+
+// A typed site in a subprogram with no audited floor never falls back to
+// Stack.LowestOffset: Auto skips it, and naming it is refused.
+func TestPerFrameTypedMissingFloor(t *testing.T) {
+	const reason = "stack floor unavailable for this function"
+	stack := StackAudit{Frames: map[string]int16{"p": -8}, Source: "verifier", FrameRounding: 16}
+	req := autoReq()
+	req.Stack = stack
+	plan, err := transformLookup(subprogramLookupFixture("register"), req)
+	if err == nil || len(plan.sites) != 0 || len(plan.skipped) != 1 || plan.skipped[0].Reason != reason {
+		t.Fatalf("auto: unaudited typed site not skipped: %+v %v", plan, err)
+	}
+	req = lookupReq()
+	req.Stack = stack
+	if _, err := transformLookup(subprogramLookupFixture("register"), req); !errors.Is(err, ErrRefused) || !strings.Contains(err.Error(), reason) {
+		t.Fatalf("explicit: unaudited typed site not refused: %v", err)
 	}
 }
