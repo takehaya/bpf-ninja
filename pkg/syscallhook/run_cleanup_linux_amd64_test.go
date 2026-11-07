@@ -395,16 +395,20 @@ func TestBPFStopsMultipleNewbornRegistrationFailure(t *testing.T) {
 			result.first = pid
 			deadline := time.Now().Add(500 * time.Millisecond)
 			for time.Now().Before(deadline) && result.other == 0 {
-				children, err := os.ReadFile(fmt.Sprintf("/proc/%d/task/%d/children", result.parent, result.parent))
+				statuses, err := filepath.Glob("/proc/[0-9]*/status")
 				if err != nil {
 					t.Fatal(err)
 				}
-				for _, field := range strings.Fields(string(children)) {
-					child, err := strconv.Atoi(field)
+				for _, path := range statuses {
+					status, err := os.ReadFile(path)
+					if err != nil || !bytes.Contains(status, fmt.Appendf(nil, "TracerPid:\t%d\n", unix.Gettid())) {
+						continue
+					}
+					child, err := strconv.Atoi(filepath.Base(filepath.Dir(path)))
 					if err != nil {
 						t.Fatal(err)
 					}
-					if child != pid {
+					if child != pid && child != result.parent {
 						result.other = child
 						break
 					}
