@@ -244,6 +244,20 @@ func TestCancellation(t *testing.T) {
 	}
 }
 
+func TestPidfdOpenFailureStopsRun(t *testing.T) {
+	marker := filepath.Join(t.TempDir(), "ran")
+	code, err := Run(context.Background(), []string{"/bin/sh", "-c", "touch \"$1\"", "pidfd-test", marker}, Options{
+		Rules:     []Rule{testRule()},
+		pidfdOpen: func(int, int) (int, error) { return -1, unix.EMFILE },
+	})
+	if !errors.Is(err, unix.EMFILE) || code != 0 {
+		t.Fatalf("code=%d err=%v, want pidfd_open failure", code, err)
+	}
+	if _, err := os.Stat(marker); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("target ran despite pidfd_open failure: %v", err)
+	}
+}
+
 // The jump-limit retry runs only when miss-first could change the rewrite:
 // some lookup hook observes hits.
 func TestMissFirstDiffers(t *testing.T) {

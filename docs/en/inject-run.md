@@ -669,30 +669,36 @@ Each of those stops costs the target about 12 to 14 µs, so a target that makes 
 It stops on every syscall instead, and logs `inject-run: stopping on every syscall: REASON`, when:
 
 - the target already runs under a seccomp filter, for example one inherited from a container runtime or a systemd unit, which could kill or refuse the call that adds the filter;
-- `seccomp(2)` refuses the filter, for example with `EACCES` because the target lacks `CAP_SYS_ADMIN` (`inject-run` never sets `no_new_privs`), or because the kernel has no seccomp filter support;
-- the kernel reports no seccomp mode for the target in `/proc/PID/status`;
+- `seccomp(2)` refuses the filter, for example with `EACCES` because the target lacks `CAP_SYS_ADMIN` (`inject-run` never sets `no_new_privs`), or with `EINVAL` or `ENOSYS`, as on a kernel without seccomp filter support;
+- the target's seccomp mode cannot be read from `/proc/PID/status`;
 - the target's first syscall comes from a process that is not native x86-64 or from a thread that is not alone.
 
 The filter is never removed and child processes inherit it, and a `SECCOMP_RET_TRACE` with no tracer fails `bpf(2)` with `ENOSYS`.
-So with the filter `inject-run` traces every child process, without instrumenting it, for as long as the target runs.
+So with the filter `inject-run` traces every child process, without instrumenting it, until it exits, also after the target has exited.
+`inject-run` then returns when the last of them exits, with the target's status, as `strace -f` does.
+If any are still running when the target exits, it logs `inject-run: target exited with status N; waiting for M child processes (PIDs ...); interrupt to kill them`.
+A loader that leaves a daemon behind therefore keeps `inject-run` waiting; use `--stop-every-syscall` to let the daemon outlive `inject-run`.
+A child created with `clone(CLONE_UNTRACED)` is not traced, so it carries the filter without a tracer, and its program and BTF loads, and those of anything it executes, fail with `ENOSYS`.
 This is what differs for the target:
 
 | | Filter (default) | Every syscall |
 |---|---|---|
 | Stops | program and BTF loads | entry and exit of every syscall |
-| Child processes (fork, vfork, clone without `CLONE_THREAD`) | traced and kept running, never instrumented | detached at once |
-| Child processes still running when the target process exits | killed and reaped; `inject-run` returns the target's status at once | keep running |
+| Child processes (fork, vfork, clone without `CLONE_THREAD`) | traced and kept running, never instrumented | not traced (a clone without `CLONE_THREAD` is detached at its first stop) |
+| Child processes still running when the target process exits | still traced; `inject-run` returns the target's status when the last of them exits | keep running; `inject-run` returns at once |
+| Child processes created with `CLONE_UNTRACED` | program and BTF loads fail with `ENOSYS` | unchanged |
 | `strace` or `gdb` attach | refused for the target and its child processes | refused for the target |
 | `SIGSTOP` | the target and its child processes stay stopped (`State` `t`) until `SIGCONT` | the target stays stopped (`State` `t`) until `SIGCONT`; child processes stop as usual |
 | `Seccomp` in `/proc/self/status` | 2; `prctl(PR_SET_SECCOMP, SECCOMP_MODE_STRICT)` fails with `EINVAL`; `no_new_privs` is not set | unchanged |
 | A load that the target's own seccomp filter denies or sends to a listener | not seen: nothing is logged or injected | seen before the filter runs |
 
-In both modes, cancelling or killing `inject-run` kills the target, and with the filter its child processes too.
+In both modes, cancelling or killing `inject-run` kills the target, and with the filter its child processes too, also those still running after the target exited.
 
 ## Limits
 
 - `inject-run` instruments only the launched process and its threads.
-  It keeps child processes running without instrumenting them, or detaches them with `--stop-every-syscall` (see [Syscall stops](#syscall-stops)).
+  With the filter it keeps child processes running without instrumenting them, and waits for them after the target exits; with `--stop-every-syscall` it does not trace them (see [Syscall stops](#syscall-stops)).
+  With the filter, a child created with `CLONE_UNTRACED` cannot load programs or BTF (`ENOSYS`).
   `inject-run` cannot attach to a running process.
 - Sibling threads keep running while the loading thread is stopped.
   The checker reads the substituted stream immediately before resuming the loading thread, but it does not stop a sibling from changing that buffer afterward.

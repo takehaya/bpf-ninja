@@ -5,12 +5,15 @@ package syscallhook
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"regexp"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -35,7 +38,7 @@ func init() {
 // checks that it still runs after the leader is gone, and exits the process.
 func leaderExit() {
 	go func() {
-		child := exec.Command("/bin/sleep", "30")
+		child := exec.Command("/bin/sleep", "1")
 		if err := child.Start(); err != nil {
 			fmt.Println(err)
 			os.Exit(1)
@@ -51,13 +54,20 @@ func leaderExit() {
 }
 
 const stopsChildEnv = "SYSCALLHOOK_STOPS_CHILD"
+const reportExecTIDEnv = "SYSCALLHOOK_REPORT_EXEC_TID"
 
 // mapCreateAttr is a static array-map attr, for use in a raw fork child.
 var mapCreateAttr = [20]byte{0: 2 /* array */, 4: 4 /* key */, 8: 4 /* value */, 12: 1 /* entries */}
+var btfLoadAttr [32]byte
 
 func rawMapCreate() (uintptr, unix.Errno) {
 	fd, _, errno := unix.RawSyscall(unix.SYS_BPF, unix.BPF_MAP_CREATE, uintptr(unsafe.Pointer(&mapCreateAttr)), uintptr(len(mapCreateAttr)))
 	return fd, errno
+}
+
+func rawBTFLoad() unix.Errno {
+	_, _, errno := unix.RawSyscall(unix.SYS_BPF, unix.BPF_BTF_LOAD, uintptr(unsafe.Pointer(&btfLoadAttr)), uintptr(len(btfLoadAttr)))
+	return errno
 }
 
 func installOwnFilter(t *testing.T, action uint32, nr uint32) {
@@ -74,9 +84,8 @@ func installOwnFilter(t *testing.T, action uint32, nr uint32) {
 	}
 }
 
-func printMapCreate(what string) {
-	_, errno := rawMapCreate()
-	fmt.Printf("%s errno=%d\n", what, int(errno))
+func printBTFLoad(what string) {
+	fmt.Printf("%s errno=%d\n", what, int(rawBTFLoad()))
 }
 
 func statusField(path, field string) string {
@@ -121,8 +130,7 @@ func stopsChild(t *testing.T, mode string) {
 		for range 4 {
 			go func() {
 				runtime.LockOSThread()
-				_, errno := rawMapCreate()
-				done <- errno
+				done <- rawBTFLoad()
 			}()
 		}
 		for range 4 {
@@ -135,20 +143,28 @@ func stopsChild(t *testing.T, mode string) {
 				t.Fatal(err)
 			}
 		}
-		printMapCreate("after exec")
+		printBTFLoad("after exec")
 	case "exec-from-thread":
 		if os.Getenv("SYSCALLHOOK_STOPS_EXECED") != "" {
-			printMapCreate("after thread exec")
+			printBTFLoad("after thread exec")
 			return
 		}
 		go func() {
 			runtime.LockOSThread()
+			if os.Getenv(reportExecTIDEnv) == "1" {
+				fmt.Printf("former tid=%d\n", unix.Gettid())
+			}
 			env := append(os.Environ(), "SYSCALLHOOK_STOPS_EXECED=1")
 			if err := syscall.Exec(os.Args[0], os.Args, env); err != nil {
 				fmt.Println(err)
 			}
 		}()
 		time.Sleep(10 * time.Second)
+	case "foreign-exec-from-thread":
+		cmd := exec.Command(os.Args[0], os.Args[1:]...)
+		cmd.Env = append(os.Environ(), stopsChildEnv+"=exec-from-thread", reportExecTIDEnv+"=1")
+		out, err := cmd.CombinedOutput()
+		fmt.Printf("%s err=%v\n", bytes.TrimSuffix(out, []byte("\n")), err)
 	case "fork-bpf":
 		// A raw fork: the child runs only raw syscalls.
 		pid, _, errno := unix.RawSyscall(unix.SYS_FORK, 0, 0, 0)
@@ -156,7 +172,7 @@ func stopsChild(t *testing.T, mode string) {
 			t.Fatal(errno)
 		}
 		if pid == 0 {
-			_, errno := rawMapCreate()
+			errno := rawBTFLoad()
 			_, _, _ = unix.RawSyscall(unix.SYS_EXIT_GROUP, uintptr(errno), 0, 0)
 		}
 		var status unix.WaitStatus
@@ -170,7 +186,7 @@ func stopsChild(t *testing.T, mode string) {
 			t.Fatal(errno)
 		}
 		if pid == 0 {
-			_, errno := rawMapCreate()
+			errno := rawBTFLoad()
 			_, _, _ = unix.RawSyscall(unix.SYS_EXIT_GROUP, uintptr(errno), 0, 0)
 		}
 		var status unix.WaitStatus
@@ -182,28 +198,28 @@ func stopsChild(t *testing.T, mode string) {
 		out, err := cmd.CombinedOutput()
 		fmt.Printf("%s err=%v\n", bytes.TrimSuffix(out, []byte("\n")), err)
 	case "bpf-only":
-		printMapCreate("execed child")
+		printBTFLoad("execed child")
 		os.Exit(0)
 	case "print-tracer":
 		fmt.Printf("child traced=%t\n", statusField("/proc/self/status", "TracerPid") != "0")
 		os.Exit(0)
 	case "own-errno":
 		installOwnFilter(t, unix.SECCOMP_RET_ERRNO|uint32(unix.EACCES), unix.SYS_BPF)
-		printMapCreate("own errno")
+		printBTFLoad("own errno")
 	case "own-trace-other":
 		installOwnFilter(t, unix.SECCOMP_RET_TRACE|7, unix.SYS_GETPPID)
 		_, _, errno := unix.Syscall(unix.SYS_GETPPID, 0, 0, 0)
 		fmt.Printf("getppid errno=%d\n", int(errno))
-		printMapCreate("bpf")
+		printBTFLoad("bpf")
 	case "own-trace-bpf":
 		installOwnFilter(t, unix.SECCOMP_RET_TRACE|7, unix.SYS_BPF)
-		printMapCreate("traced bpf")
+		printBTFLoad("traced bpf")
 	case "own-allow":
 		installOwnFilter(t, unix.SECCOMP_RET_ALLOW, unix.SYS_BPF)
-		printMapCreate("after own filter")
+		printBTFLoad("after own filter")
 	case "own-kill":
 		installOwnFilter(t, unix.SECCOMP_RET_KILL_PROCESS, unix.SYS_BPF)
-		printMapCreate("not reached")
+		printBTFLoad("not reached")
 	case "common-attrs":
 		// An attr over maxAttr makes entry refuse the load under fail-closed,
 		// before it reads anything, so the kernel's answer never shows.
@@ -219,7 +235,7 @@ func stopsChild(t *testing.T, mode string) {
 			t.Fatal(err)
 		}
 		fmt.Println("got", <-ch)
-		printMapCreate("after signal")
+		printBTFLoad("after signal")
 	case "group-stop":
 		// Does a child of the target stop on SIGSTOP, as an untraced process does?
 		cmd := exec.Command("/bin/sleep", "30")
@@ -296,25 +312,26 @@ func TestBPFStopsBehaviour(t *testing.T) {
 		stopsChild(t, mode)
 		return
 	}
-	thread := strings.Repeat("thread errno=0\n", 4)
+	invalid := int(unix.EINVAL)
+	thread := strings.Repeat(fmt.Sprintf("thread errno=%d\n", invalid), 4)
 	for _, tc := range []struct {
 		mode, want, wantFiltered string
 		code                     int
 	}{
 		{mode: "status", want: "seccomp=0 nnp=0", wantFiltered: "seccomp=2 nnp=0"},
 		{mode: "thread-bpf", want: strings.TrimSuffix(thread, "\n")},
-		{mode: "exec-bpf", want: "after exec errno=0"},
-		{mode: "exec-from-thread", want: "after thread exec errno=0"},
-		{mode: "fork-bpf", want: "fork child errno=0 err=<nil>"},
-		{mode: "clone-bpf", want: "clone child errno=0 err=<nil>"},
-		{mode: "vfork-exec-bpf", want: "execed child errno=0 err=<nil>"},
+		{mode: "exec-bpf", want: fmt.Sprintf("after exec errno=%d", invalid)},
+		{mode: "exec-from-thread", want: fmt.Sprintf("after thread exec errno=%d", invalid)},
+		{mode: "fork-bpf", want: fmt.Sprintf("fork child errno=%d err=<nil>", invalid)},
+		{mode: "clone-bpf", want: fmt.Sprintf("clone child errno=%d err=<nil>", invalid)},
+		{mode: "vfork-exec-bpf", want: fmt.Sprintf("execed child errno=%d err=<nil>", invalid)},
 		{mode: "tracer-pid", want: "child traced=false err=<nil>", wantFiltered: "child traced=true err=<nil>"},
 		{mode: "own-errno", want: fmt.Sprintf("own errno errno=%d", int(unix.EACCES))},
-		{mode: "own-trace-other", want: fmt.Sprintf("getppid errno=%d\nbpf errno=0", int(unix.ENOSYS))},
+		{mode: "own-trace-other", want: fmt.Sprintf("getppid errno=%d\nbpf errno=%d", int(unix.ENOSYS), invalid)},
 		{mode: "own-trace-bpf", want: fmt.Sprintf("traced bpf errno=%d", int(unix.ENOSYS))},
-		{mode: "own-allow", want: "after own filter errno=0"},
+		{mode: "own-allow", want: fmt.Sprintf("after own filter errno=%d", invalid)},
 		{mode: "own-kill", want: "", code: 128 + int(unix.SIGSYS)},
-		{mode: "signal", want: "got user defined signal 1\nafter signal errno=0"},
+		{mode: "signal", want: fmt.Sprintf("got user defined signal 1\nafter signal errno=%d", invalid)},
 		// The followed child and the target stay in a group stop until SIGCONT.
 		{mode: "group-stop", want: "child stopped=true continued=true"},
 		{mode: "group-stop-self", want: "target stopped=true continued=true err=<nil>"},
@@ -489,27 +506,43 @@ func loadedHook(id uint32) string {
 	return fmt.Sprintf("hook=%t action=%d", found, action)
 }
 
-// When the target exits, Run kills the followed children and returns its exit
-// code at once. The old path neither follows nor waits for them.
+// When the target exits, the filter path waits for followed children and
+// returns its exit code. The every-syscall path neither follows nor waits.
 func TestBPFStopsOutlivingChild(t *testing.T) {
 	if os.Geteuid() != 0 {
 		t.Skip("requires root and BPF privileges")
 	}
-	file := filepath.Join(t.TempDir(), "late")
-	script := fmt.Sprintf(`(sleep 1; SYSCALLHOOK_STOPS_CHILD=bpf-only %s -test.run=^TestBPFStopsBehaviour$ > %s) & exit 3`, os.Args[0], file)
 	for _, filtered := range []bool{false, true} {
-		_ = os.Remove(file)
-		start := time.Now()
-		code, err := Run(context.Background(), []string{"/bin/sh", "-c", script}, Options{EverySyscall: !filtered, Rules: []Rule{testRule()}})
-		took := time.Since(start)
-		if err != nil || code != 3 || took >= time.Second {
-			t.Fatalf("filtered=%t code=%d err=%v after %v", filtered, code, err, took)
-		}
-		time.Sleep(1500 * time.Millisecond)
-		data, _ := os.ReadFile(file)
-		if ran := strings.Contains(string(data), "execed child errno=0"); ran == filtered {
-			t.Fatalf("filtered=%t late child ran=%t: %q", filtered, ran, data)
-		}
+		t.Run(strconv.FormatBool(filtered), func(t *testing.T) {
+			file := filepath.Join(t.TempDir(), "late")
+			script := fmt.Sprintf(`(sleep 1; SYSCALLHOOK_STOPS_CHILD=bpf-only %s -test.run=^TestBPFStopsBehaviour$ > %s) & exit 3`, os.Args[0], file)
+			var logs bytes.Buffer
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			start := time.Now()
+			code, err := Run(ctx, []string{"/bin/sh", "-c", script}, Options{EverySyscall: !filtered, Rules: []Rule{testRule()}, Log: &logs})
+			took := time.Since(start)
+			if err != nil || code != 3 || filtered != (took >= 800*time.Millisecond) {
+				t.Fatalf("filtered=%t code=%d err=%v after %v\n%s", filtered, code, err, took, &logs)
+			}
+			if filtered {
+				if err := checkWaitLog(logs.String(), 3); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				deadline := time.Now().Add(3 * time.Second)
+				for {
+					if _, err := os.Stat(file); err == nil || time.Now().After(deadline) {
+						break
+					}
+					time.Sleep(10 * time.Millisecond)
+				}
+			}
+			data, err := os.ReadFile(file)
+			if err != nil || !strings.Contains(string(data), fmt.Sprintf("execed child errno=%d", unix.EINVAL)) {
+				t.Fatalf("filtered=%t late child: %v: %q", filtered, err, data)
+			}
+		})
 	}
 }
 
@@ -531,9 +564,134 @@ func TestBPFStopsLeaderExit(t *testing.T) {
 		}
 		time.Sleep(100 * time.Millisecond)
 		running := unix.Kill(child, 0) == nil && !strings.HasPrefix(statusField(fmt.Sprintf("/proc/%d/status", child), "State"), "Z")
-		_ = unix.Kill(child, unix.SIGKILL)
 		if running == filtered {
 			t.Fatalf("filtered=%t: child running=%t after the target exited", filtered, running)
+		}
+		if running {
+			_ = unix.Kill(child, unix.SIGKILL)
+		}
+	}
+}
+
+const daemonLoaderEnv = "SYSCALLHOOK_DAEMON_LOADER"
+
+// A daemon that outlives the target remains traced, completes a real program
+// load, and delays Run without changing the target's status.
+func TestBPFStopsDaemonizingTarget(t *testing.T) {
+	if os.Geteuid() != 0 {
+		t.Skip("requires root and BPF privileges")
+	}
+	if os.Getenv(daemonLoaderEnv) == "1" {
+		if _, err := unix.Setsid(); err != nil {
+			t.Fatal(err)
+		}
+		time.Sleep(time.Second)
+		loadIntegrationProgram(t, "plain")
+		return
+	}
+	out := filepath.Join(t.TempDir(), "daemon.out")
+	script := fmt.Sprintf(`%s=1 %s -test.run=^TestBPFStopsDaemonizingTarget$ > %s 2>&1 & exit 7`, daemonLoaderEnv, os.Args[0], out)
+	var logs bytes.Buffer
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	start := time.Now()
+	code, err := Run(ctx, []string{"/bin/sh", "-c", script, "daemon-target"}, Options{Rules: []Rule{testRule()}, Log: &logs})
+	data, readErr := os.ReadFile(out)
+	if err != nil || readErr != nil || code != 7 || time.Since(start) < 800*time.Millisecond ||
+		!strings.Contains(string(data), "kernel hook=false, action=2") {
+		t.Fatalf("code=%d err=%v read=%v after %v\n%s\n%s", code, err, readErr, time.Since(start), &logs, data)
+	}
+	if err := checkWaitLog(logs.String(), 7); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A nonleader exec in a followed process has no exit notification for its old
+// TID. The exec event must remove that key from the supervisor's thread map.
+func TestBPFStopsForeignExecDropsFormerTID(t *testing.T) {
+	if os.Geteuid() != 0 {
+		t.Skip("requires root and BPF privileges")
+	}
+	var left []int
+	code, out, log, _, err := runStops(t, "foreign-exec-from-thread", true, func(o *Options) { o.leftThreads = &left })
+	var former int
+	wantLoad := fmt.Sprintf("after thread exec errno=%d", unix.EINVAL)
+	if _, scanErr := fmt.Sscanf(out, "former tid=%d", &former); scanErr != nil || err != nil || code != 0 ||
+		!strings.Contains(out, wantLoad) || !strings.HasSuffix(out, "err=<nil>") {
+		t.Fatalf("former=%d scan=%v code=%d err=%v left=%v\n%s\n%s", former, scanErr, code, err, left, out, log)
+	}
+	if err := checkFormerTIDDropped(former, left); err != nil {
+		t.Fatal(err)
+	}
+	if checkFormerTIDDropped(former, append(slices.Clone(left), former)) == nil {
+		t.Fatal("former-TID oracle accepted a planted stale entry")
+	}
+}
+
+func TestBPFStopsChildPidfdFailure(t *testing.T) {
+	if os.Geteuid() != 0 {
+		t.Skip("requires root and BPF privileges")
+	}
+	var calls int
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	code, err := Run(ctx, []string{"/bin/sh", "-c", "sleep 30 & wait"}, Options{
+		Rules: []Rule{testRule()},
+		pidfdOpen: func(pid, flags int) (int, error) {
+			calls++
+			if calls == 1 {
+				return unix.PidfdOpen(pid, flags)
+			}
+			return -1, unix.EMFILE
+		},
+	})
+	if !errors.Is(err, unix.EMFILE) || code != 0 || calls < 2 {
+		t.Fatalf("code=%d err=%v pidfd_open calls=%d, want child registration failure", code, err, calls)
+	}
+}
+
+func checkFormerTIDDropped(former int, left []int) error {
+	if slices.Contains(left, former) {
+		return fmt.Errorf("former exec TID %d remains at ECHILD: %v", former, left)
+	}
+	return nil
+}
+
+func checkWaitLog(log string, status int) error {
+	prefix := fmt.Sprintf("inject-run: target exited with status %d; waiting for ", status)
+	pattern := regexp.MustCompile(`^` + regexp.QuoteMeta(prefix) + `([1-9][0-9]*) child processes \(PIDs ([0-9]+(?: [0-9]+)*)\); interrupt to kill them$`)
+	var match []string
+	for _, line := range strings.Split(log, "\n") {
+		if strings.HasPrefix(line, prefix) {
+			if match != nil {
+				return fmt.Errorf("repeated child-wait log for status %d:\n%s", status, log)
+			}
+			match = pattern.FindStringSubmatch(line)
+		}
+	}
+	if match == nil {
+		return fmt.Errorf("missing exact child-wait log for status %d:\n%s", status, log)
+	}
+	count, _ := strconv.Atoi(match[1])
+	if len(strings.Fields(match[2])) != count {
+		return fmt.Errorf("child-wait count does not match PIDs for status %d:\n%s", status, log)
+	}
+	return nil
+}
+
+func TestWaitLogOracle(t *testing.T) {
+	good := "inject-run: target exited with status 7; waiting for 1 child processes (PIDs 123); interrupt to kill them\n"
+	if err := checkWaitLog(good, 7); err != nil {
+		t.Fatal(err)
+	}
+	for _, bad := range []string{
+		strings.Replace(good, "status 7", "status 6", 1),
+		strings.Replace(good, "1 child", "2 child", 1),
+		strings.Replace(good, "PIDs", "TIDs", 1),
+		good + good,
+	} {
+		if checkWaitLog(bad, 7) == nil {
+			t.Fatalf("oracle accepted planted fault %q", bad)
 		}
 	}
 }

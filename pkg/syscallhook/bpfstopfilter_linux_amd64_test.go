@@ -85,7 +85,7 @@ func TestFilterFallback(t *testing.T) {
 		want    string
 	}{
 		{"0", unix.AUDIT_ARCH_X86_64, 1, ""},
-		{"", unix.AUDIT_ARCH_X86_64, 1, "the kernel reports no seccomp mode for the target"},
+		{"", unix.AUDIT_ARCH_X86_64, 1, "cannot read the target's seccomp mode from /proc"},
 		{"2", unix.AUDIT_ARCH_X86_64, 1, "the target already runs under a seccomp filter (Seccomp 2)"},
 		{"1", unix.AUDIT_ARCH_X86_64, 1, "the target already runs under a seccomp filter (Seccomp 1)"},
 		{"0", unix.AUDIT_ARCH_I386, 1, "the target is not a native x86-64 process (arch 0x40000003)"},
@@ -99,8 +99,8 @@ func TestFilterFallback(t *testing.T) {
 	}
 	for err, want := range map[error]string{
 		unix.EACCES: "seccomp(2) refused the filter: the target lacks CAP_SYS_ADMIN and no_new_privs is not set",
-		unix.EINVAL: "seccomp(2) failed: invalid argument; the kernel lacks seccomp filter support",
-		unix.ENOSYS: "seccomp(2) failed: function not implemented; the kernel lacks seccomp filter support",
+		unix.EINVAL: "seccomp(2) failed: invalid argument; the kernel may lack seccomp filter support",
+		unix.ENOSYS: "seccomp(2) failed: function not implemented; the kernel may lack seccomp filter support",
 		unix.EPERM:  "cannot install the seccomp filter: operation not permitted",
 	} {
 		if got := seccompRefusal(err); got != want {

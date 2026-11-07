@@ -50,13 +50,18 @@ type Options struct {
 	// EverySyscall stops the target at the entry and exit of every syscall.
 	// Otherwise Run installs a seccomp filter in the target at its first
 	// syscall, stops it only on program and BTF loads, and follows every child
-	// process so the filter never meets a process without a tracer; those still
-	// running when the target process exits are killed. Where the filter cannot
+	// process except one created with CLONE_UNTRACED. Run then returns when the
+	// target and every followed process have exited, with the target's status;
+	// cancelling ctx kills them all. Where the filter cannot
 	// be installed, Run logs why and stops on every syscall. See
 	// docs/en/inject-run.md for what each mode changes for the target.
 	EverySyscall bool
 	// stops counts ptrace stops, for tests.
 	stops *int
+	// leftThreads records thread-map keys when wait reports ECHILD, for tests.
+	leftThreads *[]int
+	// pidfdOpen is a test-only fault injection point.
+	pidfdOpen func(int, int) (int, error)
 }
 
 // Discovery lists the lookups of one program load (see
@@ -170,18 +175,54 @@ func run(ctx context.Context, argv []string, opts Options, probeUntrusted, probe
 	}
 	pid := cmd.Process.Pid
 	defer func() { _ = cmd.Process.Release() }()
-	done := make(chan struct{})
-	defer close(done)
-	var foreignMu sync.Mutex
-	foreign := map[int]bool{}
-	killAll := func() {
-		_ = unix.Kill(pid, unix.SIGKILL)
-		foreignMu.Lock()
-		defer foreignMu.Unlock()
-		for tid := range foreign {
-			_ = unix.Kill(tid, unix.SIGKILL)
+	// procs holds a pidfd for the target and for each followed child process,
+	// which a cancel or a supervisor error kills. Unlike a pid, a pidfd never
+	// reaches another process that reuses the number after a reap.
+	var procsMu sync.Mutex
+	procs := map[int]int{}
+	pidfdOpen := opts.pidfdOpen
+	if pidfdOpen == nil {
+		pidfdOpen = unix.PidfdOpen
+	}
+	addProc := func(p int) error {
+		fd, err := pidfdOpen(p, 0)
+		if err != nil {
+			return err
+		}
+		procsMu.Lock()
+		procs[p] = fd
+		procsMu.Unlock()
+		return nil
+	}
+	dropProc := func(p int) {
+		procsMu.Lock()
+		defer procsMu.Unlock()
+		if fd, ok := procs[p]; ok {
+			_ = unix.Close(fd)
+			delete(procs, p)
 		}
 	}
+	killAll := func() {
+		procsMu.Lock()
+		defer procsMu.Unlock()
+		for _, fd := range procs {
+			_ = unix.PidfdSendSignal(fd, unix.SIGKILL, nil, 0)
+		}
+	}
+	defer func() {
+		procsMu.Lock()
+		defer procsMu.Unlock()
+		for _, fd := range procs {
+			_ = unix.Close(fd)
+		}
+	}()
+	if err := addProc(pid); err != nil {
+		_ = unix.Kill(pid, unix.SIGKILL)
+		_, _ = cmd.Process.Wait()
+		return 0, fmt.Errorf("pidfd_open (Linux >=5.3 required): %w", err)
+	}
+	done := make(chan struct{})
+	defer close(done)
 	go func() {
 		select {
 		case <-ctx.Done():
@@ -219,8 +260,6 @@ func run(ctx context.Context, argv []string, opts Options, probeUntrusted, probe
 	if !status.Stopped() {
 		return 0, fmt.Errorf("target did not stop at exec: %#x", uint32(status))
 	}
-	// TODO: follow FORK/VFORK with per-process caches before supporting loaders
-	// which delegate BPF loads to child processes.
 	flags := unix.PTRACE_O_TRACESYSGOOD | unix.PTRACE_O_TRACECLONE | unix.PTRACE_O_TRACEEXEC | unix.PTRACE_O_EXITKILL
 	if err := seize(pid, flags); err != nil {
 		return 0, err
@@ -231,16 +270,19 @@ func run(ctx context.Context, argv []string, opts Options, probeUntrusted, probe
 	s := supervisor{probeUntrusted: sync.OnceValue(probeUntrusted), probeTailCallReachability: sync.OnceValue(probeTailCallReachability),
 		options: opts, btf: make(map[uint32]rememberedBTF), filterPending: !opts.EverySyscall && !testEverySyscall}
 	exitCode := 0
-	targetExited := false
-	for len(threads) > 0 {
+	for {
 		tid, err := unix.Wait4(-1, &status, unix.WALL|unix.WNOTHREAD, nil)
 		if err == unix.EINTR {
 			continue
 		}
-		// No tracee is left, but an entry can stay behind: a followed thread that
-		// lost its tid to exec, or a thread reaped before its creator's clone event
-		// was handled, which adds the tid again.
+		// No tracee is left. threads cannot tell: an entry can stay behind for a
+		// thread reaped before its creator's clone event was handled, which adds
+		// the tid again, and a tracee can be missing from it, such as the child
+		// of a fork event that ended in ESRCH.
 		if err == unix.ECHILD {
+			if opts.leftThreads != nil {
+				*opts.leftThreads = slices.Sorted(maps.Keys(threads))
+			}
 			break
 		}
 		if err != nil {
@@ -256,37 +298,27 @@ func run(ctx context.Context, argv []string, opts Options, probeUntrusted, probe
 		}
 		if status.Exited() || status.Signaled() {
 			delete(threads, tid)
-			if t.foreign {
-				foreignMu.Lock()
-				delete(foreign, tid)
-				foreignMu.Unlock()
-			}
+			// Only leaders have an entry in procs. Linux reports their exit only
+			// after every other thread of the group has exited.
+			dropProc(tid)
 			if tid == pid {
 				if status.Exited() {
 					exitCode = status.ExitStatus()
 				} else {
 					exitCode = 128 + int(status.Signal())
 				}
-				// Linux reports the leader's exit only after every other thread of
-				// the group has exited, so this is the end of the target process,
-				// not of its leader thread. Followed child processes die with it.
-				if s.filtered {
-					targetExited = true
-					foreignMu.Lock()
-					for child := range foreign {
-						_ = unix.Kill(child, unix.SIGKILL)
-					}
-					foreignMu.Unlock()
+				// Followed child processes run on, traced, until they exit too.
+				procsMu.Lock()
+				left := slices.Sorted(maps.Keys(procs))
+				procsMu.Unlock()
+				if len(left) != 0 {
+					s.log("target exited with status %d; waiting for %d child processes (PIDs %s); interrupt to kill them",
+						exitCode, len(left), strings.Trim(fmt.Sprint(left), "[]"))
 				}
 			}
 			continue
 		}
 		if !status.Stopped() {
-			continue
-		}
-		if targetExited {
-			// A followed child, or a process it just created, still stopped.
-			_ = unix.Kill(tid, unix.SIGKILL)
 			continue
 		}
 		sig := int(status.StopSignal())
@@ -311,6 +343,18 @@ func run(ctx context.Context, argv []string, opts Options, probeUntrusted, probe
 		case event == unix.PTRACE_EVENT_EXEC:
 			sig = 0
 			if t.foreign {
+				// exec from a nonleader gives it the leader's tid; the old tid has
+				// no exit to report.
+				former, err := unix.PtraceGetEventMsg(tid)
+				if err == unix.ESRCH {
+					continue
+				}
+				if err != nil {
+					return 0, err
+				}
+				if int(former) != tid {
+					delete(threads, int(former))
+				}
 				break
 			}
 			// exec from a nonleader changes its tid to pid and destroys other threads.
@@ -330,8 +374,9 @@ func run(ctx context.Context, argv []string, opts Options, probeUntrusted, probe
 			t.traceExit = t.btf != nil && !t.foreign && regs.Orig_rax == unix.SYS_BPF
 		case t.newborn && stopEvent:
 			t.newborn = false
-			// TRACECLONE can also report clone without CLONE_THREAD. Those separate
-			// processes are outside this prototype; detach without changing them.
+			// A new process: on the every-syscall path, only a clone without
+			// CLONE_THREAD comes here (fork and vfork are not traced); it is detached
+			// without changes. With the filter, every new process is followed.
 			if !sameThreadGroup(pid, tid) {
 				if !s.filtered {
 					if err := unix.PtraceDetach(tid); err != nil {
@@ -341,11 +386,12 @@ func run(ctx context.Context, argv []string, opts Options, probeUntrusted, probe
 					continue
 				}
 				t.foreign = true
-				foreignMu.Lock()
-				foreign[tid] = true
-				foreignMu.Unlock()
+				// A thread of a followed process has no pidfd; its leader has one.
+				if err := addProc(tid); err != nil && err != unix.EINVAL && err != unix.ESRCH {
+					return 0, fmt.Errorf("child process %d: pidfd_open: %w", tid, err)
+				}
 				if ctx.Err() != nil {
-					_ = unix.Kill(tid, unix.SIGKILL)
+					killAll()
 				}
 			}
 			sig = 0
@@ -592,7 +638,7 @@ func (s *supervisor) installFilter(tid, threads int, arch uint32, regs unix.Ptra
 func filterUnusable(mode string, arch uint32, threads int) string {
 	switch {
 	case mode == "":
-		return "the kernel reports no seccomp mode for the target"
+		return "cannot read the target's seccomp mode from /proc"
 	case mode != "0":
 		return "the target already runs under a seccomp filter (Seccomp " + mode + ")"
 	case arch != unix.AUDIT_ARCH_X86_64:
@@ -609,7 +655,7 @@ func seccompRefusal(err error) string {
 	case unix.EACCES:
 		return "seccomp(2) refused the filter: the target lacks CAP_SYS_ADMIN and no_new_privs is not set"
 	case unix.ENOSYS, unix.EINVAL:
-		return fmt.Sprintf("seccomp(2) failed: %v; the kernel lacks seccomp filter support", err)
+		return fmt.Sprintf("seccomp(2) failed: %v; the kernel may lack seccomp filter support", err)
 	}
 	return fmt.Sprintf("cannot install the seccomp filter: %v", err)
 }
