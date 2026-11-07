@@ -162,7 +162,8 @@ class AuditTests(unittest.TestCase):
 class RunnerTests(unittest.TestCase):
     def test_syscallhook_binary_requires_all_tests_and_no_skips(self):
         stops = "".join(f"--- PASS: {name} (0.01s)\n" for name in module.SYSCALLHOOK_TESTS if name.startswith("TestBPFStops"))
-        passed = "--- PASS: TestBpfAutoStatic (0.01s)\n--- PASS: TestIntegrationMapTypes (0.01s)\n--- PASS: TestIntegrationLoader (0.01s)\n--- PASS: TestIntegrationIndirectJump (0.01s)\n--- PASS: TestIntegrationJumpLimit (0.01s)\n" + stops
+        every_passed = "--- PASS: TestBpfAutoStatic (0.01s)\n--- PASS: TestIntegrationMapTypes (0.01s)\n--- PASS: TestIntegrationLoader (0.01s)\n--- PASS: TestIntegrationIndirectJump (0.01s)\n--- PASS: TestIntegrationJumpLimit (0.01s)\n"
+        passed = every_passed + stops
         for output, code, expected in (
             (passed, 0, 0),
             (passed.replace("PASS: TestIntegrationMapTypes", "SKIP: TestIntegrationMapTypes"), 0, 1),
@@ -189,15 +190,35 @@ class RunnerTests(unittest.TestCase):
                     mock.patch.object(module.subprocess, "Popen") as popen, \
                     mock.patch("builtins.open", mock.mock_open()), \
                     mock.patch("builtins.print"):
-                popen.return_value.__enter__.return_value = mock.Mock(
-                    stdout=io.StringIO(output), wait=mock.Mock(return_value=code),
+                streams = iter(((output, code), (every_passed, 0)))
+                popen.return_value.__enter__.side_effect = lambda: mock.Mock(
+                    stdout=io.StringIO((item := next(streams))[0]), wait=mock.Mock(return_value=item[1]),
                 )
                 self.assertEqual(module.syscallhook_suite("./syscallhook.test", "unused.log"), expected)
-                command = popen.call_args.args[0]
+                self.assertEqual(popen.call_count, 2 if expected == 0 else 1)
+                command = popen.call_args_list[0].args[0]
                 self.assertIn("-test.count=1", command)
                 self.assertIn("-test.run=^(" + "|".join(module.SYSCALLHOOK_TESTS) + ")$", command)
+                if expected == 0:
+                    every = popen.call_args_list[1]
+                    self.assertEqual(every.args[0][-2:], ["-test.skip", "^TestBPFStops"])
+                    self.assertEqual(every.kwargs["env"]["SYSCALLHOOK_TEST_EVERY_SYSCALL"], "1")
                 self.assertTrue({"TestIntegrationJumpLimit", "TestBpfAutoStatic", "TestBPFStopsDefault",
                                  "TestBPFStopsFallback"} <= set(module.SYSCALLHOOK_TESTS))
+
+    def test_syscallhook_every_syscall_pass_is_a_gate(self):
+        every = "--- PASS: TestBpfAutoStatic (0.01s)\n--- PASS: TestIntegrationMapTypes (0.01s)\n--- PASS: TestIntegrationLoader (0.01s)\n--- PASS: TestIntegrationIndirectJump (0.01s)\n--- PASS: TestIntegrationJumpLimit (0.01s)\n"
+        default = every + "".join(
+            f"--- PASS: {name} (0.01s)\n" for name in module.SYSCALLHOOK_TESTS if name.startswith("TestBPFStops")
+        )
+        with mock.patch.object(module.subprocess, "Popen") as popen, \
+                mock.patch("builtins.open", mock.mock_open()), mock.patch("builtins.print"):
+            streams = iter((default, every.replace("--- PASS: TestIntegrationJumpLimit (0.01s)\n", "")))
+            popen.return_value.__enter__.side_effect = lambda: mock.Mock(
+                stdout=io.StringIO(next(streams)), wait=mock.Mock(return_value=0),
+            )
+            self.assertEqual(module.syscallhook_suite("./syscallhook.test", "unused.log"), 1)
+            self.assertEqual(popen.call_count, 2)
 
     def test_libpcap_tag_used_for_listing_and_running(self):
         package, test = module.PROGRAM, "TestBpfLegacy"
