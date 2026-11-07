@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"runtime"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -248,6 +249,10 @@ func run(ctx context.Context, argv []string, opts Options, probeUntrusted, probe
 			return
 		}
 		killAll()
+		for _, tracee := range tracedProcesses(unix.Gettid()) {
+			threads[tracee] = &thread{}
+			_ = unix.Kill(tracee, unix.SIGKILL)
+		}
 		// Reap any thread first: waiting for the leader before its dying siblings
 		// can deadlock because Linux delays the leader's final wait notification.
 		for len(threads) != 0 {
@@ -504,6 +509,26 @@ func run(ctx context.Context, argv []string, opts Options, probeUntrusted, probe
 		return exitCode, ctx.Err()
 	}
 	return exitCode, nil
+}
+
+func tracedProcesses(tracer int) []int {
+	entries, err := os.ReadDir("/proc")
+	if err != nil {
+		return nil
+	}
+	want := fmt.Appendf(nil, "TracerPid:\t%d\n", tracer)
+	var pids []int
+	for _, entry := range entries {
+		pid, err := strconv.Atoi(entry.Name())
+		if err != nil {
+			continue
+		}
+		status, err := os.ReadFile(fmt.Sprintf("/proc/%d/status", pid))
+		if err == nil && bytes.Contains(status, want) {
+			pids = append(pids, pid)
+		}
+	}
+	return pids
 }
 
 func ptrace(request, pid int, data uintptr) error {
