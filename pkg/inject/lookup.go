@@ -1879,7 +1879,11 @@ func (e lookupEmitter) splice(groups []lookupGroup) (asm.Instructions, []LookupH
 				calls[site.SitePC] = siteCall{hook: group.name, op: group.op, withSite: true, withMap: true,
 					dispatch: req.Dispatch, when: req.Lookups, missFirst: req.MissFirst, results: results, ctxFrom: siteCtxSource(site), frameFloor: req.Stack.floor(site.FuncName), wrapper: site.Wrapper}
 				if site.Wrapper != "" {
-					hooks = append(hooks, lookupWrapper(site, e.insns[site.InstructionIndex], calls[site.SitePC], e.ctxType)...)
+					wrapper, err := lookupWrapper(site, e.insns[site.InstructionIndex], calls[site.SitePC], e.ctxType)
+					if err != nil {
+						return nil, nil, err
+					}
+					hooks = append(hooks, wrapper...)
 				}
 			}
 			continue
@@ -1974,7 +1978,11 @@ func (e lookupEmitter) splice(groups []lookupGroup) (asm.Instructions, []LookupH
 			calls[site.SitePC] = siteCall{hook: group.name, missHook: group.missName, when: req.Lookups, missFirst: req.MissFirst,
 				withSite: req.Auto, copySize: copySize, ctxFrom: siteCtxSource(site), frameFloor: req.Stack.floor(site.FuncName), wrapper: site.Wrapper}
 			if site.Wrapper != "" {
-				hooks = append(hooks, lookupWrapper(site, e.insns[site.InstructionIndex], calls[site.SitePC], e.ctxType)...)
+				wrapper, err := lookupWrapper(site, e.insns[site.InstructionIndex], calls[site.SitePC], e.ctxType)
+				if err != nil {
+					return nil, nil, err
+				}
+				hooks = append(hooks, wrapper...)
 			}
 		}
 	}
@@ -2455,7 +2463,11 @@ func lookupRegion(pc uint32, call siteCall, ctxOf, keyOf, mapOf func(asm.Registe
 // the helper's R0. It touches no stack, so with its zero frame the chain stays
 // within the kernel's limit under the 6.9+ JIT rule. Ctx comes in R4: a lookup
 // reads only R1 and R2, a per-CPU lookup R3 too, and all are unreadable after.
-func lookupWrapper(site discoveredLookup, helper asm.Instruction, call siteCall, ctx btf.Type) asm.Instructions {
+// A site that copies its value needs stack for the copy, so it is refused.
+func lookupWrapper(site discoveredLookup, helper asm.Instruction, call siteCall, ctx btf.Type) (asm.Instructions, error) {
+	if call.copySize > 0 {
+		return nil, refuse("lookup at %d: a wrapper has no stack for a %d-byte value copy", site.SitePC, call.copySize)
+	}
 	regOf := func(reg asm.Register) func(asm.Register) asm.Instruction {
 		return func(dst asm.Register) asm.Instruction { return asm.Mov.Reg(dst, reg) }
 	}
@@ -2470,7 +2482,7 @@ func lookupWrapper(site discoveredLookup, helper asm.Instruction, call siteCall,
 	}
 	out = append(out, asm.BuiltinFunc(helper.Constant).Call())
 	region := lookupRegion(site.SitePC, call, regOf(asm.R6), regOf(asm.R7), regOf(asm.R9), nil, asm.Mov.Reg(asm.R8, asm.R0), asm.Mov.Reg(asm.R0, asm.R8))
-	return append(append(out, region...), asm.Return())
+	return append(append(out, region...), asm.Return()), nil
 }
 
 // InfoOpUpdate, InfoOpDelete, InfoOpPush, InfoOpPop and InfoOpPeek are the

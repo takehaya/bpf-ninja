@@ -417,3 +417,18 @@ func TestWrapperFrameLimit(t *testing.T) {
 }
 
 func ptr[T any](v T) *T { return &v }
+
+// wrapSites never wraps a site that copies its value, but a wrapper has no
+// stack for the copy: lookupWrapper refuses one instead of emitting it.
+func TestLookupWrapperRefusesCopy(t *testing.T) {
+	site := discoveredLookup{LookupSite: LookupSite{Op: HookLookup, SitePC: 11, Wrapper: "lookup_hook__site11"}}
+	call := siteCall{hook: "lookup_hook", when: LookupHit, copySize: 16, frameFloor: -496}
+	out, err := lookupWrapper(site, asm.FnMapLookupElem.Call(), call, &btf.Pointer{Target: &btf.Void{}})
+	if !errors.Is(err, ErrRefused) || out != nil {
+		t.Fatalf("copying site wrapped: %d instructions, err = %v", len(out), err)
+	}
+	call.copySize = 0
+	if out, err := lookupWrapper(site, asm.FnMapLookupElem.Call(), call, &btf.Pointer{Target: &btf.Void{}}); err != nil || len(out) == 0 {
+		t.Fatalf("plain site: %d instructions, err = %v", len(out), err)
+	}
+}
