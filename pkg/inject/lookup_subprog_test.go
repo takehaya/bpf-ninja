@@ -242,3 +242,21 @@ func TestPerFrameEntryMissingFloor(t *testing.T) {
 		}
 	}
 }
+
+// A typed site in a subprogram with no audited floor never falls back to
+// Stack.LowestOffset: Auto skips it, and naming it is refused.
+func TestPerFrameTypedMissingFloor(t *testing.T) {
+	const reason = "stack floor unavailable for this function"
+	stack := StackAudit{Frames: map[string]int16{"p": -8}, Source: "verifier", FrameRounding: 16}
+	req := autoReq()
+	req.Stack = stack
+	plan, err := transformLookup(subprogramLookupFixture("register"), req)
+	if err == nil || len(plan.sites) != 0 || len(plan.skipped) != 1 || plan.skipped[0].Reason != reason {
+		t.Fatalf("auto: unaudited typed site not skipped: %+v %v", plan, err)
+	}
+	req = lookupReq()
+	req.Stack = stack
+	if _, err := transformLookup(subprogramLookupFixture("register"), req); !errors.Is(err, ErrRefused) || !strings.Contains(err.Error(), reason) {
+		t.Fatalf("explicit: unaudited typed site not refused: %v", err)
+	}
+}
