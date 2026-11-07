@@ -185,6 +185,12 @@ func run(ctx context.Context, argv []string, opts Options, probeUntrusted, probe
 		pidfdOpen = unix.PidfdOpen
 	}
 	addProc := func(p int) error {
+		procsMu.Lock()
+		_, exists := procs[p]
+		procsMu.Unlock()
+		if exists {
+			return nil
+		}
 		fd, err := pidfdOpen(p, 0)
 		if err != nil {
 			return err
@@ -377,7 +383,12 @@ func run(ctx context.Context, argv []string, opts Options, probeUntrusted, probe
 			// A new process: on the every-syscall path, only a clone without
 			// CLONE_THREAD comes here (fork and vfork are not traced); it is detached
 			// without changes. With the filter, every new process is followed.
-			if !sameThreadGroup(pid, tid) {
+			group, err := threadGroup(tid)
+			if err != nil {
+				_ = unix.PtraceCont(tid, int(unix.SIGKILL))
+				return 0, fmt.Errorf("thread group of %d: %w", tid, err)
+			}
+			if group != pid {
 				if !s.filtered {
 					if err := unix.PtraceDetach(tid); err != nil {
 						return 0, err
@@ -386,9 +397,10 @@ func run(ctx context.Context, argv []string, opts Options, probeUntrusted, probe
 					continue
 				}
 				t.foreign = true
-				// A thread of a followed process has no pidfd; its leader has one.
-				if err := addProc(tid); err != nil && err != unix.EINVAL && err != unix.ESRCH {
-					return 0, fmt.Errorf("child process %d: pidfd_open: %w", tid, err)
+				if err := addProc(group); err != nil {
+					// This tracee is stopped and cannot be reused before it is killed.
+					_ = unix.PtraceCont(tid, int(unix.SIGKILL))
+					return 0, fmt.Errorf("child process %d: pidfd_open: %w", group, err)
 				}
 				if ctx.Err() != nil {
 					killAll()
@@ -689,18 +701,18 @@ func (s *supervisor) seccompStop(tid int, t *thread) (regs unix.PtraceRegs, ok b
 	return regs, err == nil, err
 }
 
-func sameThreadGroup(pid, tid int) bool {
+func threadGroup(tid int) (int, error) {
 	data, err := os.ReadFile(fmt.Sprintf("/proc/%d/status", tid))
 	if err != nil {
-		return false
+		return 0, err
 	}
 	for _, line := range bytes.Split(data, []byte{'\n'}) {
 		var group int
 		if _, err := fmt.Sscanf(string(line), "Tgid:\t%d", &group); err == nil {
-			return group == pid
+			return group, nil
 		}
 	}
-	return false
+	return 0, fmt.Errorf("tgid is missing from /proc/%d/status", tid)
 }
 
 func (s *supervisor) entry(pid int, t *thread, regs unix.PtraceRegs) error {

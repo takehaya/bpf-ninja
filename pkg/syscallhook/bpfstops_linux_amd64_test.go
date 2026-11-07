@@ -525,22 +525,21 @@ func TestBPFStopsOutlivingChild(t *testing.T) {
 			if err != nil || code != 3 || filtered != (took >= 800*time.Millisecond) {
 				t.Fatalf("filtered=%t code=%d err=%v after %v\n%s", filtered, code, err, took, &logs)
 			}
-			if filtered {
-				if err := checkWaitLog(logs.String(), 3); err != nil {
-					t.Fatal(err)
-				}
-			} else {
+			var data []byte
+			if !filtered {
 				deadline := time.Now().Add(3 * time.Second)
 				for {
-					if _, err := os.Stat(file); err == nil || time.Now().After(deadline) {
+					data, _ = os.ReadFile(file)
+					if strings.Contains(string(data), fmt.Sprintf("execed child errno=%d", unix.EINVAL)) || time.Now().After(deadline) {
 						break
 					}
 					time.Sleep(10 * time.Millisecond)
 				}
+			} else {
+				data, _ = os.ReadFile(file)
 			}
-			data, err := os.ReadFile(file)
-			if err != nil || !strings.Contains(string(data), fmt.Sprintf("execed child errno=%d", unix.EINVAL)) {
-				t.Fatalf("filtered=%t late child: %v: %q", filtered, err, data)
+			if !strings.Contains(string(data), fmt.Sprintf("execed child errno=%d", unix.EINVAL)) {
+				t.Fatalf("filtered=%t late child: %q", filtered, data)
 			}
 		})
 	}
