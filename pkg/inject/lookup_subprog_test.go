@@ -1,6 +1,7 @@
 package inject
 
 import (
+	"errors"
 	"strings"
 	"testing"
 
@@ -221,6 +222,23 @@ func TestPerFrameGenericMissingFloor(t *testing.T) {
 		// Generic would say Auto still instruments it.
 		if plan.skipped[0].Generic {
 			t.Fatalf("skipped unaudited site keeps Generic: %+v", plan.skipped[0])
+		}
+	}
+}
+
+// An entry function with no audited floor is refused as such, not as a
+// program whose sites were all skipped or as an unusable site.
+func TestPerFrameEntryMissingFloor(t *testing.T) {
+	for _, auto := range []bool{true, false} {
+		spec := lookupFixture()
+		req := lookupReq()
+		if auto {
+			req = autoReq()
+		}
+		req.Stack = StackAudit{Frames: map[string]int16{}, Source: "verifier", FrameRounding: 16}
+		_, err := transformLookup(spec, req)
+		if !errors.Is(err, ErrRefused) || !strings.Contains(err.Error(), `entry function "p" has no usable stack floor`) {
+			t.Fatalf("auto %v: %v", auto, err)
 		}
 	}
 }

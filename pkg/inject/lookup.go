@@ -1505,6 +1505,13 @@ func transformLookupProgramGuarded(insns asm.Instructions, typ ebpf.ProgramType,
 			reserved = append(reserved, tailName)
 		}
 	}
+	// Checked before selection, which would otherwise refuse with the
+	// entry's sites skipped or unusable.
+	if entry := btf.FuncMetadata(&insns[0]).Name; req.Stack.perFrame() {
+		if _, ok := req.Stack.Frames[entry]; !ok {
+			return nil, plan, refuse("entry function %q has no usable stack floor", entry)
+		}
+	}
 	groups, skipped, err := selectLookups(sites, req, reserved)
 	plan.skipped = skipped
 	if err != nil {
@@ -1515,11 +1522,6 @@ func transformLookupProgramGuarded(insns asm.Instructions, typ ebpf.ProgramType,
 	}
 	entryFunc := btf.FuncMetadata(&insns[0]).Name
 	entryFloor := req.Stack.floor(entryFunc)
-	if req.Stack.perFrame() {
-		if _, ok := req.Stack.Frames[entryFunc]; !ok {
-			return nil, plan, refuse("entry function %q has no usable stack floor", entryFunc)
-		}
-	}
 	if req.Entry && lookupSlots(entryFloor).ctx < -siteFrameLimit(req.Stack) {
 		return nil, plan, refuse("entry hook does not fit below function %q stack floor %d", entryFunc, entryFloor)
 	}
