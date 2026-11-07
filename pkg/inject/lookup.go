@@ -1458,9 +1458,7 @@ func transformLookupProgramGuarded(insns asm.Instructions, typ ebpf.ProgramType,
 	if req.Stack.perFrame() {
 		for i := range sites {
 			sites[i].Floor = req.Stack.floor(sites[i].FuncName)
-			if _, ok := req.Stack.Frames[sites[i].FuncName]; !ok {
-				sites[i].Reason, sites[i].noFloor = "stack floor unavailable for this function", true
-			}
+			sites[i].noFloor = req.Stack.markNoFloor(&sites[i].LookupSite)
 		}
 	}
 	// Every function a context is passed through reserves a slot below its

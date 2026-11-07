@@ -78,7 +78,9 @@ func discoveryJSON(d syscallhook.Discovery) discoveredProgJSON {
 		}
 		return i
 	}
-	for _, site := range d.Lookups {
+	// A site in a function with no usable floor is listed as Auto skips it.
+	audit := inject.StackAudit{Frames: d.Stack.Frames(), Source: d.Stack.Source}
+	for _, site := range audit.MarkUnaudited(d.Lookups) {
 		s := discoveredSiteJSON(site)
 		setFrame(&s, site.FuncName)
 		out.Lookups = append(out.Lookups, s)
@@ -102,7 +104,7 @@ func discoveryJSON(d syscallhook.Discovery) discoveredProgJSON {
 	for _, name := range rest {
 		addMap(name)
 	}
-	for _, site := range d.Calls {
+	for _, site := range audit.MarkUnaudited(d.Calls) {
 		s := discoveredSiteJSON(site)
 		setFrame(&s, site.FuncName)
 		out.Calls = append(out.Calls, s)

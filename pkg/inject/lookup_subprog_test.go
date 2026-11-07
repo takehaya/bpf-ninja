@@ -218,5 +218,9 @@ func TestPerFrameGenericMissingFloor(t *testing.T) {
 		if err == nil || len(plan.sites) != 0 || len(plan.skipped) != 1 || plan.skipped[0].Reason != "stack floor unavailable for this function" {
 			t.Fatalf("unaudited generic site not skipped: %+v %v", plan, err)
 		}
+		// Generic would say Auto still instruments it.
+		if plan.skipped[0].Generic {
+			t.Fatalf("skipped unaudited site keeps Generic: %+v", plan.skipped[0])
+		}
 	}
 }
