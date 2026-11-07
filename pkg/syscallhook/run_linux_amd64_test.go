@@ -13,6 +13,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 	"unsafe"
@@ -289,5 +290,35 @@ func TestBlockedSIGCONT(t *testing.T) {
 	out, err := cmd.CombinedOutput()
 	if err != nil || !strings.Contains(string(out), "SigBlk:\t0000000000020000\n") || !strings.Contains(string(out), "code=0 err=<nil>\n") {
 		t.Fatalf("err=%v\n%s", err, out)
+	}
+}
+
+// A signal that reaches the target while the launcher hands it over to
+// PTRACE_SEIZE is kept for the target, not taken as a supervisor error.
+func TestSeizeKeepsPendingSignal(t *testing.T) {
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+	cmd := exec.Command("/bin/true")
+	cmd.SysProcAttr = &syscall.SysProcAttr{Ptrace: true}
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	pid := cmd.Process.Pid
+	defer func() { _ = unix.Kill(pid, unix.SIGKILL); _, _ = waitThread(pid) }()
+	if status, err := waitThread(pid); err != nil || !status.Stopped() {
+		t.Fatalf("exec stop: %#x %v", uint32(status), err)
+	}
+	if err := unix.Kill(pid, unix.SIGUSR1); err != nil {
+		t.Fatal(err)
+	}
+	if err := seize(pid, unix.PTRACE_O_TRACESYSGOOD|unix.PTRACE_O_EXITKILL); err != nil {
+		t.Fatalf("seize: %v", err)
+	}
+	if err := unix.PtraceCont(pid, 0); err != nil {
+		t.Fatal(err)
+	}
+	status, err := waitThread(pid)
+	if err != nil || !status.Stopped() || status.StopSignal() != unix.SIGUSR1 || uint32(status)>>16 != 0 {
+		t.Fatalf("after seize: %#x %v, want the SIGUSR1 delivery stop", uint32(status), err)
 	}
 }

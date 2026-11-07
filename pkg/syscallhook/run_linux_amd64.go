@@ -418,6 +418,7 @@ func ptrace(request, pid int, data uintptr) error {
 // SIGCONT then ends the group stop, and seize returns at its signal-delivery
 // stop, for the caller to resume without the signal. A SIGCONT blocked across
 // exec is unblocked until that stop, so the target never sees the signal.
+// Another signal reported before it is held back and sent again afterwards.
 func seize(pid, flags int) error {
 	if err := ptrace(unix.PTRACE_DETACH, pid, uintptr(unix.SIGSTOP)); err != nil {
 		return err
@@ -444,6 +445,7 @@ func seize(pid, flags int) error {
 	}
 	var mask uint64
 	masked := false
+	var held []unix.Signal
 	for {
 		status, err := waitThread(pid)
 		if err != nil {
@@ -452,7 +454,14 @@ func seize(pid, flags int) error {
 		switch {
 		case status.Stopped() && status.StopSignal() == unix.SIGCONT && uint32(status)>>16 == 0:
 			if masked {
-				return signalMask(pid, unix.PTRACE_SETSIGMASK, &mask)
+				if err := signalMask(pid, unix.PTRACE_SETSIGMASK, &mask); err != nil {
+					return err
+				}
+			}
+			for _, sig := range held {
+				if err := unix.Tgkill(pid, pid, sig); err != nil {
+					return err
+				}
 			}
 			return nil
 		case status.Stopped() && uint32(status)>>16 == unix.PTRACE_EVENT_STOP:
@@ -466,6 +475,11 @@ func seize(pid, flags int) error {
 				}
 				masked = true
 			}
+			if err := unix.PtraceSyscall(pid, 0); err != nil {
+				return err
+			}
+		case status.Stopped() && uint32(status)>>16 == 0 && status.StopSignal() != unix.SIGTRAP|0x80:
+			held = append(held, status.StopSignal())
 			if err := unix.PtraceSyscall(pid, 0); err != nil {
 				return err
 			}
