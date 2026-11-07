@@ -1,4 +1,6 @@
 // Package syscallhook supervises an unmodified loader at the bpf syscall boundary.
+// Run must not be called from a process that has other children it waits for,
+// because its ptrace wait loop can consume their status.
 package syscallhook
 
 import (

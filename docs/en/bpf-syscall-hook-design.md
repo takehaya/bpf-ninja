@@ -86,6 +86,7 @@ Loss of ptrace control is fatal in either mode: the supervisor terminates the ta
 ## How the supervisor handles a load
 
 The launcher uses Go's fork/exec support with `PTRACE_TRACEME`, moves the target to `PTRACE_SEIZE` before it runs, and keeps ptrace operations on one locked OS thread.
+Its wait loop uses process-wide child waits inherited from the original every-syscall implementation, so library callers must not call `Run` from a process that has other children it waits for.
 A seccomp filter installed at the target's first syscall limits the stops to program and BTF loads; where it cannot be installed, the target stops on every syscall ([inject-run.md](inject-run.md#syscall-stops)).
 Child processes inherit the filter, so with it the supervisor also follows them with `PTRACE_O_TRACEFORK` and `PTRACE_O_TRACEVFORK`, without instrumenting them, until each has exited, also after the target has; it resumes group stops with `PTRACE_LISTEN`.
 It follows target threads with `PTRACE_O_TRACECLONE` and uses `PTRACE_GET_SYSCALL_INFO` to tell syscall entry from exit.

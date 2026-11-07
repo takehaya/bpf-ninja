@@ -3,11 +3,15 @@
 package syscallhook
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -157,6 +161,93 @@ func TestRunLeavesUnrelatedChildWaitable(t *testing.T) {
 	}
 }
 
+type errorCleanupResult struct {
+	blocked       bool
+	code          int
+	err, otherErr error
+}
+
+func errorCleanupError(r errorCleanupResult) error {
+	var exitErr *exec.ExitError
+	switch {
+	case r.blocked:
+		return errors.New("Run waited after its tracees exited")
+	case r.code != 0:
+		return fmt.Errorf("code=%d", r.code)
+	case r.err == nil || !strings.Contains(r.err.Error(), "target did not stop at exec"):
+		return fmt.Errorf("startup error=%v", r.err)
+	case !errors.As(r.otherErr, &exitErr) || exitErr.ExitCode() != 23:
+		return fmt.Errorf("unrelated child Wait=%v", r.otherErr)
+	default:
+		return nil
+	}
+}
+
+func TestErrorCleanupOracleRejectsFaults(t *testing.T) {
+	good := errorCleanupResult{err: errors.New("target did not stop at exec"), otherErr: &exec.ExitError{ProcessState: exitedProcessState(t, 23)}}
+	if err := errorCleanupError(good); err != nil {
+		t.Fatal(err)
+	}
+	faults := []func(*errorCleanupResult){
+		func(r *errorCleanupResult) { r.blocked = true },
+		func(r *errorCleanupResult) { r.code = 1 },
+		func(r *errorCleanupResult) { r.err = nil },
+		func(r *errorCleanupResult) { r.otherErr = unix.ECHILD },
+	}
+	for i, fault := range faults {
+		mutant := good
+		fault(&mutant)
+		if errorCleanupError(mutant) == nil {
+			t.Fatalf("accepted fault %d", i)
+		}
+	}
+}
+
+func exitedProcessState(t *testing.T, code int) *os.ProcessState {
+	t.Helper()
+	cmd := exec.Command("/bin/sh", "-c", fmt.Sprintf("exit %d", code))
+	err := cmd.Run()
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) {
+		t.Fatalf("fixture exit %d: %v", code, err)
+	}
+	return exitErr.ProcessState
+}
+
+func TestRunErrorCleanupLeavesUnrelatedChildWaitable(t *testing.T) {
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+	unrelated, release := startWaitOwnershipChild(t)
+	runReturned := make(chan struct{})
+	timedOut := make(chan bool, 1)
+	go func() {
+		select {
+		case <-runReturned:
+			timedOut <- false
+		case <-time.After(500 * time.Millisecond):
+			timedOut <- true
+		}
+		release()
+	}()
+
+	code, err := Run(context.Background(), []string{"/bin/true"}, Options{
+		Rules:        []Rule{testRule()},
+		EverySyscall: true,
+		pidfdOpen: func(pid, flags int) (int, error) {
+			fd, err := unix.PidfdOpen(pid, flags)
+			if err == nil {
+				err = unix.PidfdSendSignal(fd, unix.SIGKILL, nil, 0)
+			}
+			return fd, err
+		},
+	})
+	close(runReturned)
+	result := errorCleanupResult{blocked: <-timedOut, code: code, err: err, otherErr: unrelated.Wait()}
+	if err := errorCleanupError(result); err != nil {
+		t.Fatalf("%v: %+v", err, result)
+	}
+}
+
 const childPidfdFailureHelper = "SYSCALLHOOK_CHILD_PIDFD_FAILURE_HELPER"
 
 func TestBPFStopsChildPidfdFailureStopsUnregisteredChild(t *testing.T) {
@@ -197,5 +288,174 @@ func TestBPFStopsChildPidfdFailureStopsUnregisteredChild(t *testing.T) {
 	}
 	if !strings.Contains(string(out), "PASS") {
 		t.Fatalf("helper did not report PASS:\n%s", out)
+	}
+}
+
+const multipleNewbornFailureHelper = "SYSCALLHOOK_MULTIPLE_NEWBORN_FAILURE_HELPER"
+
+type multipleNewbornResult struct {
+	code, calls, parent, first, other int
+	err                               error
+	record, log                       string
+	alive, rescued                    bool
+}
+
+func multipleNewbornError(r multipleNewbornResult) error {
+	switch {
+	case r.code != 0:
+		return fmt.Errorf("code=%d", r.code)
+	case !errors.Is(r.err, unix.EMFILE):
+		return fmt.Errorf("error=%v", r.err)
+	case r.calls != 2:
+		return fmt.Errorf("pidfd_open calls=%d", r.calls)
+	case r.parent <= 0 || r.first <= 0 || r.other <= 0 || r.first == r.other:
+		return fmt.Errorf("processes parent=%d first=%d other=%d", r.parent, r.first, r.other)
+	case r.record != "":
+		return fmt.Errorf("unregistered child ran: %q", r.record)
+	case r.alive:
+		return errors.New("unregistered child survived cleanup")
+	case r.rescued:
+		return errors.New("cleanup required an external rescue")
+	case r.log != "inject-run: stopping only on bpf()\n":
+		return fmt.Errorf("filter log=%q", r.log)
+	default:
+		return nil
+	}
+}
+
+func TestMultipleNewbornCleanupOracleRejectsFaults(t *testing.T) {
+	good := multipleNewbornResult{err: unix.EMFILE, calls: 2, parent: 1, first: 2, other: 3, log: "inject-run: stopping only on bpf()\n"}
+	if err := multipleNewbornError(good); err != nil {
+		t.Fatal(err)
+	}
+	faults := []func(*multipleNewbornResult){
+		func(r *multipleNewbornResult) { r.code = 1 },
+		func(r *multipleNewbornResult) { r.err = nil },
+		func(r *multipleNewbornResult) { r.calls = 3 },
+		func(r *multipleNewbornResult) { r.parent = 0 },
+		func(r *multipleNewbornResult) { r.other = r.first },
+		func(r *multipleNewbornResult) { r.record = "ran\n" },
+		func(r *multipleNewbornResult) { r.alive = true },
+		func(r *multipleNewbornResult) { r.rescued = true },
+		func(r *multipleNewbornResult) { r.log = "" },
+	}
+	for i, fault := range faults {
+		mutant := good
+		fault(&mutant)
+		if multipleNewbornError(mutant) == nil {
+			t.Fatalf("accepted fault %d", i)
+		}
+	}
+}
+
+func TestBPFStopsMultipleNewbornRegistrationFailure(t *testing.T) {
+	if os.Getenv(multipleNewbornFailureHelper) != "1" {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestBPFStopsMultipleNewbornRegistrationFailure$")
+		cmd.Env = append(os.Environ(), multipleNewbornFailureHelper+"=1")
+		out, err := cmd.CombinedOutput()
+		if ctx.Err() != nil {
+			t.Fatalf("multiple-newborn cleanup timed out: %v\n%s", ctx.Err(), out)
+		}
+		if err != nil || !strings.Contains(string(out), "PASS") {
+			t.Fatalf("helper failed: %v\n%s", err, out)
+		}
+		return
+	}
+
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+	if seccompMode(os.Getpid()) != "0" {
+		t.Fatal("helper requires initial seccomp mode 0")
+	}
+	if err := unix.Prctl(unix.PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0); err != nil {
+		t.Fatal(err)
+	}
+	marker := filepath.Join(t.TempDir(), "record")
+	if _, err := os.Stat(marker); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("dirty record path: %v", err)
+	}
+	var log bytes.Buffer
+	runDone := make(chan struct{})
+	observed := make(chan struct {
+		alive, rescued bool
+	}, 1)
+	result := multipleNewbornResult{}
+	code, runErr := Run(context.Background(), []string{"/bin/sh", "-c",
+		`(printf x >> "$1"; exec /bin/sleep 60) & (printf x >> "$1"; exec /bin/sleep 60) & wait`, "sh", marker}, Options{
+		Rules: []Rule{testRule()},
+		Log:   &log,
+		pidfdOpen: func(pid, flags int) (int, error) {
+			result.calls++
+			if result.calls == 1 {
+				result.parent = pid
+				return unix.PidfdOpen(pid, flags)
+			}
+			result.first = pid
+			deadline := time.Now().Add(500 * time.Millisecond)
+			for time.Now().Before(deadline) && result.other == 0 {
+				children, err := os.ReadFile(fmt.Sprintf("/proc/%d/task/%d/children", result.parent, result.parent))
+				if err != nil {
+					t.Fatal(err)
+				}
+				for _, field := range strings.Fields(string(children)) {
+					child, err := strconv.Atoi(field)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if child != pid {
+						result.other = child
+						break
+					}
+				}
+				time.Sleep(time.Millisecond)
+			}
+			if result.other == 0 {
+				return -1, unix.EMFILE
+			}
+			fd, err := unix.PidfdOpen(result.other, 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			status, err := os.ReadFile(fmt.Sprintf("/proc/%d/status", result.other))
+			if err != nil || !bytes.Contains(status, fmt.Appendf(nil, "TracerPid:\t%d\n", unix.Gettid())) {
+				t.Fatalf("second child is not this supervisor's tracee: %s (%v)", status, err)
+			}
+			go func() {
+				defer func() { _ = unix.Close(fd) }()
+				rescued := false
+				select {
+				case <-runDone:
+				case <-time.After(time.Second):
+					rescued = unix.PidfdSendSignal(fd, unix.SIGKILL, nil, 0) == nil
+				}
+				poll := []unix.PollFd{{Fd: int32(fd), Events: unix.POLLIN}}
+				n, err := unix.Poll(poll, 0)
+				if err != nil {
+					t.Errorf("pidfd poll: %v", err)
+				}
+				observed <- struct {
+					alive, rescued bool
+				}{alive: n == 0 && unix.PidfdSendSignal(fd, 0, nil, 0) == nil, rescued: rescued}
+			}()
+			return -1, unix.EMFILE
+		},
+	})
+	close(runDone)
+	state := <-observed
+	result.code, result.err = code, runErr
+	result.alive, result.rescued = state.alive, state.rescued
+	result.log = log.String()
+	if data, err := os.ReadFile(marker); err == nil {
+		result.record = string(data)
+	} else if !errors.Is(err, os.ErrNotExist) {
+		t.Fatal(err)
+	}
+	if result.other == 0 {
+		t.Fatal("second-newborn schedule was not reached")
+	}
+	if err := multipleNewbornError(result); err != nil {
+		t.Fatalf("%v: %+v", err, result)
 	}
 }

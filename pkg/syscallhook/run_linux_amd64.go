@@ -250,7 +250,7 @@ func run(ctx context.Context, argv []string, opts Options, probeUntrusted, probe
 		killAll()
 		// Reap any thread first: waiting for the leader before its dying siblings
 		// can deadlock because Linux delays the leader's final wait notification.
-		for {
+		for len(threads) != 0 {
 			var status unix.WaitStatus
 			tid, err := unix.Wait4(-1, &status, unix.WALL|unix.WNOTHREAD, nil)
 			if err == unix.EINTR {
@@ -259,8 +259,22 @@ func run(ctx context.Context, argv []string, opts Options, probeUntrusted, probe
 			if err != nil {
 				break
 			}
+			if status.Exited() || status.Signaled() {
+				delete(threads, tid)
+				dropProc(tid)
+				continue
+			}
 			if status.Stopped() {
-				_ = unix.PtraceCont(tid, int(unix.SIGKILL))
+				threads[tid] = &thread{}
+				switch status.TrapCause() {
+				case unix.PTRACE_EVENT_CLONE, unix.PTRACE_EVENT_FORK, unix.PTRACE_EVENT_VFORK:
+					if child, err := unix.PtraceGetEventMsg(tid); err == nil {
+						threads[int(child)] = &thread{}
+					}
+				}
+				// A signal supplied to PTRACE_CONT is not delivered at an event stop.
+				_ = unix.Kill(tid, unix.SIGKILL)
+				_ = unix.PtraceCont(tid, 0)
 			}
 		}
 	}()
@@ -269,6 +283,8 @@ func run(ctx context.Context, argv []string, opts Options, probeUntrusted, probe
 		return 0, err
 	}
 	if !status.Stopped() {
+		delete(threads, pid)
+		dropProc(pid)
 		return 0, fmt.Errorf("target did not stop at exec: %#x", uint32(status))
 	}
 	flags := unix.PTRACE_O_TRACESYSGOOD | unix.PTRACE_O_TRACECLONE | unix.PTRACE_O_TRACEEXEC | unix.PTRACE_O_EXITKILL

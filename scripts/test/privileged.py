@@ -123,6 +123,7 @@ SYSCALLHOOK_TESTS = (
     "TestBPFStopsOutlivingChild", "TestBPFStopsLeaderExit", "TestBPFStopsCancelEndsChild",
     "TestBPFStopsChildNotInstrumented", "TestBPFStopsTargetListener", "TestBPFStopsCommonAttrs",
     "TestBPFStopsDaemonizingTarget", "TestBPFStopsForeignExecDropsFormerTID", "TestBPFStopsChildPidfdFailure",
+    "TestBPFStopsMultipleNewbornRegistrationFailure",
 )
 
 
