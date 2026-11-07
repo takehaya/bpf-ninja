@@ -94,6 +94,29 @@ func TestDiscoveryJSONUnauditedFrame(t *testing.T) {
 	}
 }
 
+// inject-run does not transform a load whose trial load failed, so the
+// listing marks every site of such a load as skipped.
+func TestDiscoveryJSONUnavailableStack(t *testing.T) {
+	sites := []inject.LookupSite{
+		{Op: inject.HookLookup, SitePC: 5, MapName: "services", FuncName: "p"},
+		{Op: inject.HookLookup, SitePC: 30, FuncName: "p", Reason: "R1 is not a direct map reference", Generic: true},
+	}
+	d := syscallhook.Discovery{Program: "p", Func: "p", Type: ebpf.XDP, Lookups: sites, Calls: sites,
+		Maps:  map[string]ebpf.MapType{"services": ebpf.Hash},
+		Stack: inject.StackReport{Source: "unavailable", Error: "trial load failed"}}
+	out := discoveryJSON(d)
+	for _, list := range [][]hookSiteJSON{out.Lookups, out.Calls} {
+		for _, s := range list {
+			if s.Reason != "stack audit unavailable" || s.Generic {
+				t.Errorf("pc %d: reason %q generic %v, want the audit reason and not generic", s.PC, s.Reason, s.Generic)
+			}
+		}
+	}
+	if !sites[1].Generic || sites[0].Reason != "" {
+		t.Fatal("discoveryJSON changed the caller's sites")
+	}
+}
+
 // The listing reads the file inject-run writes.
 func TestLookupsFileRoundTrip(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "lookups.json")

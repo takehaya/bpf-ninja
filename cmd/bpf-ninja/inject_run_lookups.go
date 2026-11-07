@@ -80,7 +80,18 @@ func discoveryJSON(d syscallhook.Discovery) discoveredProgJSON {
 	}
 	// A site in a function with no usable floor is listed as Auto skips it.
 	audit := inject.StackAudit{Frames: d.Stack.Frames(), Source: d.Stack.Source}
-	for _, site := range audit.MarkUnaudited(d.Lookups) {
+	mark := audit.MarkUnaudited
+	if d.Stack.Source == "unavailable" {
+		// inject-run does not transform a load whose trial load failed.
+		mark = func(sites []inject.LookupSite) []inject.LookupSite {
+			sites = slices.Clone(sites)
+			for i := range sites {
+				sites[i].Reason, sites[i].Generic = "stack audit unavailable", false
+			}
+			return sites
+		}
+	}
+	for _, site := range mark(d.Lookups) {
 		s := discoveredSiteJSON(site)
 		setFrame(&s, site.FuncName)
 		out.Lookups = append(out.Lookups, s)
@@ -104,7 +115,7 @@ func discoveryJSON(d syscallhook.Discovery) discoveredProgJSON {
 	for _, name := range rest {
 		addMap(name)
 	}
-	for _, site := range audit.MarkUnaudited(d.Calls) {
+	for _, site := range mark(d.Calls) {
 		s := discoveredSiteJSON(site)
 		setFrame(&s, site.FuncName)
 		out.Calls = append(out.Calls, s)
