@@ -228,8 +228,13 @@ func run(ctx context.Context, argv []string, opts Options, probeUntrusted, probe
 		return 0, fmt.Errorf("pidfd_open (Linux >=5.3 required): %w", err)
 	}
 	done := make(chan struct{})
-	defer close(done)
+	cancelDone := make(chan struct{})
+	defer func() {
+		close(done)
+		<-cancelDone
+	}()
 	go func() {
+		defer close(cancelDone)
 		select {
 		case <-ctx.Done():
 			killAll()
@@ -276,9 +281,32 @@ func run(ctx context.Context, argv []string, opts Options, probeUntrusted, probe
 	s := supervisor{probeUntrusted: sync.OnceValue(probeUntrusted), probeTailCallReachability: sync.OnceValue(probeTailCallReachability),
 		options: opts, btf: make(map[uint32]rememberedBTF), filterPending: !opts.EverySyscall && !testEverySyscall}
 	exitCode := 0
+	pending := map[int]struct{}{}
+	recordLeftThreads := func() {
+		if opts.leftThreads != nil {
+			*opts.leftThreads = slices.Sorted(maps.Keys(threads))
+		}
+	}
 	for {
-		tid, err := unix.Wait4(-1, &status, unix.WALL|unix.WNOTHREAD, nil)
+		procsMu.Lock()
+		haveProcs := len(procs) != 0
+		procsMu.Unlock()
+		waitFor := -1
+		if !haveProcs {
+			for waitFor = range pending {
+				break
+			}
+			if waitFor == -1 {
+				recordLeftThreads()
+				break
+			}
+		}
+		tid, err := unix.Wait4(waitFor, &status, unix.WALL|unix.WNOTHREAD, nil)
 		if err == unix.EINTR {
+			continue
+		}
+		if err == unix.ECHILD && waitFor != -1 {
+			delete(pending, waitFor)
 			continue
 		}
 		// No tracee is left. threads cannot tell: an entry can stay behind for a
@@ -286,14 +314,13 @@ func run(ctx context.Context, argv []string, opts Options, probeUntrusted, probe
 		// the tid again, and a tracee can be missing from it, such as the child
 		// of a fork event that ended in ESRCH.
 		if err == unix.ECHILD {
-			if opts.leftThreads != nil {
-				*opts.leftThreads = slices.Sorted(maps.Keys(threads))
-			}
+			recordLeftThreads()
 			break
 		}
 		if err != nil {
 			return 0, err
 		}
+		delete(pending, tid)
 		if opts.stops != nil {
 			*opts.stops++
 		}
@@ -344,6 +371,7 @@ func run(ctx context.Context, argv []string, opts Options, probeUntrusted, probe
 			}
 			if threads[int(child)] == nil {
 				threads[int(child)] = &thread{newborn: true}
+				pending[int(child)] = struct{}{}
 			}
 			sig = 0
 		case event == unix.PTRACE_EVENT_EXEC:
@@ -398,8 +426,7 @@ func run(ctx context.Context, argv []string, opts Options, probeUntrusted, probe
 				}
 				t.foreign = true
 				if err := addProc(group); err != nil {
-					// This tracee is stopped and cannot be reused before it is killed.
-					_ = unix.PtraceCont(tid, int(unix.SIGKILL))
+					_ = unix.Kill(group, unix.SIGKILL)
 					return 0, fmt.Errorf("child process %d: pidfd_open: %w", group, err)
 				}
 				if ctx.Err() != nil {
