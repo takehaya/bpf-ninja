@@ -4,6 +4,8 @@ package main
 
 import (
 	"encoding/json"
+	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -89,5 +91,27 @@ func TestDiscoveryJSONUnauditedFrame(t *testing.T) {
 	}
 	if !sites[2].Generic || sites[1].Reason != "" {
 		t.Fatal("discoveryJSON changed the caller's sites")
+	}
+}
+
+// The listing reads the file inject-run writes.
+func TestLookupsFileRoundTrip(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "lookups.json")
+	w, err := newLookupsWriter(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	site := inject.LookupSite{Op: inject.HookLookup, SitePC: 5, MapName: "services", FuncName: "p", File: "p.c", Line: 3}
+	if err := w.add(syscallhook.Discovery{Program: "p", Func: "p", Type: ebpf.XDP, Lookups: []inject.LookupSite{site}, Calls: []inject.LookupSite{site},
+		Maps: map[string]ebpf.MapType{"services": ebpf.Hash}}); err != nil {
+		t.Fatal(err)
+	}
+	calls, err := readLoadCalls(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []loadCall{{Kind: "lookup", PC: 5, Map: "services", Func: "p", File: "p.c", Line: 3}}
+	if !reflect.DeepEqual(calls["p"], want) {
+		t.Fatalf("calls = %+v, want %+v", calls, want)
 	}
 }

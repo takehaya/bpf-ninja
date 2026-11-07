@@ -69,10 +69,10 @@ func TestMatchLoadCalls(t *testing.T) {
 	if uses := mapsToJSON(n)[0].Uses; uses[0].Site == nil || *uses[0].Site != 6 || uses[1].Site != nil {
 		t.Errorf("JSON uses = %+v", uses)
 	}
-	if err := os.WriteFile(path, []byte(`{"version":2,"programs":[]}`), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(`{"version":3,"programs":[]}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := readLoadCalls(path); err == nil {
-		t.Error("accepted version 2")
+		t.Error("accepted version 3")
 	}
 }
