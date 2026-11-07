@@ -584,7 +584,7 @@ func TestBPFStopsDaemonizingTarget(t *testing.T) {
 		if _, err := unix.Setsid(); err != nil {
 			t.Fatal(err)
 		}
-		time.Sleep(time.Second)
+		time.Sleep(3 * time.Second)
 		loadIntegrationProgram(t, "plain")
 		return
 	}
@@ -596,7 +596,7 @@ func TestBPFStopsDaemonizingTarget(t *testing.T) {
 	start := time.Now()
 	code, err := Run(ctx, []string{"/bin/sh", "-c", script, "daemon-target"}, Options{Rules: []Rule{testRule()}, Log: &logs})
 	data, readErr := os.ReadFile(out)
-	if err != nil || readErr != nil || code != 7 || time.Since(start) < 800*time.Millisecond ||
+	if err != nil || readErr != nil || code != 7 || time.Since(start) < 2800*time.Millisecond ||
 		!strings.Contains(string(data), "kernel hook=false, action=2") {
 		t.Fatalf("code=%d err=%v read=%v after %v\n%s\n%s", code, err, readErr, time.Since(start), &logs, data)
 	}
