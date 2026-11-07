@@ -115,37 +115,57 @@ def audit(events, expected, kernel):
     return sorted(set(failures))
 
 
+# The supervisor tests that need root: the integration loaders and the
+# syscall-stop modes, including the fallback from the seccomp filter.
+SYSCALLHOOK_TESTS = (
+    "TestIntegrationMapTypes", "TestIntegrationLoader", "TestIntegrationIndirectJump", "TestIntegrationJumpLimit",
+    "TestBpfAutoStatic", "TestBPFStopsBehaviour", "TestBPFStopsCount", "TestBPFStopsDefault", "TestBPFStopsFallback",
+    "TestBPFStopsOutlivingChild", "TestBPFStopsLeaderExit", "TestBPFStopsCancelEndsChild",
+    "TestBPFStopsChildNotInstrumented", "TestBPFStopsTargetListener", "TestBPFStopsCommonAttrs",
+    "TestBPFStopsDaemonizingTarget", "TestBPFStopsForeignExecDropsFormerTID", "TestBPFStopsChildPidfdFailure",
+    "TestBPFStopsMultipleNewbornRegistrationFailure",
+)
+
+
 def syscallhook_suite(binary, log_path):
     # Run the same tagged binary in CI and in VMs without a Go toolchain.
-    command = [str(Path(binary).resolve()), "-test.v", "-test.count=1",
-               "-test.timeout=2m", "-test.run=^(TestIntegration(MapTypes|Loader|IndirectJump|JumpLimit)|TestBpfAutoStatic)$"]
-    expected = {(SYSCALLHOOK, "TestIntegration" + name) for name in ("MapTypes", "Loader", "IndirectJump", "JumpLimit")}
-    expected.add((SYSCALLHOOK, "TestBpfAutoStatic"))
-    events = []
+    command = [str(Path(binary).resolve()), "-test.v", "-test.count=1", "-test.timeout=5m",
+               "-test.run=^(" + "|".join(SYSCALLHOOK_TESTS) + ")$"]
+    passes = [
+        ("default", [], SYSCALLHOOK_TESTS, dict(os.environ)),
+        ("every-syscall", ["-test.skip", "^TestBPFStops"],
+         tuple(name for name in SYSCALLHOOK_TESTS if not name.startswith("TestBPFStops")),
+         dict(os.environ, SYSCALLHOOK_TEST_EVERY_SYSCALL="1")),
+    ]
     # A test that runs this binary again as a loader may echo the loader's
     # results; while a top-level test runs, only its own results count.
-    running = None
-    print("+ " + " ".join(command), flush=True)
-    with open(log_path, "w", encoding="utf-8") as log, \
-            subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True) as process:
-        for line in process.stdout:
-            print(line, end="", flush=True)
-            log.write(line)
-            started = re.match(r"=== RUN\s+([^/\s]+)$", line)
-            if started and running is None:
-                running = started[1]
-            match = re.match(r"\s*--- (PASS|FAIL|SKIP): (\S+)", line)
-            if match and running in (None, match[2].split("/", 1)[0]):
-                events.append({"Package": SYSCALLHOOK, "Test": match[2], "Action": match[1].lower()})
-                if match[2] == running:
-                    running = None
-        events.append({"Package": SYSCALLHOOK, "Action": "pass" if process.wait() == 0 else "fail"})
-    failures = audit(events, expected, None)
-    for failure in failures:
-        print(f"AUDIT FAIL: {failure}", file=sys.stderr)
-    if failures:
-        return 1
-    print("Privileged supervisor audit passed: all required tests passed; no skips.")
+    with open(log_path, "w", encoding="utf-8") as log:
+        for name, extra, tests, env in passes:
+            events = []
+            running = None
+            pass_command = command + extra
+            print("+ " + " ".join(pass_command), flush=True)
+            with subprocess.Popen(pass_command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                  text=True, env=env) as process:
+                for line in process.stdout:
+                    print(line, end="", flush=True)
+                    log.write(line)
+                    started = re.match(r"=== RUN\s+([^/\s]+)$", line)
+                    if started and running is None:
+                        running = started[1]
+                    match = re.match(r"\s*--- (PASS|FAIL|SKIP): (\S+)", line)
+                    if match and running in (None, match[2].split("/", 1)[0]):
+                        events.append({"Package": SYSCALLHOOK, "Test": match[2], "Action": match[1].lower()})
+                        if match[2] == running:
+                            running = None
+                events.append({"Package": SYSCALLHOOK, "Action": "pass" if process.wait() == 0 else "fail"})
+            expected = {(SYSCALLHOOK, test) for test in tests}
+            failures = audit(events, expected, None)
+            for failure in failures:
+                print(f"AUDIT FAIL ({name}): {failure}", file=sys.stderr)
+            if failures:
+                return 1
+    print("Privileged supervisor audit passed in default and every-syscall modes: all required tests passed; no skips.")
     return 0
 
 

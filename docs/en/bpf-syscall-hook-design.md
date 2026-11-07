@@ -85,7 +85,10 @@ Loss of ptrace control is fatal in either mode: the supervisor terminates the ta
 
 ## How the supervisor handles a load
 
-The launcher uses Go's fork/exec support with `PTRACE_TRACEME` and keeps ptrace operations on one locked OS thread.
+The launcher uses Go's fork/exec support with `PTRACE_TRACEME`, moves the target to `PTRACE_SEIZE` before it runs, and keeps ptrace operations on one locked OS thread.
+Its wait loop uses broad `wait4(-1)` calls inherited from the original every-syscall implementation, so library callers must not call `Run` from a process that has other children it waits for.
+A seccomp filter installed at the target's first syscall limits the stops to program and BTF loads; where it cannot be installed, the target stops on every syscall ([inject-run.md](inject-run.md#syscall-stops)).
+Child processes inherit the filter, so with it the supervisor also follows them with `PTRACE_O_TRACEFORK` and `PTRACE_O_TRACEVFORK`, without instrumenting them, until each has exited, also after the target has; it resumes group stops with `PTRACE_LISTEN`.
 It follows target threads with `PTRACE_O_TRACECLONE` and uses `PTRACE_GET_SYSCALL_INFO` to tell syscall entry from exit.
 It intercepts native x86-64 `SYS_bpf`; compat and x32 calls pass through without injection.
 Every original BPF command other than `BPF_BTF_LOAD` and a matched `BPF_PROG_LOAD` passes through untouched.
@@ -134,10 +137,10 @@ The wire offsets and stop discriminators follow the Linux [BPF UAPI](https://git
 
 These mechanisms would lift the [launcher's limits](inject-run.md#limits):
 
-- Child processes: add `PTRACE_O_TRACEFORK` and `PTRACE_O_TRACEVFORK`, keep per-process fd caches and thread groups, and handle nonleader exec identity changes across the process tree.
+- Child processes: instrument the child processes that the filter path already follows, with per-process fd caches and thread groups.
 - Attaching to a running process: `PTRACE_SEIZE` every `/proc/<pid>/task` entry, and recover BTF loaded before the attach.
 - Concurrent threads: use a seize-based launcher with `PTRACE_INTERRUPT` to stop all siblings, drain their stops, snapshot inputs and fd identities, and resume them after the load.
-- Signals and seccomp: tell group stops apart with `PTRACE_GETSIGINFO`, use `PTRACE_LISTEN` after switching to `PTRACE_SEIZE`, and model `PTRACE_EVENT_SECCOMP` and syscall restarts.
+- Signals and seccomp: hold signals that arrive during syscall replay, and model the target's own seccomp tracing and notification and syscall restarts.
 - Function-name selection: resolve the live BTF ID before preselection, or track fd duplication and inheritance, instead of trusting the numeric fd.
 - Load formats: normalize larger known metadata records, relocate every offset-bearing field, and resolve indexed map references before accepting kernel-side CO-RE records and fd arrays.
 

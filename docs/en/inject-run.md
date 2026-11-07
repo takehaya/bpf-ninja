@@ -249,7 +249,7 @@ Choose an ELF and types that describe the live map, including CO-RE or loader ad
 ### Command line
 
 ```text
-bpf-ninja inject-run [--config FILE] [--fail-closed] [--hooks-json FILE] [--lookups-json FILE] -- TARGET [ARGS...]
+bpf-ninja inject-run [--config FILE] [--fail-closed] [--hooks-json FILE] [--lookups-json FILE] [--stop-every-syscall] -- TARGET [ARGS...]
 ```
 
 | Flag | Meaning |
@@ -258,6 +258,7 @@ bpf-ninja inject-run [--config FILE] [--fail-closed] [--hooks-json FILE] [--look
 | `--fail-closed` | Refuse a matched load with `EPERM` when transformation, checking, or the substituted kernel load fails, or when the checker is not applicable. By default a failed check loads the original program, while a checker-inapplicable transformed program loads without validation. |
 | `--hooks-json FILE` | Write the injected programs and their hooks to FILE. See [Hooks file](#hooks-file). |
 | `--lookups-json FILE` | Write every XDP, tc, cgroup_skb and netfilter program the target loads, with its map calls and a suggested rule. Rules are then optional. See [Lookups file](#lookups-file). |
+| `--stop-every-syscall` | Stop the target at the entry and exit of every syscall instead of only at program and BTF loads. See [Syscall stops](#syscall-stops). |
 
 - Flags before `--` belong to `inject-run`; the command and arguments after it belong to the target.
 - `--config` takes precedence over `BPF_NINJA_INJECT_CONFIG`.
@@ -656,16 +657,55 @@ In both modes:
 - SIGINT or SIGTERM sent to `inject-run` kills the target instead of being forwarded to it;
 - the kernel kills the target if the tracing thread dies (`PTRACE_O_EXITKILL`).
 
+## Syscall stops
+
+By default `inject-run` installs a seccomp filter in the target at its first syscall.
+The target then stops only on native `bpf(2)` with `BPF_PROG_LOAD` or `BPF_BTF_LOAD`, also when the command carries the `BPF_COMMON_ATTRS` flag of Linux 7.3.
+Other `bpf(2)` commands, such as map operations, and every other syscall run without a stop.
+With `--stop-every-syscall`, or where the filter cannot be used, the target stops at the entry and exit of every syscall of every thread instead.
+Each of those stops costs the target about 12 to 14 µs, so a target that makes many syscalls, such as one that updates maps in a loop, runs much slower; what is injected is the same in both modes.
+
+`inject-run` logs `inject-run: stopping only on bpf()` when the filter is in place.
+It stops on every syscall instead, and logs `inject-run: stopping on every syscall: REASON`, when:
+
+- the target already runs under a seccomp filter, for example one inherited from a container runtime or a systemd unit, which could kill or refuse the call that adds the filter;
+- `seccomp(2)` refuses the filter, for example with `EACCES` because the target lacks `CAP_SYS_ADMIN` (`inject-run` never sets `no_new_privs`), or with `EINVAL` or `ENOSYS`, as on a kernel without seccomp filter support;
+- the target's seccomp mode cannot be read from `/proc/PID/status`;
+- the target's first syscall comes from a process that is not native x86-64 or from a thread that is not alone.
+
+The filter is never removed and child processes inherit it, and a `SECCOMP_RET_TRACE` with no tracer fails `bpf(2)` with `ENOSYS`.
+So with the filter `inject-run` traces every child process, without instrumenting it, until it exits, also after the target has exited.
+`inject-run` then returns when the last of them exits, with the target's status, as `strace -f` does.
+If any are still running when the target exits, it logs `inject-run: target exited with status N; waiting for M child processes (PIDs ...); interrupt to kill them`.
+A loader that leaves a daemon behind therefore keeps `inject-run` waiting; use `--stop-every-syscall` to let the daemon outlive `inject-run`.
+A child created with `clone(CLONE_UNTRACED)` is not traced, so it carries the filter without a tracer, and its program and BTF loads, and those of anything it executes, fail with `ENOSYS`.
+This is what differs for the target:
+
+| | Filter (default) | Every syscall |
+|---|---|---|
+| Stops | program and BTF loads | entry and exit of every syscall |
+| Child processes (fork, vfork, clone without `CLONE_THREAD`) | traced and kept running, never instrumented | not traced (a clone without `CLONE_THREAD` is detached at its first stop) |
+| Child processes still running when the target process exits | still traced; `inject-run` returns the target's status when the last of them exits | keep running; `inject-run` returns at once |
+| Child processes created with `CLONE_UNTRACED` | program and BTF loads fail with `ENOSYS` | unchanged |
+| `strace` or `gdb` attach | refused for the target and its child processes | refused for the target |
+| `SIGSTOP` | the target and its child processes stay stopped (`State` `t`) until `SIGCONT` | the target stays stopped (`State` `t`) until `SIGCONT`; child processes stop as usual |
+| `Seccomp` in `/proc/self/status` | 2; `prctl(PR_SET_SECCOMP, SECCOMP_MODE_STRICT)` fails with `EINVAL`; `no_new_privs` is not set | unchanged |
+| A load that the target's own seccomp filter denies or sends to a listener | not seen: nothing is logged or injected | seen before the filter runs |
+
+In both modes, cancelling or killing `inject-run` kills the target, and with the filter its child processes too, also those still running after the target exited.
+
 ## Limits
 
-- `inject-run` supervises only the launched process and its threads.
-  It does not follow children from fork or vfork, and it detaches a separate process created by clone.
+- `inject-run` instruments only the launched process and its threads.
+  With the filter it keeps child processes running without instrumenting them, and waits for them after the target exits; with `--stop-every-syscall` it does not trace them (see [Syscall stops](#syscall-stops)).
+  With the filter, a child created with `CLONE_UNTRACED` cannot load programs or BTF (`ENOSYS`).
   `inject-run` cannot attach to a running process.
 - Sibling threads keep running while the loading thread is stopped.
   The checker reads the substituted stream immediately before resuming the loading thread, but it does not stop a sibling from changing that buffer afterward.
   Do not use `inject-run` with loaders that change load buffers, replace referenced fds, unshare fd tables or exec while another thread loads a program.
 - `inject-run` forwards ordinary signals outside syscall replay.
-  It does not fully support job-control stops, seccomp tracing and notification, or uncatchable signals during replay; an unexpected stop during replay ends supervision.
+  The target and followed child processes stay stopped on `SIGSTOP` (`State` shows `t`, tracing stop) until `SIGCONT`, except a thread in syscall replay, which finishes the replay and runs on.
+  It does not fully support seccomp tracing and notification, or uncatchable signals during replay; another unexpected stop during replay ends supervision.
 - `inject-run` handles only native x86-64 `bpf(2)` calls.
   Compat and x32 calls pass through without injection.
 - `inject-run` can rewrite only XDP, tc (`SchedCLS`, `SchedACT`), cgroup_skb (`CGroupSKB`) and netfilter (`Netfilter`) programs loaded with BTF and `func_info`.
@@ -698,6 +738,7 @@ In both modes:
 | Need | For | Kernel |
 |---|---|---|
 | `PTRACE_GET_SYSCALL_INFO` | `inject-run` itself | 5.3 or newer |
+| seccomp filters (`CONFIG_SECCOMP_FILTER`) | stopping only on loads | without them, `inject-run` stops on every syscall |
 | `arg:untrusted` on global functions | the global form of untrusted hooks | 6.18 or newer in CI; older kernels get static hooks automatically |
 | static BPF functions | static hooks | 6.1 or newer in CI |
 | BPF JIT enabled | any hook in a program that calls `bpf_tail_call` | x86-64 JIT on; otherwise the rewritten load fails |

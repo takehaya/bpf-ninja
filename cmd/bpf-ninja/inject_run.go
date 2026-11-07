@@ -26,6 +26,7 @@ func newInjectRunCommand() *cli.Command {
 			&cli.StringFlag{Name: "config", Usage: "JSON injection rules file (otherwise BPF_NINJA_INJECT_CONFIG contains JSON)"},
 			&cli.BoolFlag{Name: "fail-closed", Usage: "refuse matched loads when injection fails; default retries the original load"},
 			&cli.StringFlag{Name: "hooks-json", Usage: "write the injected programs' hooks and skipped sites as JSON to this file, rewritten after each injected load"},
+			&cli.BoolFlag{Name: "stop-every-syscall", Usage: "stop the target at every syscall, not only at program and BTF loads; the default falls back to this where its seccomp filter cannot be used"},
 			&cli.StringFlag{Name: "lookups-json", Usage: "write every loaded XDP, tc, cgroup_skb and netfilter program's lookups and maps, with a rule to edit, as JSON to this file; rules become optional"},
 		},
 		Action: func(ctx context.Context, cmd *cli.Command) error {
@@ -52,7 +53,7 @@ func newInjectRunCommand() *cli.Command {
 			}
 			ctx, cancel := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 			defer cancel()
-			opts := syscallhook.Options{Rules: rules, FailClosed: cmd.Bool("fail-closed"), FrameRounding: inject.RunningKernelFrameRounding()}
+			opts := syscallhook.Options{Rules: rules, FailClosed: cmd.Bool("fail-closed"), EverySyscall: cmd.Bool("stop-every-syscall"), FrameRounding: inject.RunningKernelFrameRounding()}
 			// The target owns stdout, so the hooks go to a file. It exists,
 			// empty, before the target starts.
 			var hooksErr, lookupsErr error

@@ -8,10 +8,12 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 	"unsafe"
@@ -242,6 +244,20 @@ func TestCancellation(t *testing.T) {
 	}
 }
 
+func TestPidfdOpenFailureStopsRun(t *testing.T) {
+	marker := filepath.Join(t.TempDir(), "ran")
+	code, err := Run(context.Background(), []string{"/bin/sh", "-c", "touch \"$1\"", "pidfd-test", marker}, Options{
+		Rules:     []Rule{testRule()},
+		pidfdOpen: func(int, int) (int, error) { return -1, unix.EMFILE },
+	})
+	if !errors.Is(err, unix.EMFILE) || code != 0 {
+		t.Fatalf("code=%d err=%v, want pidfd_open failure", code, err)
+	}
+	if _, err := os.Stat(marker); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("target ran despite pidfd_open failure: %v", err)
+	}
+}
+
 // The jump-limit retry runs only when miss-first could change the rewrite:
 // some lookup hook observes hits.
 func TestMissFirstDiffers(t *testing.T) {
@@ -258,5 +274,65 @@ func TestMissFirstDiffers(t *testing.T) {
 		if got := missFirstDiffers(inject.LookupRequestRaw{Lookups: tc.when}, tc.result); got != tc.want {
 			t.Errorf("lookups %q hooks %+v: %v, want %v", tc.when, tc.result.Hooks, got, tc.want)
 		}
+	}
+}
+
+// A SIGCONT blocked when the supervisor starts is blocked in the target too.
+// The launcher must still seize it, and the target keeps its mask. The test
+// binary re-executes itself with SIGCONT blocked, since exec.Command resets the
+// mask to the one the process started with.
+func TestBlockedSIGCONT(t *testing.T) {
+	const env = "SYSCALLHOOK_TEST_SIGCONT"
+	switch os.Getenv(env) {
+	case "block":
+		runtime.LockOSThread()
+		set := unix.Sigset_t{Val: [16]uint64{1 << (unix.SIGCONT - 1)}}
+		if err := unix.PthreadSigmask(unix.SIG_BLOCK, &set, nil); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Setenv(env, "run"); err != nil {
+			t.Fatal(err)
+		}
+		t.Fatal(unix.Exec(os.Args[0], os.Args, os.Environ()))
+	case "run":
+		code, err := Run(context.Background(), []string{"grep", "^SigBlk:", "/proc/self/status"}, Options{OnDiscover: func(Discovery) {}})
+		fmt.Printf("code=%d err=%v\n", code, err)
+		return
+	}
+	cmd := exec.Command(os.Args[0], "-test.run=^TestBlockedSIGCONT$")
+	cmd.Env = append(os.Environ(), env+"=block")
+	out, err := cmd.CombinedOutput()
+	if err != nil || !strings.Contains(string(out), "SigBlk:\t0000000000020000\n") || !strings.Contains(string(out), "code=0 err=<nil>\n") {
+		t.Fatalf("err=%v\n%s", err, out)
+	}
+}
+
+// A signal that reaches the target while the launcher hands it over to
+// PTRACE_SEIZE is kept for the target, not taken as a supervisor error.
+func TestSeizeKeepsPendingSignal(t *testing.T) {
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+	cmd := exec.Command("/bin/true")
+	cmd.SysProcAttr = &syscall.SysProcAttr{Ptrace: true}
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	pid := cmd.Process.Pid
+	defer func() { _ = unix.Kill(pid, unix.SIGKILL); _, _ = waitThread(pid) }()
+	if status, err := waitThread(pid); err != nil || !status.Stopped() {
+		t.Fatalf("exec stop: %#x %v", uint32(status), err)
+	}
+	if err := unix.Kill(pid, unix.SIGUSR1); err != nil {
+		t.Fatal(err)
+	}
+	if err := seize(pid, unix.PTRACE_O_TRACESYSGOOD|unix.PTRACE_O_EXITKILL); err != nil {
+		t.Fatalf("seize: %v", err)
+	}
+	if err := unix.PtraceCont(pid, 0); err != nil {
+		t.Fatal(err)
+	}
+	status, err := waitThread(pid)
+	if err != nil || !status.Stopped() || status.StopSignal() != unix.SIGUSR1 || uint32(status)>>16 != 0 {
+		t.Fatalf("after seize: %#x %v, want the SIGUSR1 delivery stop", uint32(status), err)
 	}
 }

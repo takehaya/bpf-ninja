@@ -175,6 +175,10 @@ func loadIntegrationProgram(t *testing.T, expected string) {
 	expected = strings.TrimSuffix(expected, "-alias")
 	inexact := strings.HasSuffix(expected, "-inexact")
 	expected = strings.TrimSuffix(expected, "-inexact")
+	// Without CAP_SYS_ADMIN the loader cannot open the program BTF by ID, so a
+	// "-nocap" loader leaves the func_info check to its caller.
+	nocap := strings.HasSuffix(expected, "-nocap")
+	expected = strings.TrimSuffix(expected, "-nocap")
 	u32 := &btf.Int{Name: "u32", Size: 4}
 	spec := &ebpf.MapSpec{Name: "sessions", Type: ebpf.Hash, KeySize: 4, ValueSize: 4, MaxEntries: 1, Key: u32, Value: u32}
 	mapTypes := strings.Contains(expected, "map-types")
@@ -269,9 +273,11 @@ func loadIntegrationProgram(t *testing.T, expected string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	funcs, err := info.FuncInfos()
-	if err != nil {
-		t.Fatal(err)
+	var funcs btf.FuncOffsets
+	if !nocap {
+		if funcs, err = info.FuncInfos(); err != nil {
+			t.Fatal(err)
+		}
 	}
 	found := false
 	for _, f := range funcs {
@@ -294,7 +300,7 @@ func loadIntegrationProgram(t *testing.T, expected string) {
 			}
 		}
 	}
-	if found != strings.HasPrefix(expected, "hook") {
+	if !nocap && found != strings.HasPrefix(expected, "hook") {
 		t.Fatalf("kernel func_info hook=%v, expected %s; funcs=%+v", found, expected, funcs)
 	}
 	action, _, err := p.Test(make([]byte, 64))
