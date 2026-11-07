@@ -15,6 +15,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unsafe"
 
 	"golang.org/x/sys/unix"
 )
@@ -292,6 +293,35 @@ func TestBPFStopsChildPidfdFailureStopsUnregisteredChild(t *testing.T) {
 }
 
 const multipleNewbornFailureHelper = "SYSCALLHOOK_MULTIPLE_NEWBORN_FAILURE_HELPER"
+const multipleNewbornMarker = "SYSCALLHOOK_MULTIPLE_NEWBORN_MARKER"
+
+func multipleNewbornTarget() {
+	runtime.LockOSThread()
+	marker := append([]byte(os.Getenv(multipleNewbornMarker)), 0)
+	record := []byte("x")
+	for range 2 {
+		pid, _, errno := unix.RawSyscall(unix.SYS_FORK, 0, 0, 0)
+		if errno != 0 {
+			_, _, _ = unix.RawSyscall(unix.SYS_EXIT_GROUP, 90, 0, 0)
+		}
+		if pid != 0 {
+			continue
+		}
+		dirfd := int(unix.AT_FDCWD)
+		fd, _, errno := unix.RawSyscall6(unix.SYS_OPENAT, uintptr(dirfd), uintptr(unsafe.Pointer(&marker[0])),
+			unix.O_CREAT|unix.O_APPEND|unix.O_WRONLY, 0o600, 0, 0)
+		if errno == 0 {
+			_, _, _ = unix.RawSyscall(unix.SYS_WRITE, fd, uintptr(unsafe.Pointer(&record[0])), uintptr(len(record)))
+			_, _, _ = unix.RawSyscall(unix.SYS_CLOSE, fd, 0, 0)
+		}
+		for {
+			_, _, _ = unix.RawSyscall(unix.SYS_PAUSE, 0, 0, 0)
+		}
+	}
+	for {
+		_, _, _ = unix.RawSyscall(unix.SYS_PAUSE, 0, 0, 0)
+	}
+}
 
 type multipleNewbornResult struct {
 	code, calls, parent, first, other int
@@ -349,11 +379,12 @@ func TestMultipleNewbornCleanupOracleRejectsFaults(t *testing.T) {
 }
 
 func TestBPFStopsMultipleNewbornRegistrationFailure(t *testing.T) {
-	if os.Getenv(multipleNewbornFailureHelper) != "1" {
+	switch os.Getenv(multipleNewbornFailureHelper) {
+	case "":
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestBPFStopsMultipleNewbornRegistrationFailure$")
-		cmd.Env = append(os.Environ(), multipleNewbornFailureHelper+"=1")
+		cmd.Env = append(os.Environ(), multipleNewbornFailureHelper+"=driver")
 		out, err := cmd.CombinedOutput()
 		if ctx.Err() != nil {
 			t.Fatalf("multiple-newborn cleanup timed out: %v\n%s", ctx.Err(), out)
@@ -362,6 +393,8 @@ func TestBPFStopsMultipleNewbornRegistrationFailure(t *testing.T) {
 			t.Fatalf("helper failed: %v\n%s", err, out)
 		}
 		return
+	case "target":
+		multipleNewbornTarget()
 	}
 
 	runtime.LockOSThread()
@@ -376,14 +409,19 @@ func TestBPFStopsMultipleNewbornRegistrationFailure(t *testing.T) {
 	if _, err := os.Stat(marker); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("dirty record path: %v", err)
 	}
+	if err := os.Setenv(multipleNewbornFailureHelper, "target"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Setenv(multipleNewbornMarker, marker); err != nil {
+		t.Fatal(err)
+	}
 	var log bytes.Buffer
 	runDone := make(chan struct{})
 	observed := make(chan struct {
 		alive, rescued bool
 	}, 1)
 	result := multipleNewbornResult{}
-	code, runErr := Run(context.Background(), []string{"/bin/sh", "-c",
-		`(printf x >> "$1"; exec /bin/sleep 60) & (printf x >> "$1"; exec /bin/sleep 60) & wait`, "sh", marker}, Options{
+	code, runErr := Run(context.Background(), []string{os.Args[0], "-test.run=^TestBPFStopsMultipleNewbornRegistrationFailure$"}, Options{
 		Rules: []Rule{testRule()},
 		Log:   &log,
 		pidfdOpen: func(pid, flags int) (int, error) {
@@ -443,6 +481,9 @@ func TestBPFStopsMultipleNewbornRegistrationFailure(t *testing.T) {
 		},
 	})
 	close(runDone)
+	if result.other == 0 {
+		t.Fatal("second-newborn schedule was not reached")
+	}
 	state := <-observed
 	result.code, result.err = code, runErr
 	result.alive, result.rescued = state.alive, state.rescued
@@ -451,9 +492,6 @@ func TestBPFStopsMultipleNewbornRegistrationFailure(t *testing.T) {
 		result.record = string(data)
 	} else if !errors.Is(err, os.ErrNotExist) {
 		t.Fatal(err)
-	}
-	if result.other == 0 {
-		t.Fatal("second-newborn schedule was not reached")
 	}
 	if err := multipleNewbornError(result); err != nil {
 		t.Fatalf("%v: %+v", err, result)
