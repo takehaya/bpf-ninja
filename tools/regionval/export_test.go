@@ -1,6 +1,7 @@
 package regionval
 
 import (
+	"encoding/binary"
 	"encoding/hex"
 	"path/filepath"
 	"slices"
@@ -131,6 +132,44 @@ func TestRBOneByteFaults(t *testing.T) {
 		if r.Validated || !r.Structure.OK || !slices.Equal(got, []string{"RB"}) {
 			t.Errorf("%s: rejected by %v, want [RB]: %+v", c.file, got, r)
 		}
+	}
+}
+
+// A copied value whose BTF type is a 16-byte FLOAT is sized like any other
+// (the rewriter accepts every type btf.Sizeof sizes): clean-missfirst-copy
+// with its value type, CONST -> struct session (16 bytes), pointed at a
+// FLOAT appended to the BTF stays validated by both cores.
+func TestRBCopyFloatValue(t *testing.T) {
+	c, err := LoadCapture(filepath.Join(exportDir, "clean", "clean-missfirst-copy.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := hex.DecodeString(c.TransformedBTFHex)
+	if err != nil {
+		t.Fatal(err)
+	}
+	le := binary.LittleEndian
+	hdr, typeLen := le.Uint32(b[4:]), le.Uint32(b[12:])
+	end := int(hdr + le.Uint32(b[8:]) + typeLen)
+	const constID, constOff, floatID = 15, 244, 25 // type 15 is CONST of type 14, struct session
+	if k := le.Uint32(b[int(hdr)+constOff+4:]) >> 24; k != 10 || le.Uint32(b[int(hdr)+constOff+8:]) != 14 {
+		t.Fatalf("type %d is kind %d, not CONST of 14", constID, k)
+	}
+	le.PutUint32(b[int(hdr)+constOff+8:], floatID)
+	float := le.AppendUint32(le.AppendUint32(le.AppendUint32(nil, 0), 16<<24), 16) // FLOAT, size 16
+	b = append(append(slices.Clone(b[:end]), float...), b[end:]...)
+	le.PutUint32(b[12:], typeLen+12)
+	le.PutUint32(b[16:], le.Uint32(b[16:])+12)
+	c.TransformedBTFHex = hex.EncodeToString(b)
+	l, err := Analyze(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f := l.TFuncs[1]; f.Name != "lookup_hook_sessions" || f.Sizes[3] != 16 {
+		t.Fatalf("%s: value size %v", f.Name, f.Sizes)
+	}
+	if r := runFile(t, c); !r.Validated || r.Counts.Disagree != 0 || r.Counts.Validated != r.Counts.Windows {
+		t.Errorf("copy of a FLOAT value: %+v", r)
 	}
 }
 

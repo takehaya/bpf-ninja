@@ -142,8 +142,10 @@ func ParseBTFFuncs(b []byte) (map[uint32]BTFFunc, error) {
 			return 0
 		}
 		switch t.kind {
-		case 1, 4, 5, 6, 19: // INT STRUCT UNION ENUM ENUM64
+		case 1, 4, 5, 6, 16, 19: // INT STRUCT UNION ENUM FLOAT ENUM64
 			return int(t.st)
+		case 2: // PTR (a map value may be a pointer-sized type)
+			return 8
 		case 8, 9, 10, 11, 18: // TYPEDEF VOLATILE CONST RESTRICT TYPE_TAG
 			return size(t.st, depth+1)
 		case 3: // ARRAY
