@@ -3,16 +3,16 @@
 //   and every concrete execution (every oracle), the obligations hold.
 //
 // Structure:
-//   (2) Sim: the symbolic state denotes the concrete state under the
+//   - Sim: the symbolic state denotes the concrete state under the
 //       assignment Env(entry regs, entry stack, sigma), where sigma is the
 //       list of every value the run obtained from outside.  Fresh symbol n
 //       stands for sigma[n], so havoc covers every concrete value.
-//   (2) StepSim: each symbolic step agrees with the concrete step.
-//   (3) Terms.Mk*Eval: the normaliser preserves evaluation.
-//   (1)(4) ExecSound: the concrete run follows one of the enumerated paths
+//   - StepSim: each symbolic step agrees with the concrete step.
+//   - Terms.Mk*Eval: the normaliser preserves evaluation.
+//   - ExecSound: the concrete run follows one of the enumerated paths
 //       (for P8 through WP, call W, W's body and the return);
 //       path conditions are not used, so every path was checked.
-//   (5) Fail-closed: an undecodable instruction makes the run Escaped, which
+//   - Fail-closed: an undecodable instruction makes the run Escaped, which
 //       violates the obligations; Validate never accepts such a region.
 include "Checker.dfy"
 

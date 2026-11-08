@@ -10,15 +10,14 @@ module Api {
   import opened Obligations
   import Checker
 
-  // site (P1c, P2 HF/HO/MO/MF, P3, P5, generic): r1..r5 unchanged at the
-  // helper call, r0 = helper result at exit, r1..r5 free at exit.
+  // site: r1..r5 unchanged at the helper call, r0 = helper result at exit, r1..r5 free at exit.
   function SiteSpec(floor: int): Spec {
     Spec(floor, {1, 2, 3, 4, 5}, Helper(true, true), true, true, false, NoWrap)
   }
 
-  // tail-call site (P4): only C1..C6; r0..r5 free.
+  // tail-call site (P4): r1..r5 unchanged at bpf_tail_call; r0..r5 free at exit.
   function TailSiteSpec(floor: int): Spec {
-    Spec(floor, {0, 1, 2, 3, 4, 5}, Helper(false, false), true, true, false, NoWrap)
+    Spec(floor, {0, 1, 2, 3, 4, 5}, Helper(true, false), true, true, false, NoWrap)
   }
 
   // entry prologue (P1): r1 preserved; r0, r2..r5 free (bottom at entry).
@@ -31,7 +30,8 @@ module Api {
     Spec(floor, {0}, NoHelper, true, false, false, NoWrap)
   }
 
-  // pass prologue / pass load (P9): only rG may change (rG in r0..r5).
+  // only rG may change; stores below the floor are allowed.  The windows
+  // prologue-P9 and passload-P9 use CustomSpec (README.md, Dafny core).
   function PassSpec(floor: int, g: nat): Spec {
     Spec(floor, {g}, NoHelper, true, false, false, NoWrap)
   }

@@ -10,10 +10,10 @@
 package regionvaldafny
 
 import (
+	_dafny "github.com/dafny-lang/DafnyRuntimeGo/v4/dafny"
 	api "github.com/takehaya/bpf-ninja/tools/regionval/dafny/gen-go/Api"
 	obl "github.com/takehaya/bpf-ninja/tools/regionval/dafny/gen-go/Obligations"
 	sem "github.com/takehaya/bpf-ninja/tools/regionval/dafny/gen-go/Semantics"
-	_dafny "github.com/dafny-lang/DafnyRuntimeGo/v4/dafny"
 )
 
 const (
@@ -68,8 +68,9 @@ func CustomSpec(floor int, free []int, helper, checkArgs, restoreR0, allowStore,
 	return Spec{obl.Companion_Spec_.Create_Spec_(_dafny.IntOf(floor), _dafny.SetOf(fs...), hm, allowStore, hookCalls, exitMode, obl.Companion_WrapMode_.Create_NoWrap_())}
 }
 
-// Verdict of Validate.  PC is the window-relative instruction index the
-// reason refers to (-1 for whole-window reasons).
+// Verdict of Validate.  PC is the instruction index the reason refers to
+// (-1 for whole-window reasons).  It indexes the window, except for a reason
+// found in W's body of a site-P8 window, where it indexes W.
 type Verdict struct {
 	Validated bool
 	PC        int

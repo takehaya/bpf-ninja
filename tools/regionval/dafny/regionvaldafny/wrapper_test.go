@@ -330,6 +330,8 @@ func TestP8(t *testing.T) {
 		{"W hook after the helper", callW(), cat(lookup(), movr(6, 0), hookCall(), movr(0, 6), exit()), lookup()},
 		{"non-lookup, r4 untouched", callW(), cat(other(), exit()), other()},
 		{"W loads through r1", callW(), cat(ldxdw(6, 1, 0), lookup(), exit()), lookup()},
+		// W's r6..r9 are its own (calling convention); the caller's come back on return.
+		{"W changes r6", wp, cat(lookup(), movk(6, 0), exit()), oi},
 	}
 	for _, c := range ok {
 		if v := Validate(c.wp, WrapSiteSpec(floor, c.w, c.helper)); !v.Validated {
@@ -353,17 +355,17 @@ func TestP8(t *testing.T) {
 		{"P8-wpstore: WP stores", cat(stxdw(10, 1, -176), callW()), w, oi},
 		{"P8-wp-writes: WP writes r1", cat(movk(1, 0), callW()), w, oi},
 		{"P8-wp-writes: WP writes and restores r2", cat(movr(6, 2), movr(2, 6), callW()), w, oi},
+		{"P8-wp-writes: WP writes r2 with its own value", cat(movr(2, 2), callW()), w, oi},
 		{"P8-wp-writes: WP hook call", cat(hookCall(), callW()), w, oi},
 		{"P8-wp-writes: WP helper call", cat(lookup(), callW()), w, oi},
 		{"P8-once: WP jumps over call W", cat(jeqk(1, 0, 1), callW()), w, oi},
 		{"P8-once: W path without helper", wp, cat(jeqk(1, 0, 1), lookup(), exit()), oi},
 		{"P8-once: helper twice", wp, cat(lookup(), lookup(), exit()), oi},
 		{"R15: W changes r1", wp, cat(movk(1, 0), lookup(), exit()), oi},
-		{"R15: non-lookup with r4 changed", movk(4, 3), cat(other(), exit()), other()},
+		{"R15: W changes r4 before a non-lookup helper", callW(), cat(movk(4, 3), other(), exit()), other()},
 		{"R15: non-lookup, WP changed r4", cat(movk(4, 3), callW()), cat(other(), exit()), other()},
 		{"P8-ret: W clobbers r0", wp, cat(lookup(), movk(0, 0), exit()), oi},
 		{"P8-ret: W falls off its end", wp, lookup(), oi},
-		{"W changes r6 (C2 of the caller is kept anyway; r6 of W is free)", wp, cat(lookup(), movk(6, 0), exit()), oi},
 		{"W jumps backward", wp, cat(lookup(), jeqk(0, 0, -2), exit()), oi},
 		{"W two hook calls", wp, cat(lookup(), movr(6, 0), hookCall(), hookCall(), movr(0, 6), exit()), oi},
 		{"W undecodable", wp, cat(lookup(), ins(0xff, 0, 0, 0, 0), exit()), oi},
@@ -371,15 +373,7 @@ func TestP8(t *testing.T) {
 		{"model-load: WP loads r10-520 (below the frame)", cat(ldxdw(4, 10, -520), callW()), w, oi},
 	}
 	for _, c := range bad {
-		v := Validate(c.wp, WrapSiteSpec(floor, c.w, c.helper))
-		if c.name == "W changes r6 (C2 of the caller is kept anyway; r6 of W is free)" {
-			// W's r6..r9 are its own (calling convention); the caller's r6..r9 come back on return.
-			if !v.Validated {
-				t.Errorf("%s: not validated: %s", c.name, v.Reason)
-			}
-			continue
-		}
-		if v.Validated {
+		if v := Validate(c.wp, WrapSiteSpec(floor, c.w, c.helper)); v.Validated {
 			t.Errorf("%s: validated (expected NotValidated)", c.name)
 		}
 	}
@@ -417,19 +411,24 @@ func TestP8RunsSatisfyObligations(t *testing.T) {
 		}
 	}
 	// plantings are real violations
-	bad := map[string]struct{ wp, w, oi []byte }{
-		"W clobbers r0":   {wp, cat(lookup(), movk(0, 0), exit()), oi},
-		"W changes r1":    {wp, cat(movk(1, 0), lookup(), exit()), oi},
-		"WP writes r1":    {cat(movk(1, 0), callW()), w, oi},
-		"W stores":        {wp, cat(stxdw(1, 2, 0), lookup(), exit()), oi},
-		"jump over W":     {cat(jeqk(1, 0, 1), callW()), w, oi},
-		"helper id wrong": {wp, w, other()},
+	bad := []struct {
+		name      string
+		wp, w, oi []byte
+		r1zero    bool // the violation needs r1 = 0 at entry
+	}{
+		{"W clobbers r0", wp, cat(lookup(), movk(0, 0), exit()), oi, false},
+		{"W changes r1", wp, cat(movk(1, 0), lookup(), exit()), oi, false},
+		{"WP writes r1", cat(movk(1, 0), callW()), w, oi, false},
+		{"W stores", wp, cat(stxdw(1, 2, 0), lookup(), exit()), oi, false},
+		{"jump over W", cat(jeqk(1, 0, 1), callW()), w, oi, true},
+		{"helper id wrong", wp, w, other(), false},
 	}
-	for name, b := range bad {
+	for _, b := range bad {
+		name := b.name
 		found := false
 		for i := 0; i < 100 && !found; i++ {
 			regs, st := randState(r)
-			if name == "jump over W" {
+			if b.r1zero {
 				regs[1] = 0
 			}
 			_, _, ok := RunAndCheck(b.wp, WrapSiteSpec(floor, b.w, b.oi), regs, st, p8Oracle(r))
