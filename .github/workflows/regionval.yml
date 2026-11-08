@@ -45,8 +45,8 @@ jobs:
           cd "$RUNNER_TEMP"
           curl -sSfLO "https://github.com/dafny-lang/dafny/releases/download/v${DAFNY_VERSION}/${DAFNY_ZIP}"
           echo "${DAFNY_SHA256}  ${DAFNY_ZIP}" | sha256sum -c -
+          mkdir -p "$HOME/.local/opt" "$HOME/.local/bin"
           unzip -q "${DAFNY_ZIP}" -d "$HOME/.local/opt"
-          mkdir -p "$HOME/.local/bin"
           ln -s "$HOME/.local/opt/dafny/dafny" "$HOME/.local/bin/dafny"
           # Both tools need a newer Go than go.mod declares; setup-go sets
           # GOTOOLCHAIN=local, so let go install fetch what each asks for.
