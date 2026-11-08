@@ -255,7 +255,9 @@ Dafny together with a proof that it is sound.
   `dafny/regionvaldafny` is a small wrapper around it.
 - `dafny/xcheck` runs both cores on hand-written windows and requires the
   same verdicts, and compares the Dafny semantics with `interp/` on random
-  inputs.
+  inputs. It also runs both cores on every window of every capture in
+  `testdata` and fails if the Dafny core validates a window the Go core
+  rejects.
 
 The Dafny core covers every window kind in the table above. For a wrapper site
 (`site-P8`) the window is the code before `call W` and the call itself, and
@@ -287,7 +289,7 @@ The checks that stay outside `Validate`: a window outside a hook has a floor;
 every pseudo call is to a hook (except `call W` at the end of a wrapper
 window, and including those inside W); a helper call in a site window is its
 centre, and the centre of `site-P4` is `bpf_tail_call`; the `P9` certificate
-and the `S10` liveness check.
+and the `S10` liveness check. `dafny/xcheck/corpus_test.go` implements them.
 
 The Dafny core is stricter than the Go core in a few places: an entry
 prologue may not call a hook, the code before `call W` must write only r4 in
