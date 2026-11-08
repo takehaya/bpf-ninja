@@ -67,7 +67,7 @@ func (_static *CompanionStruct_Default___) TailSiteSpec(floor _dafny.Int) m_Obli
 	return m_Obligations.Companion_Spec_.Create_Spec_(floor, _dafny.SetOf(_dafny.Zero, _dafny.One, _dafny.IntOfInt64(2), _dafny.IntOfInt64(3), _dafny.IntOfInt64(4), _dafny.IntOfInt64(5)), m_Obligations.Companion_HelperMode_.Create_Helper_(true, false), true, true, false, m_Obligations.Companion_WrapMode_.Create_NoWrap_())
 }
 func (_static *CompanionStruct_Default___) EntryPrologueSpec(floor _dafny.Int) m_Obligations.Spec {
-	return m_Obligations.Companion_Spec_.Create_Spec_(floor, _dafny.SetOf(_dafny.Zero, _dafny.IntOfInt64(2), _dafny.IntOfInt64(3), _dafny.IntOfInt64(4), _dafny.IntOfInt64(5)), m_Obligations.Companion_HelperMode_.Create_NoHelper_(), true, false, false, m_Obligations.Companion_WrapMode_.Create_NoWrap_())
+	return m_Obligations.Companion_Spec_.Create_Spec_(floor, _dafny.SetOf(_dafny.Zero, _dafny.IntOfInt64(2), _dafny.IntOfInt64(3), _dafny.IntOfInt64(4), _dafny.IntOfInt64(5)), m_Obligations.Companion_HelperMode_.Create_NoHelper_(), true, true, false, m_Obligations.Companion_WrapMode_.Create_NoWrap_())
 }
 func (_static *CompanionStruct_Default___) CallbackPrologueSpec(floor _dafny.Int) m_Obligations.Spec {
 	return m_Obligations.Companion_Spec_.Create_Spec_(floor, _dafny.SetOf(_dafny.Zero), m_Obligations.Companion_HelperMode_.Create_NoHelper_(), true, false, false, m_Obligations.Companion_WrapMode_.Create_NoWrap_())

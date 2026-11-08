@@ -20,9 +20,10 @@ module Api {
     Spec(floor, {0, 1, 2, 3, 4, 5}, Helper(true, false), true, true, false, NoWrap)
   }
 
-  // entry prologue (P1): r1 preserved; r0, r2..r5 free (bottom at entry).
+  // entry prologue (P1): r1 preserved; r0, r2..r5 free (bottom at entry);
+  // one hook call per path.
   function EntryPrologueSpec(floor: int): Spec {
-    Spec(floor, {0, 2, 3, 4, 5}, NoHelper, true, false, false, NoWrap)
+    Spec(floor, {0, 2, 3, 4, 5}, NoHelper, true, true, false, NoWrap)
   }
 
   // callback prologue (P1b): only r0 may change.
