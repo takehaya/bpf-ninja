@@ -474,3 +474,32 @@ func TestRecordBinding(t *testing.T) {
 		t.Error("value = r10: no run breaks RB")
 	}
 }
+
+// Hook selection (HS): the hook of TestRecordBinding's window as a hit
+// hook. With the guard inverted it runs on NULL; Validate refuses that and
+// some run breaks the obligation.
+func TestHookSelection(t *testing.T) {
+	r := rand.New(rand.NewSource(4))
+	w := cat(stxdw(10, 2, -184), helper(), stxdw(10, 0, -176), jeqk(0, 0, 3), ldxdw(3, 10, -184), movr(4, 0), hookCall(), ldxdw(0, 10, -176))
+	bad := replace(w, 3, ins(0x55, 0, 0, 3, 0)) // if r0 != 0 goto restore
+	sp := WithBinds(SiteSpec(floor), []Bind{{PC: 6, Reg: 1, Hit: true}})
+	if v := Validate(w, sp); !v.Validated {
+		t.Fatalf("hit hook after `if r0 == 0` skip: %+v", v)
+	}
+	if v := Validate(bad, sp); v.Validated || v.PC != 6 {
+		t.Fatalf("inverted guard: %+v", v)
+	}
+	found := false
+	for i := 0; i < 200; i++ {
+		regs, st := randState(r)
+		o := randOracle(r)
+		if _, _, ok := RunAndCheck(w, sp, regs, st, o); !ok {
+			t.Fatalf("obligations violated on the guarded window (iteration %d)", i)
+		}
+		_, _, ok := RunAndCheck(bad, sp, regs, st, o)
+		found = found || !ok
+	}
+	if !found {
+		t.Error("inverted guard: no run breaks HS")
+	}
+}

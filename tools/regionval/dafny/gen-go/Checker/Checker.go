@@ -76,7 +76,7 @@ func (_static *CompanionStruct_Default___) SInit() SState {
 		}
 	}(func(_2_k _dafny.Int) m_Terms.Term {
 		return m_Terms.Companion_Term_.Create_Entry_(_2_k)
-	})), _0_st, _0_st, _dafny.Zero, _dafny.Zero, _dafny.Zero, m_Terms.Companion_Term_.Create_Const_(uint64(0)), m_Terms.Companion_Term_.Create_Const_(uint64(0)))
+	})), _0_st, _0_st, _dafny.Zero, _dafny.Zero, _dafny.Zero, m_Terms.Companion_Term_.Create_Const_(uint64(0)), m_Terms.Companion_Term_.Create_Const_(uint64(0)), Companion_Know_.Create_Unknown_())
 }
 func (_static *CompanionStruct_Default___) SymOperand(is64 bool, o m_Semantics.Operand, regs _dafny.Sequence) m_Terms.Term {
 	var _source0 m_Semantics.Operand = o
@@ -235,7 +235,7 @@ func (_static *CompanionStruct_Default___) SymStore(sp m_Obligations.Spec, ss SS
 					return func(_2_dt__update__tmp_h0 SState) SState {
 						return func(_pat_let31_0 _dafny.Sequence) SState {
 							return func(_3_dt__update_hstack_h0 _dafny.Sequence) SState {
-								return Companion_SState_.Create_SState_((_2_dt__update__tmp_h0).Dtor_regs(), _3_dt__update_hstack_h0, (_2_dt__update__tmp_h0).Dtor_snap(), (_2_dt__update__tmp_h0).Dtor_next(), (_2_dt__update__tmp_h0).Dtor_helpers(), (_2_dt__update__tmp_h0).Dtor_hooks(), (_2_dt__update__tmp_h0).Dtor_ret(), (_2_dt__update__tmp_h0).Dtor_hkey())
+								return Companion_SState_.Create_SState_((_2_dt__update__tmp_h0).Dtor_regs(), _3_dt__update_hstack_h0, (_2_dt__update__tmp_h0).Dtor_snap(), (_2_dt__update__tmp_h0).Dtor_next(), (_2_dt__update__tmp_h0).Dtor_helpers(), (_2_dt__update__tmp_h0).Dtor_hooks(), (_2_dt__update__tmp_h0).Dtor_ret(), (_2_dt__update__tmp_h0).Dtor_hkey(), (_2_dt__update__tmp_h0).Dtor_know())
 							}(_pat_let31_0)
 						}(Companion_Default___.WriteBT((_pat_let_tv0).Dtor_stack(), (_1_o).Plus(m_Semantics.Companion_Default___.STACK()), Companion_Default___.StoreBytes(_pat_let_tv1, _pat_let_tv2)))
 					}(_pat_let30_0)
@@ -280,7 +280,7 @@ func (_static *CompanionStruct_Default___) SymStep(sp m_Obligations.Spec, ins m_
 					return func(_4_dt__update__tmp_h0 SState) SState {
 						return func(_pat_let33_0 _dafny.Sequence) SState {
 							return func(_5_dt__update_hregs_h0 _dafny.Sequence) SState {
-								return Companion_SState_.Create_SState_(_5_dt__update_hregs_h0, (_4_dt__update__tmp_h0).Dtor_stack(), (_4_dt__update__tmp_h0).Dtor_snap(), (_4_dt__update__tmp_h0).Dtor_next(), (_4_dt__update__tmp_h0).Dtor_helpers(), (_4_dt__update__tmp_h0).Dtor_hooks(), (_4_dt__update__tmp_h0).Dtor_ret(), (_4_dt__update__tmp_h0).Dtor_hkey())
+								return Companion_SState_.Create_SState_(_5_dt__update_hregs_h0, (_4_dt__update__tmp_h0).Dtor_stack(), (_4_dt__update__tmp_h0).Dtor_snap(), (_4_dt__update__tmp_h0).Dtor_next(), (_4_dt__update__tmp_h0).Dtor_helpers(), (_4_dt__update__tmp_h0).Dtor_hooks(), (_4_dt__update__tmp_h0).Dtor_ret(), (_4_dt__update__tmp_h0).Dtor_hkey(), (_4_dt__update__tmp_h0).Dtor_know())
 							}(_pat_let33_0)
 						}(_dafny.Companion_Sequence_.Update((_pat_let_tv0).Dtor_regs(), (_2_dst).Uint32(), Companion_Default___.AluTerm(_0_is64, _1_op, ((_pat_let_tv1).Dtor_regs()).Select((_2_dst).Uint32()).(m_Terms.Term), Companion_Default___.SymOperand(_0_is64, _3_opnd, (_pat_let_tv2).Dtor_regs()))))
 					}(_pat_let32_0)
@@ -328,7 +328,7 @@ func (_static *CompanionStruct_Default___) SymStep(sp m_Obligations.Spec, ins m_
 							return func(_13_dt__update_hnext_h0 _dafny.Int) SState {
 								return func(_pat_let36_0 _dafny.Sequence) SState {
 									return func(_14_dt__update_hregs_h1 _dafny.Sequence) SState {
-										return Companion_SState_.Create_SState_(_14_dt__update_hregs_h1, (_12_dt__update__tmp_h1).Dtor_stack(), (_12_dt__update__tmp_h1).Dtor_snap(), _13_dt__update_hnext_h0, (_12_dt__update__tmp_h1).Dtor_helpers(), (_12_dt__update__tmp_h1).Dtor_hooks(), (_12_dt__update__tmp_h1).Dtor_ret(), (_12_dt__update__tmp_h1).Dtor_hkey())
+										return Companion_SState_.Create_SState_(_14_dt__update_hregs_h1, (_12_dt__update__tmp_h1).Dtor_stack(), (_12_dt__update__tmp_h1).Dtor_snap(), _13_dt__update_hnext_h0, (_12_dt__update__tmp_h1).Dtor_helpers(), (_12_dt__update__tmp_h1).Dtor_hooks(), (_12_dt__update__tmp_h1).Dtor_ret(), (_12_dt__update__tmp_h1).Dtor_hkey(), (_12_dt__update__tmp_h1).Dtor_know())
 									}(_pat_let36_0)
 								}(_dafny.Companion_Sequence_.Update((_pat_let_tv4).Dtor_regs(), (_7_dst).Uint32(), _10_v))
 							}(_pat_let35_0)
@@ -398,7 +398,7 @@ func (_static *CompanionStruct_Default___) SymStep(sp m_Obligations.Spec, ins m_
 					}
 				})(_24_lo, ss)))
 				_ = _25_st
-				return Companion_SR_.Create_SOk_(Companion_SState_.Create_SState_(Companion_Default___.FreshRegs((ss).Dtor_regs(), (ss).Dtor_next()), _25_st, _25_st, (((ss).Dtor_next()).Plus(_dafny.IntOfInt64(6))).Plus((_dafny.Zero).Minus((sp).Dtor_floor())), _dafny.One, (ss).Dtor_hooks(), m_Terms.Companion_Term_.Create_Fresh_((ss).Dtor_next()), ((ss).Dtor_regs()).Select(2).(m_Terms.Term)))
+				return Companion_SR_.Create_SOk_(Companion_SState_.Create_SState_(Companion_Default___.FreshRegs((ss).Dtor_regs(), (ss).Dtor_next()), _25_st, _25_st, (((ss).Dtor_next()).Plus(_dafny.IntOfInt64(6))).Plus((_dafny.Zero).Minus((sp).Dtor_floor())), _dafny.One, (ss).Dtor_hooks(), m_Terms.Companion_Term_.Create_Fresh_((ss).Dtor_next()), ((ss).Dtor_regs()).Select(2).(m_Terms.Term), Companion_Know_.Create_Unknown_()))
 			}
 		}
 	}
@@ -417,7 +417,7 @@ func (_static *CompanionStruct_Default___) SymStep(sp m_Obligations.Spec, ins m_
 									return func(_31_dt__update_hnext_h1 _dafny.Int) SState {
 										return func(_pat_let40_0 _dafny.Sequence) SState {
 											return func(_32_dt__update_hregs_h2 _dafny.Sequence) SState {
-												return Companion_SState_.Create_SState_(_32_dt__update_hregs_h2, (_29_dt__update__tmp_h2).Dtor_stack(), (_29_dt__update__tmp_h2).Dtor_snap(), _31_dt__update_hnext_h1, (_29_dt__update__tmp_h2).Dtor_helpers(), _30_dt__update_hhooks_h0, (_29_dt__update__tmp_h2).Dtor_ret(), (_29_dt__update__tmp_h2).Dtor_hkey())
+												return Companion_SState_.Create_SState_(_32_dt__update_hregs_h2, (_29_dt__update__tmp_h2).Dtor_stack(), (_29_dt__update__tmp_h2).Dtor_snap(), _31_dt__update_hnext_h1, (_29_dt__update__tmp_h2).Dtor_helpers(), _30_dt__update_hhooks_h0, (_29_dt__update__tmp_h2).Dtor_ret(), (_29_dt__update__tmp_h2).Dtor_hkey(), (_29_dt__update__tmp_h2).Dtor_know())
 											}(_pat_let40_0)
 										}(Companion_Default___.FreshRegs((_pat_let_tv6).Dtor_regs(), (_pat_let_tv7).Dtor_next()))
 									}(_pat_let39_0)
@@ -461,7 +461,7 @@ func (_static *CompanionStruct_Default___) EnterWS(ss SState) SState {
 		}
 	})(ss)))
 	_ = _2_dt__update_hregs_h0
-	return Companion_SState_.Create_SState_(_2_dt__update_hregs_h0, (_0_dt__update__tmp_h0).Dtor_stack(), (_0_dt__update__tmp_h0).Dtor_snap(), _1_dt__update_hnext_h0, (_0_dt__update__tmp_h0).Dtor_helpers(), (_0_dt__update__tmp_h0).Dtor_hooks(), (_0_dt__update__tmp_h0).Dtor_ret(), (_0_dt__update__tmp_h0).Dtor_hkey())
+	return Companion_SState_.Create_SState_(_2_dt__update_hregs_h0, (_0_dt__update__tmp_h0).Dtor_stack(), (_0_dt__update__tmp_h0).Dtor_snap(), _1_dt__update_hnext_h0, (_0_dt__update__tmp_h0).Dtor_helpers(), (_0_dt__update__tmp_h0).Dtor_hooks(), (_0_dt__update__tmp_h0).Dtor_ret(), (_0_dt__update__tmp_h0).Dtor_hkey(), (_0_dt__update__tmp_h0).Dtor_know())
 }
 func (_static *CompanionStruct_Default___) ReturnS(ss SState, caller _dafny.Sequence) SState {
 	var _0_dt__update__tmp_h0 SState = ss
@@ -488,7 +488,7 @@ func (_static *CompanionStruct_Default___) ReturnS(ss SState, caller _dafny.Sequ
 		}
 	})(ss, caller)))
 	_ = _2_dt__update_hregs_h0
-	return Companion_SState_.Create_SState_(_2_dt__update_hregs_h0, (_0_dt__update__tmp_h0).Dtor_stack(), (_0_dt__update__tmp_h0).Dtor_snap(), _1_dt__update_hnext_h0, (_0_dt__update__tmp_h0).Dtor_helpers(), (_0_dt__update__tmp_h0).Dtor_hooks(), (_0_dt__update__tmp_h0).Dtor_ret(), (_0_dt__update__tmp_h0).Dtor_hkey())
+	return Companion_SState_.Create_SState_(_2_dt__update_hregs_h0, (_0_dt__update__tmp_h0).Dtor_stack(), (_0_dt__update__tmp_h0).Dtor_snap(), _1_dt__update_hnext_h0, (_0_dt__update__tmp_h0).Dtor_helpers(), (_0_dt__update__tmp_h0).Dtor_hooks(), (_0_dt__update__tmp_h0).Dtor_ret(), (_0_dt__update__tmp_h0).Dtor_hkey(), (_0_dt__update__tmp_h0).Dtor_know())
 }
 func (_static *CompanionStruct_Default___) BindFail(sp m_Obligations.Spec, pc _dafny.Int, ss SState) _dafny.Sequence {
 	return Companion_Default___.BindFailFrom((sp).Dtor_binds(), pc, ss, _dafny.Zero)
@@ -523,6 +523,10 @@ TAIL_CALL_START:
 		return _dafny.UnicodeSeqOfUtf8Bytes("record binding: key argument is not the helper's key pointer")
 	} else if ((((bs).Select((j).Uint32()).(m_Obligations.Bind)).Dtor_role()).Is_ValueArg()) && (!(((ss).Dtor_regs()).Select((((bs).Select((j).Uint32()).(m_Obligations.Bind)).Dtor_reg()).Uint32()).(m_Terms.Term)).Equals((ss).Dtor_ret())) {
 		return _dafny.UnicodeSeqOfUtf8Bytes("record binding: value argument is not the helper's result")
+	} else if ((((bs).Select((j).Uint32()).(m_Obligations.Bind)).Dtor_role()).Is_HitCall()) && (!(((ss).Dtor_know()).Is_NonZero())) {
+		return _dafny.UnicodeSeqOfUtf8Bytes("hook selection: hit hook on a path where the result may be NULL")
+	} else if ((((bs).Select((j).Uint32()).(m_Obligations.Bind)).Dtor_role()).Is_MissCall()) && (!(((ss).Dtor_know()).Is_IsZero())) {
+		return _dafny.UnicodeSeqOfUtf8Bytes("hook selection: miss hook on a path where the result may be non-NULL")
 	} else if ((((bs).Select((j).Uint32()).(m_Obligations.Bind)).Dtor_role()).Is_CopyArg()) && (!(Companion_Default___.CopyHolds(((ss).Dtor_regs()).Select((((bs).Select((j).Uint32()).(m_Obligations.Bind)).Dtor_reg()).Uint32()).(m_Terms.Term), (((bs).Select((j).Uint32()).(m_Obligations.Bind)).Dtor_role()).Dtor_off(), ss))) {
 		return _dafny.UnicodeSeqOfUtf8Bytes("record binding: value argument is not r10 plus the copy's offset, or r0 is not the helper's result")
 	} else {
@@ -573,6 +577,22 @@ func (_static *CompanionStruct_Default___) Final(sp m_Obligations.Spec, ss SStat
 		return Companion_Verdict_.Create_NotValidated_(pc, _dafny.UnicodeSeqOfUtf8Bytes("stack at or above the floor changed"))
 	} else {
 		return Companion_Verdict_.Create_Validated_()
+	}
+}
+func (_static *CompanionStruct_Default___) Refine(ss SState, c m_Semantics.Cond, dst _dafny.Int, imm uint32, taken bool) SState {
+	if (((((c).Is_JEq()) || ((c).Is_JNe())) && ((imm) == (uint32(0)))) && ((dst).Cmp(m_Semantics.Companion_Default___.NREGS()) < 0)) && ((((ss).Dtor_regs()).Select((dst).Uint32()).(m_Terms.Term)).Equals((ss).Dtor_ret())) {
+		var _0_dt__update__tmp_h0 SState = ss
+		_ = _0_dt__update__tmp_h0
+		var _1_dt__update_hknow_h0 Know = (func() Know {
+			if ((c).Is_JEq()) == (taken) {
+				return Companion_Know_.Create_IsZero_()
+			}
+			return Companion_Know_.Create_NonZero_()
+		})()
+		_ = _1_dt__update_hknow_h0
+		return Companion_SState_.Create_SState_((_0_dt__update__tmp_h0).Dtor_regs(), (_0_dt__update__tmp_h0).Dtor_stack(), (_0_dt__update__tmp_h0).Dtor_snap(), (_0_dt__update__tmp_h0).Dtor_next(), (_0_dt__update__tmp_h0).Dtor_helpers(), (_0_dt__update__tmp_h0).Dtor_hooks(), (_0_dt__update__tmp_h0).Dtor_ret(), (_0_dt__update__tmp_h0).Dtor_hkey(), _1_dt__update_hknow_h0)
+	} else {
+		return ss
 	}
 }
 func (_static *CompanionStruct_Default___) Target(pc _dafny.Int, off uint16) _dafny.Int {
@@ -656,19 +676,23 @@ func (_static *CompanionStruct_Default___) SymExec(prog _dafny.Sequence, sp m_Ob
 		}
 		{
 			if _source1.Is_Jcond() {
-				var _4_dst _dafny.Int = _source1.Get_().(m_Semantics.Instr_Jcond).Dst
-				_ = _4_dst
-				var _5_off uint16 = _source1.Get_().(m_Semantics.Instr_Jcond).Off
-				_ = _5_off
-				if (((_4_dst).Cmp(m_Semantics.Companion_Default___.NREGS()) >= 0) || ((m_Bits.Companion_Default___.Signed16(_5_off)).Sign() == -1)) || ((Companion_Default___.Target(pc, _5_off)).Cmp(_dafny.IntOfUint32((prog).Cardinality())) > 0) {
+				var _4_c m_Semantics.Cond = _source1.Get_().(m_Semantics.Instr_Jcond).Cond
+				_ = _4_c
+				var _5_dst _dafny.Int = _source1.Get_().(m_Semantics.Instr_Jcond).Dst
+				_ = _5_dst
+				var _6_imm uint32 = _source1.Get_().(m_Semantics.Instr_Jcond).Imm
+				_ = _6_imm
+				var _7_off uint16 = _source1.Get_().(m_Semantics.Instr_Jcond).Off
+				_ = _7_off
+				if (((_5_dst).Cmp(m_Semantics.Companion_Default___.NREGS()) >= 0) || ((m_Bits.Companion_Default___.Signed16(_7_off)).Sign() == -1)) || ((Companion_Default___.Target(pc, _7_off)).Cmp(_dafny.IntOfUint32((prog).Cardinality())) > 0) {
 					return Companion_Verdict_.Create_NotValidated_(pc, _dafny.UnicodeSeqOfUtf8Bytes("branch not forward within the window"))
 				} else {
-					var _6_r Verdict = Companion_Default___.SymExec(prog, sp, (pc).Plus(_dafny.One), ss, m)
-					_ = _6_r
-					if (_6_r).Is_NotValidated() {
-						return _6_r
+					var _8_r Verdict = Companion_Default___.SymExec(prog, sp, (pc).Plus(_dafny.One), Companion_Default___.Refine(ss, _4_c, _5_dst, _6_imm, false), m)
+					_ = _8_r
+					if (_8_r).Is_NotValidated() {
+						return _8_r
 					} else {
-						return Companion_Default___.SymExec(prog, sp, Companion_Default___.Target(pc, _5_off), ss, m)
+						return Companion_Default___.SymExec(prog, sp, Companion_Default___.Target(pc, _7_off), Companion_Default___.Refine(ss, _4_c, _5_dst, _6_imm, true), m)
 					}
 				}
 			}
@@ -678,20 +702,20 @@ func (_static *CompanionStruct_Default___) SymExec(prog _dafny.Sequence, sp m_Ob
 			_ = _source3
 			{
 				if _source3.Is_SFail() {
-					var _7_msg _dafny.Sequence = _source3.Get_().(SR_SFail).Reason
-					_ = _7_msg
-					return Companion_Verdict_.Create_NotValidated_(pc, _7_msg)
+					var _9_msg _dafny.Sequence = _source3.Get_().(SR_SFail).Reason
+					_ = _9_msg
+					return Companion_Verdict_.Create_NotValidated_(pc, _9_msg)
 				}
 			}
 			{
-				var _8_ss_k SState = _source3.Get_().(SR_SOk).Ss
-				_ = _8_ss_k
-				if !(Companion_Default___.SWF(_8_ss_k)) {
+				var _10_ss_k SState = _source3.Get_().(SR_SOk).Ss
+				_ = _10_ss_k
+				if !(Companion_Default___.SWF(_10_ss_k)) {
 					return Companion_Verdict_.Create_NotValidated_(pc, _dafny.UnicodeSeqOfUtf8Bytes("internal"))
 				} else if (((prog).Select((pc).Uint32()).(m_Semantics.Instr)).Is_CallLocal()) && (!_dafny.Companion_Sequence_.Equal(Companion_Default___.BindFail(sp, pc, ss), _dafny.UnicodeSeqOfUtf8Bytes(""))) {
 					return Companion_Verdict_.Create_NotValidated_(pc, Companion_Default___.BindFail(sp, pc, ss))
 				} else {
-					return Companion_Default___.SymExec(prog, sp, (pc).Plus(_dafny.One), _8_ss_k, m)
+					return Companion_Default___.SymExec(prog, sp, (pc).Plus(_dafny.One), _10_ss_k, m)
 				}
 			}
 		}
@@ -851,6 +875,161 @@ func (_static *CompanionStruct_Default___) MAX__BRANCHES() _dafny.Int {
 
 // End of class Default__
 
+// Definition of datatype Know
+type Know struct {
+	Data_Know_
+}
+
+func (_this Know) Get_() Data_Know_ {
+	return _this.Data_Know_
+}
+
+type Data_Know_ interface {
+	isKnow()
+}
+
+type CompanionStruct_Know_ struct {
+}
+
+var Companion_Know_ = CompanionStruct_Know_{}
+
+type Know_Unknown struct {
+}
+
+func (Know_Unknown) isKnow() {}
+
+func (CompanionStruct_Know_) Create_Unknown_() Know {
+	return Know{Know_Unknown{}}
+}
+
+func (_this Know) Is_Unknown() bool {
+	_, ok := _this.Get_().(Know_Unknown)
+	return ok
+}
+
+type Know_IsZero struct {
+}
+
+func (Know_IsZero) isKnow() {}
+
+func (CompanionStruct_Know_) Create_IsZero_() Know {
+	return Know{Know_IsZero{}}
+}
+
+func (_this Know) Is_IsZero() bool {
+	_, ok := _this.Get_().(Know_IsZero)
+	return ok
+}
+
+type Know_NonZero struct {
+}
+
+func (Know_NonZero) isKnow() {}
+
+func (CompanionStruct_Know_) Create_NonZero_() Know {
+	return Know{Know_NonZero{}}
+}
+
+func (_this Know) Is_NonZero() bool {
+	_, ok := _this.Get_().(Know_NonZero)
+	return ok
+}
+
+func (CompanionStruct_Know_) Default() Know {
+	return Companion_Know_.Create_Unknown_()
+}
+
+func (_ CompanionStruct_Know_) AllSingletonConstructors() _dafny.Iterator {
+	i := -1
+	return func() (interface{}, bool) {
+		i++
+		switch i {
+		case 0:
+			return Companion_Know_.Create_Unknown_(), true
+		case 1:
+			return Companion_Know_.Create_IsZero_(), true
+		case 2:
+			return Companion_Know_.Create_NonZero_(), true
+		default:
+			return Know{}, false
+		}
+	}
+}
+
+func (_this Know) String() string {
+	switch _this.Get_().(type) {
+	case nil:
+		return "null"
+	case Know_Unknown:
+		{
+			return "Checker.Know.Unknown"
+		}
+	case Know_IsZero:
+		{
+			return "Checker.Know.IsZero"
+		}
+	case Know_NonZero:
+		{
+			return "Checker.Know.NonZero"
+		}
+	default:
+		{
+			return "<unexpected>"
+		}
+	}
+}
+
+func (_this Know) Equals(other Know) bool {
+	switch _this.Get_().(type) {
+	case Know_Unknown:
+		{
+			_, ok := other.Get_().(Know_Unknown)
+			return ok
+		}
+	case Know_IsZero:
+		{
+			_, ok := other.Get_().(Know_IsZero)
+			return ok
+		}
+	case Know_NonZero:
+		{
+			_, ok := other.Get_().(Know_NonZero)
+			return ok
+		}
+	default:
+		{
+			return false // unexpected
+		}
+	}
+}
+
+func (_this Know) EqualsGeneric(other interface{}) bool {
+	typed, ok := other.(Know)
+	return ok && _this.Equals(typed)
+}
+
+func Type_Know_() _dafny.TypeDescriptor {
+	return type_Know_{}
+}
+
+type type_Know_ struct {
+}
+
+func (_this type_Know_) Default() interface{} {
+	return Companion_Know_.Default()
+}
+
+func (_this type_Know_) String() string {
+	return "Checker.Know"
+}
+func (_this Know) ParentTraits_() []*_dafny.TraitID {
+	return [](*_dafny.TraitID){}
+}
+
+var _ _dafny.TraitOffspring = Know{}
+
+// End of datatype Know
+
 // Definition of datatype SState
 type SState struct {
 	Data_SState_
@@ -878,12 +1057,13 @@ type SState_SState struct {
 	Hooks   _dafny.Int
 	Ret     m_Terms.Term
 	Hkey    m_Terms.Term
+	Know    Know
 }
 
 func (SState_SState) isSState() {}
 
-func (CompanionStruct_SState_) Create_SState_(Regs _dafny.Sequence, Stack _dafny.Sequence, Snap _dafny.Sequence, Next _dafny.Int, Helpers _dafny.Int, Hooks _dafny.Int, Ret m_Terms.Term, Hkey m_Terms.Term) SState {
-	return SState{SState_SState{Regs, Stack, Snap, Next, Helpers, Hooks, Ret, Hkey}}
+func (CompanionStruct_SState_) Create_SState_(Regs _dafny.Sequence, Stack _dafny.Sequence, Snap _dafny.Sequence, Next _dafny.Int, Helpers _dafny.Int, Hooks _dafny.Int, Ret m_Terms.Term, Hkey m_Terms.Term, Know Know) SState {
+	return SState{SState_SState{Regs, Stack, Snap, Next, Helpers, Hooks, Ret, Hkey, Know}}
 }
 
 func (_this SState) Is_SState() bool {
@@ -892,7 +1072,7 @@ func (_this SState) Is_SState() bool {
 }
 
 func (CompanionStruct_SState_) Default() SState {
-	return Companion_SState_.Create_SState_(_dafny.EmptySeq, _dafny.EmptySeq, _dafny.EmptySeq, _dafny.Zero, _dafny.Zero, _dafny.Zero, m_Terms.Companion_Term_.Default(), m_Terms.Companion_Term_.Default())
+	return Companion_SState_.Create_SState_(_dafny.EmptySeq, _dafny.EmptySeq, _dafny.EmptySeq, _dafny.Zero, _dafny.Zero, _dafny.Zero, m_Terms.Companion_Term_.Default(), m_Terms.Companion_Term_.Default(), Companion_Know_.Default())
 }
 
 func (_this SState) Dtor_regs() _dafny.Sequence {
@@ -927,13 +1107,17 @@ func (_this SState) Dtor_hkey() m_Terms.Term {
 	return _this.Get_().(SState_SState).Hkey
 }
 
+func (_this SState) Dtor_know() Know {
+	return _this.Get_().(SState_SState).Know
+}
+
 func (_this SState) String() string {
 	switch data := _this.Get_().(type) {
 	case nil:
 		return "null"
 	case SState_SState:
 		{
-			return "Checker.SState.SState" + "(" + _dafny.String(data.Regs) + ", " + _dafny.String(data.Stack) + ", " + _dafny.String(data.Snap) + ", " + _dafny.String(data.Next) + ", " + _dafny.String(data.Helpers) + ", " + _dafny.String(data.Hooks) + ", " + _dafny.String(data.Ret) + ", " + _dafny.String(data.Hkey) + ")"
+			return "Checker.SState.SState" + "(" + _dafny.String(data.Regs) + ", " + _dafny.String(data.Stack) + ", " + _dafny.String(data.Snap) + ", " + _dafny.String(data.Next) + ", " + _dafny.String(data.Helpers) + ", " + _dafny.String(data.Hooks) + ", " + _dafny.String(data.Ret) + ", " + _dafny.String(data.Hkey) + ", " + _dafny.String(data.Know) + ")"
 		}
 	default:
 		{
@@ -947,7 +1131,7 @@ func (_this SState) Equals(other SState) bool {
 	case SState_SState:
 		{
 			data2, ok := other.Get_().(SState_SState)
-			return ok && data1.Regs.Equals(data2.Regs) && data1.Stack.Equals(data2.Stack) && data1.Snap.Equals(data2.Snap) && data1.Next.Cmp(data2.Next) == 0 && data1.Helpers.Cmp(data2.Helpers) == 0 && data1.Hooks.Cmp(data2.Hooks) == 0 && data1.Ret.Equals(data2.Ret) && data1.Hkey.Equals(data2.Hkey)
+			return ok && data1.Regs.Equals(data2.Regs) && data1.Stack.Equals(data2.Stack) && data1.Snap.Equals(data2.Snap) && data1.Next.Cmp(data2.Next) == 0 && data1.Helpers.Cmp(data2.Helpers) == 0 && data1.Hooks.Cmp(data2.Hooks) == 0 && data1.Ret.Equals(data2.Ret) && data1.Hkey.Equals(data2.Hkey) && data1.Know.Equals(data2.Know)
 		}
 	default:
 		{

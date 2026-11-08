@@ -14,9 +14,11 @@ module Checker {
 
   // Symbolic state.  snap: the stack at [f,0) the region must leave as is;
   // next: number of fresh symbols used; ret: the helper result symbol;
-  // hkey: r2 at the helper call (the key pointer of a lookup).
+  // hkey: r2 at the helper call (the key pointer of a lookup); know: what
+  // the branches taken since the helper call say about the result.
+  datatype Know = Unknown | IsZero | NonZero
   datatype SState = SState(regs: seq<Term>, stack: seq<BTerm>, snap: seq<BTerm>,
-                           next: nat, helpers: nat, hooks: nat, ret: Term, hkey: Term)
+                           next: nat, helpers: nat, hooks: nat, ret: Term, hkey: Term, know: Know)
 
   predicate SWF(ss: SState) {
     |ss.regs| == NREGS && |ss.stack| == STACK && |ss.snap| == STACK
@@ -24,7 +26,7 @@ module Checker {
 
   function SInit(): SState {
     var st := seq(STACK, (i: nat) => BEntry(i));
-    SState(seq(NREGS, (k: nat) => Entry(k)), st, st, 0, 0, 0, Const(0), Const(0))
+    SState(seq(NREGS, (k: nat) => Entry(k)), st, st, 0, 0, 0, Const(0), Const(0), Unknown)
   }
 
   datatype Verdict = Validated | NotValidated(pc: int, reason: string)
@@ -130,7 +132,7 @@ module Checker {
         var lo := STACK as int + sp.floor;
         var st := seq(STACK, i requires 0 <= i < STACK =>
                         if i >= lo then BOf(Fresh(ss.next + 6 + (i - lo)), 0) else ss.stack[i]);
-        SOk(SState(FreshRegs(ss.regs, ss.next), st, st, ss.next + 6 + (-sp.floor), 1, ss.hooks, Fresh(ss.next), ss.regs[2]))
+        SOk(SState(FreshRegs(ss.regs, ss.next), st, st, ss.next + 6 + (-sp.floor), 1, ss.hooks, Fresh(ss.next), ss.regs[2], Unknown))
     case CallLocal(_) =>
       // hook call (trusted calling convention): r0..r5 <- havoc; r6..r10 and the stack preserved
       if !sp.hookCalls then SFail("call not allowed in this window")
@@ -192,6 +194,10 @@ module Checker {
     then "record binding: key argument is not the helper's key pointer"
     else if bs[j].role.ValueArg? && ss.regs[bs[j].reg] != ss.ret
     then "record binding: value argument is not the helper's result"
+    else if bs[j].role.HitCall? && !ss.know.NonZero?
+    then "hook selection: hit hook on a path where the result may be NULL"
+    else if bs[j].role.MissCall? && !ss.know.IsZero?
+    then "hook selection: miss hook on a path where the result may be non-NULL"
     else if bs[j].role.CopyArg? && !CopyHolds(ss.regs[bs[j].reg], bs[j].role.off, ss)
     then "record binding: value argument is not r10 plus the copy's offset, or r0 is not the helper's result"
     else BindFailFrom(bs, pc, ss, j + 1)
@@ -215,6 +221,17 @@ module Checker {
   }
 
   // ---------------- path enumeration ----------------
+
+  // The arm of `if rd == 0` / `if rd != 0` taken (taken = jump) when rd is
+  // the result symbol: the result is zero or non-zero there.  Any other
+  // branch leaves know as it is.
+  function Refine(ss: SState, c: Cond, dst: nat, imm: bv32, taken: bool): SState
+    requires SWF(ss)
+  {
+    if (c.JEq? || c.JNe?) && imm == 0 && dst < NREGS && ss.regs[dst] == ss.ret
+    then ss.(know := if c.JEq? == taken then IsZero else NonZero)
+    else ss
+  }
 
   function Target(pc: nat, off: bv16): int { pc + 1 + Signed16(off) }
 
@@ -247,12 +264,12 @@ module Checker {
       case Ja(off) =>
         if Signed16(off) < 0 || Target(pc, off) > |prog| then NotValidated(pc, "jump not forward within the window")
         else SymExec(prog, sp, Target(pc, off), ss, m)
-      case Jcond(_, dst, _, off) =>
+      case Jcond(c, dst, imm, off) =>
         if dst >= NREGS || Signed16(off) < 0 || Target(pc, off) > |prog|
         then NotValidated(pc, "branch not forward within the window")
         else
-          var r := SymExec(prog, sp, pc + 1, ss, m);
-          if r.NotValidated? then r else SymExec(prog, sp, Target(pc, off), ss, m)
+          var r := SymExec(prog, sp, pc + 1, Refine(ss, c, dst, imm, false), m);
+          if r.NotValidated? then r else SymExec(prog, sp, Target(pc, off), Refine(ss, c, dst, imm, true), m)
       case _ =>
         match SymStep(sp, prog[pc], ss)
         case SFail(msg) => NotValidated(pc, msg)

@@ -44,6 +44,7 @@ module Soundness {
     && ss.helpers <= 1 && ss.hooks <= 1
     && Eval(ss.ret, EnvOf(s0, sigma)) == HelperRet(cs.events)
     && Eval(ss.hkey, EnvOf(s0, sigma)) == HelperKey(cs.events)
+    && (ss.know.IsZero? ==> HelperRet(cs.events) == 0) && (ss.know.NonZero? ==> HelperRet(cs.events) != 0)
     && AllBound(sp, cs.events)
     && (forall i :: 0 <= i < |cs.events| ==> EventOk(sp, s0, cs.events[i]))
     && cs.regs[10] == s0.regs[10]
@@ -190,9 +191,23 @@ module Soundness {
   lemma SymExecJcond(prog: seq<Instr>, sp: Spec, pc: nat, ss: SState, m: Mode)
     requires pc < |prog| && prog[pc].Jcond? && SWF(ss) && SpecWF(sp) && SymExec(prog, sp, pc, ss, m) == Validated
     ensures var t := Target(pc, prog[pc].off);
-            prog[pc].dst < NREGS && pc < t <= |prog|
-            && SymExec(prog, sp, pc + 1, ss, m) == Validated && SymExec(prog, sp, t, ss, m) == Validated
+            var ins := prog[pc];
+            ins.dst < NREGS && pc < t <= |prog|
+            && SymExec(prog, sp, pc + 1, Refine(ss, ins.cond, ins.dst, ins.imm, false), m) == Validated
+            && SymExec(prog, sp, t, Refine(ss, ins.cond, ins.dst, ins.imm, true), m) == Validated
   { reveal SymExec(); }
+
+  // The arm the run takes agrees with what Refine records about the result.
+  lemma RefineSim(sp: Spec, ss: SState, cs: CState, s0: CState, sigma: seq<bv64>, ins: Instr, taken: bool)
+    requires Sim(sp, ss, cs, s0, sigma) && ins.Jcond? && ins.dst < NREGS
+    requires taken == CondHolds(ins.cond, cs.regs[ins.dst], ins.imm)
+    ensures Sim(sp, Refine(ss, ins.cond, ins.dst, ins.imm, taken), cs, s0, sigma)
+  {
+    if (ins.cond.JEq? || ins.cond.JNe?) && ins.imm == 0 && ss.regs[ins.dst] == ss.ret {
+      assert cs.regs[ins.dst] == HelperRet(cs.events);
+      assert Sext32(0) == 0;
+    }
+  }
 
   lemma SymExecStep(prog: seq<Instr>, sp: Spec, pc: nat, ss: SState, m: Mode)
     requires pc < |prog| && !prog[pc].Exit? && !prog[pc].Ja? && !prog[pc].Jcond?
@@ -485,6 +500,8 @@ module Soundness {
               && (bs[i].role.KeyArg? ==> ss.regs[bs[i].reg] == ss.hkey)
               && (bs[i].role.ValueArg? ==> ss.regs[bs[i].reg] == ss.ret)
               && (bs[i].role.CopyArg? ==> CopyHolds(ss.regs[bs[i].reg], bs[i].role.off, ss))
+              && (bs[i].role.HitCall? ==> ss.know.NonZero?)
+              && (bs[i].role.MissCall? ==> ss.know.IsZero?)
     decreases |bs| - j
   {
     if j < |bs| { BindFailOk(bs, pc, ss, j + 1); }
@@ -521,6 +538,8 @@ module Soundness {
                    case KeyArg => ev.args[b.reg - 1] == HelperKey(cs.events)
                    case ValueArg => ev.args[b.reg - 1] == HelperRet(cs.events)
                    case CopyArg(off) => Rel(ev.args[b.reg - 1], ev.fp) == off && ev.r0 == HelperRet(cs.events)
+                   case HitCall => HelperRet(cs.events) != 0
+                   case MissCall => HelperRet(cs.events) == 0
       {
         var b := sp.binds[j];
         assert ev.args[b.reg - 1] == cs.regs[b.reg];
@@ -772,11 +791,14 @@ module Soundness {
     var ins := prog[pc];
     SymExecJcond(prog, sp, pc, ss, ModeOf(ph));
     var t := if CondHolds(ins.cond, cs.regs[ins.dst], ins.imm) then Target(pc, ins.off) else pc + 1;
+    var taken := CondHolds(ins.cond, cs.regs[ins.dst], ins.imm);
+    var ss' := Refine(ss, ins.cond, ins.dst, ins.imm, taken);
     assert pc < t <= |prog|;
-    assert SymExec(prog, sp, t, ss, ModeOf(ph)) == Validated;
+    assert SymExec(prog, sp, t, ss', ModeOf(ph)) == Validated;
     StepEq(sp.floor, ins, cs, oracle);
     var cs' := JumpAdvance(raw, ph, prog, sp, pc, ss, cs, s0, oracle, fuel, t);
-    ExecSound(raw, ph, prog, sp, t, ss, cs', s0, oracle, fuel - 1);
+    RefineSim(sp, ss, cs', s0, LogOf(Out(raw, sp, ph, cs', oracle, fuel - 1)), ins, taken);
+    ExecSound(raw, ph, prog, sp, t, ss', cs', s0, oracle, fuel - 1);
   }
 
   // Other instructions: one symbolic step simulates one concrete step, and

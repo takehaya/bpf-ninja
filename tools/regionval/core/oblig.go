@@ -28,6 +28,19 @@ var (
 	wrapArgs = []int{1, 2, 3, 5}
 )
 
+// resultKnown is what the branches of the path between the helper call
+// (event hi) and event i say about the result v: the last `if t == 0` or
+// `if t != 0` with t the result decides whether it is zero or not.
+func resultKnown(cs []Cond, v *Term, hi, i int) (zero, nonzero bool) {
+	for _, c := range cs {
+		if c.Ev > hi && c.Ev <= i && (c.Op == 0x15 || c.Op == 0x55) && c.Imm == 0 && Equal(c.T, v) {
+			zero = (c.Op == 0x15) == c.Taken
+			nonzero = !zero
+		}
+	}
+	return zero, nonzero
+}
+
 // Writes is the set of registers x may write (rows A64, A32,
 // LDX: dst; C-1/C-2: a call writes r0-r5).
 func Writes(x Insn) uint16 {
@@ -263,10 +276,11 @@ func validated(w Window, paths []Path) Verdict {
 	// since it is about what a hook records, not about the target.
 	for _, p := range paths {
 		var helper *Event
+		hi := 0
 		for i := range p.Events {
 			e := &p.Events[i]
 			if e.Kind == EvHelper {
-				helper = e
+				helper, hi = e, i
 			}
 			b, ok := w.Bind[e.At.PC]
 			if e.Kind != EvHook || !ok || (e.At.Depth == 1) != wrap {
@@ -283,6 +297,13 @@ func validated(w Window, paths []Path) Verdict {
 				return notValidated("RB", "hook call at %v: value argument r%d is %v, not the copy at r10%+d", e.At, b.Value, e.Regs[b.Value], b.Off)
 			case b.Copy && !Equal(e.Regs[0], helper.V): // rule:RB-copy-r0
 				return notValidated("RB", "hook call at %v: r0 is %v, not the helper's result %v the copy reads", e.At, e.Regs[0], helper.V)
+			}
+			zero, nonzero := resultKnown(p.Conds, helper.V, hi, i)
+			if b.Hit && !nonzero { // rule:HS-hit
+				return notValidated("HS", "hit hook call at %v on a path where the result may be NULL", e.At)
+			}
+			if b.Miss && !zero { // rule:HS-miss
+				return notValidated("HS", "miss hook call at %v on a path where the result may be non-NULL", e.At)
 			}
 		}
 	}

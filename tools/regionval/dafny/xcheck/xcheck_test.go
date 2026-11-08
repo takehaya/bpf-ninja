@@ -207,6 +207,9 @@ func TestRecordBinding(t *testing.T) {
 	cp := cat(stx(10, 2, -176), helper, stx(10, 0, -184), jeq(0, 0, 7), ldx(1, 0, 0), stx(10, 1, -200), ldx(1, 10, -192), ldx(3, 10, -176),
 		mov(4, 10), addk(4, -200), hook, ldx(0, 10, -184))
 	cb := map[int]core.Binding{10: {Key: 3, Value: 4, Copy: true, Off: -200}}
+	hit := func(pc int) map[int]core.Binding { return map[int]core.Binding{pc: {Key: 3, Value: 4, Hit: true}} }
+	mf := map[int]core.Binding{6: {Key: 3, Miss: true}, 11: {Key: 3, Value: 4, Hit: true}}
+	mf1 := map[int]core.Binding{7: {Key: 3, Miss: true}, 12: {Key: 3, Value: 4, Hit: true}} // one insn added before the guard
 	for _, c := range []struct {
 		name string
 		raw  []byte
@@ -223,6 +226,15 @@ func TestRecordBinding(t *testing.T) {
 		{"key = result slot", rep8(auto, 5, ldx(3, 10, -184)), kv(7, 3, 4), false},
 		{"plain, key and value swapped", rep8(rep8(auto, 5, ldx(3, 10, -176)), 6, mov(2, 0)), kv(7, 2, 3), false},
 		{"copy", cp, cb, true},
+		// HS: which result each hook runs on
+		{"auto, hit", auto, hit(7), true},
+		{"auto, hit, guard inverted", rep8(auto, 3, jne(0, 0, 4)), hit(7), false},
+		{"auto, hit, guard on r1", rep8(auto, 3, jeq(1, 0, 4)), hit(7), false},
+		{"auto, hit, no guard", generic, hit(6), false},
+		{"miss-first, hit and miss", missFirst, mf, true},
+		{"miss-first, guard inverted", rep8(missFirst, 3, jeq(0, 0, 4)), mf, false},
+		{"miss-first, guard on the key", ins8(rep8(missFirst, 3, jne(5, 0, 4)), 3, ldx(5, 10, -176)), mf1, false},
+		{"miss-first, guard on a reload of the result", ins8(rep8(missFirst, 3, jne(5, 0, 4)), 3, ldx(5, 10, -184)), mf1, true},
 		{"copy, value = r0", rep8(rep8(cp, 8, mov(4, 0)), 9, mov(4, 4)), cb, false},
 		{"copy, wrong offset", rep8(cp, 9, addk(4, -192)), cb, false},
 		{"copy, r0 changed", rep8(cp, 7, mov(0, 10)), cb, false},
@@ -233,10 +245,15 @@ func TestRecordBinding(t *testing.T) {
 			t.Fatalf("%s: decode", c.name)
 		}
 		w.Bind = c.bind
+		for pc := range c.bind {
+			if !w.Hook[pc] {
+				t.Fatalf("%s: bind at %d is not a hook call", c.name, pc)
+			}
+		}
 		gv := core.Check(w)
 		dv := contract.Validate(w, c.raw, nil, nil)
-		if gv.Validated != c.ok || dv.Validated != c.ok || (!c.ok && gv.Rule != "RB") {
-			t.Errorf("%s: Go %+v, Dafny %+v, want validated=%v (rule RB if not)", c.name, gv, dv, c.ok)
+		if gv.Validated != c.ok || dv.Validated != c.ok || (!c.ok && gv.Rule != "RB" && gv.Rule != "HS") {
+			t.Errorf("%s: Go %+v, Dafny %+v, want validated=%v (rule RB or HS if not)", c.name, gv, dv, c.ok)
 		}
 	}
 }

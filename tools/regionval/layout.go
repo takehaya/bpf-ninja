@@ -519,6 +519,12 @@ func (l *Layout) binds(start, end int) map[int]core.Binding {
 				}
 			}
 		}
+		// HS: a typed lookup hook with a value runs on hits, one with only a
+		// key on misses; a hook that also takes the map (generic, dispatch)
+		// runs on both.
+		if !slices.Contains(fn.Params, "map") {
+			b.Hit, b.Miss = b.Value != 0, b.Value == 0 && b.Key != 0
+		}
 		if b != (core.Binding{}) {
 			m[j] = b
 		}
