@@ -120,6 +120,9 @@ func (m *machine) step() (bool, error) {
 		return true, nil
 	}
 	x := f.code[f.pc]
+	if x.Dst > 10 || x.Src > 10 { // 4-bit fields; the register file is r0-r10
+		return false, fmt.Errorf("%v: register number above r10", x)
+	}
 	m.out.Locs = append(m.out.Locs, core.Loc{Depth: d, PC: f.pc})
 	r := &f.r
 	class, code, useReg := x.Op&7, x.Op&0xf0, x.Op&0x08 != 0
