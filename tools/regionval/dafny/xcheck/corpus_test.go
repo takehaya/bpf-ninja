@@ -1,7 +1,6 @@
 package xcheck
 
 import (
-	"encoding/hex"
 	"fmt"
 	"io/fs"
 	"math/rand"
@@ -12,198 +11,12 @@ import (
 
 	"github.com/takehaya/bpf-ninja/tools/regionval"
 	"github.com/takehaya/bpf-ninja/tools/regionval/core"
+	"github.com/takehaya/bpf-ninja/tools/regionval/dafny/contract"
 	rd "github.com/takehaya/bpf-ninja/tools/regionval/dafny/regionvaldafny"
 	"github.com/takehaya/bpf-ninja/tools/regionval/interp"
 )
 
 const tailCallID = 12 // bpf_tail_call
-
-// spillSource is r_G of a pass prologue (the source register of its single
-// STX to r10), or 0 if the prologue is no certificate. It mirrors the
-// unexported core.spillSource.
-func spillSource(pro []core.Insn) int {
-	src := 0
-	for _, x := range pro {
-		if x.Class() == core.ClassSTX {
-			if src != 0 || x.Op != 0x7b || x.Dst != 10 || x.Src < 1 || x.Src > 5 {
-				return 0
-			}
-			src = int(x.Src)
-		}
-	}
-	return src
-}
-
-// writes is the set of registers an instruction may write, as a bit mask.
-// It mirrors the unexported core.writes.
-func writes(x core.Insn) uint16 {
-	switch c := x.Class(); {
-	case c == core.ClassALU || c == core.ClassALU64 || c == core.ClassLDX || x.Op == core.OpLdImm64:
-		return 1 << x.Dst
-	case x.Op == core.OpCall:
-		return 0x3f
-	}
-	return 0
-}
-
-// writesOutside returns the first instruction that may write a register
-// outside allowed, or -1.
-func writesOutside(xs []core.Insn, allowed uint16) int {
-	for i, x := range xs {
-		if writes(x)&^allowed != 0 {
-			return i
-		}
-	}
-	return -1
-}
-
-// dafnySpec maps a window kind to its Dafny Spec (README.md, Dafny core).
-// wbody and helper are W's raw instructions and the raw original helper
-// call O[i]; they are used for site-P8 only. ok is false when the Dafny
-// core has no spec for the window.
-func dafnySpec(cw core.Window, wbody, helper []byte) (rd.Spec, bool) {
-	f := int(cw.Floor)
-	const (
-		noHelper   = false
-		checkArgs  = false
-		restoreR0  = false
-		noHook     = false
-		notHookBdy = false
-	)
-	switch cw.Kind {
-	case core.KindWrap:
-		if cw.Callee == nil || len(helper) != 8 {
-			return rd.Spec{}, false
-		}
-		return rd.WrapSiteSpec(f, wbody, helper), true
-	case core.KindSite:
-		return rd.SiteSpec(f), true
-	case core.KindTail:
-		return rd.TailSiteSpec(f), true
-	case core.KindEntry:
-		return rd.EntryPrologueSpec(f), true
-	case core.KindCallback:
-		return rd.CallbackPrologueSpec(f), true
-	case core.KindPass: // no register changes; stores allowed
-		return rd.CustomSpec(f, nil, noHelper, checkArgs, restoreR0, true, noHook, notHookBdy), true
-	case core.KindPassLoad: // only r_G changes; no store
-		g := spillSource(cw.PassPrologue)
-		if g == 0 {
-			return rd.Spec{}, false
-		}
-		return rd.CustomSpec(f, []int{g}, noHelper, checkArgs, restoreR0, false, noHook, notHookBdy), true
-	case core.KindHook:
-		return rd.HookBodySpec(), true
-	}
-	return rd.Spec{}, false
-}
-
-// contract returns why a window fails the checks a caller of the Dafny core
-// makes outside Validate (README.md, Dafny core), or "" if it passes them.
-// Where the Go core checks the instructions a path executes, these checks
-// look at every instruction of the window, which is at least as strict.
-func contract(cw core.Window) string {
-	switch cw.Kind {
-	case core.KindSite, core.KindTail, core.KindWrap, core.KindEntry, core.KindCallback, core.KindPass, core.KindPassLoad, core.KindHook:
-	default:
-		return "kind not supported by the Dafny core"
-	}
-	if cw.Kind != core.KindHook && !cw.HasFloor {
-		return "no floor"
-	}
-	site := cw.Kind == core.KindSite || cw.Kind == core.KindTail
-	wrap := cw.Kind == core.KindWrap
-	for i, x := range cw.Insns {
-		if x.IsPseudoCall() && !cw.Hook[i] && (!wrap || i != len(cw.Insns)-1) {
-			return "pseudo call not to a hook"
-		}
-		if x.IsHelperCall() && (!site || i != cw.Center) {
-			return "helper call not at the centre"
-		}
-	}
-	switch cw.Kind {
-	case core.KindSite, core.KindTail:
-		if cw.Center < 0 || cw.Center >= len(cw.Insns) || !cw.Insns[cw.Center].IsHelperCall() {
-			return "no centre"
-		}
-		if (cw.Kind == core.KindTail) != (cw.Insns[cw.Center].Imm == tailCallID) {
-			return "centre is not this kind's helper"
-		}
-	case core.KindWrap:
-		// The last instruction is call W, whose target the layout resolved;
-		// every pseudo call inside W must be a hook call.
-		if cw.Center != len(cw.Insns)-1 || cw.Callee == nil {
-			return "P8 shape"
-		}
-		for i, x := range cw.Callee {
-			if x.IsPseudoCall() && !cw.CalleeHook[i] {
-				return "pseudo call in W not to a hook"
-			}
-		}
-	case core.KindCallback:
-		if writesOutside(cw.Insns, 1) >= 0 {
-			return "P1b: writes a register other than r0"
-		}
-	case core.KindPass:
-		if spillSource(cw.Insns) == 0 {
-			return "P9 certificate"
-		}
-		if writesOutside(cw.Insns, 0) >= 0 {
-			return "P9: pass prologue writes a register"
-		}
-		// Branches go forward only, so the store runs on every path when
-		// no branch comes before it.
-		for _, x := range cw.Insns {
-			if x.Class() == core.ClassSTX {
-				break
-			}
-			if x.IsJump() {
-				return "P9: a branch may skip the store"
-			}
-		}
-	case core.KindPassLoad:
-		g := spillSource(cw.PassPrologue)
-		if g == 0 {
-			return "P9 certificate"
-		}
-		if cw.PassLive&(1<<uint(g)) != 0 {
-			return "S10"
-		}
-		if writesOutside(cw.Insns, 1<<uint(g)) >= 0 {
-			return "P9: pass load writes a register other than r_G"
-		}
-	case core.KindHook:
-		for _, x := range cw.Insns {
-			if x.Class() == core.ClassLDX && x.Dst > 5 {
-				return "P7: load into r6-r9"
-			}
-		}
-	}
-	return ""
-}
-
-// rawRange is the wire-format bytes of T instructions [start, end).
-func rawRange(l *regionval.Layout, blob []byte, start, end int) []byte {
-	if end <= start {
-		return nil
-	}
-	last := l.T[end-1]
-	return blob[8*l.T[start].Raw : 8*(last.Raw+last.Slots())]
-}
-
-// sameInsns reports whether raw decodes to exactly the instructions xs.
-func sameInsns(raw []byte, xs []core.Insn) bool {
-	ys, err := core.Decode(raw)
-	if err != nil || len(ys) != len(xs) {
-		return false
-	}
-	for i := range xs {
-		if !xs[i].Same(ys[i]) {
-			return false
-		}
-	}
-	return true
-}
 
 func captureFiles(t *testing.T) []string {
 	t.Helper()
@@ -260,22 +73,16 @@ func p8Runs(r *rand.Rand, cw core.Window, raw []byte, sp rd.Spec, wlen, n int) s
 	return ""
 }
 
-// TestCaptureWindows runs the Go core and the Dafny core, used as the Go
-// core's replacement (the contract checks, then Validate), on every window
-// of every capture under testdata. A window the Dafny core validates and the
-// Go core rejects fails the test. Every site-P8 window is also run on random
-// inputs by both interpreters.
+// TestCaptureWindows runs the Go core and the Dafny core (contract.Validate,
+// what the command decides with) on every window of every capture under
+// testdata, and fails on any window where the two verdicts differ. Every
+// site-P8 window is also run on random inputs by both interpreters.
 func TestCaptureWindows(t *testing.T) {
 	files := captureFiles(t)
 	if len(files) == 0 {
 		t.Fatal("no captures under testdata")
 	}
-	// Windows the Go core validates and the Dafny core rejects. The Dafny
-	// core does not allow a hook call in an entry prologue.
-	wantGoOnly := map[string]bool{
-		"export/clean/clean-katran-ctxwrite.json ctxwrite [0,3) prologue-P1": true,
-	}
-	type count struct{ windows, goV, dafnyV, both int }
+	type count struct{ windows, goV, dafnyV int }
 	byKind := map[string]*count{}
 	goRejected, p8Compared := 0, 0
 	rng := rand.New(rand.NewSource(1))
@@ -291,50 +98,19 @@ func TestCaptureWindows(t *testing.T) {
 			t.Logf("%s: no windows (%v)", name, err) // neither core validates the load
 			continue
 		}
-		blob, err := hex.DecodeString(c.TransformedInsnsHex)
-		if err != nil {
-			t.Fatalf("%s: transformed instructions: %v", name, err)
-		}
-		oblob, err := hex.DecodeString(c.OriginalInsnsHex)
-		if err != nil {
-			t.Fatalf("%s: original instructions: %v", name, err)
-		}
 		for _, w := range l.Windows {
 			cw := l.CoreWindow(w)
 			id := fmt.Sprintf("%s %s [%d,%d) %s", name, w.Func, w.Start, w.End, cw.Kind)
-			raw := rawRange(l, blob, w.Start, w.End)
-			var wbody, helper []byte
-			if w.Callee >= 0 {
-				tf := l.TFuncs[w.Callee]
-				wbody = rawRange(l, blob, tf.Start, tf.End)
-				if w.Orig >= 0 {
-					if o := l.O[w.Orig]; 8*o.Raw+8 <= len(oblob) {
-						helper = oblob[8*o.Raw : 8*o.Raw+8]
-					}
-				}
-			}
-			// The bytes given to Dafny are the instructions the Go core checks.
-			if !sameInsns(raw, cw.Insns) {
-				t.Errorf("%s: window bytes differ from the Go core's window", id)
-			}
-			if cw.Kind == core.KindWrap && (!sameInsns(wbody, cw.Callee) || !sameInsns(helper, []core.Insn{cw.Helper})) {
-				t.Errorf("%s: W or O[i] bytes differ from the Go core's window", id)
-			}
+			raw, wbody, helper := l.WindowBytes(w)
 			rv := core.Check(cw)
-			dv := false
-			why := contract(cw)
-			if why == "" {
-				if sp, ok := dafnySpec(cw, wbody, helper); ok {
-					v := rd.Validate(raw, sp)
-					dv, why = v.Validated, v.Reason
-					if cw.Kind == core.KindWrap {
-						p8Compared++
-						if d := p8Runs(rng, cw, raw, sp, len(wbody)/8, 50); d != "" {
-							t.Errorf("%s: interp and Dafny differ: %s", id, d)
-						}
-					}
-				} else {
-					why = "no Dafny spec"
+			dv := contract.Validate(cw, raw, wbody, helper)
+			if strings.Contains(dv.Reason, "bytes differ") {
+				t.Errorf("%s: %s", id, dv.Reason)
+			}
+			if sp, ok := contract.Spec(cw, wbody, helper); ok && cw.Kind == core.KindWrap && contract.Check(cw) == "" {
+				p8Compared++
+				if d := p8Runs(rng, cw, raw, sp, len(wbody)/8, 50); d != "" {
+					t.Errorf("%s: interp and Dafny differ: %s", id, d)
 				}
 			}
 			k := byKind[cw.Kind]
@@ -348,24 +124,16 @@ func TestCaptureWindows(t *testing.T) {
 			} else {
 				goRejected++
 			}
-			if dv {
+			if dv.Validated {
 				k.dafnyV++
 			}
-			if dv && rv.Validated {
-				k.both++
-			}
 			switch {
-			case dv && !rv.Validated:
+			case dv.Validated && !rv.Validated:
 				t.Errorf("%s: Dafny validates, Go rejects (%s: %s)", id, rv.Rule, rv.Reason)
-			case rv.Validated && !dv && !wantGoOnly[id]:
-				t.Errorf("%s: Go validates, Dafny rejects (%s)", id, why)
-			case rv.Validated && !dv:
-				delete(wantGoOnly, id)
+			case rv.Validated && !dv.Validated:
+				t.Errorf("%s: Go validates, Dafny rejects (%s)", id, dv.Reason)
 			}
 		}
-	}
-	for id := range wantGoOnly {
-		t.Errorf("%s: expected Go to validate and Dafny to reject", id)
 	}
 	kinds := make([]string, 0, len(byKind))
 	for k := range byKind {
@@ -374,14 +142,14 @@ func TestCaptureWindows(t *testing.T) {
 	sort.Strings(kinds)
 	for _, k := range kinds {
 		c := byKind[k]
-		t.Logf("%-14s windows %4d  Go validated %4d  Dafny validated %4d  both %4d", k, c.windows, c.goV, c.dafnyV, c.both)
+		t.Logf("%-14s windows %4d  Go validated %4d  Dafny validated %4d", k, c.windows, c.goV, c.dafnyV)
 	}
 	// Guard against a vacuous pass: the planted captures give windows the Go
 	// core rejects, and wrapper sites reach the Dafny core.
 	if goRejected == 0 {
 		t.Error("no window rejected by the Go core")
 	}
-	if c := byKind[core.KindWrap]; c == nil || c.both == 0 || p8Compared == 0 {
+	if c := byKind[core.KindWrap]; c == nil || c.dafnyV == 0 || p8Compared == 0 {
 		t.Error("no site-P8 window validated by both cores")
 	}
 }
@@ -439,15 +207,18 @@ func TestContract(t *testing.T) {
 		if v := core.Check(c.w); v.Validated {
 			t.Errorf("%s: the Go core validates the window", c.name)
 		}
-		if why := contract(c.w); why == "" {
+		if why := contract.Check(c.w); why == "" {
 			t.Errorf("%s: contract passes", c.name)
+		}
+		if v := contract.Validate(c.w, nil, nil, nil); v.Validated || !strings.HasPrefix(v.Reason, "contract: ") {
+			t.Errorf("%s: Validate does not refuse by the contract: %+v", c.name, v)
 		}
 	}
 
 	// R15 at bpf_tail_call is in TailSiteSpec, not in the contract.
 	raw := cat(movk(3, 7), tail)
 	w := mk(core.KindTail, raw, nil)
-	if core.Check(w).Validated || contract(w) != "" || rd.Validate(raw, rd.TailSiteSpec(floor)).Validated {
+	if core.Check(w).Validated || contract.Check(w) != "" || rd.Validate(raw, rd.TailSiteSpec(floor)).Validated {
 		t.Error("tail site changing r3: want Go to reject, the contract to pass and Validate to reject")
 	}
 }

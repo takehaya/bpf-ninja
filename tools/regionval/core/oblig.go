@@ -28,9 +28,9 @@ var (
 	wrapArgs = []int{1, 2, 3, 5}
 )
 
-// writes is the set of registers x may write (rows A64, A32,
+// Writes is the set of registers x may write (rows A64, A32,
 // LDX: dst; C-1/C-2: a call writes r0-r5).
-func writes(x Insn) uint16 {
+func Writes(x Insn) uint16 {
 	switch c := x.Class(); {
 	case c == ClassALU || c == ClassALU64 || c == ClassLDX || x.Op == OpLdImm64:
 		return bit(x.Dst)
@@ -49,10 +49,10 @@ func lowest(m uint16) int {
 	return -1
 }
 
-// spillSource is r_G of a pass prologue: the source of its only
+// SpillSource is r_G of a pass prologue: the source of its only
 // instruction of class STX, which must be `*(u64 *)(r10 + o) = r_G` with
 // r_G one of r1-r5. 0 means no certificate.
-func spillSource(pro []Insn) int {
+func SpillSource(pro []Insn) int {
 	src := 0
 	for _, x := range pro {
 		if x.Class() == ClassSTX {
@@ -105,7 +105,7 @@ func validated(w Window, paths []Path) Verdict {
 		if w.Kind == KindPass {
 			pro = w.Insns
 		}
-		if rG = spillSource(pro); rG == 0 { // rule:P9-cert
+		if rG = SpillSource(pro); rG == 0 { // rule:P9-cert
 			return notValidated("P9", "no pass certificate: the callee's pass prologue does not spill exactly one of r1-r5")
 		}
 		// S10 only where r_G is written: a pass prologue writes no register
@@ -198,7 +198,7 @@ func validated(w Window, paths []Path) Verdict {
 		var wset uint16
 		for _, at := range p.Locs {
 			if prelude := !wrap || at.PC < w.Center; at.Depth == 0 && prelude {
-				wset |= writes(w.Insns[at.PC])
+				wset |= Writes(w.Insns[at.PC])
 			}
 		}
 		if wrap && wset&^bit(4) != 0 { // rule:P8-wp-writes

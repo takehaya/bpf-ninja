@@ -10,6 +10,11 @@ The answer is binary for each load: `validated` or not. Every failure carries a
 reason, and anything regionval does not model counts as a failure. A load that
 is not validated may still be correct; regionval is sound, not complete.
 
+Each window of inserted code is judged by two cores. The verdict comes from
+the Dafny core, which is proved sound (see [Dafny core](#dafny-core)). The Go
+core in `core/` runs on every window as well and gives the rule and reason
+of a failure. The output marks every window where the two cores differ.
+
 regionval is its own Go module, separate from the bpf-ninja binary, and it does
 not import bpf-ninja's packages. Its only input is the capture file.
 
@@ -33,9 +38,11 @@ From the repository root, `make regionval-test` runs the Go tests and
 
 `scripts/corpus.sh DIR [OUT]` writes the results to OUT (default
 `regionval-corpus.jsonl`) and prints how many loads were validated, how many
+windows were validated and how many the two cores disagree on, how many loads
 failed each structure stage, and how many windows failed each rule. It exits
-0 if every load is validated, 1 if any is not, and 2 on a usage error, a
-missing tool, a build failure or a directory without capture files.
+0 if every load is validated and the cores agree on every window, 1
+otherwise, and 2 on a usage error, a missing tool, a build failure or a
+directory without capture files.
 
 ### Output
 
@@ -48,13 +55,16 @@ One JSON object per capture file:
   "structure": {"kappa_ok": true, "edges_ok": true, "ok": true},
   "windows": [
     {"kind": "prologue", "core_kind": "prologue-P1", "func": "xsk_def_prog",
-     "start": 0, "end": 1, "validated": true, "reason": "", "paths": 1},
+     "start": 0, "end": 1, "validated": true, "reason": "", "paths": 1,
+     "go_validated": true, "disagree": false},
     {"kind": "site", "core_kind": "site", "func": "xsk_def_prog",
-     "start": 10, "end": 29, "validated": true, "reason": "", "paths": 2},
+     "start": 10, "end": 29, "validated": true, "reason": "", "paths": 2,
+     "go_validated": true, "disagree": false},
     {"kind": "hook", "core_kind": "hook-P7", "func": "ninja_any",
-     "start": 39, "end": 41, "validated": true, "reason": "", "paths": 1}
+     "start": 39, "end": 41, "validated": true, "reason": "", "paths": 1,
+     "go_validated": true, "disagree": false}
   ],
-  "counts": {"windows": 3, "validated": 3, "not_validated": 0,
+  "counts": {"windows": 3, "validated": 3, "not_validated": 0, "disagree": 0,
              "by_kind": {"hook": 1, "prologue": 1, "site": 1}},
   "time_ms": 0,
   "time_us": 497
@@ -72,9 +82,18 @@ One JSON object per capture file:
   write a result, and 2 without arguments. Read `validated` to decide.
 - `start` and `end` are instruction indices in T, counting a 16-byte
   `ld_imm64` as one instruction.
-- A window that is not validated has `rule` (the first failed obligation, see
-  [Obligations](#obligations)) and `reason`.
-- `paths` is the number of paths regionval explored in the window.
+- A window's `validated` is the Dafny core's verdict. `go_validated` is the
+  Go core's verdict, and `disagree` is true when the two differ.
+  `counts.disagree` is the number of such windows in the load.
+- When the Go core rejects a window, `rule` and `reason` are the Go core's:
+  the first failed obligation (see [Obligations](#obligations)). This holds
+  even if the Dafny core validates the window; `disagree` is then true. When
+  only the Dafny core rejects it, `rule` is `dafny`.
+- `dafny_reason` is set when the Dafny core rejects a window. It starts with
+  `contract:` when a check outside `Validate` failed, and with `insn N:` when
+  the reason concerns instruction N of the window (of W, for a reason found in
+  a wrapper's body).
+- `paths` is the number of paths the Go core explored in the window.
 
 ### Capture files
 
@@ -139,10 +158,10 @@ window sits in T, and `core_kind` is the set of obligations it is judged by:
 | `passload-P9` | the instructions before a call to such a function that pass the context |
 | `hook-P7` | the body of an inserted hook function |
 
-For each window regionval enumerates every path through the inserted code with
-a symbolic machine. A path is followed whether or not its branch conditions can
-hold, so this covers more paths than can run. At the end of each path it checks
-the obligations below by comparing symbolic terms. Two terms that are equal but
+For each window the Go core enumerates every path through the inserted code
+with a symbolic machine. A path is followed whether or not its branch
+conditions can hold, so this covers more paths than can run. At the end of
+each path it checks the obligations below by comparing symbolic terms. Two terms that are equal but
 written differently compare as unequal, so that case fails closed.
 
 ### Obligations
@@ -170,6 +189,7 @@ register or stack byte had when the window started.
 | `kind` | The window kind is known. |
 | `model` | The path left what the symbolic machine models, for example a load or store whose address it cannot place. |
 | `limit` | The window has more than 1024 paths, or a path runs more than 4096 instructions. |
+| `dafny` | The Go core validates the window and the Dafny core does not (`dafny_reason` says why). |
 
 ### Allowed instructions
 
@@ -209,25 +229,45 @@ wrong.
   report for the original program and is taken as given. The original program
   uses no stack below its floor, so a helper called with the original
   arguments writes only `[f, 0)`.
-- **Instruction semantics.** The allowlist rows above, the wire decoder and the
-  func_info and BTF parsers match the kernel. The differential tests compare
-  the symbolic machine with a separately written interpreter
-  (`interp/`); both follow the same table, so they do not test the table
-  against the kernel.
+- **The Dafny specification.** `dafny/src/Semantics.dfy` and `Bits.dfy` (the
+  semantics of the allowed instructions and the Dafny decoder) match the
+  kernel, and `Obligations.dfy` states what a window must keep. The
+  differential tests compare these semantics and the Go core's symbolic
+  machine with a separately written interpreter (`interp/`); all follow the
+  same table, so they do not test the table against the kernel.
+- **Structure parsing.** The wire decoder in `core/` and the `Insn` methods
+  that classify instructions, used to cut windows and by the contract, and
+  the func_info and BTF parsers match the kernel.
 - **Calling convention.** A helper call sets r0 to its result, leaves r1 to r5
   undefined and keeps r6 to r10. It may write any stack byte in `[f, 0)`. The
   lookup helpers do not read r4. A call to a hook or wrapper keeps r6 to r10
   and the caller's whole stack; hooks rely on their own `hook-P7` check for
-  this. A load from memory outside the stack changes nothing but its
-  destination register.
+  this. For a wrapper site, running W as a second frame (see
+  [Dafny core](#dafny-core)) matches the kernel. A load from memory outside
+  the stack changes nothing but its destination register.
 - **The original program is valid.** O passed the verifier, so it never reads
   r1 to r5 after a call before writing them. The liveness used by `P9` relies
   on this and on a table of argument counts for common helpers (unknown helpers
-  count as reading r1 to r5).
-- **Window cutting and kinds.** The code that cuts T into windows and assigns
-  each window's kind (`layout.go`) is outside the checked core. The core
-  re-checks the shape of a site, wrapper and pass window, and it rejects an
-  unknown kind.
+  count as reading r1 to r5). The liveness is computed by `core/live.go`.
+- **Window cutting, kinds and the contract.** The code that cuts T into
+  windows and assigns each window's kind (`layout.go`) is outside the proof,
+  and so is `dafny/contract`, which makes the checks outside `Validate` and
+  picks the spec for each kind. The contract rejects an unknown kind.
+- **The specs.** The presets in `dafny/src/Api.dfy` and the `CustomSpec`
+  arguments in `dafny/contract` say which obligations each window kind gets.
+  The proof holds for any spec; whether a spec asks enough of its kind is
+  outside it.
+- **The verdict merge.** `result.go` takes each window's verdict from the
+  Dafny core and validates a load only if every window is validated.
+- **The translation of the Dafny core to Go.** The checked-in `dafny/gen-go`
+  is what `dafny translate go` (Dafny 4.11.0) produces from `dafny/src`, and
+  that translation keeps the meaning of the verified code. `make
+  dafny-check-gen` checks that the files match a fresh translation, not that
+  the translation is correct.
+- **The Dafny Go runtime.** `github.com/dafny-lang/DafnyRuntimeGo/v4` v4.11.0,
+  which the generated Go calls for integers, sequences and sets.
+- **The wrapper.** `dafny/regionvaldafny` converts the window bytes and the
+  spec to Dafny values and the verdict back.
 - **What was checked is what was loaded.** The capture records the exact
   instructions given to the kernel.
 - **From windows to the program.** regionval shows that every window meets its
@@ -235,9 +275,15 @@ wrong.
   behaves like the original is argued separately; regionval does not check it.
 - The Go toolchain.
 
+The Go core's symbolic machine, term comparison, allowlist and obligations
+(`core/sym.go`, `term.go`, `allow.go`, `oblig.go` apart from `Writes` and
+`SpillSource`, which the contract uses) are not trusted for the verdict. A
+fault there can change a rule name or mark a window as disagreeing, but
+cannot make a window validated.
+
 ## Dafny core
 
-`dafny/` holds a second implementation of the per-window check, written in
+`dafny/` holds the per-window check that decides the verdict, written in
 Dafny together with a proof that it is sound.
 
 - `dafny/src/Semantics.dfy` and `Bits.dfy` are the concrete semantics of the
@@ -253,40 +299,42 @@ Dafny together with a proof that it is sound.
   missing from the list that `make dafny-verify` verifies.
 - `dafny/gen-go` is Go translated from the sources and is checked in.
   `dafny/regionvaldafny` is a small wrapper around it.
+- `dafny/contract` is what the command calls for each window: the checks
+  outside `Validate`, then `Validate` with the spec for the window's kind.
 - `dafny/xcheck` runs both cores on hand-written windows and requires the
   same verdicts, and compares the Dafny semantics with `interp/` on random
   inputs. It also runs both cores on every window of every capture in
-  `testdata`, fails if the Dafny core validates a window the Go core rejects,
-  and compares the two interpreters on every `site-P8` window.
+  `testdata`, fails on any window where they differ, and compares the two
+  interpreters on every `site-P8` window.
 
 The Dafny core covers every window kind listed under Windows. For a wrapper
 site (`site-P8`) the window is the code before `call W` and the call itself,
 and the model runs W's body as a second frame: on entry W's r1 to r5 are the
 caller's and r0 and r6 to r9 are unknown values; on `exit` the caller gets
-W's r0, unknown r1 to r5 and its own r6 to r10. The proof shows that the helper that runs is the
-original call in every field and runs exactly once, that the code before
-`call W` writes only r4, that the helper's arguments (r4 aside for the lookup
-helpers) are the site's entry values, and that r0 at W's and the window's exit
-is the helper's result. W's own stack frame is not modelled; this is sound
-because a validated W never names r10.
+W's r0, unknown r1 to r5 and its own r6 to r10. The proof shows that the
+helper that runs is the original call in every field and runs exactly once,
+that the code before `call W` writes only r4, that the helper's arguments
+(r4 aside for the lookup helpers) are the site's entry values, and that r0
+at W's and the window's exit is the helper's result. W's own stack frame is
+not modelled; this is sound because a validated W never names r10.
 
-The regionval command still judges windows with the Go core in `core/`. To
-use the Dafny core in its place, a caller does what the Go core does around
-it and then calls `Validate` with the spec for the window's kind:
+`contract.Validate` takes the window as the layout cut it, the window's
+bytes and, for a wrapper site, W's bytes and the 8 bytes of the original
+helper call O[i]. The bytes must decode to the same instructions the Go core
+checks. It calls `Validate` with the spec for the window's kind:
 
 | Kind | Spec |
 |---|---|
 | `site` | `SiteSpec(f)` |
 | `site-P4` | `TailSiteSpec(f)`: r1 to r5 hold their entry values at `bpf_tail_call` |
 | `site-P8` | `WrapSiteSpec(f, W, O[i])`: W's instructions and the 8 bytes of the original helper call |
-| `prologue-P1` | `EntryPrologueSpec(f)` |
+| `prologue-P1` | `EntryPrologueSpec(f)`: r1 kept, at most one hook call per path |
 | `prologue-P1b` | `CallbackPrologueSpec(f)` |
 | `prologue-P9` | `CustomSpec(f, nil, false, false, false, true, false, false)`: no register changes, stores allowed |
 | `passload-P9` | `CustomSpec(f, []int{r_G}, false, false, false, false, false, false)`: only r_G changes, no store |
 | `hook-P7` | `HookBodySpec()` |
 
-The caller passes W and O[i] as the target of `call W` and the original call
-it replaced, and keeps these checks outside `Validate`:
+Before that it makes these checks, which `Validate` does not:
 
 - a window outside a hook has a floor;
 - every pseudo call is to a hook, except `call W` at the end of a wrapper
@@ -300,21 +348,14 @@ it replaced, and keeps these checks outside `Validate`:
   into r0 to r5;
 - a pass prologue executes its store on every path.
 
-`dafny/xcheck/corpus_test.go` implements these checks for the tests; they look
-at every instruction of the window, which is at least as strict as the Go
-core's check of the executed ones.
+These checks look at every instruction of the window, which is at least as
+strict as the Go core's check of the executed ones.
 
-With these checks, the Dafny core is stricter than the Go core in a few
-places: an entry prologue may not call a hook, the code before `call W` must
-write only r4 in every instruction rather than on the paths it takes, and a
-window may hold at most 10 branches (counting W for a wrapper site), where the
-Go core limits the number of paths.
-
-Beyond what regionval trusts (What it trusts), the Dafny core trusts Dafny's Go translation, the Go
-runtime `github.com/dafny-lang/DafnyRuntimeGo/v4` v4.11.0 and the wrapper,
-and that running W in the model as described matches the kernel. Its proof is
-about one window; the window cutting, kinds and hook checks stay with the Go
-code.
+The Dafny core is stricter than the Go core in two places: the code before
+`call W` must write only r4 in every instruction rather than on the paths it
+takes, and a window may hold at most 10 branches (counting W for a wrapper
+site), where the Go core limits the number of paths. A window that only the
+Go core validates is not validated and has rule `dafny`.
 
 ### Tools
 
@@ -343,6 +384,8 @@ only how Z3 searches, not what counts as a proof.
 - `testdata/export`: synthetic captures. The `clean` set must be validated.
   Each capture in `planted` has one planted fault and must be rejected by one
   specific rule.
+- Every window of every capture under `testdata` must get the same verdict
+  from both cores.
 - `interp/`: random windows and every window in `testdata` are run
   both symbolically and in the reference interpreter. They must agree on the
   path taken, registers, stack and the number of unknown values used.

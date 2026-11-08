@@ -32,6 +32,7 @@ type Layout struct {
 	Windows        []Window
 	Floors         map[string]int16
 	Live           []uint16 // core.LiveIn(O): r1-r5 live at each original function's entry (S10)
+	oRaw, tRaw     []byte   // wire bytes of O and T
 }
 
 // StructError fails the whole load (fail-closed).
@@ -97,7 +98,7 @@ func Analyze(c *Capture) (*Layout, error) {
 	if err != nil {
 		return nil, fail("decode", "%v", err)
 	}
-	l := &Layout{}
+	l := &Layout{oRaw: bl[0], tRaw: bl[1]}
 	if l.O, err = core.Decode(bl[0]); err != nil {
 		return nil, fail("decode", "original: %v", err)
 	}
@@ -427,6 +428,32 @@ func (l *Layout) CoreWindow(w Window) core.Window {
 		}
 	}
 	return cw
+}
+
+// WindowBytes returns the wire bytes the Dafny core judges for window w: the
+// window, and for a window with a wrapper the body of W and the original
+// helper call O[i] (nil otherwise).
+func (l *Layout) WindowBytes(w Window) (insns, body, helper []byte) {
+	insns = l.tBytes(w.Start, w.End)
+	if w.Callee >= 0 {
+		f := l.TFuncs[w.Callee]
+		body = l.tBytes(f.Start, f.End)
+		if w.Orig >= 0 {
+			if o := l.O[w.Orig]; 8*o.Raw+8 <= len(l.oRaw) {
+				helper = l.oRaw[8*o.Raw : 8*o.Raw+8]
+			}
+		}
+	}
+	return insns, body, helper
+}
+
+// tBytes is the wire bytes of T[start:end].
+func (l *Layout) tBytes(start, end int) []byte {
+	if end <= start {
+		return nil
+	}
+	last := l.T[end-1]
+	return l.tRaw[8*l.T[start].Raw : 8*(last.Raw+last.Slots())]
 }
 
 // hookCalls marks the pseudo calls in T[start:end) whose target is a hook

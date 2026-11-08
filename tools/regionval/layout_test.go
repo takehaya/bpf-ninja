@@ -347,7 +347,11 @@ func runFile(t *testing.T, c *Capture) Result {
 	if err := os.WriteFile(path, b, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	return Run(path)
+	r := Run(path)
+	if r.Counts.Disagree != 0 {
+		t.Errorf("the Dafny and Go cores disagree on %d windows: %+v", r.Counts.Disagree, r.Windows)
+	}
+	return r
 }
 
 // Identity rewrite: no windows, structure OK, validated. Any

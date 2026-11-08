@@ -2,8 +2,9 @@
 # Check every capture file under DIR and summarise the results.
 # Usage: scripts/corpus.sh DIR [OUT]
 # OUT (default regionval-corpus.jsonl) receives one JSON result per load.
-# Needs go and jq. Exits 0 if every load is validated, 1 if any is not,
-# and 2 on a usage error, a missing tool, a build failure or no capture files.
+# Needs go and jq. Exits 0 if every load is validated and the two cores
+# agree on every window, 1 otherwise, and 2 on a usage error, a missing tool,
+# a build failure or no capture files.
 set -eu
 dir=${1:-}
 out=${2:-regionval-corpus.jsonl}
@@ -25,11 +26,13 @@ trap 'rm -f "$bin"' EXIT
 (cd "$here" && CGO_ENABLED=0 go build -o "$bin" ./cmd/regionval) || exit 2
 find "$dir" -name '*.json' -type f | sort | tr '\n' '\0' | xargs -0 "$bin" > "$out" || exit 2
 # Failed loads are counted by structure stage; failed windows by rule.
+# disagree counts the windows where the Dafny and Go cores differ.
 jq -rs '
   "loads: \(length)  validated: \(map(select(.validated)) | length)",
+  "windows: \(map(.counts.windows) | add)  validated: \(map(.counts.validated) | add)  disagree: \(map(.counts.disagree) | add)",
   (map(select(.validated | not)
        | if .structure.ok then (.windows[] | select(.validated | not) | "window rule \(.rule)")
          else "load structure:\(.structure.failed_stage)" end)
    | group_by(.) | map("  \(.[0]): \(length)") | .[])
 ' "$out"
-jq -se 'all(.validated)' "$out" > /dev/null || exit 1
+jq -se 'all(.validated) and all(.counts.disagree == 0)' "$out" > /dev/null || exit 1

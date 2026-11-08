@@ -1,7 +1,8 @@
 // Entry points compiled to Go.  Validate is Checker.Validate (the theorem in
 // Soundness.dfy is about exactly that function).  The presets map the window
-// kinds (README.md, Windows) to Spec values; they are convenience only and
-// are not part of the proof.
+// kinds (README.md, Windows) to Spec values.  The theorem holds for any Spec;
+// whether a preset asks enough of its kind is outside the proof and trusted
+// (README.md, What it trusts).
 include "Soundness.dfy"
 
 module Api {
@@ -20,9 +21,10 @@ module Api {
     Spec(floor, {0, 1, 2, 3, 4, 5}, Helper(true, false), true, true, false, NoWrap)
   }
 
-  // entry prologue (P1): r1 preserved; r0, r2..r5 free (bottom at entry).
+  // entry prologue (P1): r1 preserved; r0, r2..r5 free (bottom at entry);
+  // at most one hook call per path.
   function EntryPrologueSpec(floor: int): Spec {
-    Spec(floor, {0, 2, 3, 4, 5}, NoHelper, true, false, false, NoWrap)
+    Spec(floor, {0, 2, 3, 4, 5}, NoHelper, true, true, false, NoWrap)
   }
 
   // callback prologue (P1b): only r0 may change.
