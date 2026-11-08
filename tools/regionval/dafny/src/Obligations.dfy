@@ -27,6 +27,19 @@ module Obligations {
   // Map lookups do not read r4 (trusted; core/oblig.go isLookup).
   predicate IsLookup(id: bv32) { id == 1 || id == 195 }
 
+  // Record binding (rule RB), separate from the preservation obligations:
+  // at the hook call at pc, register reg (r1..r5) holds the key pointer the
+  // central helper received (its r2) or the value the helper returned (r0).
+  // pc counts instructions of the window, or of W for a wrapper site, whose
+  // hook calls are all in W.  CopyArg(off) is a value passed as a stack
+  // copy (CopyReadOnly): the register holds r10 + off, and r0 still holds
+  // the helper's result at the call.  That the bytes at off are a copy of
+  // the value is not stated here (dafny/contract checks the copy's shape).
+  // Which hook parameters get a Bind is the caller's choice
+  // (dafny/contract), as is the rest of the Spec.
+  datatype Role = KeyArg | ValueArg | CopyArg(off: int)
+  datatype Bind = Bind(pc: nat, reg: nat, role: Role)
+
   // Per-window parameters.  Presets for each window kind are in Api.dfy.
   //   floor:      f, -512 <= f <= 0 (from the stack report; trusted)
   //   free:       registers among r0..r5 whose exit value is unconstrained
@@ -34,8 +47,10 @@ module Obligations {
   //   hookCalls:  whether one BPF_PSEUDO_CALL (hook call) per path is allowed
   //   exitMode:   hook body: must end in EXIT with r0 == 0
   //   wrap:       P8 wrapper site (W's body and O[i]); the run is RunWrap
+  //   binds:      record binding of hook arguments (empty: none)
   datatype Spec = Spec(floor: int, free: set<nat>, helper: HelperMode,
-                       allowStore: bool, hookCalls: bool, exitMode: bool, wrap: WrapMode)
+                       allowStore: bool, hookCalls: bool, exitMode: bool, wrap: WrapMode,
+                       binds: seq<Bind>)
 
   predicate SpecWF(sp: Spec) {
     -(STACK as int) <= sp.floor <= 0
@@ -43,6 +58,8 @@ module Obligations {
     && (sp.exitMode ==> sp.helper.NoHelper?)
     && (sp.wrap.Wrap? ==> HelperIdOf(sp.wrap.helper).Some? && sp.helper == Helper(false, true)
                           && !sp.allowStore && !sp.exitMode)
+    && (|sp.binds| > 0 ==> sp.helper.Helper? && sp.hookCalls)
+    && (forall b :: b in sp.binds ==> 1 <= b.reg <= 5)
   }
 
   // The concrete run of the window.
@@ -74,7 +91,7 @@ module Obligations {
       && (sp.wrap.Wrap? ==> Some(id) == HelperIdOf(sp.wrap.helper) && |args| == 5
                             && args[0] == s0.regs[1] && args[1] == s0.regs[2] && args[2] == s0.regs[3]
                             && args[4] == s0.regs[5] && (!IsLookup(id) ==> args[3] == s0.regs[4]))
-    case EHook => sp.hookCalls
+    case EHook(_, _, _, _) => sp.hookCalls
     // P8: at call W, every register but r4 has its entry value
     case ECallW(regs) =>
       sp.wrap.Wrap? && |regs| == NREGS && (forall k :: 0 <= k <= 9 && k != 4 ==> regs[k] == s0.regs[k])
@@ -94,6 +111,30 @@ module Obligations {
     if |evs| == 0 then 0
     else if evs[|evs|-1].EHelper? then evs[|evs|-1].ret
     else HelperRet(evs[..|evs|-1])
+  }
+
+  // The key pointer (r2) of the (last) helper call; 0 if there was none.
+  function HelperKey(evs: seq<Event>): bv64 {
+    if |evs| == 0 then 0
+    else if evs[|evs|-1].EHelper? then (if |evs[|evs|-1].args| >= 2 then evs[|evs|-1].args[1] else 0)
+    else HelperKey(evs[..|evs|-1])
+  }
+
+  // RB: a hook call e, after the events prior, meets every Bind at its pc:
+  // the helper has run, and the bound register holds its key or its result.
+  predicate BindOk(sp: Spec, prior: seq<Event>, e: Event) {
+    e.EHook? ==>
+      forall j :: 0 <= j < |sp.binds| && sp.binds[j].pc == e.pc ==>
+        var b := sp.binds[j];
+        CountHelpers(prior) == 1 && 1 <= b.reg <= 5 && |e.args| == 5
+        && match b.role
+           case KeyArg => e.args[b.reg - 1] == HelperKey(prior)
+           case ValueArg => e.args[b.reg - 1] == HelperRet(prior)
+           case CopyArg(off) => Rel(e.args[b.reg - 1], e.fp) == off && e.r0 == HelperRet(prior)
+  }
+
+  predicate AllBound(sp: Spec, evs: seq<Event>) {
+    forall i :: 0 <= i < |evs| ==> BindOk(sp, evs[..i], evs[i])
   }
 
   // The stack the region must leave untouched at [f, 0): the entry stack, or
@@ -121,6 +162,8 @@ module Obligations {
     && (sp.helper.Helper? && sp.helper.restoreR0 ==> s.regs[0] == HelperRet(s.events))
     // hook body: r0 = 0 at exit
     && (sp.exitMode ==> s.regs[0] == 0)
+    // RB: record binding of hook arguments
+    && AllBound(sp, s.events)
     // C3: stack at or above the floor untouched by the region
     && |UpperBase(s.events, s0.stack)| == STACK
     && (forall i :: 0 <= i < STACK && STACK as int + sp.floor <= i ==> s.stack[i] == UpperBase(s.events, s0.stack)[i])

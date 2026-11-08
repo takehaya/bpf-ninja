@@ -80,11 +80,15 @@ func (_static *CompanionStruct_Default___) IsLookup(id uint32) bool {
 	return ((id) == (uint32(1))) || ((id) == (uint32(195)))
 }
 func (_static *CompanionStruct_Default___) SpecWF(sp Spec) bool {
-	return ((((((_dafny.Zero).Minus(m_Semantics.Companion_Default___.STACK())).Cmp((sp).Dtor_floor()) <= 0) && (((sp).Dtor_floor()).Sign() != 1)) && (_dafny.Quantifier(((sp).Dtor_free()).Elements(), true, func(_forall_var_0 _dafny.Int) bool {
+	return ((((((((_dafny.Zero).Minus(m_Semantics.Companion_Default___.STACK())).Cmp((sp).Dtor_floor()) <= 0) && (((sp).Dtor_floor()).Sign() != 1)) && (_dafny.Quantifier(((sp).Dtor_free()).Elements(), true, func(_forall_var_0 _dafny.Int) bool {
 		var _0_k _dafny.Int
 		_0_k = interface{}(_forall_var_0).(_dafny.Int)
 		return !(((sp).Dtor_free()).Contains(_0_k)) || ((_0_k).Cmp(_dafny.IntOfInt64(5)) <= 0)
-	}))) && (!((sp).Dtor_exitMode()) || (((sp).Dtor_helper()).Is_NoHelper()))) && (!(((sp).Dtor_wrap()).Is_Wrap()) || (((((Companion_Default___.HelperIdOf(((sp).Dtor_wrap()).Dtor_helper())).Is_Some()) && (((sp).Dtor_helper()).Equals(Companion_HelperMode_.Create_Helper_(false, true)))) && (!((sp).Dtor_allowStore()))) && (!((sp).Dtor_exitMode()))))
+	}))) && (!((sp).Dtor_exitMode()) || (((sp).Dtor_helper()).Is_NoHelper()))) && (!(((sp).Dtor_wrap()).Is_Wrap()) || (((((Companion_Default___.HelperIdOf(((sp).Dtor_wrap()).Dtor_helper())).Is_Some()) && (((sp).Dtor_helper()).Equals(Companion_HelperMode_.Create_Helper_(false, true)))) && (!((sp).Dtor_allowStore()))) && (!((sp).Dtor_exitMode()))))) && (!((_dafny.IntOfUint32(((sp).Dtor_binds()).Cardinality())).Sign() == 1) || ((((sp).Dtor_helper()).Is_Helper()) && ((sp).Dtor_hookCalls())))) && (_dafny.Quantifier(((sp).Dtor_binds()).UniqueElements(), true, func(_forall_var_1 Bind) bool {
+		var _1_b Bind
+		_1_b = interface{}(_forall_var_1).(Bind)
+		return !(_dafny.Companion_Sequence_.Contains((sp).Dtor_binds(), _1_b)) || (((_dafny.One).Cmp((_1_b).Dtor_reg()) <= 0) && (((_1_b).Dtor_reg()).Cmp(_dafny.IntOfInt64(5)) <= 0))
+	}))
 }
 func (_static *CompanionStruct_Default___) WindowRun(raw _dafny.Sequence, sp Spec, s m_Semantics.CState, oracle _dafny.Sequence, fuel _dafny.Int) m_Semantics.Outcome {
 	if ((sp).Dtor_wrap()).Is_Wrap() {
@@ -198,6 +202,80 @@ TAIL_CALL_START:
 		goto TAIL_CALL_START
 	}
 }
+func (_static *CompanionStruct_Default___) HelperKey(evs _dafny.Sequence) uint64 {
+	goto TAIL_CALL_START
+TAIL_CALL_START:
+	if (_dafny.IntOfUint32((evs).Cardinality())).Sign() == 0 {
+		return uint64(0)
+	} else if ((evs).Select(((_dafny.IntOfUint32((evs).Cardinality())).Minus(_dafny.One)).Uint32()).(m_Semantics.Event)).Is_EHelper() {
+		if (_dafny.IntOfUint32((((evs).Select(((_dafny.IntOfUint32((evs).Cardinality())).Minus(_dafny.One)).Uint32()).(m_Semantics.Event)).Dtor_args()).Cardinality())).Cmp(_dafny.IntOfInt64(2)) >= 0 {
+			return (((evs).Select(((_dafny.IntOfUint32((evs).Cardinality())).Minus(_dafny.One)).Uint32()).(m_Semantics.Event)).Dtor_args()).Select(1).(uint64)
+		} else {
+			return uint64(0)
+		}
+	} else {
+		var _in0 _dafny.Sequence = (evs).Take(((_dafny.IntOfUint32((evs).Cardinality())).Minus(_dafny.One)).Uint32())
+		_ = _in0
+		evs = _in0
+		goto TAIL_CALL_START
+	}
+}
+func (_static *CompanionStruct_Default___) BindOk(sp Spec, prior _dafny.Sequence, e m_Semantics.Event) bool {
+	var _pat_let_tv0 = prior
+	_ = _pat_let_tv0
+	var _pat_let_tv1 = e
+	_ = _pat_let_tv1
+	var _pat_let_tv2 = e
+	_ = _pat_let_tv2
+	var _pat_let_tv3 = prior
+	_ = _pat_let_tv3
+	var _pat_let_tv4 = e
+	_ = _pat_let_tv4
+	var _pat_let_tv5 = prior
+	_ = _pat_let_tv5
+	var _pat_let_tv6 = e
+	_ = _pat_let_tv6
+	var _pat_let_tv7 = e
+	_ = _pat_let_tv7
+	var _pat_let_tv8 = e
+	_ = _pat_let_tv8
+	var _pat_let_tv9 = prior
+	_ = _pat_let_tv9
+	return !((e).Is_EHook()) || (_dafny.Quantifier(_dafny.IntegerRange(_dafny.Zero, _dafny.IntOfUint32(((sp).Dtor_binds()).Cardinality())), true, func(_forall_var_0 _dafny.Int) bool {
+		var _0_j _dafny.Int
+		_0_j = interface{}(_forall_var_0).(_dafny.Int)
+		return !((((_0_j).Sign() != -1) && ((_0_j).Cmp(_dafny.IntOfUint32(((sp).Dtor_binds()).Cardinality())) < 0)) && (((((sp).Dtor_binds()).Select((_0_j).Uint32()).(Bind)).Dtor_pc()).Cmp((e).Dtor_pc()) == 0)) || (func(_pat_let29_0 Bind) bool {
+			return func(_1_b Bind) bool {
+				return ((((Companion_Default___.CountHelpers(_pat_let_tv0)).Cmp(_dafny.One) == 0) && (((_dafny.One).Cmp((_1_b).Dtor_reg()) <= 0) && (((_1_b).Dtor_reg()).Cmp(_dafny.IntOfInt64(5)) <= 0))) && ((_dafny.IntOfUint32(((_pat_let_tv1).Dtor_args()).Cardinality())).Cmp(_dafny.IntOfInt64(5)) == 0)) && (func() bool {
+					var _source0 Role = (_1_b).Dtor_role()
+					_ = _source0
+					{
+						if _source0.Is_KeyArg() {
+							return (((_pat_let_tv2).Dtor_args()).Select((((_1_b).Dtor_reg()).Minus(_dafny.One)).Uint32()).(uint64)) == (Companion_Default___.HelperKey(_pat_let_tv3))
+						}
+					}
+					{
+						if _source0.Is_ValueArg() {
+							return (((_pat_let_tv4).Dtor_args()).Select((((_1_b).Dtor_reg()).Minus(_dafny.One)).Uint32()).(uint64)) == (Companion_Default___.HelperRet(_pat_let_tv5))
+						}
+					}
+					{
+						var _2_off _dafny.Int = _source0.Get_().(Role_CopyArg).Off
+						_ = _2_off
+						return ((m_Semantics.Companion_Default___.Rel(((_pat_let_tv6).Dtor_args()).Select((((_1_b).Dtor_reg()).Minus(_dafny.One)).Uint32()).(uint64), (_pat_let_tv7).Dtor_fp())).Cmp(_2_off) == 0) && (((_pat_let_tv8).Dtor_r0()) == (Companion_Default___.HelperRet(_pat_let_tv9)))
+					}
+				}())
+			}(_pat_let29_0)
+		}(((sp).Dtor_binds()).Select((_0_j).Uint32()).(Bind)))
+	}))
+}
+func (_static *CompanionStruct_Default___) AllBound(sp Spec, evs _dafny.Sequence) bool {
+	return _dafny.Quantifier(_dafny.IntegerRange(_dafny.Zero, _dafny.IntOfUint32((evs).Cardinality())), true, func(_forall_var_0 _dafny.Int) bool {
+		var _0_i _dafny.Int
+		_0_i = interface{}(_forall_var_0).(_dafny.Int)
+		return !(((_0_i).Sign() != -1) && ((_0_i).Cmp(_dafny.IntOfUint32((evs).Cardinality())) < 0)) || (Companion_Default___.BindOk(sp, (evs).Take((_0_i).Uint32()), (evs).Select((_0_i).Uint32()).(m_Semantics.Event)))
+	})
+}
 func (_static *CompanionStruct_Default___) UpperBase(evs _dafny.Sequence, entry _dafny.Sequence) _dafny.Sequence {
 	goto TAIL_CALL_START
 TAIL_CALL_START:
@@ -216,7 +294,7 @@ TAIL_CALL_START:
 	}
 }
 func (_static *CompanionStruct_Default___) FinalOk(sp Spec, s0 m_Semantics.CState, s m_Semantics.CState) bool {
-	return (((((((((m_Semantics.Companion_Default___.CWF(s)) && (_dafny.Quantifier(_dafny.IntegerRange(_dafny.Zero, _dafny.IntOfUint32(((s).Dtor_events()).Cardinality())), true, func(_forall_var_0 _dafny.Int) bool {
+	return ((((((((((m_Semantics.Companion_Default___.CWF(s)) && (_dafny.Quantifier(_dafny.IntegerRange(_dafny.Zero, _dafny.IntOfUint32(((s).Dtor_events()).Cardinality())), true, func(_forall_var_0 _dafny.Int) bool {
 		var _0_i _dafny.Int
 		_0_i = interface{}(_forall_var_0).(_dafny.Int)
 		return !(((_0_i).Sign() != -1) && ((_0_i).Cmp(_dafny.IntOfUint32(((s).Dtor_events()).Cardinality())) < 0)) || (Companion_Default___.EventOk(sp, s0, ((s).Dtor_events()).Select((_0_i).Uint32()).(m_Semantics.Event)))
@@ -233,7 +311,7 @@ func (_static *CompanionStruct_Default___) FinalOk(sp Spec, s0 m_Semantics.CStat
 		var _2_k _dafny.Int
 		_2_k = interface{}(_forall_var_2).(_dafny.Int)
 		return !(((((_2_k).Sign() != -1) && ((_2_k).Cmp(_dafny.IntOfInt64(5)) <= 0)) && (!((sp).Dtor_free()).Contains(_2_k))) && (!(((_2_k).Sign() == 0) && (Companion_Default___.R0Special(sp))))) || ((((s).Dtor_regs()).Select((_2_k).Uint32()).(uint64)) == (((s0).Dtor_regs()).Select((_2_k).Uint32()).(uint64)))
-	}))) && (!((((sp).Dtor_helper()).Is_Helper()) && (((sp).Dtor_helper()).Dtor_restoreR0())) || ((((s).Dtor_regs()).Select(0).(uint64)) == (Companion_Default___.HelperRet((s).Dtor_events()))))) && (!((sp).Dtor_exitMode()) || ((((s).Dtor_regs()).Select(0).(uint64)) == (uint64(0))))) && ((_dafny.IntOfUint32((Companion_Default___.UpperBase((s).Dtor_events(), (s0).Dtor_stack())).Cardinality())).Cmp(m_Semantics.Companion_Default___.STACK()) == 0)) && (_dafny.Quantifier(_dafny.IntegerRange(_dafny.Zero, m_Semantics.Companion_Default___.STACK()), true, func(_forall_var_3 _dafny.Int) bool {
+	}))) && (!((((sp).Dtor_helper()).Is_Helper()) && (((sp).Dtor_helper()).Dtor_restoreR0())) || ((((s).Dtor_regs()).Select(0).(uint64)) == (Companion_Default___.HelperRet((s).Dtor_events()))))) && (!((sp).Dtor_exitMode()) || ((((s).Dtor_regs()).Select(0).(uint64)) == (uint64(0))))) && (Companion_Default___.AllBound(sp, (s).Dtor_events()))) && ((_dafny.IntOfUint32((Companion_Default___.UpperBase((s).Dtor_events(), (s0).Dtor_stack())).Cardinality())).Cmp(m_Semantics.Companion_Default___.STACK()) == 0)) && (_dafny.Quantifier(_dafny.IntegerRange(_dafny.Zero, m_Semantics.Companion_Default___.STACK()), true, func(_forall_var_3 _dafny.Int) bool {
 		var _3_i _dafny.Int
 		_3_i = interface{}(_forall_var_3).(_dafny.Int)
 		return !((((_3_i).Sign() != -1) && ((_3_i).Cmp(m_Semantics.Companion_Default___.STACK()) < 0)) && (((m_Semantics.Companion_Default___.STACK()).Plus((sp).Dtor_floor())).Cmp(_3_i) <= 0)) || ((((s).Dtor_stack()).Select((_3_i).Uint32()).(uint8)) == ((Companion_Default___.UpperBase((s).Dtor_events(), (s0).Dtor_stack())).Select((_3_i).Uint32()).(uint8)))
@@ -539,6 +617,256 @@ var _ _dafny.TraitOffspring = WrapMode{}
 
 // End of datatype WrapMode
 
+// Definition of datatype Role
+type Role struct {
+	Data_Role_
+}
+
+func (_this Role) Get_() Data_Role_ {
+	return _this.Data_Role_
+}
+
+type Data_Role_ interface {
+	isRole()
+}
+
+type CompanionStruct_Role_ struct {
+}
+
+var Companion_Role_ = CompanionStruct_Role_{}
+
+type Role_KeyArg struct {
+}
+
+func (Role_KeyArg) isRole() {}
+
+func (CompanionStruct_Role_) Create_KeyArg_() Role {
+	return Role{Role_KeyArg{}}
+}
+
+func (_this Role) Is_KeyArg() bool {
+	_, ok := _this.Get_().(Role_KeyArg)
+	return ok
+}
+
+type Role_ValueArg struct {
+}
+
+func (Role_ValueArg) isRole() {}
+
+func (CompanionStruct_Role_) Create_ValueArg_() Role {
+	return Role{Role_ValueArg{}}
+}
+
+func (_this Role) Is_ValueArg() bool {
+	_, ok := _this.Get_().(Role_ValueArg)
+	return ok
+}
+
+type Role_CopyArg struct {
+	Off _dafny.Int
+}
+
+func (Role_CopyArg) isRole() {}
+
+func (CompanionStruct_Role_) Create_CopyArg_(Off _dafny.Int) Role {
+	return Role{Role_CopyArg{Off}}
+}
+
+func (_this Role) Is_CopyArg() bool {
+	_, ok := _this.Get_().(Role_CopyArg)
+	return ok
+}
+
+func (CompanionStruct_Role_) Default() Role {
+	return Companion_Role_.Create_KeyArg_()
+}
+
+func (_this Role) Dtor_off() _dafny.Int {
+	return _this.Get_().(Role_CopyArg).Off
+}
+
+func (_this Role) String() string {
+	switch data := _this.Get_().(type) {
+	case nil:
+		return "null"
+	case Role_KeyArg:
+		{
+			return "Obligations.Role.KeyArg"
+		}
+	case Role_ValueArg:
+		{
+			return "Obligations.Role.ValueArg"
+		}
+	case Role_CopyArg:
+		{
+			return "Obligations.Role.CopyArg" + "(" + _dafny.String(data.Off) + ")"
+		}
+	default:
+		{
+			return "<unexpected>"
+		}
+	}
+}
+
+func (_this Role) Equals(other Role) bool {
+	switch data1 := _this.Get_().(type) {
+	case Role_KeyArg:
+		{
+			_, ok := other.Get_().(Role_KeyArg)
+			return ok
+		}
+	case Role_ValueArg:
+		{
+			_, ok := other.Get_().(Role_ValueArg)
+			return ok
+		}
+	case Role_CopyArg:
+		{
+			data2, ok := other.Get_().(Role_CopyArg)
+			return ok && data1.Off.Cmp(data2.Off) == 0
+		}
+	default:
+		{
+			return false // unexpected
+		}
+	}
+}
+
+func (_this Role) EqualsGeneric(other interface{}) bool {
+	typed, ok := other.(Role)
+	return ok && _this.Equals(typed)
+}
+
+func Type_Role_() _dafny.TypeDescriptor {
+	return type_Role_{}
+}
+
+type type_Role_ struct {
+}
+
+func (_this type_Role_) Default() interface{} {
+	return Companion_Role_.Default()
+}
+
+func (_this type_Role_) String() string {
+	return "Obligations.Role"
+}
+func (_this Role) ParentTraits_() []*_dafny.TraitID {
+	return [](*_dafny.TraitID){}
+}
+
+var _ _dafny.TraitOffspring = Role{}
+
+// End of datatype Role
+
+// Definition of datatype Bind
+type Bind struct {
+	Data_Bind_
+}
+
+func (_this Bind) Get_() Data_Bind_ {
+	return _this.Data_Bind_
+}
+
+type Data_Bind_ interface {
+	isBind()
+}
+
+type CompanionStruct_Bind_ struct {
+}
+
+var Companion_Bind_ = CompanionStruct_Bind_{}
+
+type Bind_Bind struct {
+	Pc   _dafny.Int
+	Reg  _dafny.Int
+	Role Role
+}
+
+func (Bind_Bind) isBind() {}
+
+func (CompanionStruct_Bind_) Create_Bind_(Pc _dafny.Int, Reg _dafny.Int, Role Role) Bind {
+	return Bind{Bind_Bind{Pc, Reg, Role}}
+}
+
+func (_this Bind) Is_Bind() bool {
+	_, ok := _this.Get_().(Bind_Bind)
+	return ok
+}
+
+func (CompanionStruct_Bind_) Default() Bind {
+	return Companion_Bind_.Create_Bind_(_dafny.Zero, _dafny.Zero, Companion_Role_.Default())
+}
+
+func (_this Bind) Dtor_pc() _dafny.Int {
+	return _this.Get_().(Bind_Bind).Pc
+}
+
+func (_this Bind) Dtor_reg() _dafny.Int {
+	return _this.Get_().(Bind_Bind).Reg
+}
+
+func (_this Bind) Dtor_role() Role {
+	return _this.Get_().(Bind_Bind).Role
+}
+
+func (_this Bind) String() string {
+	switch data := _this.Get_().(type) {
+	case nil:
+		return "null"
+	case Bind_Bind:
+		{
+			return "Obligations.Bind.Bind" + "(" + _dafny.String(data.Pc) + ", " + _dafny.String(data.Reg) + ", " + _dafny.String(data.Role) + ")"
+		}
+	default:
+		{
+			return "<unexpected>"
+		}
+	}
+}
+
+func (_this Bind) Equals(other Bind) bool {
+	switch data1 := _this.Get_().(type) {
+	case Bind_Bind:
+		{
+			data2, ok := other.Get_().(Bind_Bind)
+			return ok && data1.Pc.Cmp(data2.Pc) == 0 && data1.Reg.Cmp(data2.Reg) == 0 && data1.Role.Equals(data2.Role)
+		}
+	default:
+		{
+			return false // unexpected
+		}
+	}
+}
+
+func (_this Bind) EqualsGeneric(other interface{}) bool {
+	typed, ok := other.(Bind)
+	return ok && _this.Equals(typed)
+}
+
+func Type_Bind_() _dafny.TypeDescriptor {
+	return type_Bind_{}
+}
+
+type type_Bind_ struct {
+}
+
+func (_this type_Bind_) Default() interface{} {
+	return Companion_Bind_.Default()
+}
+
+func (_this type_Bind_) String() string {
+	return "Obligations.Bind"
+}
+func (_this Bind) ParentTraits_() []*_dafny.TraitID {
+	return [](*_dafny.TraitID){}
+}
+
+var _ _dafny.TraitOffspring = Bind{}
+
+// End of datatype Bind
+
 // Definition of datatype Spec
 type Spec struct {
 	Data_Spec_
@@ -565,12 +893,13 @@ type Spec_Spec struct {
 	HookCalls  bool
 	ExitMode   bool
 	Wrap       WrapMode
+	Binds      _dafny.Sequence
 }
 
 func (Spec_Spec) isSpec() {}
 
-func (CompanionStruct_Spec_) Create_Spec_(Floor _dafny.Int, Free _dafny.Set, Helper HelperMode, AllowStore bool, HookCalls bool, ExitMode bool, Wrap WrapMode) Spec {
-	return Spec{Spec_Spec{Floor, Free, Helper, AllowStore, HookCalls, ExitMode, Wrap}}
+func (CompanionStruct_Spec_) Create_Spec_(Floor _dafny.Int, Free _dafny.Set, Helper HelperMode, AllowStore bool, HookCalls bool, ExitMode bool, Wrap WrapMode, Binds _dafny.Sequence) Spec {
+	return Spec{Spec_Spec{Floor, Free, Helper, AllowStore, HookCalls, ExitMode, Wrap, Binds}}
 }
 
 func (_this Spec) Is_Spec() bool {
@@ -579,7 +908,7 @@ func (_this Spec) Is_Spec() bool {
 }
 
 func (CompanionStruct_Spec_) Default() Spec {
-	return Companion_Spec_.Create_Spec_(_dafny.Zero, _dafny.EmptySet, Companion_HelperMode_.Default(), false, false, false, Companion_WrapMode_.Default())
+	return Companion_Spec_.Create_Spec_(_dafny.Zero, _dafny.EmptySet, Companion_HelperMode_.Default(), false, false, false, Companion_WrapMode_.Default(), _dafny.EmptySeq)
 }
 
 func (_this Spec) Dtor_floor() _dafny.Int {
@@ -610,13 +939,17 @@ func (_this Spec) Dtor_wrap() WrapMode {
 	return _this.Get_().(Spec_Spec).Wrap
 }
 
+func (_this Spec) Dtor_binds() _dafny.Sequence {
+	return _this.Get_().(Spec_Spec).Binds
+}
+
 func (_this Spec) String() string {
 	switch data := _this.Get_().(type) {
 	case nil:
 		return "null"
 	case Spec_Spec:
 		{
-			return "Obligations.Spec.Spec" + "(" + _dafny.String(data.Floor) + ", " + _dafny.String(data.Free) + ", " + _dafny.String(data.Helper) + ", " + _dafny.String(data.AllowStore) + ", " + _dafny.String(data.HookCalls) + ", " + _dafny.String(data.ExitMode) + ", " + _dafny.String(data.Wrap) + ")"
+			return "Obligations.Spec.Spec" + "(" + _dafny.String(data.Floor) + ", " + _dafny.String(data.Free) + ", " + _dafny.String(data.Helper) + ", " + _dafny.String(data.AllowStore) + ", " + _dafny.String(data.HookCalls) + ", " + _dafny.String(data.ExitMode) + ", " + _dafny.String(data.Wrap) + ", " + _dafny.String(data.Binds) + ")"
 		}
 	default:
 		{
@@ -630,7 +963,7 @@ func (_this Spec) Equals(other Spec) bool {
 	case Spec_Spec:
 		{
 			data2, ok := other.Get_().(Spec_Spec)
-			return ok && data1.Floor.Cmp(data2.Floor) == 0 && data1.Free.Equals(data2.Free) && data1.Helper.Equals(data2.Helper) && data1.AllowStore == data2.AllowStore && data1.HookCalls == data2.HookCalls && data1.ExitMode == data2.ExitMode && data1.Wrap.Equals(data2.Wrap)
+			return ok && data1.Floor.Cmp(data2.Floor) == 0 && data1.Free.Equals(data2.Free) && data1.Helper.Equals(data2.Helper) && data1.AllowStore == data2.AllowStore && data1.HookCalls == data2.HookCalls && data1.ExitMode == data2.ExitMode && data1.Wrap.Equals(data2.Wrap) && data1.Binds.Equals(data2.Binds)
 		}
 	default:
 		{

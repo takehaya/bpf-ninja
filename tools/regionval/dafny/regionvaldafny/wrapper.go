@@ -65,7 +65,33 @@ func CustomSpec(floor int, free []int, helper, checkArgs, restoreR0, allowStore,
 	if helper {
 		hm = obl.Companion_HelperMode_.Create_Helper_(checkArgs, restoreR0)
 	}
-	return Spec{obl.Companion_Spec_.Create_Spec_(_dafny.IntOf(floor), _dafny.SetOf(fs...), hm, allowStore, hookCalls, exitMode, obl.Companion_WrapMode_.Create_NoWrap_())}
+	return Spec{obl.Companion_Spec_.Create_Spec_(_dafny.IntOf(floor), _dafny.SetOf(fs...), hm, allowStore, hookCalls, exitMode, obl.Companion_WrapMode_.Create_NoWrap_(), _dafny.SeqOf())}
+}
+
+// Bind is one record-binding obligation (rule RB, Obligations.Bind): at the
+// hook call at PC (of the window, or of W for a wrapper site), register Reg
+// holds the helper's result (Value), the address r10 + Off of a stack copy
+// of the value with r0 still the result (Copy), or else the key pointer.
+type Bind struct {
+	PC, Reg     int
+	Value, Copy bool
+	Off         int
+}
+
+// WithBinds is sp with the record-binding obligations bs.
+func WithBinds(sp Spec, bs []Bind) Spec {
+	ds := make([]interface{}, len(bs))
+	for i, b := range bs {
+		role := obl.Companion_Role_.Create_KeyArg_()
+		switch {
+		case b.Copy:
+			role = obl.Companion_Role_.Create_CopyArg_(_dafny.IntOf(b.Off))
+		case b.Value:
+			role = obl.Companion_Role_.Create_ValueArg_()
+		}
+		ds[i] = obl.Companion_Bind_.Create_Bind_(_dafny.IntOf(b.PC), _dafny.IntOf(b.Reg), role)
+	}
+	return Spec{api.Companion_Default___.WithBinds(sp.d, _dafny.SeqOf(ds...))}
 }
 
 // Verdict of Validate.  PC is the instruction index the reason refers to
@@ -102,7 +128,9 @@ type Event struct {
 	Kind       EventKind
 	Addr       uint64        // EvStore
 	Width      int           // EvStore
-	Args       [5]uint64     // EvHelper: r1..r5 at the call
+	Args       [5]uint64     // EvHelper, EvHook: r1..r5 at the call
+	PC         int           // EvHook: pc of the call
+	R0, FP     uint64        // EvHook: r0 and r10 at the call
 	Ret        uint64        // EvHelper: result; EvRet: W's r0
 	StackAfter [Stack]byte   // EvHelper
 	ID         uint32        // EvHelper: helper id
@@ -158,7 +186,7 @@ func toD(s State) sem.CState {
 		case EvRet:
 			evs[i] = sem.Companion_Event_.Create_ERet_(e.Ret)
 		default:
-			evs[i] = sem.Companion_Event_.Create_EHook_()
+			evs[i] = sem.Companion_Event_.Create_EHook_(_dafny.IntOf(e.PC), u64seq(e.Args[:]), e.R0, e.FP)
 		}
 	}
 	return sem.Companion_CState_.Create_CState_(_dafny.IntOf(s.PC), u64seq(s.Regs[:]), _dafny.SeqOfBytes(s.Stack[:]),
@@ -204,7 +232,12 @@ func fromD(c sem.CState) State {
 		case e.Is_ERet():
 			s.Events = append(s.Events, Event{Kind: EvRet, Ret: e.Dtor_r0()})
 		default:
-			s.Events = append(s.Events, Event{Kind: EvHook})
+			ev := Event{Kind: EvHook, PC: int(e.Dtor_pc().Int64()), R0: e.Dtor_r0(), FP: e.Dtor_fp()}
+			a := e.Dtor_args()
+			for j := uint32(0); j < a.Cardinality() && j < 5; j++ {
+				ev.Args[j] = a.Select(j).(uint64)
+			}
+			s.Events = append(s.Events, ev)
 		}
 	}
 	return s

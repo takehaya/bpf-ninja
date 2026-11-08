@@ -259,5 +259,32 @@ func validated(w Window, paths []Path) Verdict {
 			}
 		}
 	}
+	// RB, record binding: checked once every preservation obligation holds,
+	// since it is about what a hook records, not about the target.
+	for _, p := range paths {
+		var helper *Event
+		for i := range p.Events {
+			e := &p.Events[i]
+			if e.Kind == EvHelper {
+				helper = e
+			}
+			b, ok := w.Bind[e.At.PC]
+			if e.Kind != EvHook || !ok || (e.At.Depth == 1) != wrap {
+				continue
+			}
+			switch {
+			case helper == nil: // rule:RB-order
+				return notValidated("RB", "hook call at %v before the helper call", e.At)
+			case b.Key != 0 && !Equal(e.Regs[b.Key], helper.Regs[2]): // rule:RB-key
+				return notValidated("RB", "hook call at %v: key argument r%d is %v, not the helper's key %v", e.At, b.Key, e.Regs[b.Key], helper.Regs[2])
+			case b.Value != 0 && !b.Copy && !Equal(e.Regs[b.Value], helper.V): // rule:RB-value
+				return notValidated("RB", "hook call at %v: value argument r%d is %v, not the helper's result %v", e.At, b.Value, e.Regs[b.Value], helper.V)
+			case b.Copy && !Equal(e.Regs[b.Value], AddC(FrameBase(0), uint64(int64(b.Off)))): // rule:RB-copy
+				return notValidated("RB", "hook call at %v: value argument r%d is %v, not the copy at r10%+d", e.At, b.Value, e.Regs[b.Value], b.Off)
+			case b.Copy && !Equal(e.Regs[0], helper.V): // rule:RB-copy-r0
+				return notValidated("RB", "hook call at %v: r0 is %v, not the helper's result %v the copy reads", e.At, e.Regs[0], helper.V)
+			}
+		}
+	}
 	return Verdict{Validated: true, Paths: len(paths)}
 }

@@ -61,25 +61,32 @@ func (_this *Default__) ParentTraits_() []*_dafny.TraitID {
 var _ _dafny.TraitOffspring = &Default__{}
 
 func (_static *CompanionStruct_Default___) SiteSpec(floor _dafny.Int) m_Obligations.Spec {
-	return m_Obligations.Companion_Spec_.Create_Spec_(floor, _dafny.SetOf(_dafny.One, _dafny.IntOfInt64(2), _dafny.IntOfInt64(3), _dafny.IntOfInt64(4), _dafny.IntOfInt64(5)), m_Obligations.Companion_HelperMode_.Create_Helper_(true, true), true, true, false, m_Obligations.Companion_WrapMode_.Create_NoWrap_())
+	return m_Obligations.Companion_Spec_.Create_Spec_(floor, _dafny.SetOf(_dafny.One, _dafny.IntOfInt64(2), _dafny.IntOfInt64(3), _dafny.IntOfInt64(4), _dafny.IntOfInt64(5)), m_Obligations.Companion_HelperMode_.Create_Helper_(true, true), true, true, false, m_Obligations.Companion_WrapMode_.Create_NoWrap_(), _dafny.SeqOf())
 }
 func (_static *CompanionStruct_Default___) TailSiteSpec(floor _dafny.Int) m_Obligations.Spec {
-	return m_Obligations.Companion_Spec_.Create_Spec_(floor, _dafny.SetOf(_dafny.Zero, _dafny.One, _dafny.IntOfInt64(2), _dafny.IntOfInt64(3), _dafny.IntOfInt64(4), _dafny.IntOfInt64(5)), m_Obligations.Companion_HelperMode_.Create_Helper_(true, false), true, true, false, m_Obligations.Companion_WrapMode_.Create_NoWrap_())
+	return m_Obligations.Companion_Spec_.Create_Spec_(floor, _dafny.SetOf(_dafny.Zero, _dafny.One, _dafny.IntOfInt64(2), _dafny.IntOfInt64(3), _dafny.IntOfInt64(4), _dafny.IntOfInt64(5)), m_Obligations.Companion_HelperMode_.Create_Helper_(true, false), true, true, false, m_Obligations.Companion_WrapMode_.Create_NoWrap_(), _dafny.SeqOf())
 }
 func (_static *CompanionStruct_Default___) EntryPrologueSpec(floor _dafny.Int) m_Obligations.Spec {
-	return m_Obligations.Companion_Spec_.Create_Spec_(floor, _dafny.SetOf(_dafny.Zero, _dafny.IntOfInt64(2), _dafny.IntOfInt64(3), _dafny.IntOfInt64(4), _dafny.IntOfInt64(5)), m_Obligations.Companion_HelperMode_.Create_NoHelper_(), true, true, false, m_Obligations.Companion_WrapMode_.Create_NoWrap_())
+	return m_Obligations.Companion_Spec_.Create_Spec_(floor, _dafny.SetOf(_dafny.Zero, _dafny.IntOfInt64(2), _dafny.IntOfInt64(3), _dafny.IntOfInt64(4), _dafny.IntOfInt64(5)), m_Obligations.Companion_HelperMode_.Create_NoHelper_(), true, true, false, m_Obligations.Companion_WrapMode_.Create_NoWrap_(), _dafny.SeqOf())
 }
 func (_static *CompanionStruct_Default___) CallbackPrologueSpec(floor _dafny.Int) m_Obligations.Spec {
-	return m_Obligations.Companion_Spec_.Create_Spec_(floor, _dafny.SetOf(_dafny.Zero), m_Obligations.Companion_HelperMode_.Create_NoHelper_(), true, false, false, m_Obligations.Companion_WrapMode_.Create_NoWrap_())
+	return m_Obligations.Companion_Spec_.Create_Spec_(floor, _dafny.SetOf(_dafny.Zero), m_Obligations.Companion_HelperMode_.Create_NoHelper_(), true, false, false, m_Obligations.Companion_WrapMode_.Create_NoWrap_(), _dafny.SeqOf())
 }
 func (_static *CompanionStruct_Default___) PassSpec(floor _dafny.Int, g _dafny.Int) m_Obligations.Spec {
-	return m_Obligations.Companion_Spec_.Create_Spec_(floor, _dafny.SetOf(g), m_Obligations.Companion_HelperMode_.Create_NoHelper_(), true, false, false, m_Obligations.Companion_WrapMode_.Create_NoWrap_())
+	return m_Obligations.Companion_Spec_.Create_Spec_(floor, _dafny.SetOf(g), m_Obligations.Companion_HelperMode_.Create_NoHelper_(), true, false, false, m_Obligations.Companion_WrapMode_.Create_NoWrap_(), _dafny.SeqOf())
 }
 func (_static *CompanionStruct_Default___) HookBodySpec() m_Obligations.Spec {
-	return m_Obligations.Companion_Spec_.Create_Spec_(_dafny.Zero, _dafny.SetOf(_dafny.Zero, _dafny.One, _dafny.IntOfInt64(2), _dafny.IntOfInt64(3), _dafny.IntOfInt64(4), _dafny.IntOfInt64(5)), m_Obligations.Companion_HelperMode_.Create_NoHelper_(), false, false, true, m_Obligations.Companion_WrapMode_.Create_NoWrap_())
+	return m_Obligations.Companion_Spec_.Create_Spec_(_dafny.Zero, _dafny.SetOf(_dafny.Zero, _dafny.One, _dafny.IntOfInt64(2), _dafny.IntOfInt64(3), _dafny.IntOfInt64(4), _dafny.IntOfInt64(5)), m_Obligations.Companion_HelperMode_.Create_NoHelper_(), false, false, true, m_Obligations.Companion_WrapMode_.Create_NoWrap_(), _dafny.SeqOf())
 }
 func (_static *CompanionStruct_Default___) WrapSiteSpec(floor _dafny.Int, body _dafny.Sequence, helper _dafny.Sequence) m_Obligations.Spec {
-	return m_Obligations.Companion_Spec_.Create_Spec_(floor, _dafny.SetOf(_dafny.One, _dafny.IntOfInt64(2), _dafny.IntOfInt64(3), _dafny.IntOfInt64(4), _dafny.IntOfInt64(5)), m_Obligations.Companion_HelperMode_.Create_Helper_(false, true), false, true, false, m_Obligations.Companion_WrapMode_.Create_Wrap_(body, helper))
+	return m_Obligations.Companion_Spec_.Create_Spec_(floor, _dafny.SetOf(_dafny.One, _dafny.IntOfInt64(2), _dafny.IntOfInt64(3), _dafny.IntOfInt64(4), _dafny.IntOfInt64(5)), m_Obligations.Companion_HelperMode_.Create_Helper_(false, true), false, true, false, m_Obligations.Companion_WrapMode_.Create_Wrap_(body, helper), _dafny.SeqOf())
+}
+func (_static *CompanionStruct_Default___) WithBinds(sp m_Obligations.Spec, binds _dafny.Sequence) m_Obligations.Spec {
+	var _0_dt__update__tmp_h0 m_Obligations.Spec = sp
+	_ = _0_dt__update__tmp_h0
+	var _1_dt__update_hbinds_h0 _dafny.Sequence = binds
+	_ = _1_dt__update_hbinds_h0
+	return m_Obligations.Companion_Spec_.Create_Spec_((_0_dt__update__tmp_h0).Dtor_floor(), (_0_dt__update__tmp_h0).Dtor_free(), (_0_dt__update__tmp_h0).Dtor_helper(), (_0_dt__update__tmp_h0).Dtor_allowStore(), (_0_dt__update__tmp_h0).Dtor_hookCalls(), (_0_dt__update__tmp_h0).Dtor_exitMode(), (_0_dt__update__tmp_h0).Dtor_wrap(), _1_dt__update_hbinds_h0)
 }
 func (_static *CompanionStruct_Default___) Validate(raw _dafny.Sequence, sp m_Obligations.Spec) m_Checker.Verdict {
 	return m_Checker.Companion_Default___.Validate(raw, sp)

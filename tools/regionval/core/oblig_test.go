@@ -35,6 +35,29 @@ func wrapW() Window {
 		CalleeHook: map[int]bool{9: true}, HelperPC: 2, Helper: hc(1)}
 }
 
+// siteB is siteW with the hook's key and value bound (rule RB): r3 is the
+// key reloaded from its slot, r4 the result.
+func siteB() Window {
+	return Window{Kind: KindSite, Center: 1, Floor: -8, HasFloor: true, Hook: map[int]bool{7: true}, Bind: map[int]Binding{7: {Key: 3, Value: 4}},
+		Insns: []Insn{st(-24, 2), hc(1), st(-32, 0), jeq(0, 4), ld(1, -16), ld(3, -24), mv(4, 0), pc(), ld(0, -32)}}
+}
+
+// siteC is siteB with the value passed as an 8-byte stack copy at r10-48
+// (CopyReadOnly): copy, ctx, key, r4 = r10 - 48.
+func siteC() Window {
+	return Window{Kind: KindSite, Center: 1, Floor: -8, HasFloor: true, Hook: map[int]bool{10: true},
+		Bind: map[int]Binding{10: {Key: 3, Value: 4, Copy: true, Off: -48}},
+		Insns: []Insn{st(-24, 2), hc(1), st(-32, 0), jeq(0, 7), {Op: 0x79, Dst: 1, Src: 0}, st(-48, 1), ld(1, -16), ld(3, -24),
+			mv(4, 10), {Op: 0x07, Dst: 4, Imm: -48}, pc(), ld(0, -32)}}
+}
+
+// wrapB is wrapW with the hook's key (r3 = r7 = W's r2) and value bound.
+func wrapB() Window {
+	w := wrapW()
+	w.Bind = map[int]Binding{9: {Key: 3, Value: 4}}
+	return w
+}
+
 func entryW() Window {
 	return Window{Kind: KindEntry, Floor: -8, HasFloor: true, Insns: []Insn{st(-16, 1)}}
 }
@@ -55,7 +78,7 @@ func hookW() Window {
 // replaced.
 func with(w Window, i int, x Insn) Window {
 	w.Insns, w.Callee = slices.Clone(w.Insns), slices.Clone(w.Callee)
-	w.Hook, w.CalleeHook = maps.Clone(w.Hook), maps.Clone(w.CalleeHook)
+	w.Hook, w.CalleeHook, w.Bind = maps.Clone(w.Hook), maps.Clone(w.CalleeHook), maps.Clone(w.Bind)
 	if i >= 0 {
 		w.Insns[i] = x
 	} else {
@@ -70,7 +93,8 @@ func TestObligationsAccept(t *testing.T) {
 	tail.Hook = map[int]bool{3: true}
 	r4 := with(wrapW(), -1, mv(7, 2)) // the lookup does not read r4
 	for name, w := range map[string]Window{"site": siteW(), "wrap": wrapW(), "entry": entryW(), "callback": cbW(),
-		"pass": passW(), "passload": passLdW(), "hook": hookW(), "tail (no r0 obligation)": tail, "wrap r4": r4} {
+		"pass": passW(), "passload": passLdW(), "hook": hookW(), "tail (no r0 obligation)": tail, "wrap r4": r4,
+		"site bound": siteB(), "wrap bound": wrapB(), "site copy": siteC()} {
 		if v := Check(w); !v.Validated {
 			t.Errorf("%s: %+v", name, v)
 		}
@@ -133,6 +157,9 @@ func ruleCases() []ruleCase {
 	offCentre := siteW()
 	offCentre.Center = 0
 	fallOff := with(hookW(), 4, mvi(0, 0))
+	// A bound hook call before the helper; r1-r5 are reloaded for it (R15).
+	early := Window{Kind: KindSite, Center: 11, Floor: -8, HasFloor: true, Hook: map[int]bool{5: true}, Bind: map[int]Binding{5: {Key: 3}},
+		Insns: []Insn{st(-24, 1), st(-32, 2), st(-40, 3), st(-48, 4), st(-56, 5), pc(), ld(1, -24), ld(2, -32), ld(3, -40), ld(4, -48), ld(5, -56), hc(1)}}
 	return []ruleCase{
 		{"kind", "kind", "unknown window kind", func() Window { w := siteW(); w.Kind = "site-x"; return w }()},
 		{"C6", "C6", "not in the allowlist", atomic},
@@ -185,6 +212,13 @@ func ruleCases() []ruleCase {
 		{"limit-paths", "limit", "paths", paths},
 		{"limit-steps", "limit", "steps", steps},
 		{"model-load", "model", "stack load outside", with(siteW(), 4, ld(1, -520))},
+		{"RB-order", "RB", "before the helper call", early},
+		{"RB-key", "RB", "key argument r3", with(siteB(), 5, ld(3, -32))},
+		{"RB-key", "RB", "key argument r3", with(wrapB(), -8, mv(3, 6))},
+		{"RB-value", "RB", "value argument r4", with(siteB(), 6, mv(4, 10))},
+		{"RB-value", "RB", "value argument r4", with(wrapB(), -9, mv(4, 7))},
+		{"RB-copy", "RB", "not the copy at r10-48", with(siteC(), 9, Insn{Op: 0x07, Dst: 4, Imm: -40})},
+		{"RB-copy-r0", "RB", "r0 is", with(siteC(), 6, mv(0, 10))},
 	}
 }
 

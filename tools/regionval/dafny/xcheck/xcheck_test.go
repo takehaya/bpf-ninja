@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/takehaya/bpf-ninja/tools/regionval/core"
+	"github.com/takehaya/bpf-ninja/tools/regionval/dafny/contract"
 	rd "github.com/takehaya/bpf-ninja/tools/regionval/dafny/regionvaldafny"
 	"github.com/takehaya/bpf-ninja/tools/regionval/interp"
 )
@@ -184,6 +185,58 @@ func TestInterpretersAgree(t *testing.T) {
 				t.Errorf("%s: final states differ (iteration %d)", c.name, it)
 				break
 			}
+		}
+	}
+}
+
+// Record binding (rule RB): both cores on site windows whose hook calls
+// bind the key and the value, in the forms the rewriter emits, and on
+// rewrites that pass the wrong pointer. A window without bindings keeps its
+// verdict whatever the hook gets: RB is separate from preservation.
+func TestRecordBinding(t *testing.T) {
+	jne := func(d byte, k int32, o int16) []byte { return ins(0x55, d, 0, o, k) }
+	// key spill, helper, result spill, skip the hook on NULL, ctx, key, value, hook, restore
+	auto := cat(stx(10, 2, -176), helper, stx(10, 0, -184), jeq(0, 0, 4), ldx(1, 10, -192), ldx(3, 10, -176), mov(4, 0), hook, ldx(0, 10, -184))
+	plain := rep8(rep8(auto, 5, ldx(2, 10, -176)), 6, mov(3, 0)) // HOOK(ctx, key, value)
+	// miss-first: the miss hook gets the key, the hit hook key and value
+	missFirst := cat(stx(10, 2, -176), helper, stx(10, 0, -184), jne(0, 0, 4), ldx(1, 10, -192), ldx(3, 10, -176), hook, ja(4),
+		ldx(1, 10, -192), ldx(3, 10, -176), mov(4, 0), hook, ldx(0, 10, -184))
+	generic := cat(stx(10, 2, -176), helper, stx(10, 0, -184), ldx(1, 10, -192), ldx(3, 10, -176), mov(4, 0), hook, ldx(0, 10, -184))
+	kv := func(pc, k, v int) map[int]core.Binding { return map[int]core.Binding{pc: {Key: k, Value: v}} }
+	// CopyReadOnly: an 8-byte copy of the value at r10-200, its address in r4
+	cp := cat(stx(10, 2, -176), helper, stx(10, 0, -184), jeq(0, 0, 7), ldx(1, 0, 0), stx(10, 1, -200), ldx(1, 10, -192), ldx(3, 10, -176),
+		mov(4, 10), addk(4, -200), hook, ldx(0, 10, -184))
+	cb := map[int]core.Binding{10: {Key: 3, Value: 4, Copy: true, Off: -200}}
+	for _, c := range []struct {
+		name string
+		raw  []byte
+		bind map[int]core.Binding
+		ok   bool
+	}{
+		{"auto", auto, kv(7, 3, 4), true},
+		{"plain", plain, kv(7, 2, 3), true},
+		{"miss-first", missFirst, map[int]core.Binding{6: {Key: 3}, 11: {Key: 3, Value: 4}}, true},
+		{"generic, NULL on a miss", generic, kv(6, 3, 4), true},
+		{"value = r10 (wrong frame)", rep8(auto, 6, mov(4, 10)), kv(7, 3, 4), false},
+		{"value = r10, unbound", rep8(auto, 6, mov(4, 10)), nil, true},
+		{"value = key", rep8(auto, 6, ldx(4, 10, -176)), kv(7, 3, 4), false},
+		{"key = result slot", rep8(auto, 5, ldx(3, 10, -184)), kv(7, 3, 4), false},
+		{"plain, key and value swapped", rep8(rep8(auto, 5, ldx(3, 10, -176)), 6, mov(2, 0)), kv(7, 2, 3), false},
+		{"copy", cp, cb, true},
+		{"copy, value = r0", rep8(rep8(cp, 8, mov(4, 0)), 9, mov(4, 4)), cb, false},
+		{"copy, wrong offset", rep8(cp, 9, addk(4, -192)), cb, false},
+		{"copy, r0 changed", rep8(cp, 7, mov(0, 10)), cb, false},
+		{"miss-first, miss key from the result slot", rep8(missFirst, 5, ldx(3, 10, -184)), map[int]core.Binding{6: {Key: 3}, 11: {Key: 3, Value: 4}}, false},
+	} {
+		w, ok := window(core.KindSite, c.raw)
+		if !ok {
+			t.Fatalf("%s: decode", c.name)
+		}
+		w.Bind = c.bind
+		gv := core.Check(w)
+		dv := contract.Validate(w, c.raw, nil, nil)
+		if gv.Validated != c.ok || dv.Validated != c.ok || (!c.ok && gv.Rule != "RB") {
+			t.Errorf("%s: Go %+v, Dafny %+v, want validated=%v (rule RB if not)", c.name, gv, dv, c.ok)
 		}
 	}
 }

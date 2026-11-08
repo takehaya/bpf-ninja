@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"slices"
 	"testing"
+
+	"github.com/takehaya/bpf-ninja/tools/regionval/core"
 )
 
 // Hand-written fixture pairs. a is one instruction of a tiny assembler:
@@ -304,17 +306,35 @@ func TestStructureRejects(t *testing.T) {
 
 func TestFuncInfoAndBTF(t *testing.T) {
 	blob, _ := btfFuncs("main", "hook")
-	names, err := ParseBTFFuncNames(blob)
-	if err != nil || names[2] != "main" || names[3] != "hook" || len(names) != 2 {
+	names, err := ParseBTFFuncs(blob)
+	if err != nil || names[2].Name != "main" || names[3].Name != "hook" || len(names) != 2 {
 		t.Fatalf("names %v %v", names, err)
 	}
 	bad := slices.Clone(blob)
 	bad[24+4+3] = 20 // first type's kind -> 20 (unknown)
-	if _, err := ParseBTFFuncNames(bad); err == nil {
+	if _, err := ParseBTFFuncs(bad); err == nil {
 		t.Error("unknown BTF kind accepted")
 	}
-	if _, err := ParseBTFFuncNames(blob[:30]); err == nil {
+	if _, err := ParseBTFFuncs(blob[:30]); err == nil {
 		t.Error("truncated BTF accepted")
+	}
+	// A FUNC_PROTO with parameters ctx, key, value and a FUNC of it.
+	le := binary.LittleEndian
+	var types []byte
+	for _, v := range []uint32{0, 13<<24 | 3, 0, 1, 0, 5, 0, 9, 0, 15, 12 << 24, 1} {
+		types = le.AppendUint32(types, v)
+	}
+	strs := []byte("\x00ctx\x00key\x00value\x00hook\x00")
+	hdr := make([]byte, 24)
+	le.PutUint16(hdr, 0xeb9f)
+	hdr[2] = 1
+	le.PutUint32(hdr[4:], 24)
+	le.PutUint32(hdr[12:], uint32(len(types)))
+	le.PutUint32(hdr[16:], uint32(len(types)))
+	le.PutUint32(hdr[20:], uint32(len(strs)))
+	fs, err := ParseBTFFuncs(append(append(hdr, types...), strs...))
+	if err != nil || fs[2].Name != "hook" || !slices.Equal(fs[2].Params, []string{"ctx", "key", "value"}) {
+		t.Fatalf("funcs %v %v", fs, err)
 	}
 	if _, err := ParseFuncInfo([]byte{1, 0, 0, 0, 2, 0, 0, 0}); err == nil {
 		t.Error("func_info not starting at 0 accepted")
@@ -381,5 +401,50 @@ func TestRunAggregation(t *testing.T) {
 	}
 	if r := Run(filepath.Join(t.TempDir(), "missing.json")); r.Validated || r.Structure.OK {
 		t.Fatalf("missing file: %+v", r)
+	}
+}
+
+// RB binds the hook parameters named key and value. A value copied to the
+// stack right before the call (copyBlock) is bound as the copy's address;
+// a lone load through r0 is not a copy.
+func TestBinds(t *testing.T) {
+	ld := func(d, s uint8, o int16) core.Insn { return core.Insn{Op: 0x79, Dst: d, Src: s, Off: o} }
+	st := func(o int16, s uint8) core.Insn { return core.Insn{Op: 0x7b, Dst: 10, Src: s, Off: o} }
+	call := core.Insn{Op: core.OpCall, Src: 1}
+	mk := func(body ...core.Insn) *Layout {
+		xs := append(append(body, call), core.Insn{Op: core.OpExit}, core.Insn{Op: 0xb7}, core.Insn{Op: core.OpExit})
+		for i := range xs {
+			xs[i].Raw = i
+		}
+		h := len(body)
+		xs[h].Imm = 1 // to the hook at h+2
+		return &Layout{T: xs, TFuncs: []Func{{Name: "p", Start: 0, End: h + 2},
+			{Name: "hook", Params: []string{"ctx", "site", "key", "value"}, Sizes: []int{24, 0, 4, 16}, Start: h + 2, End: h + 4, Inserted: true}}}
+	}
+	copy16 := []core.Insn{ld(1, 0, 0), st(-48, 1), ld(1, 0, 8), st(-40, 1), ld(3, 10, -24), {Op: 0xbf, Dst: 4, Src: 10}, {Op: 0x07, Dst: 4, Imm: -48}}
+	for _, c := range []struct {
+		name string
+		body []core.Insn
+		want core.Binding
+	}{
+		{"plain", []core.Insn{{Op: 0xbf, Dst: 4}, ld(3, 10, -24)}, core.Binding{Key: 3, Value: 4}},
+		{"copy", copy16, core.Binding{Key: 3, Value: 4, Copy: true, Off: -48}},
+		{"one load through r0 is no copy", []core.Insn{ld(4, 0, 0), ld(3, 10, -24)}, core.Binding{Key: 3, Value: 4}},
+		{"copy of 8 of 16 bytes", append([]core.Insn{ld(1, 0, 0), st(-48, 1)}, copy16[4:]...), core.Binding{Key: 3, Value: 4}},
+		{"copy with a gap", append([]core.Insn{ld(1, 0, 0), st(-48, 1), ld(1, 0, 8), st(-32, 1)}, copy16[4:]...), core.Binding{Key: 3, Value: 4}},
+		{"store after the copy", append(slices.Clone(copy16), st(-48, 3)), core.Binding{Key: 3, Value: 4}},
+		{"r0 written after the copy", append(slices.Clone(copy16), core.Insn{Op: 0xbf, Dst: 0, Src: 10}), core.Binding{Key: 3, Value: 4}},
+		{"jump into the copy", append([]core.Insn{{Op: 0x15, Dst: 0, Off: 2}}, copy16...), core.Binding{Key: 3, Value: 4}},
+	} {
+		l := mk(c.body...)
+		h := len(c.body)
+		if b := l.binds(0, h+2); len(b) != 1 || b[h] != c.want {
+			t.Errorf("%s: binds %v, want %v at %d", c.name, b, c.want, h)
+		}
+	}
+	l := mk(copy16...)
+	l.TFuncs[1].Params = []string{"ctx", "k", "v"}
+	if b := l.binds(0, len(copy16)+2); len(b) != 0 {
+		t.Errorf("other names: binds %v", b)
 	}
 }

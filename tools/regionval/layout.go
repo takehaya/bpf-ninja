@@ -10,7 +10,9 @@ import (
 // Func is one function of a stream, from func_info and BTF.
 type Func struct {
 	Name       string
-	Start, End int // decoded indices [Start, End)
+	Params     []string // BTF parameter names
+	Sizes      []int    // per parameter, the size of the type it points to (0: unknown)
+	Start, End int      // decoded indices [Start, End)
 	Inserted   bool
 }
 
@@ -31,8 +33,9 @@ type Layout struct {
 	Kappa          []int
 	Windows        []Window
 	Floors         map[string]int16
-	Live           []uint16 // core.LiveIn(O): r1-r5 live at each original function's entry (S10)
-	oRaw, tRaw     []byte   // wire bytes of O and T
+	Live           []uint16    // core.LiveIn(O): r1-r5 live at each original function's entry (S10)
+	oRaw, tRaw     []byte      // wire bytes of O and T
+	tIdx           map[int]int // rawIndex(T), built on first use
 }
 
 // StructError fails the whole load (fail-closed).
@@ -55,13 +58,14 @@ func rawIndex(is []core.Insn) map[int]int {
 	return m
 }
 
-func buildFuncs(is []core.Insn, recs []FuncRec, names map[uint32]string, which string) ([]Func, error) {
+func buildFuncs(is []core.Insn, recs []FuncRec, names map[uint32]BTFFunc, which string) ([]Func, error) {
 	raw := rawIndex(is)
 	var fs []Func
 	seen := map[string]bool{}
 	for k, r := range recs {
 		start, ok := raw[int(r.InsnOff)]
-		name, named := names[r.TypeID]
+		fn, named := names[r.TypeID]
+		name := fn.Name
 		switch {
 		case !ok:
 			return nil, fail("funcs", "%s func_info %d: insn_off %d is not an instruction boundary", which, k, r.InsnOff)
@@ -74,7 +78,7 @@ func buildFuncs(is []core.Insn, recs []FuncRec, names map[uint32]string, which s
 		if len(fs) > 0 {
 			fs[len(fs)-1].End = start
 		}
-		fs = append(fs, Func{Name: name, Start: start, End: len(is)})
+		fs = append(fs, Func{Name: name, Params: fn.Params, Sizes: fn.Sizes, Start: start, End: len(is)})
 	}
 	return fs, nil
 }
@@ -139,7 +143,7 @@ func Analyze(c *Capture) (*Layout, error) {
 }
 
 func (l *Layout) functions(ofi, tfi, blob []byte) error {
-	names, err := ParseBTFFuncNames(blob)
+	names, err := ParseBTFFuncs(blob)
 	if err != nil {
 		return fail("funcs", "%v", err)
 	}
@@ -416,6 +420,13 @@ func (l *Layout) CoreWindow(w Window) core.Window {
 		cw.HelperPC = slices.IndexFunc(cw.Callee, cw.Helper.Same)
 	}
 	cw.Floor, cw.HasFloor = l.Floors[w.Func]
+	if (cw.Kind == core.KindSite || cw.Kind == core.KindWrap) && isLookup(l.O[w.Orig].Imm) {
+		start, end := w.Start, w.End
+		if w.Callee >= 0 {
+			start, end = l.TFuncs[w.Callee].Start, l.TFuncs[w.Callee].End
+		}
+		cw.Bind = l.binds(start, end)
+	}
 	if cw.Kind == core.KindPassLoad { // FP(G) of the called G; S10 of G
 		cw.PassLive = core.ArgRegs // no callee found: everything live
 		if g := funcStarting(l.OFuncs, rawIndex(l.O), l.O[w.Orig].CallTarget()); g >= 0 {
@@ -459,7 +470,7 @@ func (l *Layout) tBytes(start, end int) []byte {
 // hookCalls marks the pseudo calls in T[start:end) whose target is a hook
 // (an inserted function that is not a wrapper), by index from start.
 func (l *Layout) hookCalls(start, end int) map[int]bool {
-	tRaw := rawIndex(l.T)
+	tRaw := l.tIndex()
 	m := map[int]bool{}
 	for j := start; j < end; j++ {
 		if x := l.T[j]; x.IsPseudoCall() {
@@ -469,6 +480,96 @@ func (l *Layout) hookCalls(start, end int) map[int]bool {
 		}
 	}
 	return m
+}
+
+// tIndex is rawIndex(l.T), built once: hookCalls and binds run per window.
+func (l *Layout) tIndex() map[int]int {
+	if l.tIdx == nil {
+		l.tIdx = rawIndex(l.T)
+	}
+	return l.tIdx
+}
+
+// isLookup is bpf_map_lookup_elem or bpf_map_lookup_percpu_elem.
+func isLookup(id int32) bool { return id == 1 || id == 195 }
+
+// binds is rule RB for the hook calls in T[start:end), by index from start:
+// a hook parameter named key (value) among the first five is in r1-r5 and
+// must hold the helper's key pointer (result). This is the record meaning
+// the hook's BTF declares (docs/en/lookup-site-injection.md); a hook
+// without such parameters, such as a miss hook's value, gets no binding.
+// A value that the window copies to the stack right before the call
+// (copyBlock) is bound as that copy's address instead.
+func (l *Layout) binds(start, end int) map[int]core.Binding {
+	tRaw := l.tIndex()
+	m := map[int]core.Binding{}
+	for j := range l.hookCalls(start, end) {
+		f := funcStarting(l.TFuncs, tRaw, l.T[start+j].CallTarget())
+		fn := l.TFuncs[f]
+		var b core.Binding
+		for i, p := range fn.Params {
+			switch {
+			case i >= 5:
+			case p == "key":
+				b.Key = i + 1
+			case p == "value":
+				b.Value = i + 1
+				if i < len(fn.Sizes) {
+					b.Off, b.Copy = copyBlock(l.T[start:end], j, fn.Sizes[i])
+				}
+			}
+		}
+		if b != (core.Binding{}) {
+			m[j] = b
+		}
+	}
+	return m
+}
+
+// copyBlock finds the stack copy of the value that a CopyReadOnly site
+// makes right before the hook call xs[h] (pkg/inject copyValue): pairs
+// `rS = *(rS width *)(r0 + d)`, `*(r10 + off + d) = rS` with the same
+// width and rS != r0, d running from 0 up to size bytes without a gap,
+// followed by code up to xs[h] that stores nothing. From the first pair to
+// xs[h] no instruction is a jump or writes r0, and no jump of the window
+// lands in between, so every path to the call runs the whole copy with r0
+// as it is at the call. It returns off. RB then requires the value
+// argument to be r10 + off and r0 to be the helper's result at the call.
+func copyBlock(xs []core.Insn, h, size int) (int16, bool) {
+	if size <= 0 {
+		return 0, false
+	}
+	// s: the first instruction of the straight-line code that ends at xs[h].
+	s := h
+	for s > 0 && !xs[s-1].IsJump() && core.Writes(xs[s-1])&1 == 0 {
+		s--
+	}
+	for _, x := range xs {
+		if x.IsJump() && x.JumpTarget() > xs[s].Raw && x.JumpTarget() <= xs[h].Raw {
+			return 0, false
+		}
+	}
+	for i := s; i+1 < h; i++ {
+		ld, st := xs[i], xs[i+1]
+		if ld.Class() != core.ClassLDX || ld.Src != 0 || ld.Off != 0 {
+			continue
+		}
+		off := st.Off
+		d := 0
+		for ; i+1 < h && d < size; i += 2 {
+			ld, st = xs[i], xs[i+1]
+			if ld.Class() != core.ClassLDX || ld.Src != 0 || ld.Dst == 0 || int(ld.Off) != d ||
+				st.Op != ld.Op+2 || st.Dst != 10 || st.Src != ld.Dst || int(st.Off) != int(off)+d {
+				return 0, false
+			}
+			d += [4]int{4, 2, 1, 8}[ld.Op>>3&3]
+		}
+		if d != size || slices.ContainsFunc(xs[i:h], func(x core.Insn) bool { return x.Class() == core.ClassSTX }) {
+			return 0, false
+		}
+		return off, true
+	}
+	return 0, false
 }
 
 func (l *Layout) isWrapper(f int) bool {

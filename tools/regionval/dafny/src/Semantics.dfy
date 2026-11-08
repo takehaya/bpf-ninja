@@ -135,7 +135,7 @@ module Semantics {
   datatype Event =
     | EStore(addr: bv64, width: nat)
     | EHelper(args: seq<bv64>, ret: bv64, stackAfter: seq<bv8>, id: bv32)
-    | EHook
+    | EHook(pc: int, args: seq<bv64>, r0: bv64, fp: bv64)  // hook call: its pc in the code being run; r1..r5, r0, r10 at the call
     | ECallW(regs: seq<bv64>)     // P8: call W; the caller's registers at the call
     | ERet(r0: bv64)              // P8: EXIT in W; W's r0
 
@@ -297,7 +297,8 @@ module Semantics {
     requires CWF(s)
   {
     var regs' := HavocRegs(s.regs, oracle, s.oc, 6);
-    Next(s.(pc := s.pc + 1, regs := regs', log := s.log + regs'[0..6], oc := s.oc + 6, events := s.events + [EHook]))
+    Next(s.(pc := s.pc + 1, regs := regs', log := s.log + regs'[0..6], oc := s.oc + 6,
+            events := s.events + [EHook(s.pc, s.regs[1..6], s.regs[0], s.regs[10])]))
   }
 
   // ---------------- runs over a region ----------------

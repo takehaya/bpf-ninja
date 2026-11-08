@@ -37,12 +37,26 @@ type Window struct {
 	// LiveIn(O)[G], the registers live at G's entry in the original (S10).
 	PassPrologue []Insn
 	PassLive     uint16
+	// Record binding (rule RB): the hook calls of a lookup site, by index in
+	// Insns (in Callee for P8), and which of r1-r5 must hold the key pointer
+	// the helper got and the value it returned.
+	Bind map[int]Binding
+}
+
+// Binding names the hook argument registers that carry a lookup's key and
+// value (0: the hook has no such parameter). With Copy the value is a stack
+// copy at r10 + Off that the window made (CopyReadOnly): the argument must be
+// that address and r0 the helper's result at the call.
+type Binding struct {
+	Key, Value int
+	Copy       bool
+	Off        int16
 }
 
 // Verdict is binary. Its zero value is "not validated", so a
 // missing or defaulted verdict never reads as validated. Rule
 // is the category of the first failed obligation (C1-C6, site, R15, R0,
-// P1, P1b, P9, P7, P8, kind, model, limit).
+// P1, P1b, P9, P7, P8, RB, kind, model, limit).
 type Verdict struct {
 	Validated bool   `json:"validated"`
 	Rule      string `json:"rule,omitempty"`
