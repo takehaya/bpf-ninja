@@ -104,6 +104,9 @@ module Checker {
       else SOk(ss.(regs := ss.regs[dst := AluTerm(is64, op, ss.regs[dst], SymOperand(is64, opnd, ss.regs))]))
     case Ldx(w, dst, base, off) =>
       if dst >= 10 || base >= NREGS || w > 8 then SFail("malformed load")
+      // r10 + c outside the frame: fail closed (as the Go core's rule model)
+      else if FpOff(AddrTerm(ss, base, off)).Some? && !InFrame(Signed64(FpOff(AddrTerm(ss, base, off)).value), w)
+      then SFail("stack load outside the frame")
       else
         var v := match FpOff(AddrTerm(ss, base, off))
                  case Some(c) =>
@@ -114,11 +117,13 @@ module Checker {
     case Stx(w, base, src, off) =>
       if src >= NREGS then SFail("malformed store") else SymStore(sp, ss, base, off, w, ss.regs[src])
     case St(w, base, off, imm) => SymStore(sp, ss, base, off, w, Const(Sext32(imm)))
-    case CallHelper(_) =>
+    case CallHelper(id) =>
       if !sp.helper.Helper? then SFail("helper call outside a site window")
       else if ss.helpers != 0 then SFail("second helper call on a path")
       else if sp.helper.checkArgs && ss.regs[1..6] != [Entry(1), Entry(2), Entry(3), Entry(4), Entry(5)]
       then SFail("r1-r5 changed before the helper call")
+      else if sp.wrap.Wrap? && !(Some(id) == HelperIdOf(sp.wrap.helper) && WrapArgsSym(id, ss.regs))
+      then SFail("W's helper call is not O[i] with the site's r1-r5")
       else
         // r0 <- v, r1..r5 <- havoc, stack [f,0) <- havoc (original helper), rest kept
         var lo := STACK as int + sp.floor;
@@ -131,6 +136,31 @@ module Checker {
       else if ss.hooks != 0 then SFail("second hook call on a path")
       else SOk(ss.(regs := FreshRegs(ss.regs, ss.next), next := ss.next + 6, hooks := 1))
     case _ => SFail("control instruction")
+  }
+
+  // P8 (rule R15): r1, r2, r3, r5, and r4 unless a lookup, are the entry symbols.
+  predicate WrapArgsSym(id: bv32, regs: seq<Term>)
+    requires |regs| == NREGS
+  {
+    regs[1] == Entry(1) && regs[2] == Entry(2) && regs[3] == Entry(3) && regs[5] == Entry(5)
+    && (!IsLookup(id) ==> regs[4] == Entry(4))
+  }
+
+  // P8 frames (mirror Semantics.EnterW / ReturnW).
+  function EnterWS(ss: SState): SState
+    requires SWF(ss)
+  {
+    ss.(regs := seq(NREGS, k requires 0 <= k < NREGS =>
+                      if 1 <= k <= 5 || k == 10 then ss.regs[k] else Fresh(ss.next + (if k == 0 then 0 else k - 5))),
+        next := ss.next + 5)
+  }
+
+  function ReturnS(ss: SState, caller: seq<Term>): SState
+    requires SWF(ss) && |caller| == NREGS
+  {
+    ss.(regs := seq(NREGS, k requires 0 <= k < NREGS =>
+                      if k == 0 then ss.regs[0] else if k <= 5 then Fresh(ss.next + (k - 1)) else caller[k]),
+        next := ss.next + 5)
   }
 
   // ---------------- obligations at the end of a path ----------------
@@ -154,29 +184,45 @@ module Checker {
 
   function Target(pc: nat, off: bv16): int { pc + 1 + Signed16(off) }
 
+  // What prog is: the whole window (Top), WP of a P8 window, whose end is
+  // call W (WP), or W's body, entered with the caller's registers (WBody).
+  datatype Mode = Top | WP(wprog: seq<Instr>) | WBody(caller: seq<Term>)
+
   // Every syntactic path from pc; both arms of each conditional branch.
-  opaque function SymExec(prog: seq<Instr>, sp: Spec, pc: nat, ss: SState): Verdict
+  opaque function SymExec(prog: seq<Instr>, sp: Spec, pc: nat, ss: SState, m: Mode): Verdict
     requires pc <= |prog| && SWF(ss) && SpecWF(sp)
-    decreases |prog| - pc
+    decreases if m.WP? then 1 else 0, |prog| - pc
   {
     if pc == |prog| then
-      if sp.exitMode then NotValidated(pc, "hook body falls through") else Final(sp, ss, pc)
+      match m
+      case Top => if sp.exitMode then NotValidated(pc, "hook body falls through") else Final(sp, ss, pc)
+      case WP(wprog) =>
+        if !(forall k :: 0 <= k <= 9 && k != 4 ==> ss.regs[k] == Entry(k))
+        then NotValidated(pc, "a register other than r4 changed before call W")
+        else SymExec(wprog, sp, 0, EnterWS(ss), WBody(ss.regs))
+      case WBody(_) => NotValidated(pc, "falls off the end of W")
     else match prog[pc]
       case Exit =>
-        if !sp.exitMode then NotValidated(pc, "exit outside a hook body") else Final(sp, ss, pc)
+        (match m
+         case Top => if !sp.exitMode then NotValidated(pc, "exit outside a hook body") else Final(sp, ss, pc)
+         case WP(_) => NotValidated(pc, "exit in WP")
+         case WBody(caller) =>
+           if ss.regs[0] != ss.ret then NotValidated(pc, "W does not return the helper result")
+           else if |caller| != NREGS then NotValidated(pc, "internal")
+           else Final(sp, ReturnS(ss, caller), pc))
       case Ja(off) =>
         if Signed16(off) < 0 || Target(pc, off) > |prog| then NotValidated(pc, "jump not forward within the window")
-        else SymExec(prog, sp, Target(pc, off), ss)
+        else SymExec(prog, sp, Target(pc, off), ss, m)
       case Jcond(_, dst, _, off) =>
         if dst >= NREGS || Signed16(off) < 0 || Target(pc, off) > |prog|
         then NotValidated(pc, "branch not forward within the window")
         else
-          var r := SymExec(prog, sp, pc + 1, ss);
-          if r.NotValidated? then r else SymExec(prog, sp, Target(pc, off), ss)
+          var r := SymExec(prog, sp, pc + 1, ss, m);
+          if r.NotValidated? then r else SymExec(prog, sp, Target(pc, off), ss, m)
       case _ =>
         match SymStep(sp, prog[pc], ss)
-        case SFail(m) => NotValidated(pc, m)
-        case SOk(ss') => if SWF(ss') then SymExec(prog, sp, pc + 1, ss') else NotValidated(pc, "internal")
+        case SFail(msg) => NotValidated(pc, msg)
+        case SOk(ss') => if SWF(ss') then SymExec(prog, sp, pc + 1, ss', m) else NotValidated(pc, "internal")
   }
 
   // ---------------- entry point ----------------
@@ -200,6 +246,10 @@ module Checker {
     if |prog| == 0 then 0 else (if prog[0].Jcond? then 1 else 0) + CountBranches(prog[1..])
   }
 
+  function CountHelperCalls(prog: seq<Instr>): nat {
+    if |prog| == 0 then 0 else (if prog[0].CallHelper? then 1 else 0) + CountHelperCalls(prog[1..])
+  }
+
   // The only function that can return Validated for a region.
   function Validate(raw: seq<bv8>, sp: Spec): Verdict {
     if !SpecWF(sp) then NotValidated(-1, "bad window parameters")
@@ -208,7 +258,27 @@ module Checker {
     else match DecodeFrom(raw, 0)
       case DBad(p) => NotValidated(p, "instruction outside the allowlist")
       case DOk(prog) =>
-        if CountBranches(prog) > MAX_BRANCHES then NotValidated(-1, "too many branches")
-        else SymExec(prog, sp, 0, SInit())
+        if sp.wrap.Wrap? then ValidateWrap(prog, sp)
+        else if CountBranches(prog) > MAX_BRANCHES then NotValidated(-1, "too many branches")
+        else SymExec(prog, sp, 0, SInit(), Top)
+  }
+
+  // P8: prog = WP . call W.  WP is checked statically (writes at most r4)
+  // and symbolically up to call W; there W's body is entered (Mode WP).
+  function ValidateWrap(prog: seq<Instr>, sp: Spec): Verdict
+    requires SpecWF(sp) && sp.wrap.Wrap?
+  {
+    var n := |prog|;
+    var body := sp.wrap.body;
+    if n == 0 || !prog[n - 1].CallLocal? then NotValidated(-1, "P8 window does not end in call W")
+    else if !(forall j :: 0 <= j < n - 1 ==> Writes(prog[j]) <= {4}) then NotValidated(-1, "WP writes a register other than r4")
+    else if |body| % 8 != 0 || NumInsns(body) > MAX_INSNS then NotValidated(-1, "bad W body")
+    else match DecodeFrom(body, 0)
+      case DBad(p) => NotValidated(p, "W instruction outside the allowlist")
+      case DOk(wprog) =>
+        if !(forall j :: 0 <= j < |wprog| ==> WInsnOk(wprog[j], sp)) then NotValidated(-1, "W names r10 or calls a helper other than O[i]")
+        else if CountHelperCalls(wprog) != 1 then NotValidated(-1, "W does not contain exactly one helper call (rule P8)")
+        else if CountBranches(prog) + CountBranches(wprog) > MAX_BRANCHES then NotValidated(-1, "too many branches")
+        else SymExec(prog[..n - 1], sp, 0, SInit(), WP(wprog))
   }
 }
