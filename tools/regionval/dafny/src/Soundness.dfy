@@ -2,7 +2,7 @@
 //   if Validate(region) == Validated then, for every concrete initial state
 //   and every concrete execution (every oracle), the obligations hold.
 //
-// Structure (numbers refer to the addendum):
+// Structure:
 //   (2) Sim: the symbolic state denotes the concrete state under the
 //       assignment Env(entry regs, entry stack, sigma), where sigma is the
 //       list of every value the run obtained from outside.  Fresh symbol n

@@ -5,7 +5,7 @@ import "fmt"
 // Window kinds (README.md, Windows). The kind selects the obligations; the
 // extraction outside the core assigns it (layout.go windowKind).
 const (
-	KindSite     = "site"         // P1c, P2 HF/HO/MO/MF, P3, P5, generic
+	KindSite     = "site"         // any helper call site except tail calls and wrapped calls
 	KindTail     = "site-P4"      // tail-call site
 	KindWrap     = "site-P8"      // WP(i)·call W_i, W_i inlined
 	KindEntry    = "prologue-P1"  // Pro_0

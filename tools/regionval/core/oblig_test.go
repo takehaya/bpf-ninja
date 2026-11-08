@@ -148,6 +148,7 @@ func ruleCases() []ruleCase {
 		{"C4-exit", "C4", "exit outside", with(siteW(), 4, ex())},
 		{"C5-target", "C5", "neither a hook", noHook},
 		{"C5-helper", "C5", "not the window's original call", extraHelper},
+		{"C5-helper-wrap", "C5", "not the window's original call", with(wrapW(), 0, hc(1))},
 		{"C5-hooks", "C5", "2 hook calls", twoHooks},
 		{"site-center", "site", "no centre", func() Window { w := siteW(); w.Center = -1; return w }()},
 		{"site-helper", "site", "not this kind's helper", offCentre},

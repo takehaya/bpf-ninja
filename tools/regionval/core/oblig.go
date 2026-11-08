@@ -112,7 +112,7 @@ func validated(w Window, paths []Path) Verdict {
 		// (P9-writes), and r_G may be a live argument that
 		// already holds ctx (no pass load before such calls).
 		if w.Kind == KindPassLoad && w.PassLive&bit(uint8(rG)) != 0 { // rule:S10
-			return notValidated("P9", "r_G = r%d is live at the callee entry (S10)", rG)
+			return notValidated("P9", "r_G = r%d is live at the callee entry", rG)
 		}
 	}
 	f := int64(w.Floor)
@@ -215,7 +215,7 @@ func validated(w Window, paths []Path) Verdict {
 				return notValidated("P1", "r%d at the prologue exit is %v", k, end[k])
 			}
 		case KindCallback:
-			// Covers the exit values r1-r9 (was rule P1b): a register no
+			// Covers the exit values r1-r9: a register no
 			// executed instruction writes keeps its entry value.
 			if wset&^1 != 0 { // rule:P1b-writes
 				return notValidated("P1b", "callback prologue writes r%d", lowest(wset&^1))
@@ -224,7 +224,6 @@ func validated(w Window, paths []Path) Verdict {
 			if stores != 1 { // rule:P9-store
 				return notValidated("P9", "pass prologue executes %d stores", stores)
 			}
-			// Covers the exit values r0-r9 (was rule P9-regs).
 			if wset != 0 { // rule:P9-writes
 				return notValidated("P9", "pass prologue writes r%d", lowest(wset))
 			}
@@ -237,8 +236,12 @@ func validated(w Window, paths []Path) Verdict {
 				return notValidated("P9", "pass load writes r%d, not only r_G = r%d", lowest(wset&^bit(uint8(rG))), rG)
 			}
 		}
-		if k, ok := regsEqual(end, r6to9...); !ok || !Equal(end[10], FrameBase(0)) { // rule:C2
-			return notValidated("C2", "r%d or r10 at the window exit differs from its entry value", k)
+		k, ok := regsEqual(end, r6to9...)
+		if !ok || !Equal(end[10], FrameBase(0)) { // rule:C2
+			if ok {
+				k = 10
+			}
+			return notValidated("C2", "r%d at the window exit differs from its entry value", k)
 		}
 		if !hook {
 			for o := f; o < 0; o++ {

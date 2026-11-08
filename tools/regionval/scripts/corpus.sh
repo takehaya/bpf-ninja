@@ -2,7 +2,8 @@
 # Check every capture file under DIR and summarise the results.
 # Usage: scripts/corpus.sh DIR [OUT]
 # OUT (default regionval-corpus.jsonl) receives one JSON result per load.
-# Exits 1 if any load is not validated, 2 on a usage or build error.
+# Needs go and jq. Exits 0 if every load is validated, 1 if any is not,
+# and 2 on a usage error, a missing tool, a build failure or no capture files.
 set -eu
 dir=${1:-}
 out=${2:-regionval-corpus.jsonl}
@@ -10,16 +11,25 @@ if [ -z "$dir" ] || [ ! -d "$dir" ]; then
 	echo "usage: $0 DIR [OUT]" >&2
 	exit 2
 fi
+for tool in go jq; do
+	command -v "$tool" > /dev/null || { echo "$0: $tool not found" >&2; exit 2; }
+done
+files=$(find "$dir" -name '*.json' -type f | wc -l)
+if [ "$files" -eq 0 ]; then
+	echo "$0: no *.json files under $dir" >&2
+	exit 2
+fi
 here=$(cd "$(dirname "$0")/.." && pwd)
 bin=$(mktemp)
 trap 'rm -f "$bin"' EXIT
 (cd "$here" && CGO_ENABLED=0 go build -o "$bin" ./cmd/regionval) || exit 2
-find "$dir" -name '*.json' -type f | sort | tr '\n' '\0' | xargs -0 "$bin" > "$out"
+find "$dir" -name '*.json' -type f | sort | tr '\n' '\0' | xargs -0 "$bin" > "$out" || exit 2
+# Failed loads are counted by structure stage; failed windows by rule.
 jq -rs '
   "loads: \(length)  validated: \(map(select(.validated)) | length)",
   (map(select(.validated | not)
-       | if .structure.ok then (.windows[] | select(.validated | not) | "rule:\(.rule)")
-         else "structure:\(.structure.failed_stage)" end)
+       | if .structure.ok then (.windows[] | select(.validated | not) | "window rule \(.rule)")
+         else "load structure:\(.structure.failed_stage)" end)
    | group_by(.) | map("  \(.[0]): \(length)") | .[])
 ' "$out"
-jq -se 'all(.validated)' "$out" > /dev/null
+jq -se 'all(.validated)' "$out" > /dev/null || exit 1

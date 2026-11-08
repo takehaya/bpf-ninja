@@ -15,7 +15,8 @@ not import bpf-ninja's packages. Its only input is the capture file.
 
 ## Running it
 
-Go 1.25 or later is needed, plus Dafny for the proof steps (see
+Go 1.25 or later is needed. `scripts/corpus.sh` also needs `jq`, `make lint`
+needs golangci-lint, and the proof steps need Dafny (see
 [Dafny core](#dafny-core)).
 
 ```sh
@@ -24,15 +25,17 @@ make build                         # ./regionval
 ./regionval capture.json...        # one JSON result per line on stdout
 make test                          # Go tests, no Dafny needed
 ./scripts/corpus.sh DIR            # every *.json under DIR, with a summary
-make ci                            # what CI runs (Dafny, Go tests, lint)
+make ci                            # what CI runs (Dafny, Go tests, golangci-lint)
 ```
 
 From the repository root, `make regionval-test` runs the Go tests and
 `make regionval-check` runs the CI steps.
 
 `scripts/corpus.sh DIR [OUT]` writes the results to OUT (default
-`regionval-corpus.jsonl`) and prints how many loads were validated and why
-the others failed. It exits 1 if any load is not validated.
+`regionval-corpus.jsonl`) and prints how many loads were validated, how many
+failed each structure stage, and how many windows failed each rule. It exits
+0 if every load is validated, 1 if any is not, and 2 on a usage error, a
+missing tool, a build failure or a directory without capture files.
 
 ### Output
 
@@ -63,7 +66,10 @@ One JSON object per capture file:
   reads as validated.
 - When the structure check fails, `structure.failed_stage` is one of `load`,
   `decode`, `funcs`, `floors`, `kappa`, `windows`, `edges` or `calls`, and
-  `windows` is empty.
+  `windows` is `null`.
+- `load` is the path as given on the command line.
+- The command exits 0 whatever the verdicts; it exits 1 only if it cannot
+  write a result, and 2 without arguments. Read `validated` to decide.
 - `start` and `end` are instruction indices in T, counting a 16-byte
   `ld_imm64` as one instruction.
 - A window that is not validated has `rule` (the first failed obligation, see
@@ -93,18 +99,28 @@ bpf-ninja does not write capture files yet. The files under
 The structure check runs on the whole load. Any failure makes the load not
 validated.
 
-- Both streams decode. Unused fields are zero, and each `ld_imm64` has its
-  second slot.
-- func_info and BTF give the function boundaries of O and T. A function of T
-  whose name is not in O was inserted (a hook or a wrapper).
-- Every original function has a floor.
+- `decode`: both streams decode, and each `ld_imm64` has a second slot with
+  only `imm` set. Reserved fields of other instructions are checked later, by
+  the allowlist, for instructions inside a window.
+- `funcs`: func_info and BTF give the function boundaries of O and T. A
+  function of T whose name is not in O was inserted (a hook or a wrapper).
+- `floors`: each floor entry is unique and in `[-512, 0]`. A function without
+  a floor is not a structure failure; its windows fail rule `C1`.
 - `kappa`: each original instruction appears in T, in order, with the same
   opcode, registers, offset and immediate. Jump offsets and function references
   must match after relocation. A helper call that bpf-ninja wrapped appears as
   `call W`, and the wrapper W contains the original call exactly once.
 - `edges`: each original jump and function reference lands on the relocated
   target.
-- `windows`: every inserted instruction belongs to exactly one window.
+- `windows`: the inserted code between two original instructions can be cut
+  into windows, for example an entry prologue and the prelude of the first
+  site do not overlap.
+- `calls`: every call to an inserted function targets a function start and
+  comes from an allowed place, every inserted function is called (a wrapper
+  exactly once), and every inserted instruction belongs to exactly one window.
+
+In the code these checks are tagged S1 (`kappa`), S2 (`edges`) and S3
+(window coverage); S10 is the liveness check of rule `P9`.
 
 ### Windows
 
@@ -232,11 +248,13 @@ Dafny together with a proof that it is sound.
   from any registers, stack, helper results and loaded values meets the
   obligations of `spec`.
 - The sources contain no `assume`, `{:axiom}`, `{:verify false}` or
-  `{:extern}`. `make check-trust` fails if one appears.
+  `{:extern}`, nor the `@Axiom`, `@Verify` and `@Extern` attributes.
+  `make check-trust` fails if one appears, or if a file in `dafny/src` is
+  missing from the list that `make dafny-verify` verifies.
 - `dafny/gen-go` is Go translated from the sources and is checked in.
   `dafny/regionvaldafny` is a small wrapper around it.
-- `dafny/xcheck` runs both cores on the same windows and requires the same
-  verdicts.
+- `dafny/xcheck` runs both cores on 28 hand-written windows and requires the
+  same verdicts. It does not yet run the Dafny core on the captures.
 
 The regionval command still judges windows with the Go core in `core/`. The
 Dafny core does not model wrapper (`site-P8`) windows yet; it reports them as
@@ -274,7 +292,7 @@ only how Z3 searches, not what counts as a proof.
 - `testdata/export`: synthetic captures. The `clean` set must be validated.
   Each capture in `planted` has one planted fault and must be rejected by one
   specific rule.
-- `interp/`: random windows and every window in `testdata/export` are run
+- `interp/`: random windows and every window in `testdata` are run
   both symbolically and in the reference interpreter. They must agree on the
   path taken, registers, stack and the number of unknown values used.
   `REGIONVAL_DIFF_GLOB` points the test at other capture files.

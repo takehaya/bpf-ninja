@@ -8,7 +8,6 @@ package interp_test
 // interpreter's (King's commutation).
 
 import (
-	"cmp"
 	"fmt"
 	"maps"
 	"math/rand/v2"
@@ -283,7 +282,14 @@ func TestDifferentialRandomWindows(t *testing.T) {
 // Every window of the test captures whose structure is OK, 200 inputs each.
 func TestDifferentialExportWindows(t *testing.T) {
 	// REGIONVAL_DIFF_GLOB runs the same comparison over other capture files
-	files, _ := filepath.Glob(cmp.Or(os.Getenv("REGIONVAL_DIFF_GLOB"), "../testdata/*/*/*.json"))
+	var files []string
+	for _, g := range []string{"../testdata/captures/*.json", "../testdata/export/*/*.json"} {
+		fs, _ := filepath.Glob(g)
+		files = append(files, fs...)
+	}
+	if g := os.Getenv("REGIONVAL_DIFF_GLOB"); g != "" {
+		files, _ = filepath.Glob(g)
+	}
 	if len(files) == 0 {
 		t.Fatal("no test captures")
 	}
@@ -300,6 +306,7 @@ func TestDifferentialExportWindows(t *testing.T) {
 		}
 		l, err := regionval.Analyze(c)
 		if err != nil {
+			t.Logf("%s: structure not OK, skipped: %v", filepath.Base(file), err)
 			continue
 		}
 		for _, lw := range l.Windows {
@@ -323,6 +330,6 @@ func TestDifferentialExportWindows(t *testing.T) {
 	}
 	for _, k := range slices.Sorted(maps.Keys(byKind)) {
 		n := byKind[k]
-		t.Logf("export %-28s seed %#x: %d windows, %d refused by the stepper, %d cases, 0 mismatches", k, seedExport, n[0], n[1], n[2])
+		t.Logf("captures %-26s seed %#x: %d windows, %d refused by the stepper, %d cases, 0 mismatches", k, seedExport, n[0], n[1], n[2])
 	}
 }

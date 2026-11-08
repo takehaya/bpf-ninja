@@ -10,7 +10,7 @@ module Checker {
   import opened Obligations
 
   const MAX_INSNS: nat := 4096
-  const MAX_BRANCHES: nat := 10     // at most 2^10 = 1024 paths (as in the Go core)
+  const MAX_BRANCHES: nat := 10     // at most 2^10 = 1024 paths; the Go core limits paths, not branches
 
   // Symbolic state.  snap: the stack at [f,0) the region must leave as is;
   // next: number of fresh symbols used; ret: the helper result symbol.

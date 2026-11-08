@@ -10,7 +10,7 @@ DFY := dafny/src/Bits.dfy dafny/src/Semantics.dfy dafny/src/Terms.dfy dafny/src/
 GEN_MODULE := github.com/takehaya/bpf-ninja/tools/regionval/dafny/gen-go
 export CGO_ENABLED := 0
 
-ci: ## What CI runs (needs dafny and goimports on PATH)
+ci: ## What CI runs (needs dafny, goimports and golangci-lint on PATH)
 	$(MAKE) check-trust dafny-verify dafny-check-gen vet test lint
 
 build: ## Build the regionval CLI
@@ -25,16 +25,20 @@ test: ## Go tests (no Dafny needed)
 lint: ## golangci-lint (the root linters, generated Go excluded)
 	golangci-lint run ./...
 
-check-trust: ## Fail on assume, axioms, unverified or extern declarations in the Dafny sources
-	@! grep -nE '\bassume\b|\{:axiom\}|\{:verify +false\}|\{:extern' $(DFY) || (echo "trust escape found"; exit 1)
+check-trust: ## Fail on assume, axioms, unverified or extern declarations, or a .dfy file missing from DFY
+	@for f in dafny/src/*.dfy; do case " $(DFY) " in *" $$f "*) ;; *) echo "$$f is not listed in DFY"; exit 1;; esac; done
+	@rc=0; grep -nE '\bassume\b|\{: *axiom\b|@Axiom\b|\{: *verify +false|@Verify\b|\{: *extern\b|@Extern\b' $(DFY) || rc=$$?; \
+	case $$rc in 0) echo "trust escape found"; exit 1;; 1) ;; *) exit $$rc;; esac
 	@echo "check-trust: ok"
 
 dafny-verify: ## Verify the Dafny core and its soundness proof
 	$(DAFNY) verify $(DFLAGS) $(DFY)
 
 dafny-gen: ## Regenerate dafny/gen-go from the Dafny sources
-	rm -rf dafny/gen-go
-	$(DAFNY) translate go --no-verify --go-module-name $(GEN_MODULE) -o dafny/gen dafny/src/Api.dfy
+	@t=$$(mktemp -d); \
+	$(DAFNY) translate go --no-verify --go-module-name $(GEN_MODULE) -o $$t/gen dafny/src/Api.dfy && \
+	rm -rf dafny/gen-go && mv $$t/gen-go dafny/gen-go; \
+	rc=$$?; rm -rf $$t; exit $$rc
 
 dafny-check-gen: ## Fail if dafny/gen-go differs from a fresh translation
 	@t=$$(mktemp -d); \
