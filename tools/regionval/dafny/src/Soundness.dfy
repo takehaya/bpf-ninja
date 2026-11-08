@@ -45,7 +45,7 @@ module Soundness {
     && Eval(ss.ret, EnvOf(s0, sigma)) == HelperRet(cs.events)
     && Eval(ss.hkey, EnvOf(s0, sigma)) == HelperKey(cs.events)
     && (ss.know.IsZero? ==> HelperRet(cs.events) == 0) && (ss.know.NonZero? ==> HelperRet(cs.events) != 0)
-    && AllBound(sp, cs.events)
+    && Bound(sp, cs.events)
     && (forall i :: 0 <= i < |cs.events| ==> EventOk(sp, s0, cs.events[i]))
     && cs.regs[10] == s0.regs[10]
   }
@@ -62,12 +62,25 @@ module Soundness {
     assert (evs + [e])[..|evs|] == evs;
   }
 
+  // AllBound, opaque in Sim: its quantifier is needed only where an event is
+  // appended (BoundSnoc) and at the end (FinalSound), and left visible it
+  // slows every other proof that carries Sim.
+  opaque predicate Bound(sp: Spec, evs: seq<Event>) { AllBound(sp, evs) }
+
+  lemma BoundAll(sp: Spec, evs: seq<Event>)
+    requires Bound(sp, evs)
+    ensures AllBound(sp, evs)
+  {
+    reveal Bound();
+  }
+
   // Appending an event that meets its Bind keeps AllBound (earlier events
   // keep their prefixes).
   lemma BoundSnoc(sp: Spec, evs: seq<Event>, e: Event)
-    requires AllBound(sp, evs) && BindOk(sp, evs, e)
-    ensures AllBound(sp, evs + [e])
+    requires Bound(sp, evs) && BindOk(sp, evs, e)
+    ensures Bound(sp, evs + [e])
   {
+    reveal Bound();
     var es := evs + [e];
     forall i | 0 <= i < |es| ensures BindOk(sp, es[..i], es[i]) {
       if i < |evs| {
@@ -92,13 +105,13 @@ module Soundness {
   lemma SnocPlain(sp: Spec, s0: CState, evs: seq<Event>, e: Event)
     requires CWF(s0) && !e.EHelper? && EventOk(sp, s0, e)
     requires HelperStacksWF(evs) && (forall i :: 0 <= i < |evs| ==> EventOk(sp, s0, evs[i]))
-    requires AllBound(sp, evs) && BindOk(sp, evs, e)
+    requires Bound(sp, evs) && BindOk(sp, evs, e)
     ensures HelperStacksWF(evs + [e])
     ensures forall i :: 0 <= i < |evs + [e]| ==> EventOk(sp, s0, (evs + [e])[i])
     ensures CountHelpers(evs + [e]) == CountHelpers(evs)
     ensures HelperRet(evs + [e]) == HelperRet(evs)
     ensures HelperKey(evs + [e]) == HelperKey(evs)
-    ensures AllBound(sp, evs + [e])
+    ensures Bound(sp, evs + [e])
     ensures UpperBase(evs + [e], s0.stack) == UpperBase(evs, s0.stack)
   {
     EventsSnoc(evs, e, s0.stack);
@@ -109,10 +122,10 @@ module Soundness {
   lemma SnocHelper(sp: Spec, s0: CState, evs: seq<Event>, e: Event)
     requires CWF(s0) && e.EHelper? && |e.stackAfter| == STACK && EventOk(sp, s0, e)
     requires HelperStacksWF(evs) && (forall i :: 0 <= i < |evs| ==> EventOk(sp, s0, evs[i]))
-    requires AllBound(sp, evs)
+    requires Bound(sp, evs)
     ensures HelperStacksWF(evs + [e])
     ensures forall i :: 0 <= i < |evs + [e]| ==> EventOk(sp, s0, (evs + [e])[i])
-    ensures AllBound(sp, evs + [e])
+    ensures Bound(sp, evs + [e])
   {
     BoundSnoc(sp, evs, e);
   }
@@ -611,6 +624,7 @@ module Soundness {
     requires Final(sp, ss, pc) == Validated
     ensures FinalOk(sp, s0, cs)
   {
+    BoundAll(sp, cs.events);
     var e := EnvOf(s0, sigma);
     forall k | 0 <= k < NREGS && ss.regs[k] == Entry(k) ensures cs.regs[k] == s0.regs[k] {
       EvEntry(k, e);
@@ -1085,7 +1099,7 @@ module Soundness {
     EvConst(0, e);
     assert ss.ret == Const(0) && ss.hkey == Const(0);
     assert HelperRet(s0.events) == 0 && HelperKey(s0.events) == 0;
-    assert AllBound(sp, s0.events);
+    assert Bound(sp, s0.events) by { reveal Bound(); }
   }
 
   // ---------------- facts that tie trusted definitions to the semantics ----------------

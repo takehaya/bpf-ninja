@@ -250,6 +250,8 @@ its slot; this covers the hit-first and miss-first layouts and the guard in
 a wrapper. The last such branch since the helper call on the path decides;
 other branches tell nothing. A hit or miss hook called where no such branch
 decided is refused (fail-closed). The Go core checks `HS` with `RB`.
+`HS` checks only which hook runs when one runs: a path that calls no hook,
+so that a hit or a miss goes unobserved, is not refused.
 
 ### Allowed instructions
 
