@@ -1,5 +1,6 @@
 .PHONY: build build-libpcap clean test test-unit test-bpf test-integration test-all vet goreleaser
 .PHONY: install-lint-tools lint lint-ci p4c-check lean-build lean-gen lean-vocab golden-update golden-diff
+.PHONY: regionval-test regionval-check
 
 BINARY = bpf-ninja
 DIFF_FROM_BRANCH_NAME ?= main
@@ -63,6 +64,12 @@ lean-gen: ## Regenerate the vocabulary and pkg/kunai/dsltest/testdata/spec_vecto
 		&& mv pkg/kunai/dsltest/testdata/spec_vectors.json.tmp pkg/kunai/dsltest/testdata/spec_vectors.json
 	spec/lean/.lake/build/bin/gen --generated > pkg/kunai/dsltest/testdata/spec_vectors_gen.json.tmp \
 		&& mv pkg/kunai/dsltest/testdata/spec_vectors_gen.json.tmp pkg/kunai/dsltest/testdata/spec_vectors_gen.json
+
+regionval-test: ## Run the region validator's Go tests (tools/regionval, no Dafny needed)
+	$(MAKE) -C tools/regionval test
+
+regionval-check: ## Run the region validator's CI steps (needs dafny and goimports; see tools/regionval/README.md)
+	$(MAKE) -C tools/regionval ci
 
 p4c-check: ## Validate bundled .p4 vocab with the official p4c parser (docker required)
 	./scripts/p4c-check.sh

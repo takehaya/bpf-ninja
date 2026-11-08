@@ -1,0 +1,60 @@
+{
+  "format": 1,
+  "kernel": "none",
+  "program": "katran ctxwrite (fkCtxPair)",
+  "func": "ctxwrite",
+  "prog_type": 0,
+  "object": "katran.o",
+  "object_sha256": "674b363bd99b85a6edcc9042a9ef9cf98aa2f2bce8b2225f038d357bedd01adf",
+  "original_insns_hex": "6201080007000000b7000000000000009500000000000000",
+  "original_func_info_hex": "0000000001000000",
+  "transformed_insns_hex": "7b1af8ff00000000851000000400000079a1f8ff000000006201080007000000b70000000000000095000000000000006110000000000000b7000000000000009500000000000000",
+  "transformed_func_info_hex": "00000000010000000600000002000000",
+  "transformed_btf_hex": "9feb01001800000000000000a4000000a4000000790000003c0000000100000c07000000450000000100000c090000004f000000000000010400000020000001530000000000000104000000200000005700000001000004c0000000610000000400000040000000000000000000000205000000000000000100000d0300000066000000060000004f000000000000010400000020000001000000000100000d0800000066000000060000006a0000000000001102000000ffffffff006a35322063747820777269746520666978747572650067656e657261746564206f62736572766174696f6e20686f6f6b206a35325f656e747279006374787772697465006a35325f656e74727900696e7400753332005f5f736b5f62756666006d61726b00637478006270662d6e696e6a613a686f6f6b00",
+  "floors": [
+    {
+      "name": "ctxwrite",
+      "start": 0,
+      "floor": 0,
+      "source": "fixture"
+    }
+  ],
+  "frame_rounding": 0,
+  "hook_form": "global",
+  "miss_first": false,
+  "rule": null,
+  "hints": {
+    "certificate": {
+      "original": [
+        3,
+        4,
+        5
+      ],
+      "hooks": [
+        {
+          "start": 6,
+          "end": 9
+        }
+      ]
+    },
+    "targets": [
+      {
+        "site": -1,
+        "when": "any",
+        "hook": 6
+      }
+    ],
+    "units": "decoded instruction indices (ld_imm64 counts once)"
+  },
+  "checker": {
+    "accepted": true,
+    "kind": ""
+  },
+  "kernel_accepted": null,
+  "mutation": {
+    "set": "clean",
+    "id": "clean-katran-ctxwrite",
+    "fixture": "katran ctxwrite (fkCtxPair)",
+    "expect": "validated"
+  }
+}

@@ -1,0 +1,30 @@
+file_format_version = "1.0"
+dafny_version = "4.11.0.0"
+[options_by_module.Bits]
+go-module-name = "github.com/takehaya/bpf-ninja/tools/regionval/dafny/gen-go"
+legacy-module-names = false
+rust-sync = false
+[options_by_module.Semantics]
+go-module-name = "github.com/takehaya/bpf-ninja/tools/regionval/dafny/gen-go"
+legacy-module-names = false
+rust-sync = false
+[options_by_module.Obligations]
+go-module-name = "github.com/takehaya/bpf-ninja/tools/regionval/dafny/gen-go"
+legacy-module-names = false
+rust-sync = false
+[options_by_module.Terms]
+go-module-name = "github.com/takehaya/bpf-ninja/tools/regionval/dafny/gen-go"
+legacy-module-names = false
+rust-sync = false
+[options_by_module.Checker]
+go-module-name = "github.com/takehaya/bpf-ninja/tools/regionval/dafny/gen-go"
+legacy-module-names = false
+rust-sync = false
+[options_by_module.Api]
+go-module-name = "github.com/takehaya/bpf-ninja/tools/regionval/dafny/gen-go"
+legacy-module-names = false
+rust-sync = false
+[options_by_module.Soundness]
+go-module-name = "github.com/takehaya/bpf-ninja/tools/regionval/dafny/gen-go"
+legacy-module-names = false
+rust-sync = false

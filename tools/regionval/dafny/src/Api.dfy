@@ -1,0 +1,62 @@
+// Entry points compiled to Go.  Validate is Checker.Validate (the theorem in
+// Soundness.dfy is about exactly that function).  The presets map the window
+// kinds (README.md, Windows) to Spec values; they are convenience only and
+// are not part of the proof.
+include "Soundness.dfy"
+
+module Api {
+  import opened Bits
+  import opened Semantics
+  import opened Obligations
+  import Checker
+
+  // site (P1c, P2 HF/HO/MO/MF, P3, P5, generic): r1..r5 unchanged at the
+  // helper call, r0 = helper result at exit, r1..r5 free at exit.
+  function SiteSpec(floor: int): Spec {
+    Spec(floor, {1, 2, 3, 4, 5}, Helper(true, true), true, true, false)
+  }
+
+  // tail-call site (P4): only C1..C6; r0..r5 free.
+  function TailSiteSpec(floor: int): Spec {
+    Spec(floor, {0, 1, 2, 3, 4, 5}, Helper(false, false), true, true, false)
+  }
+
+  // entry prologue (P1): r1 preserved; r0, r2..r5 free (bottom at entry).
+  function EntryPrologueSpec(floor: int): Spec {
+    Spec(floor, {0, 2, 3, 4, 5}, NoHelper, true, false, false)
+  }
+
+  // callback prologue (P1b): only r0 may change.
+  function CallbackPrologueSpec(floor: int): Spec {
+    Spec(floor, {0}, NoHelper, true, false, false)
+  }
+
+  // pass prologue / pass load (P9): only rG may change (rG in r0..r5).
+  function PassSpec(floor: int, g: nat): Spec {
+    Spec(floor, {g}, NoHelper, true, false, false)
+  }
+
+  // hook body (P7): no store, no call, ends in EXIT with r0 = 0; r6..r9 kept.
+  function HookBodySpec(): Spec {
+    Spec(0, {0, 1, 2, 3, 4, 5}, NoHelper, false, false, true)
+  }
+
+  function Validate(raw: seq<bv8>, sp: Spec): Checker.Verdict {
+    Checker.Validate(raw, sp)
+  }
+
+  // One concrete step at s.pc (reference interpreter for differential tests).
+  function ConcreteStep(raw: seq<bv8>, floor: int, s: CState, oracle: seq<bv64>): StepRes {
+    if !CWF(s) || !(-(STACK as int) <= floor <= 0) || s.pc < 0 || s.pc >= NumInsns(raw) then Stuck
+    else match Decode(InsnAt(raw, s.pc))
+      case None => Stuck
+      case Some(ins) => Step(floor, ins, s, oracle)
+  }
+
+  // A whole run over the region (fuel > number of instructions suffices for
+  // validated regions, which only jump forward).
+  function ConcreteRun(raw: seq<bv8>, floor: int, s: CState, oracle: seq<bv64>, fuel: nat): Outcome {
+    if !CWF(s) || !(-(STACK as int) <= floor <= 0) then Escaped(s)
+    else Run(raw, floor, s, oracle, fuel)
+  }
+}

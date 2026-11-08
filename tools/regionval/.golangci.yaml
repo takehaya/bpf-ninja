@@ -1,0 +1,12 @@
+version: "2"
+
+# Same linters as the repository root; the Go translated from Dafny is
+# generated and not linted.
+linters:
+  enable:
+    - errcheck
+    - govet
+    - staticcheck
+  exclusions:
+    paths:
+      - dafny/gen-go
