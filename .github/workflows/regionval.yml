@@ -48,9 +48,11 @@ jobs:
           unzip -q "${DAFNY_ZIP}" -d "$HOME/.local/opt"
           mkdir -p "$HOME/.local/bin"
           ln -s "$HOME/.local/opt/dafny/dafny" "$HOME/.local/bin/dafny"
-          GOBIN="$HOME/.local/bin" go install "golang.org/x/tools/cmd/goimports@${GOIMPORTS_VERSION}"
-          GOBIN="$HOME/.local/bin" GOTOOLCHAIN=auto \
-            go install "github.com/golangci/golangci-lint/v2/cmd/golangci-lint@${GOLANGCI_LINT_VERSION}"
+          # Both tools need a newer Go than go.mod declares; setup-go sets
+          # GOTOOLCHAIN=local, so let go install fetch what each asks for.
+          export GOBIN="$HOME/.local/bin" GOTOOLCHAIN=auto
+          go install "golang.org/x/tools/cmd/goimports@${GOIMPORTS_VERSION}"
+          go install "github.com/golangci/golangci-lint/v2/cmd/golangci-lint@${GOLANGCI_LINT_VERSION}"
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
       - name: Versions
