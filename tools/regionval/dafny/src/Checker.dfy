@@ -173,6 +173,13 @@ module Checker {
     BindFailFrom(sp.binds, pc, ss, 0)
   }
 
+  // CopyArg(off): the register is r10 + off and r0 is the result symbol.
+  predicate CopyHolds(t: Term, off: int, ss: SState)
+    requires SWF(ss)
+  {
+    FpOff(t).Some? && Signed64(FpOff(t).value) == off && ss.regs[0] == ss.ret
+  }
+
   function BindFailFrom(bs: seq<Bind>, pc: nat, ss: SState, j: nat): string
     requires SWF(ss)
     decreases |bs| - j
@@ -185,6 +192,8 @@ module Checker {
     then "record binding: key argument is not the helper's key pointer"
     else if bs[j].role.ValueArg? && ss.regs[bs[j].reg] != ss.ret
     then "record binding: value argument is not the helper's result"
+    else if bs[j].role.CopyArg? && !CopyHolds(ss.regs[bs[j].reg], bs[j].role.off, ss)
+    then "record binding: value argument is not r10 plus the copy's offset, or r0 is not the helper's result"
     else BindFailFrom(bs, pc, ss, j + 1)
   }
 

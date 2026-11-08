@@ -11,6 +11,7 @@ import (
 type Func struct {
 	Name       string
 	Params     []string // BTF parameter names
+	Sizes      []int    // per parameter, the size of the type it points to (0: unknown)
 	Start, End int      // decoded indices [Start, End)
 	Inserted   bool
 }
@@ -77,7 +78,7 @@ func buildFuncs(is []core.Insn, recs []FuncRec, names map[uint32]BTFFunc, which 
 		if len(fs) > 0 {
 			fs[len(fs)-1].End = start
 		}
-		fs = append(fs, Func{Name: name, Params: fn.Params, Start: start, End: len(is)})
+		fs = append(fs, Func{Name: name, Params: fn.Params, Sizes: fn.Sizes, Start: start, End: len(is)})
 	}
 	return fs, nil
 }
@@ -497,20 +498,25 @@ func isLookup(id int32) bool { return id == 1 || id == 195 }
 // must hold the helper's key pointer (result). This is the record meaning
 // the hook's BTF declares (docs/en/lookup-site-injection.md); a hook
 // without such parameters, such as a miss hook's value, gets no binding.
+// A value that the window copies to the stack right before the call
+// (copyBlock) is bound as that copy's address instead.
 func (l *Layout) binds(start, end int) map[int]core.Binding {
 	tRaw := l.tIndex()
 	m := map[int]core.Binding{}
-	copied := copiesValue(l.T[start:end])
 	for j := range l.hookCalls(start, end) {
 		f := funcStarting(l.TFuncs, tRaw, l.T[start+j].CallTarget())
+		fn := l.TFuncs[f]
 		var b core.Binding
-		for i, p := range l.TFuncs[f].Params {
+		for i, p := range fn.Params {
 			switch {
 			case i >= 5:
 			case p == "key":
 				b.Key = i + 1
-			case p == "value" && !copied:
+			case p == "value":
 				b.Value = i + 1
+				if i < len(fn.Sizes) {
+					b.Off, b.Copy = copyBlock(l.T[start:end], j, fn.Sizes[i])
+				}
 			}
 		}
 		if b != (core.Binding{}) {
@@ -520,14 +526,50 @@ func (l *Layout) binds(start, end int) map[int]core.Binding {
 	return m
 }
 
-// copiesValue reports whether code loads through r0, as a site that passes
-// its hook a stack copy of the value does (LookupRequest.CopyReadOnly).
-// shortcut: such a hook's value is not bound, since the model does not tie
-// the copy to the memory the result points to; a window that loads through
-// r0 for another reason loses its value binding too. Upgrade with a model
-// of the loads' addresses.
-func copiesValue(xs []core.Insn) bool {
-	return slices.ContainsFunc(xs, func(x core.Insn) bool { return x.Class() == core.ClassLDX && x.Src == 0 })
+// copyBlock finds the stack copy of the value that a CopyReadOnly site
+// makes right before the hook call xs[h] (pkg/inject copyValue): pairs
+// `rS = *(rS width *)(r0 + d)`, `*(r10 + off + d) = rS` with the same
+// width and rS != r0, d running from 0 up to size bytes without a gap,
+// followed by code up to xs[h] that stores nothing. From the first pair to
+// xs[h] no instruction is a jump or writes r0, and no jump of the window
+// lands in between, so every path to the call runs the whole copy with r0
+// as it is at the call. It returns off. RB then requires the value
+// argument to be r10 + off and r0 to be the helper's result at the call.
+func copyBlock(xs []core.Insn, h, size int) (int16, bool) {
+	if size <= 0 {
+		return 0, false
+	}
+	// s: the first instruction of the straight-line code that ends at xs[h].
+	s := h
+	for s > 0 && !xs[s-1].IsJump() && core.Writes(xs[s-1])&1 == 0 {
+		s--
+	}
+	for _, x := range xs {
+		if x.IsJump() && x.JumpTarget() > xs[s].Raw && x.JumpTarget() <= xs[h].Raw {
+			return 0, false
+		}
+	}
+	for i := s; i+1 < h; i++ {
+		ld, st := xs[i], xs[i+1]
+		if ld.Class() != core.ClassLDX || ld.Src != 0 || ld.Off != 0 {
+			continue
+		}
+		off := st.Off
+		d := 0
+		for ; i+1 < h && d < size; i += 2 {
+			ld, st = xs[i], xs[i+1]
+			if ld.Class() != core.ClassLDX || ld.Src != 0 || ld.Dst == 0 || int(ld.Off) != d ||
+				st.Op != ld.Op+2 || st.Dst != 10 || st.Src != ld.Dst || int(st.Off) != int(off)+d {
+				return 0, false
+			}
+			d += [4]int{4, 2, 1, 8}[ld.Op>>3&3]
+		}
+		if d != size || slices.ContainsFunc(xs[i:h], func(x core.Insn) bool { return x.Class() == core.ClassSTX }) {
+			return 0, false
+		}
+		return off, true
+	}
+	return 0, false
 }
 
 func (l *Layout) isWrapper(f int) bool {

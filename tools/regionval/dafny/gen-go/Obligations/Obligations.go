@@ -229,19 +229,42 @@ func (_static *CompanionStruct_Default___) BindOk(sp Spec, prior _dafny.Sequence
 	_ = _pat_let_tv2
 	var _pat_let_tv3 = prior
 	_ = _pat_let_tv3
-	var _pat_let_tv4 = prior
+	var _pat_let_tv4 = e
 	_ = _pat_let_tv4
+	var _pat_let_tv5 = prior
+	_ = _pat_let_tv5
+	var _pat_let_tv6 = e
+	_ = _pat_let_tv6
+	var _pat_let_tv7 = e
+	_ = _pat_let_tv7
+	var _pat_let_tv8 = e
+	_ = _pat_let_tv8
+	var _pat_let_tv9 = prior
+	_ = _pat_let_tv9
 	return !((e).Is_EHook()) || (_dafny.Quantifier(_dafny.IntegerRange(_dafny.Zero, _dafny.IntOfUint32(((sp).Dtor_binds()).Cardinality())), true, func(_forall_var_0 _dafny.Int) bool {
 		var _0_j _dafny.Int
 		_0_j = interface{}(_forall_var_0).(_dafny.Int)
 		return !((((_0_j).Sign() != -1) && ((_0_j).Cmp(_dafny.IntOfUint32(((sp).Dtor_binds()).Cardinality())) < 0)) && (((((sp).Dtor_binds()).Select((_0_j).Uint32()).(Bind)).Dtor_pc()).Cmp((e).Dtor_pc()) == 0)) || (func(_pat_let29_0 Bind) bool {
 			return func(_1_b Bind) bool {
-				return ((((Companion_Default___.CountHelpers(_pat_let_tv0)).Cmp(_dafny.One) == 0) && (((_dafny.One).Cmp((_1_b).Dtor_reg()) <= 0) && (((_1_b).Dtor_reg()).Cmp(_dafny.IntOfInt64(5)) <= 0))) && ((_dafny.IntOfUint32(((_pat_let_tv1).Dtor_args()).Cardinality())).Cmp(_dafny.IntOfInt64(5)) == 0)) && ((((_pat_let_tv2).Dtor_args()).Select((((_1_b).Dtor_reg()).Minus(_dafny.One)).Uint32()).(uint64)) == ((func() uint64 {
-					if ((_1_b).Dtor_role()).Is_KeyArg() {
-						return Companion_Default___.HelperKey(_pat_let_tv3)
+				return ((((Companion_Default___.CountHelpers(_pat_let_tv0)).Cmp(_dafny.One) == 0) && (((_dafny.One).Cmp((_1_b).Dtor_reg()) <= 0) && (((_1_b).Dtor_reg()).Cmp(_dafny.IntOfInt64(5)) <= 0))) && ((_dafny.IntOfUint32(((_pat_let_tv1).Dtor_args()).Cardinality())).Cmp(_dafny.IntOfInt64(5)) == 0)) && (func() bool {
+					var _source0 Role = (_1_b).Dtor_role()
+					_ = _source0
+					{
+						if _source0.Is_KeyArg() {
+							return (((_pat_let_tv2).Dtor_args()).Select((((_1_b).Dtor_reg()).Minus(_dafny.One)).Uint32()).(uint64)) == (Companion_Default___.HelperKey(_pat_let_tv3))
+						}
 					}
-					return Companion_Default___.HelperRet(_pat_let_tv4)
-				})()))
+					{
+						if _source0.Is_ValueArg() {
+							return (((_pat_let_tv4).Dtor_args()).Select((((_1_b).Dtor_reg()).Minus(_dafny.One)).Uint32()).(uint64)) == (Companion_Default___.HelperRet(_pat_let_tv5))
+						}
+					}
+					{
+						var _2_off _dafny.Int = _source0.Get_().(Role_CopyArg).Off
+						_ = _2_off
+						return ((m_Semantics.Companion_Default___.Rel(((_pat_let_tv6).Dtor_args()).Select((((_1_b).Dtor_reg()).Minus(_dafny.One)).Uint32()).(uint64), (_pat_let_tv7).Dtor_fp())).Cmp(_2_off) == 0) && (((_pat_let_tv8).Dtor_r0()) == (Companion_Default___.HelperRet(_pat_let_tv9)))
+					}
+				}())
 			}(_pat_let29_0)
 		}(((sp).Dtor_binds()).Select((_0_j).Uint32()).(Bind)))
 	}))
@@ -640,27 +663,31 @@ func (_this Role) Is_ValueArg() bool {
 	return ok
 }
 
+type Role_CopyArg struct {
+	Off _dafny.Int
+}
+
+func (Role_CopyArg) isRole() {}
+
+func (CompanionStruct_Role_) Create_CopyArg_(Off _dafny.Int) Role {
+	return Role{Role_CopyArg{Off}}
+}
+
+func (_this Role) Is_CopyArg() bool {
+	_, ok := _this.Get_().(Role_CopyArg)
+	return ok
+}
+
 func (CompanionStruct_Role_) Default() Role {
 	return Companion_Role_.Create_KeyArg_()
 }
 
-func (_ CompanionStruct_Role_) AllSingletonConstructors() _dafny.Iterator {
-	i := -1
-	return func() (interface{}, bool) {
-		i++
-		switch i {
-		case 0:
-			return Companion_Role_.Create_KeyArg_(), true
-		case 1:
-			return Companion_Role_.Create_ValueArg_(), true
-		default:
-			return Role{}, false
-		}
-	}
+func (_this Role) Dtor_off() _dafny.Int {
+	return _this.Get_().(Role_CopyArg).Off
 }
 
 func (_this Role) String() string {
-	switch _this.Get_().(type) {
+	switch data := _this.Get_().(type) {
 	case nil:
 		return "null"
 	case Role_KeyArg:
@@ -671,6 +698,10 @@ func (_this Role) String() string {
 		{
 			return "Obligations.Role.ValueArg"
 		}
+	case Role_CopyArg:
+		{
+			return "Obligations.Role.CopyArg" + "(" + _dafny.String(data.Off) + ")"
+		}
 	default:
 		{
 			return "<unexpected>"
@@ -679,7 +710,7 @@ func (_this Role) String() string {
 }
 
 func (_this Role) Equals(other Role) bool {
-	switch _this.Get_().(type) {
+	switch data1 := _this.Get_().(type) {
 	case Role_KeyArg:
 		{
 			_, ok := other.Get_().(Role_KeyArg)
@@ -689,6 +720,11 @@ func (_this Role) Equals(other Role) bool {
 		{
 			_, ok := other.Get_().(Role_ValueArg)
 			return ok
+		}
+	case Role_CopyArg:
+		{
+			data2, ok := other.Get_().(Role_CopyArg)
+			return ok && data1.Off.Cmp(data2.Off) == 0
 		}
 	default:
 		{

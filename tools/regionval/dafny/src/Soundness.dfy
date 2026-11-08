@@ -482,7 +482,9 @@ module Soundness {
     requires SWF(ss) && BindFailFrom(bs, pc, ss, j) == ""
     ensures forall i :: j <= i < |bs| && bs[i].pc == pc ==>
               ss.helpers == 1 && 1 <= bs[i].reg <= 5
-              && ss.regs[bs[i].reg] == (if bs[i].role.KeyArg? then ss.hkey else ss.ret)
+              && (bs[i].role.KeyArg? ==> ss.regs[bs[i].reg] == ss.hkey)
+              && (bs[i].role.ValueArg? ==> ss.regs[bs[i].reg] == ss.ret)
+              && (bs[i].role.CopyArg? ==> CopyHolds(ss.regs[bs[i].reg], bs[i].role.off, ss))
     decreases |bs| - j
   {
     if j < |bs| { BindFailOk(bs, pc, ss, j + 1); }
@@ -509,16 +511,26 @@ module Soundness {
       {
         if k < 6 { EvFresh(n + k, e); assert sigma[n + k] == regs'[k]; }
       }
-      var ev := EHook(cs.pc, cs.regs[1..6]);
+      var ev := EHook(cs.pc, cs.regs[1..6], cs.regs[0], cs.regs[10]);
       assert r.s.events == cs.events + [ev];
       BindFailOk(sp.binds, cs.pc, ss, 0);
       forall j | 0 <= j < |sp.binds| && sp.binds[j].pc == ev.pc
         ensures var b := sp.binds[j];
                 CountHelpers(cs.events) == 1 && 1 <= b.reg <= 5 && |ev.args| == 5
-                && ev.args[b.reg - 1] == (if b.role.KeyArg? then HelperKey(cs.events) else HelperRet(cs.events))
+                && match b.role
+                   case KeyArg => ev.args[b.reg - 1] == HelperKey(cs.events)
+                   case ValueArg => ev.args[b.reg - 1] == HelperRet(cs.events)
+                   case CopyArg(off) => Rel(ev.args[b.reg - 1], ev.fp) == off && ev.r0 == HelperRet(cs.events)
       {
         var b := sp.binds[j];
         assert ev.args[b.reg - 1] == cs.regs[b.reg];
+        if b.role.CopyArg? {
+          var t := ss.regs[b.reg];
+          FpOffEval(t, e);
+          EvEntry(10, e);
+          SubOfAdd(s0.regs[10], FpOff(t).value);
+          assert cs.regs[b.reg] == s0.regs[10] + FpOff(t).value;
+        }
       }
       assert BindOk(sp, cs.events, ev);
       SnocPlain(sp, s0, cs.events, ev);

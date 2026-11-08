@@ -277,8 +277,12 @@ func validated(w Window, paths []Path) Verdict {
 				return notValidated("RB", "hook call at %v before the helper call", e.At)
 			case b.Key != 0 && !Equal(e.Regs[b.Key], helper.Regs[2]): // rule:RB-key
 				return notValidated("RB", "hook call at %v: key argument r%d is %v, not the helper's key %v", e.At, b.Key, e.Regs[b.Key], helper.Regs[2])
-			case b.Value != 0 && !Equal(e.Regs[b.Value], helper.V): // rule:RB-value
+			case b.Value != 0 && !b.Copy && !Equal(e.Regs[b.Value], helper.V): // rule:RB-value
 				return notValidated("RB", "hook call at %v: value argument r%d is %v, not the helper's result %v", e.At, b.Value, e.Regs[b.Value], helper.V)
+			case b.Copy && !Equal(e.Regs[b.Value], AddC(FrameBase(0), uint64(int64(b.Off)))): // rule:RB-copy
+				return notValidated("RB", "hook call at %v: value argument r%d is %v, not the copy at r10%+d", e.At, b.Value, e.Regs[b.Value], b.Off)
+			case b.Copy && !Equal(e.Regs[0], helper.V): // rule:RB-copy-r0
+				return notValidated("RB", "hook call at %v: r0 is %v, not the helper's result %v the copy reads", e.At, e.Regs[0], helper.V)
 			}
 		}
 	}

@@ -31,9 +31,13 @@ module Obligations {
   // at the hook call at pc, register reg (r1..r5) holds the key pointer the
   // central helper received (its r2) or the value the helper returned (r0).
   // pc counts instructions of the window, or of W for a wrapper site, whose
-  // hook calls are all in W.  Which hook parameters get a Bind is the
-  // caller's choice (dafny/contract), as is the rest of the Spec.
-  datatype Role = KeyArg | ValueArg
+  // hook calls are all in W.  CopyArg(off) is a value passed as a stack
+  // copy (CopyReadOnly): the register holds r10 + off, and r0 still holds
+  // the helper's result at the call.  That the bytes at off are a copy of
+  // the value is not stated here (dafny/contract checks the copy's shape).
+  // Which hook parameters get a Bind is the caller's choice
+  // (dafny/contract), as is the rest of the Spec.
+  datatype Role = KeyArg | ValueArg | CopyArg(off: int)
   datatype Bind = Bind(pc: nat, reg: nat, role: Role)
 
   // Per-window parameters.  Presets for each window kind are in Api.dfy.
@@ -87,7 +91,7 @@ module Obligations {
       && (sp.wrap.Wrap? ==> Some(id) == HelperIdOf(sp.wrap.helper) && |args| == 5
                             && args[0] == s0.regs[1] && args[1] == s0.regs[2] && args[2] == s0.regs[3]
                             && args[4] == s0.regs[5] && (!IsLookup(id) ==> args[3] == s0.regs[4]))
-    case EHook(_, _) => sp.hookCalls
+    case EHook(_, _, _, _) => sp.hookCalls
     // P8: at call W, every register but r4 has its entry value
     case ECallW(regs) =>
       sp.wrap.Wrap? && |regs| == NREGS && (forall k :: 0 <= k <= 9 && k != 4 ==> regs[k] == s0.regs[k])
@@ -123,7 +127,10 @@ module Obligations {
       forall j :: 0 <= j < |sp.binds| && sp.binds[j].pc == e.pc ==>
         var b := sp.binds[j];
         CountHelpers(prior) == 1 && 1 <= b.reg <= 5 && |e.args| == 5
-        && e.args[b.reg - 1] == (if b.role.KeyArg? then HelperKey(prior) else HelperRet(prior))
+        && match b.role
+           case KeyArg => e.args[b.reg - 1] == HelperKey(prior)
+           case ValueArg => e.args[b.reg - 1] == HelperRet(prior)
+           case CopyArg(off) => Rel(e.args[b.reg - 1], e.fp) == off && e.r0 == HelperRet(prior)
   }
 
   predicate AllBound(sp: Spec, evs: seq<Event>) {

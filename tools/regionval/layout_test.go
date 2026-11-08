@@ -404,24 +404,47 @@ func TestRunAggregation(t *testing.T) {
 	}
 }
 
-// RB binds the hook parameters named key and value; a window that copies
-// the value through r0 (CopyReadOnly) keeps only its key binding.
+// RB binds the hook parameters named key and value. A value copied to the
+// stack right before the call (copyBlock) is bound as the copy's address;
+// a lone load through r0 is not a copy.
 func TestBinds(t *testing.T) {
-	call := core.Insn{Op: core.OpCall, Src: 1, Imm: 1, Raw: 2} // to T[4]
-	l := &Layout{
-		T: []core.Insn{{Op: 0xbf, Dst: 4, Src: 0, Raw: 0}, {Op: 0x79, Dst: 3, Src: 10, Off: -24, Raw: 1}, call, {Op: core.OpExit, Raw: 3},
-			{Op: 0xb7, Raw: 4}, {Op: core.OpExit, Raw: 5}},
-		TFuncs: []Func{{Name: "p", Start: 0, End: 4}, {Name: "hook", Params: []string{"ctx", "site", "key", "value"}, Start: 4, End: 6, Inserted: true}},
+	ld := func(d, s uint8, o int16) core.Insn { return core.Insn{Op: 0x79, Dst: d, Src: s, Off: o} }
+	st := func(o int16, s uint8) core.Insn { return core.Insn{Op: 0x7b, Dst: 10, Src: s, Off: o} }
+	call := core.Insn{Op: core.OpCall, Src: 1}
+	mk := func(body ...core.Insn) *Layout {
+		xs := append(append(body, call), core.Insn{Op: core.OpExit}, core.Insn{Op: 0xb7}, core.Insn{Op: core.OpExit})
+		for i := range xs {
+			xs[i].Raw = i
+		}
+		h := len(body)
+		xs[h].Imm = 1 // to the hook at h+2
+		return &Layout{T: xs, TFuncs: []Func{{Name: "p", Start: 0, End: h + 2},
+			{Name: "hook", Params: []string{"ctx", "site", "key", "value"}, Sizes: []int{24, 0, 4, 16}, Start: h + 2, End: h + 4, Inserted: true}}}
 	}
-	if b := l.binds(0, 4); len(b) != 1 || b[2] != (core.Binding{Key: 3, Value: 4}) {
-		t.Errorf("binds %v", b)
+	copy16 := []core.Insn{ld(1, 0, 0), st(-48, 1), ld(1, 0, 8), st(-40, 1), ld(3, 10, -24), {Op: 0xbf, Dst: 4, Src: 10}, {Op: 0x07, Dst: 4, Imm: -48}}
+	for _, c := range []struct {
+		name string
+		body []core.Insn
+		want core.Binding
+	}{
+		{"plain", []core.Insn{{Op: 0xbf, Dst: 4}, ld(3, 10, -24)}, core.Binding{Key: 3, Value: 4}},
+		{"copy", copy16, core.Binding{Key: 3, Value: 4, Copy: true, Off: -48}},
+		{"one load through r0 is no copy", []core.Insn{ld(4, 0, 0), ld(3, 10, -24)}, core.Binding{Key: 3, Value: 4}},
+		{"copy of 8 of 16 bytes", append([]core.Insn{ld(1, 0, 0), st(-48, 1)}, copy16[4:]...), core.Binding{Key: 3, Value: 4}},
+		{"copy with a gap", append([]core.Insn{ld(1, 0, 0), st(-48, 1), ld(1, 0, 8), st(-32, 1)}, copy16[4:]...), core.Binding{Key: 3, Value: 4}},
+		{"store after the copy", append(slices.Clone(copy16), st(-48, 3)), core.Binding{Key: 3, Value: 4}},
+		{"r0 written after the copy", append(slices.Clone(copy16), core.Insn{Op: 0xbf, Dst: 0, Src: 10}), core.Binding{Key: 3, Value: 4}},
+		{"jump into the copy", append([]core.Insn{{Op: 0x15, Dst: 0, Off: 2}}, copy16...), core.Binding{Key: 3, Value: 4}},
+	} {
+		l := mk(c.body...)
+		h := len(c.body)
+		if b := l.binds(0, h+2); len(b) != 1 || b[h] != c.want {
+			t.Errorf("%s: binds %v, want %v at %d", c.name, b, c.want, h)
+		}
 	}
-	l.T[0] = core.Insn{Op: 0x79, Dst: 1, Src: 0, Raw: 0} // r1 = *(u64 *)(r0 + 0)
-	if b := l.binds(0, 4); len(b) != 1 || b[2] != (core.Binding{Key: 3}) {
-		t.Errorf("copy: binds %v", b)
-	}
+	l := mk(copy16...)
 	l.TFuncs[1].Params = []string{"ctx", "k", "v"}
-	if b := l.binds(0, 4); len(b) != 0 {
+	if b := l.binds(0, len(copy16)+2); len(b) != 0 {
 		t.Errorf("other names: binds %v", b)
 	}
 }

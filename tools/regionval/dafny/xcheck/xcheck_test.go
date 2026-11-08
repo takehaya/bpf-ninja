@@ -203,6 +203,10 @@ func TestRecordBinding(t *testing.T) {
 		ldx(1, 10, -192), ldx(3, 10, -176), mov(4, 0), hook, ldx(0, 10, -184))
 	generic := cat(stx(10, 2, -176), helper, stx(10, 0, -184), ldx(1, 10, -192), ldx(3, 10, -176), mov(4, 0), hook, ldx(0, 10, -184))
 	kv := func(pc, k, v int) map[int]core.Binding { return map[int]core.Binding{pc: {Key: k, Value: v}} }
+	// CopyReadOnly: an 8-byte copy of the value at r10-200, its address in r4
+	cp := cat(stx(10, 2, -176), helper, stx(10, 0, -184), jeq(0, 0, 7), ldx(1, 0, 0), stx(10, 1, -200), ldx(1, 10, -192), ldx(3, 10, -176),
+		mov(4, 10), addk(4, -200), hook, ldx(0, 10, -184))
+	cb := map[int]core.Binding{10: {Key: 3, Value: 4, Copy: true, Off: -200}}
 	for _, c := range []struct {
 		name string
 		raw  []byte
@@ -218,6 +222,10 @@ func TestRecordBinding(t *testing.T) {
 		{"value = key", rep8(auto, 6, ldx(4, 10, -176)), kv(7, 3, 4), false},
 		{"key = result slot", rep8(auto, 5, ldx(3, 10, -184)), kv(7, 3, 4), false},
 		{"plain, key and value swapped", rep8(rep8(auto, 5, ldx(3, 10, -176)), 6, mov(2, 0)), kv(7, 2, 3), false},
+		{"copy", cp, cb, true},
+		{"copy, value = r0", rep8(rep8(cp, 8, mov(4, 0)), 9, mov(4, 4)), cb, false},
+		{"copy, wrong offset", rep8(cp, 9, addk(4, -192)), cb, false},
+		{"copy, r0 changed", rep8(cp, 7, mov(0, 10)), cb, false},
 		{"miss-first, miss key from the result slot", rep8(missFirst, 5, ldx(3, 10, -184)), map[int]core.Binding{6: {Key: 3}, 11: {Key: 3, Value: 4}}, false},
 	} {
 		w, ok := window(core.KindSite, c.raw)

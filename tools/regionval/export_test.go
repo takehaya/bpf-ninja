@@ -21,7 +21,10 @@ func exportFiles(t *testing.T, set string) []string {
 	return fs
 }
 
-// The 14 clean pairs are validated, every window of them.
+// The 15 clean pairs are validated, every window of them. clean-missfirst-copy
+// is clean-missfirst-any with the hit hook given a 16-byte stack copy of the
+// value at r10-48, as CopyReadOnly lays it out; it was built by hand, not
+// captured from a load.
 func TestExportClean(t *testing.T) {
 	fs := exportFiles(t, "clean")
 	for _, f := range fs {
@@ -29,8 +32,8 @@ func TestExportClean(t *testing.T) {
 			t.Errorf("%s: %+v", filepath.Base(f), r)
 		}
 	}
-	if len(fs) != 14 {
-		t.Errorf("%d clean pairs, want 14", len(fs))
+	if len(fs) != 15 {
+		t.Errorf("%d clean pairs, want 15", len(fs))
 	}
 }
 
@@ -87,6 +90,47 @@ func TestExportPlanted(t *testing.T) {
 	}
 	if len(fs) != 44 || obl != 30 {
 		t.Errorf("%d planted files, %d rejected by an obligation; want 44 and 30", len(fs), obl)
+	}
+}
+
+// One-byte rewriter faults RB must refuse: in clean-missfirst-any the hit
+// hook's `r4 = r0` (raw slot 24) becomes `r4 = *(u64 *)(r0 + 0)`, which
+// passes the value's first 8 bytes as the value pointer; in
+// clean-missfirst-copy the copy's address r10-48 becomes r10-40.
+func TestRBOneByteFaults(t *testing.T) {
+	for _, c := range []struct {
+		file   string
+		at     int // byte offset in transformed_insns_hex
+		was    byte
+		now    []byte
+		clause string
+	}{
+		{"clean-missfirst-any", 24 * 8, 0xbf, []byte{0x79}, "value argument r4 is u14/8, not the helper's result"},
+		{"clean-missfirst-copy", 30*8 + 4, 0xd0, []byte{0xd8}, "not the copy at r10-48"},
+	} {
+		cp, err := LoadCapture(filepath.Join(exportDir, "clean", c.file+".json"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		b, err := hex.DecodeString(cp.TransformedInsnsHex)
+		if err != nil || b[c.at] != c.was {
+			t.Fatalf("%s: byte %d is %#x (%v)", c.file, c.at, b[c.at], err)
+		}
+		copy(b[c.at:], c.now)
+		cp.TransformedInsnsHex = hex.EncodeToString(b)
+		r := runFile(t, cp)
+		var got []string
+		for _, w := range r.Windows {
+			if !w.Validated {
+				got = append(got, w.Rule)
+				if !strings.Contains(w.Reason, c.clause) {
+					t.Errorf("%s: reason %q, want %q", c.file, w.Reason, c.clause)
+				}
+			}
+		}
+		if r.Validated || !r.Structure.OK || !slices.Equal(got, []string{"RB"}) {
+			t.Errorf("%s: rejected by %v, want [RB]: %+v", c.file, got, r)
+		}
 	}
 }
 

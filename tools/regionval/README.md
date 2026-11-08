@@ -209,13 +209,26 @@ counts only if the slot holds the helper's r2.
 This covers the forms bpf-ninja emits at lookups: the typed hit hook
 (`key` and `value` in r2 and r3, or in r3 and r4 after `site`), the miss
 hook (`key` only), the generic and dispatch hooks, which get the result on a
-miss too (NULL then), and the same hooks inside a wrapper. It does not cover:
+miss too (NULL then), and the same hooks inside a wrapper.
+
+A hook given a stack copy of the value (`CopyReadOnly`) gets r10 + off
+instead of the result. `layout.go` (`copyBlock`) accepts this only when the
+code right before the call is the copy bpf-ninja emits: load and store
+pairs `rS = *(r0 + d)`, `*(r10 + off + d) = rS` of one width each, with d
+running from 0 to the size of the type the `value` parameter points to in
+BTF, followed by code that stores nothing; from the copy to the call there
+is no jump, no jump lands in between and r0 is not written. `RB` then
+requires the `value` register to be r10 + off and r0 to be the helper's
+result at the call, so the copy read the helper's result. Otherwise the
+`value` register must be the result itself.
+
+It does not cover:
 
 - which hook runs on which result: a hit hook called on a miss gets NULL as
   its value, which is the helper's result, and is not refused;
-- the value of a hook given a stack copy of it (`CopyReadOnly`): the model
-  does not tie the copy to the memory the result points to. A window that
-  loads through r0, as the copy does, gets no `value` check;
+- that a copy's loads read the memory the result points to: a load from
+  outside the stack is an unknown value in the model, so the shape check
+  above is what ties the copy to the value;
 - `site`, `map`, `info` and `status` arguments, and the hooks of updates,
   deletes, pushes, pops, peeks and tail calls;
 - hooks whose BTF uses other parameter names.
@@ -271,8 +284,10 @@ wrong.
   that classify instructions, used to cut windows and by the contract, and
   the func_info and BTF parsers match the kernel.
 - **Hook parameter names.** `RB` takes the meaning of a hook's arguments
-  from the names in its BTF prototype (`layout.go` `binds`). A hook whose
-  parameters are not named `key` or `value` gets no `RB` check.
+  from the names in its BTF prototype (`layout.go` `binds`), and the size of
+  a copied value from the type its `value` parameter points to. A hook whose
+  parameters are not named `key` or `value` gets no `RB` check. The shape
+  check of a value copy (`copyBlock`) is outside the proof.
 - **Calling convention.** A helper call sets r0 to its result, leaves r1 to r5
   undefined and keeps r6 to r10. It may write any stack byte in `[f, 0)`. The
   lookup helpers do not read r4. A call to a hook or wrapper keeps r6 to r10
@@ -355,8 +370,9 @@ not modelled; this is sound because a validated W never names r10.
 
 For `RB` the spec lists binds: at the hook call at instruction pc (of the
 window, or of W for a wrapper site), register r holds the helper's key
-pointer or its result. The model records r1 to r5 at every hook call, and
-the proof shows that on every run each bind holds after the helper call.
+pointer, its result, or r10 + off with r0 the result (a copy). The model
+records r0 to r5 and r10 at every hook call, and the proof shows that on
+every run each bind holds after the helper call.
 
 `contract.Validate` takes the window as the layout cut it, the window's
 bytes and, for a wrapper site, W's bytes and the 8 bytes of the original

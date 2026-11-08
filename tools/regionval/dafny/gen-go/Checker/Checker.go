@@ -493,6 +493,9 @@ func (_static *CompanionStruct_Default___) ReturnS(ss SState, caller _dafny.Sequ
 func (_static *CompanionStruct_Default___) BindFail(sp m_Obligations.Spec, pc _dafny.Int, ss SState) _dafny.Sequence {
 	return Companion_Default___.BindFailFrom((sp).Dtor_binds(), pc, ss, _dafny.Zero)
 }
+func (_static *CompanionStruct_Default___) CopyHolds(t m_Terms.Term, off _dafny.Int, ss SState) bool {
+	return (((m_Terms.Companion_Default___.FpOff(t)).Is_Some()) && ((m_Bits.Companion_Default___.Signed64((m_Terms.Companion_Default___.FpOff(t)).Dtor_value().(uint64))).Cmp(off) == 0)) && ((((ss).Dtor_regs()).Select(0).(m_Terms.Term)).Equals((ss).Dtor_ret()))
+}
 func (_static *CompanionStruct_Default___) BindFailFrom(bs _dafny.Sequence, pc _dafny.Int, ss SState, j _dafny.Int) _dafny.Sequence {
 	goto TAIL_CALL_START
 TAIL_CALL_START:
@@ -520,6 +523,8 @@ TAIL_CALL_START:
 		return _dafny.UnicodeSeqOfUtf8Bytes("record binding: key argument is not the helper's key pointer")
 	} else if ((((bs).Select((j).Uint32()).(m_Obligations.Bind)).Dtor_role()).Is_ValueArg()) && (!(((ss).Dtor_regs()).Select((((bs).Select((j).Uint32()).(m_Obligations.Bind)).Dtor_reg()).Uint32()).(m_Terms.Term)).Equals((ss).Dtor_ret())) {
 		return _dafny.UnicodeSeqOfUtf8Bytes("record binding: value argument is not the helper's result")
+	} else if ((((bs).Select((j).Uint32()).(m_Obligations.Bind)).Dtor_role()).Is_CopyArg()) && (!(Companion_Default___.CopyHolds(((ss).Dtor_regs()).Select((((bs).Select((j).Uint32()).(m_Obligations.Bind)).Dtor_reg()).Uint32()).(m_Terms.Term), (((bs).Select((j).Uint32()).(m_Obligations.Bind)).Dtor_role()).Dtor_off(), ss))) {
+		return _dafny.UnicodeSeqOfUtf8Bytes("record binding: value argument is not r10 plus the copy's offset, or r0 is not the helper's result")
 	} else {
 		var _in4 _dafny.Sequence = bs
 		_ = _in4

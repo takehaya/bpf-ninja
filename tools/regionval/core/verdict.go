@@ -44,8 +44,14 @@ type Window struct {
 }
 
 // Binding names the hook argument registers that carry a lookup's key and
-// value (0: the hook has no such parameter).
-type Binding struct{ Key, Value int }
+// value (0: the hook has no such parameter). With Copy the value is a stack
+// copy at r10 + Off that the window made (CopyReadOnly): the argument must be
+// that address and r0 the helper's result at the call.
+type Binding struct {
+	Key, Value int
+	Copy       bool
+	Off        int16
+}
 
 // Verdict is binary. Its zero value is "not validated", so a
 // missing or defaulted verdict never reads as validated. Rule
