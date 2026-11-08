@@ -3,7 +3,8 @@
 regionval checks a bpf-ninja rewrite offline. It reads a capture file that holds
 the original instructions of one program load (O) and the rewritten instructions
 that bpf-ninja passed to the kernel (T). It then decides whether every
-instruction bpf-ninja inserted keeps the original program's behaviour. It never
+instruction bpf-ninja inserted keeps the original program's behaviour, and
+whether the hooks at map lookups get the lookup's key and value. It never
 loads BPF and needs no privileges.
 
 The answer is binary for each load: `validated` or not. Every failure carries a
@@ -186,10 +187,41 @@ register or stack byte had when the window started.
 | `P9` | A pass prologue stores exactly one of r1 to r5 (the register r_G) once, below the floor, and writes no register. The pass load before a call to that function writes only r_G, and r_G is not live at the callee's entry in O. |
 | `P7` | A hook body has no store and no call, loads only into r0 to r5, and returns 0. |
 | `P8` | The code before `call W` writes only r4 and stores nothing. W stores nothing, does not name r10, contains the original helper call and no other helper call, executes it once, and returns its result. |
+| `RB` | Record binding (below): at a lookup site, a hook argument named `key` is the key pointer the helper got, and one named `value` is the helper's result. |
 | `kind` | The window kind is known. |
 | `model` | The path left what the symbolic machine models, for example a load or store whose address it cannot place. |
 | `limit` | The window has more than 1024 paths, or a path runs more than 4096 instructions. |
 | `dafny` | The Go core validates the window and the Dafny core does not (`dafny_reason` says why). |
+
+### Record binding
+
+Rule `RB` is not about the original program's behaviour, which the other
+rules cover, but about what a hook records. It applies to `site` and
+`site-P8` windows whose original helper is `bpf_map_lookup_elem` or
+`bpf_map_lookup_percpu_elem`. For each hook call in the window (in W for a
+wrapper site), the hook's BTF prototype names the record: if its parameter i
+(i from 1 to 5) is named `key`, then ri at the call must be the key pointer
+the helper received (its r2), and if it is named `value`, ri must be the
+helper's result. The helper call must come before the hook call on the path.
+The two are compared as symbolic terms, so a key reloaded from a stack slot
+counts only if the slot holds the helper's r2.
+
+This covers the forms bpf-ninja emits at lookups: the typed hit hook
+(`key` and `value` in r2 and r3, or in r3 and r4 after `site`), the miss
+hook (`key` only), the generic and dispatch hooks, which get the result on a
+miss too (NULL then), and the same hooks inside a wrapper. It does not cover:
+
+- which hook runs on which result: a hit hook called on a miss gets NULL as
+  its value, which is the helper's result, and is not refused;
+- the value of a hook given a stack copy of it (`CopyReadOnly`): the model
+  does not tie the copy to the memory the result points to. A window that
+  loads through r0, as the copy does, gets no `value` check;
+- `site`, `map`, `info` and `status` arguments, and the hooks of updates,
+  deletes, pushes, pops, peeks and tail calls;
+- hooks whose BTF uses other parameter names.
+
+The Go core checks `RB` after every other rule, so a window whose rule is
+`RB` meets all the others.
 
 ### Allowed instructions
 
@@ -238,6 +270,9 @@ wrong.
 - **Structure parsing.** The wire decoder in `core/` and the `Insn` methods
   that classify instructions, used to cut windows and by the contract, and
   the func_info and BTF parsers match the kernel.
+- **Hook parameter names.** `RB` takes the meaning of a hook's arguments
+  from the names in its BTF prototype (`layout.go` `binds`). A hook whose
+  parameters are not named `key` or `value` gets no `RB` check.
 - **Calling convention.** A helper call sets r0 to its result, leaves r1 to r5
   undefined and keeps r6 to r10. It may write any stack byte in `[f, 0)`. The
   lookup helpers do not read r4. A call to a hook or wrapper keeps r6 to r10
@@ -318,6 +353,11 @@ that the code before `call W` writes only r4, that the helper's arguments
 at W's and the window's exit is the helper's result. W's own stack frame is
 not modelled; this is sound because a validated W never names r10.
 
+For `RB` the spec lists binds: at the hook call at instruction pc (of the
+window, or of W for a wrapper site), register r holds the helper's key
+pointer or its result. The model records r1 to r5 at every hook call, and
+the proof shows that on every run each bind holds after the helper call.
+
 `contract.Validate` takes the window as the layout cut it, the window's
 bytes and, for a wrapper site, W's bytes and the 8 bytes of the original
 helper call O[i]. The bytes must decode to the same instructions the Go core
@@ -325,9 +365,9 @@ checks. It calls `Validate` with the spec for the window's kind:
 
 | Kind | Spec |
 |---|---|
-| `site` | `SiteSpec(f)` |
+| `site` | `SiteSpec(f)`, with the `RB` binds of its hook calls at a lookup |
 | `site-P4` | `TailSiteSpec(f)`: r1 to r5 hold their entry values at `bpf_tail_call` |
-| `site-P8` | `WrapSiteSpec(f, W, O[i])`: W's instructions and the 8 bytes of the original helper call |
+| `site-P8` | `WrapSiteSpec(f, W, O[i])`: W's instructions and the 8 bytes of the original helper call; `RB` binds as for `site` |
 | `prologue-P1` | `EntryPrologueSpec(f)`: r1 kept, at most one hook call per path |
 | `prologue-P1b` | `CallbackPrologueSpec(f)` |
 | `prologue-P9` | `CustomSpec(f, nil, false, false, false, true, false, false)`: no register changes, stores allowed |

@@ -13,9 +13,10 @@ module Checker {
   const MAX_BRANCHES: nat := 10     // at most 2^10 = 1024 paths; the Go core limits paths, not branches
 
   // Symbolic state.  snap: the stack at [f,0) the region must leave as is;
-  // next: number of fresh symbols used; ret: the helper result symbol.
+  // next: number of fresh symbols used; ret: the helper result symbol;
+  // hkey: r2 at the helper call (the key pointer of a lookup).
   datatype SState = SState(regs: seq<Term>, stack: seq<BTerm>, snap: seq<BTerm>,
-                           next: nat, helpers: nat, hooks: nat, ret: Term)
+                           next: nat, helpers: nat, hooks: nat, ret: Term, hkey: Term)
 
   predicate SWF(ss: SState) {
     |ss.regs| == NREGS && |ss.stack| == STACK && |ss.snap| == STACK
@@ -23,7 +24,7 @@ module Checker {
 
   function SInit(): SState {
     var st := seq(STACK, (i: nat) => BEntry(i));
-    SState(seq(NREGS, (k: nat) => Entry(k)), st, st, 0, 0, 0, Const(0))
+    SState(seq(NREGS, (k: nat) => Entry(k)), st, st, 0, 0, 0, Const(0), Const(0))
   }
 
   datatype Verdict = Validated | NotValidated(pc: int, reason: string)
@@ -129,7 +130,7 @@ module Checker {
         var lo := STACK as int + sp.floor;
         var st := seq(STACK, i requires 0 <= i < STACK =>
                         if i >= lo then BOf(Fresh(ss.next + 6 + (i - lo)), 0) else ss.stack[i]);
-        SOk(SState(FreshRegs(ss.regs, ss.next), st, st, ss.next + 6 + (-sp.floor), 1, ss.hooks, Fresh(ss.next)))
+        SOk(SState(FreshRegs(ss.regs, ss.next), st, st, ss.next + 6 + (-sp.floor), 1, ss.hooks, Fresh(ss.next), ss.regs[2]))
     case CallLocal(_) =>
       // hook call (trusted calling convention): r0..r5 <- havoc; r6..r10 and the stack preserved
       if !sp.hookCalls then SFail("call not allowed in this window")
@@ -161,6 +162,30 @@ module Checker {
     ss.(regs := seq(NREGS, k requires 0 <= k < NREGS =>
                       if k == 0 then ss.regs[0] else if k <= 5 then Fresh(ss.next + (k - 1)) else caller[k]),
         next := ss.next + 5)
+  }
+
+  // RB at the hook call at pc: every Bind there names a register that holds
+  // the helper's key symbol or its result symbol, after the helper call.
+  // Returns "" or why a Bind fails.
+  function BindFail(sp: Spec, pc: nat, ss: SState): string
+    requires SWF(ss)
+  {
+    BindFailFrom(sp.binds, pc, ss, 0)
+  }
+
+  function BindFailFrom(bs: seq<Bind>, pc: nat, ss: SState, j: nat): string
+    requires SWF(ss)
+    decreases |bs| - j
+  {
+    if j >= |bs| then ""
+    else if bs[j].pc != pc then BindFailFrom(bs, pc, ss, j + 1)
+    else if ss.helpers != 1 then "record binding: hook call before the helper call"
+    else if !(1 <= bs[j].reg <= 5) then "record binding: bad register"
+    else if bs[j].role.KeyArg? && ss.regs[bs[j].reg] != ss.hkey
+    then "record binding: key argument is not the helper's key pointer"
+    else if bs[j].role.ValueArg? && ss.regs[bs[j].reg] != ss.ret
+    then "record binding: value argument is not the helper's result"
+    else BindFailFrom(bs, pc, ss, j + 1)
   }
 
   // ---------------- obligations at the end of a path ----------------
@@ -222,7 +247,11 @@ module Checker {
       case _ =>
         match SymStep(sp, prog[pc], ss)
         case SFail(msg) => NotValidated(pc, msg)
-        case SOk(ss') => if SWF(ss') then SymExec(prog, sp, pc + 1, ss', m) else NotValidated(pc, "internal")
+        case SOk(ss') =>
+          if !SWF(ss') then NotValidated(pc, "internal")
+          // RB after the step's own checks (C5): it is about the record
+          else if prog[pc].CallLocal? && BindFail(sp, pc, ss) != "" then NotValidated(pc, BindFail(sp, pc, ss))
+          else SymExec(prog, sp, pc + 1, ss', m)
   }
 
   // ---------------- entry point ----------------

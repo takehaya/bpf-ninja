@@ -29,11 +29,22 @@ func ParseFuncInfo(b []byte) ([]FuncRec, error) {
 	return rs, nil
 }
 
-const btfKindFunc = 12
+const (
+	btfKindFunc      = 12
+	btfKindFuncProto = 13
+)
 
-// ParseBTFFuncNames returns the names of the FUNC types of a BTF blob by
-// type id (uapi btf.h: struct btf_header, struct btf_type, BTF_KIND_*). Any malformed or unknown construct is an error.
-func ParseBTFFuncNames(b []byte) (map[uint32]string, error) {
+// BTFFunc is a FUNC type: its name and the names of its FUNC_PROTO's
+// parameters (nil if its type is not a FUNC_PROTO).
+type BTFFunc struct {
+	Name   string
+	Params []string
+}
+
+// ParseBTFFuncs returns the FUNC types of a BTF blob by type id (uapi
+// btf.h: struct btf_header, struct btf_type, struct btf_param, BTF_KIND_*).
+// Any malformed or unknown construct is an error.
+func ParseBTFFuncs(b []byte) (map[uint32]BTFFunc, error) {
 	le := binary.LittleEndian
 	if len(b) < 24 || le.Uint16(b) != 0xeb9f || b[2] != 1 {
 		return nil, fmt.Errorf("btf: bad header")
@@ -62,7 +73,9 @@ func ParseBTFFuncNames(b []byte) (map[uint32]string, error) {
 		}
 		return string(strs[off : off+uint32(n)]), nil
 	}
-	names := map[uint32]string{}
+	funcs := map[uint32]BTFFunc{}
+	protoOf := map[uint32]uint32{}  // FUNC id -> its type
+	params := map[uint32][]string{} // FUNC_PROTO id -> parameter names
 	for id, p := uint32(1), 0; p < len(types); id++ {
 		if p+12 > len(types) {
 			return nil, fmt.Errorf("btf: truncated type %d", id)
@@ -83,17 +96,33 @@ func ParseBTFFuncNames(b []byte) (map[uint32]string, error) {
 		default:
 			return nil, fmt.Errorf("btf: type %d has unknown kind %d", id, kind)
 		}
-		if kind == btfKindFunc {
+		if p+12+extra > len(types) {
+			return nil, fmt.Errorf("btf: truncated type %d", id)
+		}
+		switch kind {
+		case btfKindFunc:
 			n, err := name(nameOff)
 			if err != nil {
 				return nil, err
 			}
-			names[id] = n
+			funcs[id] = BTFFunc{Name: n}
+			protoOf[id] = le.Uint32(types[p+8:])
+		case btfKindFuncProto:
+			ps := make([]string, vlen)
+			for j := range ps {
+				n, err := name(le.Uint32(types[p+12+8*j:]))
+				if err != nil {
+					return nil, err
+				}
+				ps[j] = n
+			}
+			params[id] = ps
 		}
 		p += 12 + extra
-		if p > len(types) {
-			return nil, fmt.Errorf("btf: truncated type %d", id)
-		}
 	}
-	return names, nil
+	for id, f := range funcs {
+		f.Params = params[protoOf[id]]
+		funcs[id] = f
+	}
+	return funcs, nil
 }

@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"slices"
 	"testing"
+
+	"github.com/takehaya/bpf-ninja/tools/regionval/core"
 )
 
 // Hand-written fixture pairs. a is one instruction of a tiny assembler:
@@ -304,17 +306,35 @@ func TestStructureRejects(t *testing.T) {
 
 func TestFuncInfoAndBTF(t *testing.T) {
 	blob, _ := btfFuncs("main", "hook")
-	names, err := ParseBTFFuncNames(blob)
-	if err != nil || names[2] != "main" || names[3] != "hook" || len(names) != 2 {
+	names, err := ParseBTFFuncs(blob)
+	if err != nil || names[2].Name != "main" || names[3].Name != "hook" || len(names) != 2 {
 		t.Fatalf("names %v %v", names, err)
 	}
 	bad := slices.Clone(blob)
 	bad[24+4+3] = 20 // first type's kind -> 20 (unknown)
-	if _, err := ParseBTFFuncNames(bad); err == nil {
+	if _, err := ParseBTFFuncs(bad); err == nil {
 		t.Error("unknown BTF kind accepted")
 	}
-	if _, err := ParseBTFFuncNames(blob[:30]); err == nil {
+	if _, err := ParseBTFFuncs(blob[:30]); err == nil {
 		t.Error("truncated BTF accepted")
+	}
+	// A FUNC_PROTO with parameters ctx, key, value and a FUNC of it.
+	le := binary.LittleEndian
+	var types []byte
+	for _, v := range []uint32{0, 13<<24 | 3, 0, 1, 0, 5, 0, 9, 0, 15, 12 << 24, 1} {
+		types = le.AppendUint32(types, v)
+	}
+	strs := []byte("\x00ctx\x00key\x00value\x00hook\x00")
+	hdr := make([]byte, 24)
+	le.PutUint16(hdr, 0xeb9f)
+	hdr[2] = 1
+	le.PutUint32(hdr[4:], 24)
+	le.PutUint32(hdr[12:], uint32(len(types)))
+	le.PutUint32(hdr[16:], uint32(len(types)))
+	le.PutUint32(hdr[20:], uint32(len(strs)))
+	fs, err := ParseBTFFuncs(append(append(hdr, types...), strs...))
+	if err != nil || fs[2].Name != "hook" || !slices.Equal(fs[2].Params, []string{"ctx", "key", "value"}) {
+		t.Fatalf("funcs %v %v", fs, err)
 	}
 	if _, err := ParseFuncInfo([]byte{1, 0, 0, 0, 2, 0, 0, 0}); err == nil {
 		t.Error("func_info not starting at 0 accepted")
@@ -381,5 +401,27 @@ func TestRunAggregation(t *testing.T) {
 	}
 	if r := Run(filepath.Join(t.TempDir(), "missing.json")); r.Validated || r.Structure.OK {
 		t.Fatalf("missing file: %+v", r)
+	}
+}
+
+// RB binds the hook parameters named key and value; a window that copies
+// the value through r0 (CopyReadOnly) keeps only its key binding.
+func TestBinds(t *testing.T) {
+	call := core.Insn{Op: core.OpCall, Src: 1, Imm: 1, Raw: 2} // to T[4]
+	l := &Layout{
+		T: []core.Insn{{Op: 0xbf, Dst: 4, Src: 0, Raw: 0}, {Op: 0x79, Dst: 3, Src: 10, Off: -24, Raw: 1}, call, {Op: core.OpExit, Raw: 3},
+			{Op: 0xb7, Raw: 4}, {Op: core.OpExit, Raw: 5}},
+		TFuncs: []Func{{Name: "p", Start: 0, End: 4}, {Name: "hook", Params: []string{"ctx", "site", "key", "value"}, Start: 4, End: 6, Inserted: true}},
+	}
+	if b := l.binds(0, 4); len(b) != 1 || b[2] != (core.Binding{Key: 3, Value: 4}) {
+		t.Errorf("binds %v", b)
+	}
+	l.T[0] = core.Insn{Op: 0x79, Dst: 1, Src: 0, Raw: 0} // r1 = *(u64 *)(r0 + 0)
+	if b := l.binds(0, 4); len(b) != 1 || b[2] != (core.Binding{Key: 3}) {
+		t.Errorf("copy: binds %v", b)
+	}
+	l.TFuncs[1].Params = []string{"ctx", "k", "v"}
+	if b := l.binds(0, 4); len(b) != 0 {
+		t.Errorf("other names: binds %v", b)
 	}
 }

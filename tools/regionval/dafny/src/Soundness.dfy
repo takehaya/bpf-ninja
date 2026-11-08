@@ -43,6 +43,8 @@ module Soundness {
     && ss.helpers == CountHelpers(cs.events) && ss.hooks == CountHooks(cs.events)
     && ss.helpers <= 1 && ss.hooks <= 1
     && Eval(ss.ret, EnvOf(s0, sigma)) == HelperRet(cs.events)
+    && Eval(ss.hkey, EnvOf(s0, sigma)) == HelperKey(cs.events)
+    && AllBound(sp, cs.events)
     && (forall i :: 0 <= i < |cs.events| ==> EventOk(sp, s0, cs.events[i]))
     && cs.regs[10] == s0.regs[10]
   }
@@ -53,9 +55,26 @@ module Soundness {
     ensures CountHelpers(evs + [e]) == CountHelpers(evs) + (if e.EHelper? then 1 else 0)
     ensures CountHooks(evs + [e]) == CountHooks(evs) + (if e.EHook? then 1 else 0)
     ensures HelperRet(evs + [e]) == if e.EHelper? then e.ret else HelperRet(evs)
+    ensures HelperKey(evs + [e]) == if e.EHelper? then (if |e.args| >= 2 then e.args[1] else 0) else HelperKey(evs)
     ensures UpperBase(evs + [e], entry) == if e.EHelper? then e.stackAfter else UpperBase(evs, entry)
   {
     assert (evs + [e])[..|evs|] == evs;
+  }
+
+  // Appending an event that meets its Bind keeps AllBound (earlier events
+  // keep their prefixes).
+  lemma BoundSnoc(sp: Spec, evs: seq<Event>, e: Event)
+    requires AllBound(sp, evs) && BindOk(sp, evs, e)
+    ensures AllBound(sp, evs + [e])
+  {
+    var es := evs + [e];
+    forall i | 0 <= i < |es| ensures BindOk(sp, es[..i], es[i]) {
+      if i < |evs| {
+        assert es[..i] == evs[..i] && es[i] == evs[i];
+      } else {
+        assert es[..i] == evs && es[i] == e;
+      }
+    }
   }
 
   lemma UpperBaseLen(evs: seq<Event>, entry: seq<bv8>)
@@ -72,22 +91,30 @@ module Soundness {
   lemma SnocPlain(sp: Spec, s0: CState, evs: seq<Event>, e: Event)
     requires CWF(s0) && !e.EHelper? && EventOk(sp, s0, e)
     requires HelperStacksWF(evs) && (forall i :: 0 <= i < |evs| ==> EventOk(sp, s0, evs[i]))
+    requires AllBound(sp, evs) && BindOk(sp, evs, e)
     ensures HelperStacksWF(evs + [e])
     ensures forall i :: 0 <= i < |evs + [e]| ==> EventOk(sp, s0, (evs + [e])[i])
     ensures CountHelpers(evs + [e]) == CountHelpers(evs)
     ensures HelperRet(evs + [e]) == HelperRet(evs)
+    ensures HelperKey(evs + [e]) == HelperKey(evs)
+    ensures AllBound(sp, evs + [e])
     ensures UpperBase(evs + [e], s0.stack) == UpperBase(evs, s0.stack)
   {
     EventsSnoc(evs, e, s0.stack);
+    BoundSnoc(sp, evs, e);
   }
 
   // The same for the helper-call event, whose stack has the right length.
   lemma SnocHelper(sp: Spec, s0: CState, evs: seq<Event>, e: Event)
     requires CWF(s0) && e.EHelper? && |e.stackAfter| == STACK && EventOk(sp, s0, e)
     requires HelperStacksWF(evs) && (forall i :: 0 <= i < |evs| ==> EventOk(sp, s0, evs[i]))
+    requires AllBound(sp, evs)
     ensures HelperStacksWF(evs + [e])
     ensures forall i :: 0 <= i < |evs + [e]| ==> EventOk(sp, s0, (evs + [e])[i])
-  {}
+    ensures AllBound(sp, evs + [e])
+  {
+    BoundSnoc(sp, evs, e);
+  }
 
   // ---------------- unfolding equations for the opaque functions ----------------
 
@@ -172,6 +199,7 @@ module Soundness {
     requires SWF(ss) && SpecWF(sp) && SymExec(prog, sp, pc, ss, m) == Validated
     ensures SymStep(sp, prog[pc], ss).SOk? && SWF(SymStep(sp, prog[pc], ss).ss)
             && SymExec(prog, sp, pc + 1, SymStep(sp, prog[pc], ss).ss, m) == Validated
+    ensures prog[pc].CallLocal? ==> BindFail(sp, pc, ss) == ""
   { reveal SymExec(); }
 
   // ---------------- (2) each symbolic step agrees with the concrete step ----------------
@@ -403,6 +431,8 @@ module Soundness {
       assert UpperBase(r.s.events, s0.stack) == r.s.stack;
       EvFresh(n, e);
       assert Eval(ss'.ret, e) == HelperRet(r.s.events);
+      assert ss'.hkey == ss.regs[2] && ev.args[1] == cs.regs[2];
+      assert Eval(ss'.hkey, e) == HelperKey(r.s.events);
       // the site rule: r1..r5 at the call are the entry values
       if sp.helper.checkArgs {
         var args := [Entry(1), Entry(2), Entry(3), Entry(4), Entry(5)];
@@ -447,9 +477,21 @@ module Soundness {
     ensures Some(ins.id) == HelperIdOf(sp.wrap.helper) && WrapArgsSym(ins.id, ss.regs)
   {}
 
+  // BindFail found nothing: every Bind at pc holds symbolically.
+  lemma BindFailOk(bs: seq<Bind>, pc: nat, ss: SState, j: nat)
+    requires SWF(ss) && BindFailFrom(bs, pc, ss, j) == ""
+    ensures forall i :: j <= i < |bs| && bs[i].pc == pc ==>
+              ss.helpers == 1 && 1 <= bs[i].reg <= 5
+              && ss.regs[bs[i].reg] == (if bs[i].role.KeyArg? then ss.hkey else ss.ret)
+    decreases |bs| - j
+  {
+    if j < |bs| { BindFailOk(bs, pc, ss, j + 1); }
+  }
+
   lemma {:isolate_assertions} HookSim(sp: Spec, ins: Instr, ss: SState, cs: CState, s0: CState, sigma: seq<bv64>, oracle: seq<bv64>)
     requires SpecWF(sp) && Sim(sp, ss, cs, s0, sigma) && ins.CallLocal?
     requires SymStep(sp, ins, ss).SOk?
+    requires cs.pc >= 0 && BindFail(sp, cs.pc, ss) == ""
     ensures var r := Step(sp.floor, ins, cs, oracle);
             r.Next? && r.s.pc == cs.pc + 1 && CWF(r.s) && cs.log <= r.s.log
             && (r.s.log <= sigma ==> Sim(sp, SymStep(sp, ins, ss).ss, r.s, s0, sigma))
@@ -467,8 +509,20 @@ module Soundness {
       {
         if k < 6 { EvFresh(n + k, e); assert sigma[n + k] == regs'[k]; }
       }
-      SnocPlain(sp, s0, cs.events, EHook);
-      EventsSnoc(cs.events, EHook, s0.stack);
+      var ev := EHook(cs.pc, cs.regs[1..6]);
+      assert r.s.events == cs.events + [ev];
+      BindFailOk(sp.binds, cs.pc, ss, 0);
+      forall j | 0 <= j < |sp.binds| && sp.binds[j].pc == ev.pc
+        ensures var b := sp.binds[j];
+                CountHelpers(cs.events) == 1 && 1 <= b.reg <= 5 && |ev.args| == 5
+                && ev.args[b.reg - 1] == (if b.role.KeyArg? then HelperKey(cs.events) else HelperRet(cs.events))
+      {
+        var b := sp.binds[j];
+        assert ev.args[b.reg - 1] == cs.regs[b.reg];
+      }
+      assert BindOk(sp, cs.events, ev);
+      SnocPlain(sp, s0, cs.events, ev);
+      EventsSnoc(cs.events, ev, s0.stack);
       assert Sim(sp, ss', r.s, s0, sigma);
     }
   }
@@ -476,6 +530,7 @@ module Soundness {
   lemma StepSim(sp: Spec, ins: Instr, ss: SState, cs: CState, s0: CState, sigma: seq<bv64>, oracle: seq<bv64>)
     requires SpecWF(sp) && Sim(sp, ss, cs, s0, sigma)
     requires SymStep(sp, ins, ss).SOk?
+    requires ins.CallLocal? ==> cs.pc >= 0 && BindFail(sp, cs.pc, ss) == ""
     ensures !ins.Ja? && !ins.Jcond? && !ins.Exit?
     ensures var r := Step(sp.floor, ins, cs, oracle);
             r.Next? && r.s.pc == cs.pc + 1 && CWF(r.s) && cs.log <= r.s.log
@@ -984,7 +1039,7 @@ module Soundness {
   }
 
   // At entry the symbolic state denotes the concrete one under any sigma.
-  lemma SimInit(sp: Spec, s0: CState, sigma: seq<bv64>)
+  lemma {:isolate_assertions} SimInit(sp: Spec, s0: CState, sigma: seq<bv64>)
     requires CWF(s0) && s0.log == [] && s0.events == []
     ensures Sim(sp, SInit(), s0, s0, sigma)
   {
@@ -994,6 +1049,9 @@ module Soundness {
     forall i | 0 <= i < STACK ensures EvalB(ss.stack[i], e) == s0.stack[i] { EvBEntry(i, e); }
     forall i | 0 <= i < STACK ensures EvalB(ss.snap[i], e) == UpperBase(s0.events, s0.stack)[i] { EvBEntry(i, e); }
     EvConst(0, e);
+    assert ss.ret == Const(0) && ss.hkey == Const(0);
+    assert HelperRet(s0.events) == 0 && HelperKey(s0.events) == 0;
+    assert AllBound(sp, s0.events);
   }
 
   // ---------------- facts that tie trusted definitions to the semantics ----------------

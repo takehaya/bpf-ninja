@@ -6,6 +6,9 @@
 package contract
 
 import (
+	"maps"
+	"slices"
+
 	"github.com/takehaya/bpf-ninja/tools/regionval/core"
 	rd "github.com/takehaya/bpf-ninja/tools/regionval/dafny/regionvaldafny"
 )
@@ -50,9 +53,9 @@ func Spec(cw core.Window, body, helper []byte) (rd.Spec, bool) {
 		if cw.Callee == nil || len(helper) != 8 {
 			return rd.Spec{}, false
 		}
-		return rd.WrapSiteSpec(f, body, helper), true
+		return rd.WithBinds(rd.WrapSiteSpec(f, body, helper), binds(cw.Bind)), true
 	case core.KindSite:
-		return rd.SiteSpec(f), true
+		return rd.WithBinds(rd.SiteSpec(f), binds(cw.Bind)), true
 	case core.KindTail:
 		return rd.TailSiteSpec(f), true
 	case core.KindEntry:
@@ -153,6 +156,20 @@ func Check(cw core.Window) string {
 		}
 	}
 	return ""
+}
+
+// binds is rule RB for the Dafny core, in pc order.
+func binds(m map[int]core.Binding) []rd.Bind {
+	var bs []rd.Bind
+	for _, pc := range slices.Sorted(maps.Keys(m)) {
+		if b := m[pc]; b.Key != 0 {
+			bs = append(bs, rd.Bind{PC: pc, Reg: b.Key})
+		}
+		if b := m[pc]; b.Value != 0 {
+			bs = append(bs, rd.Bind{PC: pc, Reg: b.Value, Value: true})
+		}
+	}
+	return bs
 }
 
 // writesOutside reports whether an instruction may write a register outside

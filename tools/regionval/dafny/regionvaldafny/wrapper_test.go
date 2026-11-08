@@ -441,3 +441,36 @@ func TestP8RunsSatisfyObligations(t *testing.T) {
 		}
 	}
 }
+
+// Record binding (RB): the hook gets the key reloaded from its slot in r3
+// and the result in r4. With the binds, a value from the frame is refused
+// and some run breaks the obligation; without them it is validated, since
+// the target's behaviour is the same.
+func TestRecordBinding(t *testing.T) {
+	r := rand.New(rand.NewSource(3))
+	w := cat(stxdw(10, 2, -184), helper(), stxdw(10, 0, -176), jeqk(0, 0, 3), ldxdw(3, 10, -184), movr(4, 0), hookCall(), ldxdw(0, 10, -176))
+	bad := replace(w, 5, movr(4, 10))
+	sp := WithBinds(SiteSpec(floor), []Bind{{PC: 6, Reg: 3}, {PC: 6, Reg: 4, Value: true}})
+	if v := Validate(w, sp); !v.Validated {
+		t.Fatalf("bound window: %+v", v)
+	}
+	if v := Validate(bad, sp); v.Validated || v.PC != 6 || v.Reason != "record binding: value argument is not the helper's result" {
+		t.Fatalf("value = r10: %+v", v)
+	}
+	if !Validate(bad, SiteSpec(floor)).Validated {
+		t.Fatal("value = r10 without binds not validated")
+	}
+	found := false
+	for i := 0; i < 200; i++ {
+		regs, st := randState(r)
+		o := randOracle(r)
+		if _, _, ok := RunAndCheck(w, sp, regs, st, o); !ok {
+			t.Fatalf("obligations violated on the bound window (iteration %d)", i)
+		}
+		_, _, ok := RunAndCheck(bad, sp, regs, st, o)
+		found = found || !ok
+	}
+	if !found {
+		t.Error("value = r10: no run breaks RB")
+	}
+}

@@ -744,6 +744,10 @@ func (_static *CompanionStruct_Default___) HookStep(s CState, oracle _dafny.Sequ
 	_ = _pat_let_tv2
 	var _pat_let_tv3 = s
 	_ = _pat_let_tv3
+	var _pat_let_tv4 = s
+	_ = _pat_let_tv4
+	var _pat_let_tv5 = s
+	_ = _pat_let_tv5
 	var _0_regs_k _dafny.Sequence = Companion_Default___.HavocRegs((s).Dtor_regs(), oracle, (s).Dtor_oc(), _dafny.IntOfInt64(6))
 	_ = _0_regs_k
 	return Companion_StepRes_.Create_Next_(func(_pat_let23_0 CState) CState {
@@ -760,15 +764,15 @@ func (_static *CompanionStruct_Default___) HookStep(s CState, oracle _dafny.Sequ
 												return func(_6_dt__update_hpc_h0 _dafny.Int) CState {
 													return Companion_CState_.Create_CState_(_6_dt__update_hpc_h0, _5_dt__update_hregs_h0, (_1_dt__update__tmp_h0).Dtor_stack(), _4_dt__update_hlog_h0, _3_dt__update_hoc_h0, _2_dt__update_hevents_h0)
 												}(_pat_let28_0)
-											}(((_pat_let_tv3).Dtor_pc()).Plus(_dafny.One))
+											}(((_pat_let_tv5).Dtor_pc()).Plus(_dafny.One))
 										}(_pat_let27_0)
 									}(_0_regs_k)
 								}(_pat_let26_0)
-							}(_dafny.Companion_Sequence_.Concatenate((_pat_let_tv2).Dtor_log(), (_0_regs_k).Subsequence(0, 6)))
+							}(_dafny.Companion_Sequence_.Concatenate((_pat_let_tv4).Dtor_log(), (_0_regs_k).Subsequence(0, 6)))
 						}(_pat_let25_0)
-					}(((_pat_let_tv1).Dtor_oc()).Plus(_dafny.IntOfInt64(6)))
+					}(((_pat_let_tv3).Dtor_oc()).Plus(_dafny.IntOfInt64(6)))
 				}(_pat_let24_0)
-			}(_dafny.Companion_Sequence_.Concatenate((_pat_let_tv0).Dtor_events(), _dafny.SeqOf(Companion_Event_.Create_EHook_())))
+			}(_dafny.Companion_Sequence_.Concatenate((_pat_let_tv0).Dtor_events(), _dafny.SeqOf(Companion_Event_.Create_EHook_((_pat_let_tv1).Dtor_pc(), ((_pat_let_tv2).Dtor_regs()).Subsequence(1, 6)))))
 		}(_pat_let23_0)
 	}(s))
 }
@@ -1891,12 +1895,14 @@ func (_this Event) Is_EHelper() bool {
 }
 
 type Event_EHook struct {
+	Pc   _dafny.Int
+	Args _dafny.Sequence
 }
 
 func (Event_EHook) isEvent() {}
 
-func (CompanionStruct_Event_) Create_EHook_() Event {
-	return Event{Event_EHook{}}
+func (CompanionStruct_Event_) Create_EHook_(Pc _dafny.Int, Args _dafny.Sequence) Event {
+	return Event{Event_EHook{Pc, Args}}
 }
 
 func (_this Event) Is_EHook() bool {
@@ -1947,7 +1953,12 @@ func (_this Event) Dtor_width() _dafny.Int {
 }
 
 func (_this Event) Dtor_args() _dafny.Sequence {
-	return _this.Get_().(Event_EHelper).Args
+	switch data := _this.Get_().(type) {
+	case Event_EHelper:
+		return data.Args
+	default:
+		return data.(Event_EHook).Args
+	}
 }
 
 func (_this Event) Dtor_ret() uint64 {
@@ -1960,6 +1971,10 @@ func (_this Event) Dtor_stackAfter() _dafny.Sequence {
 
 func (_this Event) Dtor_id() uint32 {
 	return _this.Get_().(Event_EHelper).Id
+}
+
+func (_this Event) Dtor_pc() _dafny.Int {
+	return _this.Get_().(Event_EHook).Pc
 }
 
 func (_this Event) Dtor_regs() _dafny.Sequence {
@@ -1984,7 +1999,7 @@ func (_this Event) String() string {
 		}
 	case Event_EHook:
 		{
-			return "Semantics.Event.EHook"
+			return "Semantics.Event.EHook" + "(" + _dafny.String(data.Pc) + ", " + _dafny.String(data.Args) + ")"
 		}
 	case Event_ECallW:
 		{
@@ -2015,8 +2030,8 @@ func (_this Event) Equals(other Event) bool {
 		}
 	case Event_EHook:
 		{
-			_, ok := other.Get_().(Event_EHook)
-			return ok
+			data2, ok := other.Get_().(Event_EHook)
+			return ok && data1.Pc.Cmp(data2.Pc) == 0 && data1.Args.Equals(data2.Args)
 		}
 	case Event_ECallW:
 		{
