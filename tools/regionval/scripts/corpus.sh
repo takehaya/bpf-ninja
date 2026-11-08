@@ -25,8 +25,10 @@ trap 'rm -f "$bin"' EXIT
 (cd "$here" && CGO_ENABLED=0 go build -o "$bin" ./cmd/regionval) || exit 2
 find "$dir" -name '*.json' -type f | sort | tr '\n' '\0' | xargs -0 "$bin" > "$out" || exit 2
 # Failed loads are counted by structure stage; failed windows by rule.
+# disagree counts the windows where the Dafny and Go cores differ.
 jq -rs '
   "loads: \(length)  validated: \(map(select(.validated)) | length)",
+  "windows: \(map(.counts.windows) | add)  validated: \(map(.counts.validated) | add)  disagree: \(map(.counts.disagree) | add)",
   (map(select(.validated | not)
        | if .structure.ok then (.windows[] | select(.validated | not) | "window rule \(.rule)")
          else "load structure:\(.structure.failed_stage)" end)
