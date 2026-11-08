@@ -308,7 +308,25 @@ If a direct instruction reaches deeper than the verifier reported, as can happen
 The trial uses the original load attributes and adds one verification pass, which can take seconds for a large program.
 
 Linux before 6.8 does not include every variable-offset access in its reported depth.
-On those kernels, `inject-run` skips sites in a function whose instruction scan is not exact.
+On those kernels, a function gets no floor when its instruction scan is not exact.
+The scan is exact only while every stack access is a constant offset from `R10` or from a register copied from it.
+It is not exact when such a copy is used at a variable offset, stored to memory, returned, or still held in any register at a jump.
+It is also not exact when the copy is passed to a BPF function, a kfunc, or a helper.
+The exceptions are the key of the map lookup, update and delete helpers, the value of the map update helper, and the buffer of `bpf_xdp_load_bytes`.
+A function without a floor has the `skip_reason` `kernel before 6.8 does not count variable-offset stack accesses and the text scan is not exact`, and the stderr floor line shows it as `NAME skipped (REASON)`.
+What happens to the program depends on where that function is:
+
+- If the entry function has no floor, no rule can rewrite the program: the transformation fails with `entry function "NAME" has no usable stack floor`.
+- `auto` skips each site in another function without a floor, with the reason `stack floor unavailable for this function`, and instruments the rest.
+  A site whose context is passed through such a function is skipped with `ctx pass: stack floor unavailable for NAME`.
+  If no site is left and the rule adds no `entry` or `tail_calls` hook, the transformation fails with `no supported lookup sites (N skipped)`.
+- An explicit rule that selects one of those sites fails the transformation with `lookup at PC: stack floor unavailable for this function`, or with the `ctx pass` reason.
+- Under any rule, `tail_calls` skips a tail call in a function without a floor.
+
+A failed transformation prints `program "P": injection skipped: inject: refused: ...`.
+Without `--fail-closed`, that program then loads unchanged, without hooks; the loader's other programs are still matched against the rules.
+With `--fail-closed`, that load fails with `EPERM`.
+
 If trial loading, statistics parsing, or function matching fails, automatic rules leave the original program unchanged, explicit rules refuse the load, and `--fail-closed` refuses either kind.
 A program with an [indirect jump](#load-stream-check) has no trial load and no floor: an explicit rule loads it unchanged, and `--fail-closed` still refuses it.
 
@@ -531,7 +549,7 @@ It writes the file like the hooks file: the file exists before the target starts
 | `reason` on a lookup or call | `auto` would skip it, unless it also has `"generic": true`, which means `auto` sends it to the generic hook. A site without a reason passed discovery and has a usable frame floor; whether its slots fit is decided only when `auto` selects (see [Map listing of a running program](#map-listing-of-a-running-program)). |
 | `ctx_source` on a lookup or call | The proven source used to initialize the site's frame: `entry`, `r6` through `r9`, or an aligned slot such as `fp-80`. It is omitted when no source was proven. |
 | `frame`, `floor` on a lookup or call | The function frame that owns the site and the floor used to place its spill slots. |
-| `stack` | The trial load's verifier accounting. A function with `skip_reason` is not instrumented; `dead` means the verifier omitted that function from this load. When `source` is `verifier`, every lookup or call in a function with either mark, or missing from `functions`, has the reason `stack floor unavailable for this function` and no `generic`: `auto` skips it, even where the generic hook could take it. When the trial load failed, `source` is `unavailable` and `error` gives the cause; `inject-run` then loads the program unchanged, and every lookup and call has the reason `stack audit unavailable` and no `generic`. |
+| `stack` | The trial load's verifier accounting. A function with `skip_reason` is not instrumented, and when it is the entry function the whole program is not; see [Stack floor](#stack-floor). `dead` means the verifier omitted that function from this load. When `source` is `verifier`, every lookup or call in a function with either mark, or missing from `functions`, has the reason `stack floor unavailable for this function` and no `generic`: `auto` skips it, even where the generic hook could take it. When the trial load failed, `source` is `unavailable` and `error` gives the cause; `inject-run` then loads the program unchanged, and every lookup and call has the reason `stack audit unavailable` and no `generic`. |
 | `rule` | A rule that instruments the lookups on every named map. Its `program` is the entry function name. Edit `maps`, and add `ops`, `dispatch`, `entry` or `tail_calls` as needed. |
 
 A program loaded twice is listed twice.
