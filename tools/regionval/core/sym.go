@@ -44,12 +44,14 @@ type Event struct {
 	Regs  [11]*Term
 }
 
-// Cond records a conditional branch on the path: Taken says which successor.
+// Cond records a conditional branch on the path: Taken says which successor,
+// Ev how many events the path had before the branch.
 type Cond struct {
 	T     *Term
 	Op    uint8
 	Imm   int32
 	Taken bool
+	Ev    int
 }
 
 // Path is one completed path. Regs and Mem are the window frame at the end.
@@ -252,7 +254,7 @@ func (s *sstate) step(w Window, floor int64) (bool, *sstate, *Fault) {
 		if f := jump(t); f != nil {
 			return false, nil, f
 		}
-		c := Cond{T: r[x.Dst], Op: x.Op, Imm: x.Imm}
+		c := Cond{T: r[x.Dst], Op: x.Op, Imm: x.Imm, Ev: len(s.p.Events)}
 		fork := s.clone()
 		fork.fr[depth].pc = t
 		c.Taken = true

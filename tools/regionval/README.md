@@ -188,6 +188,7 @@ register or stack byte had when the window started.
 | `P7` | A hook body has no store and no call, loads only into r0 to r5, and returns 0. |
 | `P8` | The code before `call W` writes only r4 and stores nothing. W stores nothing, does not name r10, contains the original helper call and no other helper call, executes it once, and returns its result. |
 | `RB` | Record binding (below): at a lookup site, a hook argument named `key` is the key pointer the helper got, and one named `value` is the helper's result. |
+| `HS` | Hook selection (below): at a lookup site, a hit hook runs only where the result is non-NULL and a miss hook only where it is NULL. |
 | `kind` | The window kind is known. |
 | `model` | The path left what the symbolic machine models, for example a load or store whose address it cannot place. |
 | `limit` | The window has more than 1024 paths, or a path runs more than 4096 instructions. |
@@ -224,8 +225,6 @@ result at the call, so the copy read the helper's result. Otherwise the
 
 It does not cover:
 
-- which hook runs on which result: a hit hook called on a miss gets NULL as
-  its value, which is the helper's result, and is not refused;
 - that a copy's loads read the memory the result points to: a load from
   outside the stack is an unknown value in the model, so the shape check
   above is what ties the copy to the value;
@@ -235,6 +234,24 @@ It does not cover:
 
 The Go core checks `RB` after every other rule, so a window whose rule is
 `RB` meets all the others.
+
+### Hook selection
+
+Rule `HS` applies to the same hook calls and says which result each hook
+may run on. A hook with a `value` parameter and no `map` parameter (the
+typed hit hook) may be called only on a path where the helper's result is
+non-NULL; one with `key` and no `value` (the typed miss hook) only where it
+is NULL. The generic and dispatch hooks, which take `map`, run on both.
+
+A path knows the result only from the branches bpf-ninja emits for it:
+`if t == 0` or `if t != 0` (64-bit, immediate 0) where t is the result as a
+symbolic term, that is r0 after the helper, a copy of it, or a reload from
+its slot; this covers the hit-first and miss-first layouts and the guard in
+a wrapper. The last such branch since the helper call on the path decides;
+other branches tell nothing. A hit or miss hook called where no such branch
+decided is refused (fail-closed). The Go core checks `HS` with `RB`.
+`HS` checks only which hook runs when one runs: a path that calls no hook,
+so that a hit or a miss goes unobserved, is not refused.
 
 ### Allowed instructions
 

@@ -38,13 +38,17 @@ func TestExportClean(t *testing.T) {
 	}
 }
 
-// plantedWant is the rule each planted fault must be rejected by. 30 faults
+// plantedWant is the rule each planted fault must be rejected by. 34 faults
 // must fail an obligation of their target; the other 14 fail in the
 // structure checks or the allowlist. PL-RB-a to d keep the target's
 // behaviour and give a hook the wrong key or value (rule RB): a value from
 // the hook's frame instead of the result (a), a miss key from the result
 // slot (b), a wrapper keeping r4 as the key (c), and swapped hit and miss
-// hook calls in a wrapper (d). Where a kind's clause is a common
+// hook calls in a wrapper (d), which rule HS names first: the miss hook
+// runs on the hit path. PL-HS-a to d run a hook on the wrong result (rule
+// HS): the guard inverted at a miss-first site with both hooks (a) and with
+// the hit hook only (b), the guard inverted in a wrapper (c), and the miss
+// path falling into the hit hook when the jump over it is dropped (d). Where a kind's clause is a common
 // obligation applied to that window, the common rule is named: P1-b, P1b-b
 // and P9-a move the prologue's spill into [f,0), which is C1's `o+w ≤ f`;
 // P7-c's backward jump is C4 inside the hook body (P7's "branches forward").
@@ -55,7 +59,8 @@ var plantedWant = map[string]string{
 	"PL-P7-b": "P7", "PL-P7-c": "C4", "PL-P7-d": "P7", "PL-P8-b": "P8", "PL-P8-e": "P8",
 	"PL-P9-a": "C1", "PL-P9-b": "P9",
 	"PL-R0-a": "R0", "PL-R0-b": "R0", "PL-R0-c": "R0", "PL-R0-d": "R0", "PL-R15-a": "R15", "PL-R15-b": "R15",
-	"PL-RB-a": "RB", "PL-RB-b": "RB", "PL-RB-c": "RB", "PL-RB-d": "RB",
+	"PL-RB-a": "RB", "PL-RB-b": "RB", "PL-RB-c": "RB", "PL-RB-d": "HS",
+	"PL-HS-a": "HS", "PL-HS-b": "HS", "PL-HS-c": "HS", "PL-HS-d": "HS",
 	// Allowlist (ST is not in the table; atomic, xor32, 0xff) and structure.
 	"PL-C3-a": "C6", "PL-C3-b": "C6", "PL-C6-a": "C6", "PL-C6-b": "C6", "PL-C6-c": "C6", "PL-P7-a": "C6", "PL-P8-a": "C6",
 	"PL-C6-d": "struct:kappa", "PL-P8-c": "struct:kappa", "PL-P8-d": "struct:kappa",
@@ -89,8 +94,8 @@ func TestExportPlanted(t *testing.T) {
 			obl++
 		}
 	}
-	if len(fs) != 44 || obl != 30 {
-		t.Errorf("%d planted files, %d rejected by an obligation; want 44 and 30", len(fs), obl)
+	if len(fs) != 48 || obl != 34 {
+		t.Errorf("%d planted files, %d rejected by an obligation; want 48 and 34", len(fs), obl)
 	}
 }
 

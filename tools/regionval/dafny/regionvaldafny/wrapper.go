@@ -72,9 +72,12 @@ func CustomSpec(floor int, free []int, helper, checkArgs, restoreR0, allowStore,
 // hook call at PC (of the window, or of W for a wrapper site), register Reg
 // holds the helper's result (Value), the address r10 + Off of a stack copy
 // of the value with r0 still the result (Copy), or else the key pointer.
+// Hit (Miss) instead says the hook runs only on a non-NULL (NULL) result;
+// Reg is then unused but must be in 1-5.
 type Bind struct {
 	PC, Reg     int
 	Value, Copy bool
+	Hit, Miss   bool
 	Off         int
 }
 
@@ -84,6 +87,10 @@ func WithBinds(sp Spec, bs []Bind) Spec {
 	for i, b := range bs {
 		role := obl.Companion_Role_.Create_KeyArg_()
 		switch {
+		case b.Hit:
+			role = obl.Companion_Role_.Create_HitCall_()
+		case b.Miss:
+			role = obl.Companion_Role_.Create_MissCall_()
 		case b.Copy:
 			role = obl.Companion_Role_.Create_CopyArg_(_dafny.IntOf(b.Off))
 		case b.Value:

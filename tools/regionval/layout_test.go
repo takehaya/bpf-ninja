@@ -427,14 +427,14 @@ func TestBinds(t *testing.T) {
 		body []core.Insn
 		want core.Binding
 	}{
-		{"plain", []core.Insn{{Op: 0xbf, Dst: 4}, ld(3, 10, -24)}, core.Binding{Key: 3, Value: 4}},
-		{"copy", copy16, core.Binding{Key: 3, Value: 4, Copy: true, Off: -48}},
-		{"one load through r0 is no copy", []core.Insn{ld(4, 0, 0), ld(3, 10, -24)}, core.Binding{Key: 3, Value: 4}},
-		{"copy of 8 of 16 bytes", append([]core.Insn{ld(1, 0, 0), st(-48, 1)}, copy16[4:]...), core.Binding{Key: 3, Value: 4}},
-		{"copy with a gap", append([]core.Insn{ld(1, 0, 0), st(-48, 1), ld(1, 0, 8), st(-32, 1)}, copy16[4:]...), core.Binding{Key: 3, Value: 4}},
-		{"store after the copy", append(slices.Clone(copy16), st(-48, 3)), core.Binding{Key: 3, Value: 4}},
-		{"r0 written after the copy", append(slices.Clone(copy16), core.Insn{Op: 0xbf, Dst: 0, Src: 10}), core.Binding{Key: 3, Value: 4}},
-		{"jump into the copy", append([]core.Insn{{Op: 0x15, Dst: 0, Off: 2}}, copy16...), core.Binding{Key: 3, Value: 4}},
+		{"plain", []core.Insn{{Op: 0xbf, Dst: 4}, ld(3, 10, -24)}, core.Binding{Key: 3, Value: 4, Hit: true}},
+		{"copy", copy16, core.Binding{Key: 3, Value: 4, Copy: true, Off: -48, Hit: true}},
+		{"one load through r0 is no copy", []core.Insn{ld(4, 0, 0), ld(3, 10, -24)}, core.Binding{Key: 3, Value: 4, Hit: true}},
+		{"copy of 8 of 16 bytes", append([]core.Insn{ld(1, 0, 0), st(-48, 1)}, copy16[4:]...), core.Binding{Key: 3, Value: 4, Hit: true}},
+		{"copy with a gap", append([]core.Insn{ld(1, 0, 0), st(-48, 1), ld(1, 0, 8), st(-32, 1)}, copy16[4:]...), core.Binding{Key: 3, Value: 4, Hit: true}},
+		{"store after the copy", append(slices.Clone(copy16), st(-48, 3)), core.Binding{Key: 3, Value: 4, Hit: true}},
+		{"r0 written after the copy", append(slices.Clone(copy16), core.Insn{Op: 0xbf, Dst: 0, Src: 10}), core.Binding{Key: 3, Value: 4, Hit: true}},
+		{"jump into the copy", append([]core.Insn{{Op: 0x15, Dst: 0, Off: 2}}, copy16...), core.Binding{Key: 3, Value: 4, Hit: true}},
 	} {
 		l := mk(c.body...)
 		h := len(c.body)

@@ -37,7 +37,9 @@ module Obligations {
   // the value is not stated here (dafny/contract checks the copy's shape).
   // Which hook parameters get a Bind is the caller's choice
   // (dafny/contract), as is the rest of the Spec.
-  datatype Role = KeyArg | ValueArg | CopyArg(off: int)
+  // HitCall and MissCall say which result the hook at pc may run on: a
+  // non-NULL (hit) or a NULL (miss) helper result; their reg is unused.
+  datatype Role = KeyArg | ValueArg | CopyArg(off: int) | HitCall | MissCall
   datatype Bind = Bind(pc: nat, reg: nat, role: Role)
 
   // Per-window parameters.  Presets for each window kind are in Api.dfy.
@@ -131,6 +133,8 @@ module Obligations {
            case KeyArg => e.args[b.reg - 1] == HelperKey(prior)
            case ValueArg => e.args[b.reg - 1] == HelperRet(prior)
            case CopyArg(off) => Rel(e.args[b.reg - 1], e.fp) == off && e.r0 == HelperRet(prior)
+           case HitCall => HelperRet(prior) != 0
+           case MissCall => HelperRet(prior) == 0
   }
 
   predicate AllBound(sp: Spec, evs: seq<Event>) {

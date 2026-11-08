@@ -168,6 +168,9 @@ func binds(m map[int]core.Binding) []rd.Bind {
 		if b := m[pc]; b.Value != 0 {
 			bs = append(bs, rd.Bind{PC: pc, Reg: b.Value, Value: !b.Copy, Copy: b.Copy, Off: int(b.Off)})
 		}
+		if b := m[pc]; b.Hit || b.Miss {
+			bs = append(bs, rd.Bind{PC: pc, Reg: 1, Hit: b.Hit, Miss: b.Miss})
+		}
 	}
 	return bs
 }

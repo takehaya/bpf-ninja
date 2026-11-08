@@ -241,6 +241,10 @@ func (_static *CompanionStruct_Default___) BindOk(sp Spec, prior _dafny.Sequence
 	_ = _pat_let_tv8
 	var _pat_let_tv9 = prior
 	_ = _pat_let_tv9
+	var _pat_let_tv10 = prior
+	_ = _pat_let_tv10
+	var _pat_let_tv11 = prior
+	_ = _pat_let_tv11
 	return !((e).Is_EHook()) || (_dafny.Quantifier(_dafny.IntegerRange(_dafny.Zero, _dafny.IntOfUint32(((sp).Dtor_binds()).Cardinality())), true, func(_forall_var_0 _dafny.Int) bool {
 		var _0_j _dafny.Int
 		_0_j = interface{}(_forall_var_0).(_dafny.Int)
@@ -260,9 +264,19 @@ func (_static *CompanionStruct_Default___) BindOk(sp Spec, prior _dafny.Sequence
 						}
 					}
 					{
-						var _2_off _dafny.Int = _source0.Get_().(Role_CopyArg).Off
-						_ = _2_off
-						return ((m_Semantics.Companion_Default___.Rel(((_pat_let_tv6).Dtor_args()).Select((((_1_b).Dtor_reg()).Minus(_dafny.One)).Uint32()).(uint64), (_pat_let_tv7).Dtor_fp())).Cmp(_2_off) == 0) && (((_pat_let_tv8).Dtor_r0()) == (Companion_Default___.HelperRet(_pat_let_tv9)))
+						if _source0.Is_CopyArg() {
+							var _2_off _dafny.Int = _source0.Get_().(Role_CopyArg).Off
+							_ = _2_off
+							return ((m_Semantics.Companion_Default___.Rel(((_pat_let_tv6).Dtor_args()).Select((((_1_b).Dtor_reg()).Minus(_dafny.One)).Uint32()).(uint64), (_pat_let_tv7).Dtor_fp())).Cmp(_2_off) == 0) && (((_pat_let_tv8).Dtor_r0()) == (Companion_Default___.HelperRet(_pat_let_tv9)))
+						}
+					}
+					{
+						if _source0.Is_HitCall() {
+							return (Companion_Default___.HelperRet(_pat_let_tv10)) != (uint64(0)) /* dircomp */
+						}
+					}
+					{
+						return (Companion_Default___.HelperRet(_pat_let_tv11)) == (uint64(0))
 					}
 				}())
 			}(_pat_let29_0)
@@ -678,6 +692,34 @@ func (_this Role) Is_CopyArg() bool {
 	return ok
 }
 
+type Role_HitCall struct {
+}
+
+func (Role_HitCall) isRole() {}
+
+func (CompanionStruct_Role_) Create_HitCall_() Role {
+	return Role{Role_HitCall{}}
+}
+
+func (_this Role) Is_HitCall() bool {
+	_, ok := _this.Get_().(Role_HitCall)
+	return ok
+}
+
+type Role_MissCall struct {
+}
+
+func (Role_MissCall) isRole() {}
+
+func (CompanionStruct_Role_) Create_MissCall_() Role {
+	return Role{Role_MissCall{}}
+}
+
+func (_this Role) Is_MissCall() bool {
+	_, ok := _this.Get_().(Role_MissCall)
+	return ok
+}
+
 func (CompanionStruct_Role_) Default() Role {
 	return Companion_Role_.Create_KeyArg_()
 }
@@ -702,6 +744,14 @@ func (_this Role) String() string {
 		{
 			return "Obligations.Role.CopyArg" + "(" + _dafny.String(data.Off) + ")"
 		}
+	case Role_HitCall:
+		{
+			return "Obligations.Role.HitCall"
+		}
+	case Role_MissCall:
+		{
+			return "Obligations.Role.MissCall"
+		}
 	default:
 		{
 			return "<unexpected>"
@@ -725,6 +775,16 @@ func (_this Role) Equals(other Role) bool {
 		{
 			data2, ok := other.Get_().(Role_CopyArg)
 			return ok && data1.Off.Cmp(data2.Off) == 0
+		}
+	case Role_HitCall:
+		{
+			_, ok := other.Get_().(Role_HitCall)
+			return ok
+		}
+	case Role_MissCall:
+		{
+			_, ok := other.Get_().(Role_MissCall)
+			return ok
 		}
 	default:
 		{
