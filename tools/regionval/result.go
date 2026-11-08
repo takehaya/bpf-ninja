@@ -2,6 +2,7 @@ package regionval
 
 import (
 	"errors"
+	"fmt"
 	"slices"
 	"time"
 
@@ -34,7 +35,8 @@ type Structure struct {
 // WindowResult is the verdict on one window. Validated is the Dafny core's
 // verdict (contract.Validate); Rule, Reason and Paths come from the Go core
 // (core.Check), except that a window only the Go core validates has rule
-// "dafny" and the Dafny core's reason.
+// "dafny" and the Dafny core's reason. A window only the Dafny core
+// validates keeps the Go core's rule and reason; Disagree marks both cases.
 type WindowResult struct {
 	Kind     string `json:"kind"`
 	CoreKind string `json:"core_kind"` // the obligation kind the core judged (windowKind)
@@ -77,6 +79,13 @@ func Run(path string) (r Result) { // named: the deferred timing must reach the 
 		return r
 	}
 	r.Structure = Structure{KappaOK: true, EdgesOK: true, OK: true}
+	r.judgeWindows(l)
+	return r
+}
+
+// judgeWindows judges every window of l and sets the window results, the
+// counts and the load verdict.
+func (r *Result) judgeWindows(l *Layout) {
 	all := true
 	for _, w := range l.Windows {
 		wr := judge(l, w)
@@ -94,7 +103,6 @@ func Run(path string) (r Result) { // named: the deferred timing must reach the 
 		}
 	}
 	r.Validated = r.Structure.OK && all
-	return r
 }
 
 // judge runs both cores on window w. The verdict is the Dafny core's.
@@ -113,8 +121,11 @@ func (wr *WindowResult) merge(g core.Verdict, d rd.Verdict) {
 	wr.Validated = d.Validated
 	if !d.Validated {
 		wr.DafnyReason = d.Reason
+		if d.PC >= 0 {
+			wr.DafnyReason = fmt.Sprintf("insn %d: %s", d.PC, d.Reason)
+		}
 		if g.Validated {
-			wr.Rule, wr.Reason = "dafny", "dafny: "+d.Reason
+			wr.Rule, wr.Reason = "dafny", "dafny: "+wr.DafnyReason
 		}
 	}
 }

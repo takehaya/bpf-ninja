@@ -37,11 +37,12 @@ From the repository root, `make regionval-test` runs the Go tests and
 `make regionval-check` runs the CI steps.
 
 `scripts/corpus.sh DIR [OUT]` writes the results to OUT (default
-`regionval-corpus.jsonl`) and prints how many loads were validated, how many windows were validated and
-how many the two cores disagree on, how many loads failed each structure
-stage, and how many windows failed each rule. It exits
-0 if every load is validated, 1 if any is not, and 2 on a usage error, a
-missing tool, a build failure or a directory without capture files.
+`regionval-corpus.jsonl`) and prints how many loads were validated, how many
+windows were validated and how many the two cores disagree on, how many loads
+failed each structure stage, and how many windows failed each rule. It exits
+0 if every load is validated and the cores agree on every window, 1
+otherwise, and 2 on a usage error, a missing tool, a build failure or a
+directory without capture files.
 
 ### Output
 
@@ -84,11 +85,14 @@ One JSON object per capture file:
 - A window's `validated` is the Dafny core's verdict. `go_validated` is the
   Go core's verdict, and `disagree` is true when the two differ.
   `counts.disagree` is the number of such windows in the load.
-- A window that is not validated has `rule` and `reason`. When the Go core
-  rejects it, they are the Go core's: the first failed obligation (see
-  [Obligations](#obligations)). When only the Dafny core rejects it, `rule` is
-  `dafny`. Either way `dafny_reason` is the Dafny core's reason; it starts
-  with `contract:` when a check outside `Validate` failed.
+- When the Go core rejects a window, `rule` and `reason` are the Go core's:
+  the first failed obligation (see [Obligations](#obligations)). This holds
+  even if the Dafny core validates the window; `disagree` is then true. When
+  only the Dafny core rejects it, `rule` is `dafny`.
+- `dafny_reason` is set when the Dafny core rejects a window. It starts with
+  `contract:` when a check outside `Validate` failed, and with `insn N:` when
+  the reason concerns instruction N of the window (of W, for a reason found in
+  a wrapper's body).
 - `paths` is the number of paths the Go core explored in the window.
 
 ### Capture files
@@ -155,9 +159,9 @@ window sits in T, and `core_kind` is the set of obligations it is judged by:
 | `hook-P7` | the body of an inserted hook function |
 
 For each window the Go core enumerates every path through the inserted code
-with a symbolic machine. A path is followed whether or not its branch conditions can
-hold, so this covers more paths than can run. At the end of each path it checks
-the obligations below by comparing symbolic terms. Two terms that are equal but
+with a symbolic machine. A path is followed whether or not its branch
+conditions can hold, so this covers more paths than can run. At the end of
+each path it checks the obligations below by comparing symbolic terms. Two terms that are equal but
 written differently compare as unequal, so that case fails closed.
 
 ### Obligations
@@ -231,7 +235,8 @@ wrong.
   differential tests compare these semantics and the Go core's symbolic
   machine with a separately written interpreter (`interp/`); all follow the
   same table, so they do not test the table against the kernel.
-- **Structure parsing.** The wire decoder in `core/`, used to cut windows, and
+- **Structure parsing.** The wire decoder in `core/` and the `Insn` methods
+  that classify instructions, used to cut windows and by the contract, and
   the func_info and BTF parsers match the kernel.
 - **Calling convention.** A helper call sets r0 to its result, leaves r1 to r5
   undefined and keeps r6 to r10. It may write any stack byte in `[f, 0)`. The
@@ -243,11 +248,17 @@ wrong.
 - **The original program is valid.** O passed the verifier, so it never reads
   r1 to r5 after a call before writing them. The liveness used by `P9` relies
   on this and on a table of argument counts for common helpers (unknown helpers
-  count as reading r1 to r5).
+  count as reading r1 to r5). The liveness is computed by `core/live.go`.
 - **Window cutting, kinds and the contract.** The code that cuts T into
   windows and assigns each window's kind (`layout.go`) is outside the proof,
   and so is `dafny/contract`, which makes the checks outside `Validate` and
   picks the spec for each kind. The contract rejects an unknown kind.
+- **The specs.** The presets in `dafny/src/Api.dfy` and the `CustomSpec`
+  arguments in `dafny/contract` say which obligations each window kind gets.
+  The proof holds for any spec; whether a spec asks enough of its kind is
+  outside it.
+- **The verdict merge.** `result.go` takes each window's verdict from the
+  Dafny core and validates a load only if every window is validated.
 - **The translation of the Dafny core to Go.** The checked-in `dafny/gen-go`
   is what `dafny translate go` (Dafny 4.11.0) produces from `dafny/src`, and
   that translation keeps the meaning of the verified code. `make
@@ -264,9 +275,11 @@ wrong.
   behaves like the original is argued separately; regionval does not check it.
 - The Go toolchain.
 
-The Go core's symbolic machine and obligations are not trusted for the
-verdict. A fault there can change a rule name or mark a window as
-disagreeing, but cannot make a window validated.
+The Go core's symbolic machine, term comparison, allowlist and obligations
+(`core/sym.go`, `term.go`, `allow.go`, `oblig.go` apart from `Writes` and
+`SpillSource`, which the contract uses) are not trusted for the verdict. A
+fault there can change a rule name or mark a window as disagreeing, but
+cannot make a window validated.
 
 ## Dafny core
 

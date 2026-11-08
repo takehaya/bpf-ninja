@@ -2,8 +2,9 @@
 # Check every capture file under DIR and summarise the results.
 # Usage: scripts/corpus.sh DIR [OUT]
 # OUT (default regionval-corpus.jsonl) receives one JSON result per load.
-# Needs go and jq. Exits 0 if every load is validated, 1 if any is not,
-# and 2 on a usage error, a missing tool, a build failure or no capture files.
+# Needs go and jq. Exits 0 if every load is validated and the two cores
+# agree on every window, 1 otherwise, and 2 on a usage error, a missing tool,
+# a build failure or no capture files.
 set -eu
 dir=${1:-}
 out=${2:-regionval-corpus.jsonl}
@@ -34,4 +35,4 @@ jq -rs '
          else "load structure:\(.structure.failed_stage)" end)
    | group_by(.) | map("  \(.[0]): \(length)") | .[])
 ' "$out"
-jq -se 'all(.validated)' "$out" > /dev/null || exit 1
+jq -se 'all(.validated) and all(.counts.disagree == 0)' "$out" > /dev/null || exit 1

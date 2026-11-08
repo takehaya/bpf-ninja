@@ -42,13 +42,9 @@ func Validate(cw core.Window, insns, body, helper []byte) rd.Verdict {
 // window.
 func Spec(cw core.Window, body, helper []byte) (rd.Spec, bool) {
 	f := int(cw.Floor)
-	const (
-		noHelper   = false
-		checkArgs  = false
-		restoreR0  = false
-		noHook     = false
-		notHookBdy = false
-	)
+	// CustomSpec arguments: no central helper call (so no argument or r0
+	// check), no hook call, not a hook body.
+	const centre, checkArgs, restoreR0, hookCalls, exitMode = false, false, false, false, false
 	switch cw.Kind {
 	case core.KindWrap:
 		if cw.Callee == nil || len(helper) != 8 {
@@ -64,13 +60,13 @@ func Spec(cw core.Window, body, helper []byte) (rd.Spec, bool) {
 	case core.KindCallback:
 		return rd.CallbackPrologueSpec(f), true
 	case core.KindPass: // no register changes; stores allowed
-		return rd.CustomSpec(f, nil, noHelper, checkArgs, restoreR0, true, noHook, notHookBdy), true
+		return rd.CustomSpec(f, nil, centre, checkArgs, restoreR0, true, hookCalls, exitMode), true
 	case core.KindPassLoad: // only r_G changes; no store
-		g := spillSource(cw.PassPrologue)
+		g := core.SpillSource(cw.PassPrologue)
 		if g == 0 {
 			return rd.Spec{}, false
 		}
-		return rd.CustomSpec(f, []int{g}, noHelper, checkArgs, restoreR0, false, noHook, notHookBdy), true
+		return rd.CustomSpec(f, []int{g}, centre, checkArgs, restoreR0, false, hookCalls, exitMode), true
 	case core.KindHook:
 		return rd.HookBodySpec(), true
 	}
@@ -122,7 +118,7 @@ func Check(cw core.Window) string {
 			return "P1b: writes a register other than r0"
 		}
 	case core.KindPass:
-		if spillSource(cw.Insns) == 0 {
+		if core.SpillSource(cw.Insns) == 0 {
 			return "P9 certificate"
 		}
 		if writesOutside(cw.Insns, 0) {
@@ -139,7 +135,7 @@ func Check(cw core.Window) string {
 			}
 		}
 	case core.KindPassLoad:
-		g := spillSource(cw.PassPrologue)
+		g := core.SpillSource(cw.PassPrologue)
 		if g == 0 {
 			return "P9 certificate"
 		}
@@ -159,39 +155,11 @@ func Check(cw core.Window) string {
 	return ""
 }
 
-// spillSource is r_G of a pass prologue (the source register of its single
-// STX to r10), or 0 if the prologue is no certificate. It mirrors the
-// unexported core.spillSource.
-func spillSource(pro []core.Insn) int {
-	src := 0
-	for _, x := range pro {
-		if x.Class() == core.ClassSTX {
-			if src != 0 || x.Op != 0x7b || x.Dst != 10 || x.Src < 1 || x.Src > 5 {
-				return 0
-			}
-			src = int(x.Src)
-		}
-	}
-	return src
-}
-
-// writes is the set of registers an instruction may write, as a bit mask.
-// It mirrors the unexported core.writes.
-func writes(x core.Insn) uint16 {
-	switch c := x.Class(); {
-	case c == core.ClassALU || c == core.ClassALU64 || c == core.ClassLDX || x.Op == core.OpLdImm64:
-		return 1 << x.Dst
-	case x.Op == core.OpCall:
-		return 0x3f
-	}
-	return 0
-}
-
 // writesOutside reports whether an instruction may write a register outside
 // allowed.
 func writesOutside(xs []core.Insn, allowed uint16) bool {
 	for _, x := range xs {
-		if writes(x)&^allowed != 0 {
+		if core.Writes(x)&^allowed != 0 {
 			return true
 		}
 	}

@@ -210,6 +210,9 @@ func TestContract(t *testing.T) {
 		if why := contract.Check(c.w); why == "" {
 			t.Errorf("%s: contract passes", c.name)
 		}
+		if v := contract.Validate(c.w, nil, nil, nil); v.Validated || !strings.HasPrefix(v.Reason, "contract: ") {
+			t.Errorf("%s: Validate does not refuse by the contract: %+v", c.name, v)
+		}
 	}
 
 	// R15 at bpf_tail_call is in TailSiteSpec, not in the contract.
