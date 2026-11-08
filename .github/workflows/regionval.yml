@@ -1,0 +1,77 @@
+---
+name: regionval
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "tools/regionval/**"
+      - ".github/workflows/regionval.yml"
+  pull_request:
+    paths:
+      - "tools/regionval/**"
+      - ".github/workflows/regionval.yml"
+
+permissions:
+  contents: read
+
+env:
+  DAFNY_VERSION: 4.11.0
+  DAFNY_ZIP: dafny-4.11.0-x64-ubuntu-22.04.zip
+  DAFNY_SHA256: a46a9ff7cdd720f7955854c78e95df13f4cfe6b80691b05f8654fe19e8267179
+  GOIMPORTS_VERSION: v0.52.0
+  GOLANGCI_LINT_VERSION: v2.15.0
+  CGO_ENABLED: "0"
+
+jobs:
+  regionval:
+    name: verify, check generated Go, test
+    runs-on: ubuntu-26.04
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: tools/regionval
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: tools/regionval/go.mod
+          cache-dependency-path: tools/regionval/go.sum
+
+      - name: Install Dafny, goimports and golangci-lint
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP"
+          curl -sSfLO "https://github.com/dafny-lang/dafny/releases/download/v${DAFNY_VERSION}/${DAFNY_ZIP}"
+          echo "${DAFNY_SHA256}  ${DAFNY_ZIP}" | sha256sum -c -
+          mkdir -p "$HOME/.local/opt" "$HOME/.local/bin"
+          unzip -q "${DAFNY_ZIP}" -d "$HOME/.local/opt"
+          ln -s "$HOME/.local/opt/dafny/dafny" "$HOME/.local/bin/dafny"
+          # Both tools need a newer Go than go.mod declares; setup-go sets
+          # GOTOOLCHAIN=local, so let go install fetch what each asks for.
+          export GOBIN="$HOME/.local/bin" GOTOOLCHAIN=auto
+          go install "golang.org/x/tools/cmd/goimports@${GOIMPORTS_VERSION}"
+          go install "github.com/golangci/golangci-lint/v2/cmd/golangci-lint@${GOLANGCI_LINT_VERSION}"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Versions
+        run: dafny --version && go version && golangci-lint version
+
+      - name: No assume, axiom or extern in the Dafny sources
+        run: make check-trust
+
+      - name: dafny verify
+        run: make dafny-verify
+
+      - name: Generated Go matches the Dafny sources
+        run: make dafny-check-gen
+
+      - name: Vet
+        run: make vet
+
+      - name: Test (CGO_ENABLED=0)
+        run: make test
+
+      - name: Lint
+        run: make lint

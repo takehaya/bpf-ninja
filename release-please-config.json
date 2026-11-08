@@ -4,7 +4,10 @@
     "bump-minor-pre-major": true,
     "packages": {
         ".": {
-            "release-type": "go"
+            "release-type": "go",
+            "exclude-paths": [
+                "tools/regionval"
+            ]
         }
     },
     "changelog-sections": [
