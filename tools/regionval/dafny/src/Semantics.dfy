@@ -28,6 +28,28 @@ module Semantics {
     | CallLocal(imm: bv32)        // BPF_PSEUDO_CALL: hook (or wrapper) call
     | Exit
 
+  // Registers an instruction writes (Alu, Ldx: dst; a call: r0..r5).
+  // StepWrites (Soundness.dfy) proves Step changes no other register.
+  function Writes(ins: Instr): set<nat> {
+    match ins
+    case Alu(_, _, dst, _) => {dst}
+    case Ldx(_, dst, _, _) => {dst}
+    case CallHelper(_) => {0, 1, 2, 3, 4, 5}
+    case CallLocal(_) => {0, 1, 2, 3, 4, 5}
+    case _ => {}
+  }
+
+  // The instruction names r10 as a register operand.
+  predicate NamesR10(ins: Instr) {
+    match ins
+    case Alu(_, _, dst, o) => dst == 10 || o == Reg(10)
+    case Ldx(_, dst, base, _) => dst == 10 || base == 10
+    case Stx(_, base, src, _) => base == 10 || src == 10
+    case St(_, base, _, _) => base == 10
+    case Jcond(_, dst, _, _) => dst == 10
+    case _ => false
+  }
+
   // ---------------- wire decoder (RFC 9669 section 3) ----------------
 
   // Size field of LDX/STX/ST (RFC 9669 5.1): W=0x00 H=0x08 B=0x10 DW=0x18.
@@ -112,8 +134,10 @@ module Semantics {
   // An event records what the region did that the obligations talk about.
   datatype Event =
     | EStore(addr: bv64, width: nat)
-    | EHelper(args: seq<bv64>, ret: bv64, stackAfter: seq<bv8>)
+    | EHelper(args: seq<bv64>, ret: bv64, stackAfter: seq<bv8>, id: bv32)
     | EHook
+    | ECallW(regs: seq<bv64>)     // P8: call W; the caller's registers at the call
+    | ERet(r0: bv64)              // P8: EXIT in W; W's r0
 
   // regs: r0..r10.  stack: the 512 bytes [r10-512, r10), index i is r10-512+i.
   // log: every value the region obtained from outside (loads, call results);
@@ -206,7 +230,7 @@ module Semantics {
     case Jcond(c, dst, imm, off) =>
       if dst > 10 then Stuck
       else Next(s.(pc := if CondHolds(c, s.regs[dst], imm) then s.pc + 1 + Signed16(off) else s.pc + 1))
-    case CallHelper(_) => HelperStep(floor, s, oracle)
+    case CallHelper(id) => HelperStep(floor, s, oracle, id)
     case CallLocal(_) => HookStep(s, oracle)
     case Exit => Halt(s)
   }
@@ -256,7 +280,7 @@ module Semantics {
     seq(STACK, i requires 0 <= i < STACK => if i >= lo then ByteOf(Orc(oracle, s.oc + 6 + (i - lo)), 0) else s.stack[i])
   }
 
-  function HelperStep(floor: int, s: CState, oracle: seq<bv64>): StepRes
+  function HelperStep(floor: int, s: CState, oracle: seq<bv64>, id: bv32): StepRes
     requires CWF(s) && -(STACK as int) <= floor <= 0
   {
     var regs' := HavocRegs(s.regs, oracle, s.oc, 6);
@@ -265,7 +289,7 @@ module Semantics {
     var stack' := HelperStack(floor, s, oracle);
     var newVals := regs'[0..6] + seq(up, j requires 0 <= j < up => Zext8(stack'[lo + j]));
     Next(s.(pc := s.pc + 1, regs := regs', stack := stack', log := s.log + newVals, oc := s.oc + 6 + up,
-            events := s.events + [EHelper(s.regs[1..6], regs'[0], stack')]))
+            events := s.events + [EHelper(s.regs[1..6], regs'[0], stack', id)]))
   }
 
   // Hook call (trusted calling convention): r0..r5 clobbered, r6..r10 and the whole stack preserved.
@@ -298,6 +322,78 @@ module Semantics {
         case Stuck => Escaped(s)
         case Halt(s') => Exited(s')
         case Next(s') => if CWF(s') then Run(raw, floor, s', oracle, fuel - 1) else Escaped(s')
+  }
+
+  // ---------------- P8: the window WP . call W ----------------
+  //
+  // The last instruction of a P8 window is the BPF_PSEUDO_CALL to the
+  // wrapper W.  W's body (wraw) runs as a second frame (depth 1) on the same
+  // Step, and EXIT in W returns to the caller (as interp's call and exit,
+  // and the kernel verifier's set_callee_state).
+  //  - entry: W's r1..r5 are the caller's; W's r0, r6..r9 are undefined
+  //    (oracle values, in this order).  W's r10 slot holds frame 0's base:
+  //    the model places stack accesses relative to r10 and models frame 0
+  //    only.  W's own frame is not modelled; a validated W never names r10
+  //    (ObligationsHold), so it has no way to reach that frame.
+  //  - return: the caller's r0 = W's r0; r1..r5 undefined (oracle);
+  //    r6..r10 kept; pc = the instruction after call W (= window end).
+  //  - falling off the end of W escapes.
+
+  function WPart(raw: seq<bv8>): seq<bv8>
+    requires NumInsns(raw) >= 1
+  {
+    raw[..8 * (NumInsns(raw) - 1)]
+  }
+
+  function EnterW(s: CState, oracle: seq<bv64>): CState
+    requires CWF(s)
+  {
+    var regs := seq(NREGS, k requires 0 <= k < NREGS =>
+                      if 1 <= k <= 5 || k == 10 then s.regs[k] else Orc(oracle, s.oc + (if k == 0 then 0 else k - 5)));
+    CState(0, regs, s.stack, s.log + [regs[0], regs[6], regs[7], regs[8], regs[9]], s.oc + 5, s.events + [ECallW(s.regs)])
+  }
+
+  function ReturnW(s1: CState, t: CState, oracle: seq<bv64>): CState
+    requires CWF(s1) && CWF(t)
+  {
+    var regs := seq(NREGS, k requires 0 <= k < NREGS =>
+                      if k == 0 then t.regs[0] else if k <= 5 then Orc(oracle, t.oc + (k - 1)) else s1.regs[k]);
+    CState(s1.pc + 1, regs, t.stack, t.log + regs[1..6], t.oc + 5, t.events + [ERet(t.regs[0])])
+  }
+
+  // W's body has run from EnterW(s1) with outcome o.
+  function WPost(s1: CState, oracle: seq<bv64>, o: Outcome): Outcome {
+    match o
+    case Exited(t) => if CWF(s1) && CWF(t) then Done(ReturnW(s1, t, oracle)) else Escaped(t)
+    case Done(t) => Escaped(t)        // fell off the end of W
+    case _ => o
+  }
+
+  // s1 is at call W.
+  function CallW(raw: seq<bv8>, wraw: seq<bv8>, floor: int, s1: CState, oracle: seq<bv64>, fuel: nat): Outcome
+    requires -(STACK as int) <= floor <= 0 && NumInsns(raw) >= 1
+  {
+    if !CWF(s1) || s1.pc != NumInsns(raw) - 1 then Escaped(s1)
+    else match Decode(InsnAt(raw, s1.pc))
+      case Some(CallLocal(_)) => WPost(s1, oracle, Run(wraw, floor, EnterW(s1, oracle), oracle, fuel))
+      case _ => Escaped(s1)
+  }
+
+  // WP (the window without call W) has run with outcome o.
+  function WPPost(raw: seq<bv8>, wraw: seq<bv8>, floor: int, oracle: seq<bv64>, fuel: nat, o: Outcome): Outcome
+    requires -(STACK as int) <= floor <= 0 && NumInsns(raw) >= 1
+  {
+    match o
+    case Done(s1) => CallW(raw, wraw, floor, s1, oracle, fuel)
+    case Escaped(s1) => if s1.pc == NumInsns(raw) then Done(s1) else o   // a jump over call W to the window end
+    case _ => o
+  }
+
+  function RunWrap(raw: seq<bv8>, wraw: seq<bv8>, floor: int, s: CState, oracle: seq<bv64>, fuel: nat): Outcome
+    requires CWF(s) && -(STACK as int) <= floor <= 0
+  {
+    if NumInsns(raw) == 0 then Escaped(s)
+    else WPPost(raw, wraw, floor, oracle, fuel, Run(WPart(raw), floor, s, oracle, fuel))
   }
 
   function InitState(regs: seq<bv64>, stack: seq<bv8>): CState {

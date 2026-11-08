@@ -3,7 +3,9 @@
 // Dafny runtime values; every decision is made by the verified Dafny code.
 //
 //   - Validate: Checker.Validate, the function covered by Soundness.Soundness.
-//   - ConcreteStep / ConcreteRun: the concrete semantics (reference interpreter).
+//   - ConcreteStep / ConcreteRun / ConcreteWindowRun: the concrete semantics
+//     (reference interpreter); ConcreteWindowRun is the run the theorem is
+//     about (for P8: WP, then W's body as a second frame, then the return).
 //   - ObligationsHold: the obligation predicate, for differential tests.
 package regionvaldafny
 
@@ -38,6 +40,20 @@ func PassSpec(floor, g int) Spec {
 }
 func HookBodySpec() Spec { return Spec{api.Companion_Default___.HookBodySpec()} }
 
+// WrapSiteSpec is the P8 wrapper site WP·call W: body is W's instructions
+// (wire format), helper the original helper call O[i] (8 bytes).
+func WrapSiteSpec(floor int, body, helper []byte) Spec {
+	return Spec{api.Companion_Default___.WrapSiteSpec(_dafny.IntOf(floor), _dafny.SeqOfBytes(body), _dafny.SeqOfBytes(helper))}
+}
+
+// wrapLen is the number of instructions of W (0 if sp is not P8).
+func (sp Spec) wrapLen() int {
+	if w := sp.d.Dtor_wrap(); w.Is_Wrap() {
+		return int(w.Dtor_body().Cardinality()) / 8
+	}
+	return 0
+}
+
 // CustomSpec builds an arbitrary Spec.  helper=false means no central helper
 // call (checkArgs and restoreR0 are then ignored).
 func CustomSpec(floor int, free []int, helper, checkArgs, restoreR0, allowStore, hookCalls, exitMode bool) Spec {
@@ -49,11 +65,12 @@ func CustomSpec(floor int, free []int, helper, checkArgs, restoreR0, allowStore,
 	if helper {
 		hm = obl.Companion_HelperMode_.Create_Helper_(checkArgs, restoreR0)
 	}
-	return Spec{obl.Companion_Spec_.Create_Spec_(_dafny.IntOf(floor), _dafny.SetOf(fs...), hm, allowStore, hookCalls, exitMode)}
+	return Spec{obl.Companion_Spec_.Create_Spec_(_dafny.IntOf(floor), _dafny.SetOf(fs...), hm, allowStore, hookCalls, exitMode, obl.Companion_WrapMode_.Create_NoWrap_())}
 }
 
-// Verdict of Validate.  PC is the window-relative instruction index the
-// reason refers to (-1 for whole-window reasons).
+// Verdict of Validate.  PC is the instruction index the reason refers to
+// (-1 for whole-window reasons).  It indexes the window, except for a reason
+// found in W's body of a site-P8 window, where it indexes W.
 type Verdict struct {
 	Validated bool
 	PC        int
@@ -77,15 +94,19 @@ const (
 	EvStore EventKind = iota
 	EvHelper
 	EvHook
+	EvCallW // P8: call W
+	EvRet   // P8: EXIT in W
 )
 
 type Event struct {
 	Kind       EventKind
-	Addr       uint64      // EvStore
-	Width      int         // EvStore
-	Args       [5]uint64   // EvHelper: r1..r5 at the call
-	Ret        uint64      // EvHelper
-	StackAfter [Stack]byte // EvHelper
+	Addr       uint64        // EvStore
+	Width      int           // EvStore
+	Args       [5]uint64     // EvHelper: r1..r5 at the call
+	Ret        uint64        // EvHelper: result; EvRet: W's r0
+	StackAfter [Stack]byte   // EvHelper
+	ID         uint32        // EvHelper: helper id
+	Regs       [NRegs]uint64 // EvCallW: caller's registers at the call
 }
 
 // State is Semantics.CState.  Stack[i] is the byte at r10-512+i.  Log holds
@@ -131,7 +152,11 @@ func toD(s State) sem.CState {
 		case EvStore:
 			evs[i] = sem.Companion_Event_.Create_EStore_(e.Addr, _dafny.IntOf(e.Width))
 		case EvHelper:
-			evs[i] = sem.Companion_Event_.Create_EHelper_(u64seq(e.Args[:]), e.Ret, _dafny.SeqOfBytes(e.StackAfter[:]))
+			evs[i] = sem.Companion_Event_.Create_EHelper_(u64seq(e.Args[:]), e.Ret, _dafny.SeqOfBytes(e.StackAfter[:]), e.ID)
+		case EvCallW:
+			evs[i] = sem.Companion_Event_.Create_ECallW_(u64seq(e.Regs[:]))
+		case EvRet:
+			evs[i] = sem.Companion_Event_.Create_ERet_(e.Ret)
 		default:
 			evs[i] = sem.Companion_Event_.Create_EHook_()
 		}
@@ -160,7 +185,7 @@ func fromD(c sem.CState) State {
 		case e.Is_EStore():
 			s.Events = append(s.Events, Event{Kind: EvStore, Addr: e.Dtor_addr(), Width: int(e.Dtor_width().Int64())})
 		case e.Is_EHelper():
-			ev := Event{Kind: EvHelper, Ret: e.Dtor_ret()}
+			ev := Event{Kind: EvHelper, Ret: e.Dtor_ret(), ID: e.Dtor_id()}
 			a, sa := e.Dtor_args(), e.Dtor_stackAfter()
 			for j := uint32(0); j < a.Cardinality() && j < 5; j++ {
 				ev.Args[j] = a.Select(j).(uint64)
@@ -169,6 +194,15 @@ func fromD(c sem.CState) State {
 				ev.StackAfter[j] = sa.Select(j).(uint8)
 			}
 			s.Events = append(s.Events, ev)
+		case e.Is_ECallW():
+			ev := Event{Kind: EvCallW}
+			r := e.Dtor_regs()
+			for j := uint32(0); j < r.Cardinality() && j < NRegs; j++ {
+				ev.Regs[j] = r.Select(j).(uint64)
+			}
+			s.Events = append(s.Events, ev)
+		case e.Is_ERet():
+			s.Events = append(s.Events, Event{Kind: EvRet, Ret: e.Dtor_r0()})
 		default:
 			s.Events = append(s.Events, Event{Kind: EvHook})
 		}
@@ -213,9 +247,15 @@ func ConcreteRun(insns []byte, floor int, s State, oracle []uint64, fuel int) (S
 	return outcome(api.Companion_Default___.ConcreteRun(_dafny.SeqOfBytes(insns), _dafny.IntOf(floor), toD(s), u64seq(oracle), _dafny.IntOf(fuel)))
 }
 
-// RunAndCheck runs the window from InitState(regs, stack) with fuel
-// len(insns)/8+1 and evaluates the obligation predicate on the outcome.
-// For a validated window the theorem says ok is always true.
+// ConcreteWindowRun is the window's run as the theorem states it
+// (Obligations.WindowRun): Run, or for P8 RunWrap.
+func ConcreteWindowRun(insns []byte, sp Spec, s State, oracle []uint64, fuel int) (State, OutcomeKind) {
+	return outcome(api.Companion_Default___.ConcreteWindowRun(_dafny.SeqOfBytes(insns), sp.d, toD(s), u64seq(oracle), _dafny.IntOf(fuel)))
+}
+
+// RunAndCheck runs the window (WindowRun) from InitState(regs, stack) with
+// fuel len(insns)/8 + |W| + 1 and evaluates the obligation predicate on the
+// outcome.  For a validated window the theorem says ok is always true.
 func RunAndCheck(insns []byte, sp Spec, regs [NRegs]uint64, stack [Stack]byte, oracle []uint64) (final State, kind OutcomeKind, ok bool) {
 	raw := _dafny.SeqOfBytes(insns)
 	s0 := toD(InitState(regs, stack))
@@ -223,7 +263,7 @@ func RunAndCheck(insns []byte, sp Spec, regs [NRegs]uint64, stack [Stack]byte, o
 	if floor.Cmp(_dafny.IntOf(-Stack)) < 0 || floor.Sign() > 0 {
 		return State{}, Escaped, false
 	}
-	out := api.Companion_Default___.ConcreteRun(raw, floor, s0, u64seq(oracle), _dafny.IntOf(len(insns)/8+1))
+	out := api.Companion_Default___.ConcreteWindowRun(raw, sp.d, s0, u64seq(oracle), _dafny.IntOf(len(insns)/8+sp.wrapLen()+1))
 	ok = obl.Companion_Default___.ObligationsHold(raw, sp.d, s0, out)
 	final, kind = outcome(out)
 	return

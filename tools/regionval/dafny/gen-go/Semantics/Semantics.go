@@ -52,6 +52,85 @@ func (_this *Default__) ParentTraits_() []*_dafny.TraitID {
 
 var _ _dafny.TraitOffspring = &Default__{}
 
+func (_static *CompanionStruct_Default___) Writes(ins Instr) _dafny.Set {
+	var _source0 Instr = ins
+	_ = _source0
+	{
+		if _source0.Is_Alu() {
+			var _0_dst _dafny.Int = _source0.Get_().(Instr_Alu).Dst
+			_ = _0_dst
+			return _dafny.SetOf(_0_dst)
+		}
+	}
+	{
+		if _source0.Is_Ldx() {
+			var _1_dst _dafny.Int = _source0.Get_().(Instr_Ldx).Dst
+			_ = _1_dst
+			return _dafny.SetOf(_1_dst)
+		}
+	}
+	{
+		if _source0.Is_CallHelper() {
+			return _dafny.SetOf(_dafny.Zero, _dafny.One, _dafny.IntOfInt64(2), _dafny.IntOfInt64(3), _dafny.IntOfInt64(4), _dafny.IntOfInt64(5))
+		}
+	}
+	{
+		if _source0.Is_CallLocal() {
+			return _dafny.SetOf(_dafny.Zero, _dafny.One, _dafny.IntOfInt64(2), _dafny.IntOfInt64(3), _dafny.IntOfInt64(4), _dafny.IntOfInt64(5))
+		}
+	}
+	{
+		return _dafny.SetOf()
+	}
+}
+func (_static *CompanionStruct_Default___) NamesR10(ins Instr) bool {
+	var _source0 Instr = ins
+	_ = _source0
+	{
+		if _source0.Is_Alu() {
+			var _0_dst _dafny.Int = _source0.Get_().(Instr_Alu).Dst
+			_ = _0_dst
+			var _1_o Operand = _source0.Get_().(Instr_Alu).Opnd
+			_ = _1_o
+			return ((_0_dst).Cmp(_dafny.IntOfInt64(10)) == 0) || ((_1_o).Equals(Companion_Operand_.Create_Reg_(_dafny.IntOfInt64(10))))
+		}
+	}
+	{
+		if _source0.Is_Ldx() {
+			var _2_dst _dafny.Int = _source0.Get_().(Instr_Ldx).Dst
+			_ = _2_dst
+			var _3_base _dafny.Int = _source0.Get_().(Instr_Ldx).Base
+			_ = _3_base
+			return ((_2_dst).Cmp(_dafny.IntOfInt64(10)) == 0) || ((_3_base).Cmp(_dafny.IntOfInt64(10)) == 0)
+		}
+	}
+	{
+		if _source0.Is_Stx() {
+			var _4_base _dafny.Int = _source0.Get_().(Instr_Stx).Base
+			_ = _4_base
+			var _5_src _dafny.Int = _source0.Get_().(Instr_Stx).Src
+			_ = _5_src
+			return ((_4_base).Cmp(_dafny.IntOfInt64(10)) == 0) || ((_5_src).Cmp(_dafny.IntOfInt64(10)) == 0)
+		}
+	}
+	{
+		if _source0.Is_St() {
+			var _6_base _dafny.Int = _source0.Get_().(Instr_St).Base
+			_ = _6_base
+			return (_6_base).Cmp(_dafny.IntOfInt64(10)) == 0
+		}
+	}
+	{
+		if _source0.Is_Jcond() {
+			var _7_dst _dafny.Int = _source0.Get_().(Instr_Jcond).Dst
+			_ = _7_dst
+			return (_7_dst).Cmp(_dafny.IntOfInt64(10)) == 0
+		}
+	}
+	{
+		return false
+	}
+}
 func (_static *CompanionStruct_Default___) SizeOf(op uint8) _dafny.Int {
 	var _0_s uint8 = (op) & (uint8(24))
 	_ = _0_s
@@ -453,7 +532,9 @@ func (_static *CompanionStruct_Default___) Step(floor _dafny.Int, ins Instr, s C
 	}
 	{
 		if _source0.Is_CallHelper() {
-			return Companion_Default___.HelperStep(floor, s, oracle)
+			var _25_id uint32 = _source0.Get_().(Instr_CallHelper).Id
+			_ = _25_id
+			return Companion_Default___.HelperStep(floor, s, oracle, _25_id)
 		}
 	}
 	{
@@ -593,17 +674,19 @@ func (_static *CompanionStruct_Default___) HelperStack(floor _dafny.Int, s CStat
 		}
 	})(_0_lo, oracle, s)))
 }
-func (_static *CompanionStruct_Default___) HelperStep(floor _dafny.Int, s CState, oracle _dafny.Sequence) StepRes {
+func (_static *CompanionStruct_Default___) HelperStep(floor _dafny.Int, s CState, oracle _dafny.Sequence, id uint32) StepRes {
 	var _pat_let_tv0 = s
 	_ = _pat_let_tv0
 	var _pat_let_tv1 = s
 	_ = _pat_let_tv1
-	var _pat_let_tv2 = s
+	var _pat_let_tv2 = id
 	_ = _pat_let_tv2
 	var _pat_let_tv3 = s
 	_ = _pat_let_tv3
 	var _pat_let_tv4 = s
 	_ = _pat_let_tv4
+	var _pat_let_tv5 = s
+	_ = _pat_let_tv5
 	var _0_regs_k _dafny.Sequence = Companion_Default___.HavocRegs((s).Dtor_regs(), oracle, (s).Dtor_oc(), _dafny.IntOfInt64(6))
 	_ = _0_regs_k
 	var _1_up _dafny.Int = (_dafny.Zero).Minus(floor)
@@ -638,17 +721,17 @@ func (_static *CompanionStruct_Default___) HelperStep(floor _dafny.Int, s CState
 														return func(_15_dt__update_hpc_h0 _dafny.Int) CState {
 															return Companion_CState_.Create_CState_(_15_dt__update_hpc_h0, _14_dt__update_hregs_h0, _13_dt__update_hstack_h0, _12_dt__update_hlog_h0, _11_dt__update_hoc_h0, _10_dt__update_hevents_h0)
 														}(_pat_let22_0)
-													}(((_pat_let_tv4).Dtor_pc()).Plus(_dafny.One))
+													}(((_pat_let_tv5).Dtor_pc()).Plus(_dafny.One))
 												}(_pat_let21_0)
 											}(_0_regs_k)
 										}(_pat_let20_0)
 									}(_3_stack_k)
 								}(_pat_let19_0)
-							}(_dafny.Companion_Sequence_.Concatenate((_pat_let_tv3).Dtor_log(), _4_newVals))
+							}(_dafny.Companion_Sequence_.Concatenate((_pat_let_tv4).Dtor_log(), _4_newVals))
 						}(_pat_let18_0)
-					}((((_pat_let_tv2).Dtor_oc()).Plus(_dafny.IntOfInt64(6))).Plus(_1_up))
+					}((((_pat_let_tv3).Dtor_oc()).Plus(_dafny.IntOfInt64(6))).Plus(_1_up))
 				}(_pat_let17_0)
-			}(_dafny.Companion_Sequence_.Concatenate((_pat_let_tv0).Dtor_events(), _dafny.SeqOf(Companion_Event_.Create_EHelper_(((_pat_let_tv1).Dtor_regs()).Subsequence(1, 6), (_0_regs_k).Select(0).(uint64), _3_stack_k))))
+			}(_dafny.Companion_Sequence_.Concatenate((_pat_let_tv0).Dtor_events(), _dafny.SeqOf(Companion_Event_.Create_EHelper_(((_pat_let_tv1).Dtor_regs()).Subsequence(1, 6), (_0_regs_k).Select(0).(uint64), _3_stack_k, _pat_let_tv2))))
 		}(_pat_let16_0)
 	}(s))
 }
@@ -748,6 +831,132 @@ TAIL_CALL_START:
 				}
 			}
 		}
+	}
+}
+func (_static *CompanionStruct_Default___) WPart(raw _dafny.Sequence) _dafny.Sequence {
+	return (raw).Take(((_dafny.IntOfInt64(8)).Times((Companion_Default___.NumInsns(raw)).Minus(_dafny.One))).Uint32())
+}
+func (_static *CompanionStruct_Default___) EnterW(s CState, oracle _dafny.Sequence) CState {
+	var _0_regs _dafny.Sequence = _dafny.SeqCreate((Companion_Default___.NREGS()).Uint32(), func(coer5 func(_dafny.Int) uint64) func(_dafny.Int) interface{} {
+		return func(arg5 _dafny.Int) interface{} {
+			return coer5(arg5)
+		}
+	}((func(_1_s CState, _2_oracle _dafny.Sequence) func(_dafny.Int) uint64 {
+		return func(_3_k _dafny.Int) uint64 {
+			return (func() uint64 {
+				if (((_dafny.One).Cmp(_3_k) <= 0) && ((_3_k).Cmp(_dafny.IntOfInt64(5)) <= 0)) || ((_3_k).Cmp(_dafny.IntOfInt64(10)) == 0) {
+					return ((_1_s).Dtor_regs()).Select((_3_k).Uint32()).(uint64)
+				}
+				return Companion_Default___.Orc(_2_oracle, ((_1_s).Dtor_oc()).Plus((func() _dafny.Int {
+					if (_3_k).Sign() == 0 {
+						return _dafny.Zero
+					}
+					return (_3_k).Minus(_dafny.IntOfInt64(5))
+				})()))
+			})()
+		}
+	})(s, oracle)))
+	_ = _0_regs
+	return Companion_CState_.Create_CState_(_dafny.Zero, _0_regs, (s).Dtor_stack(), _dafny.Companion_Sequence_.Concatenate((s).Dtor_log(), _dafny.SeqOf((_0_regs).Select(0).(uint64), (_0_regs).Select(6).(uint64), (_0_regs).Select(7).(uint64), (_0_regs).Select(8).(uint64), (_0_regs).Select(9).(uint64))), ((s).Dtor_oc()).Plus(_dafny.IntOfInt64(5)), _dafny.Companion_Sequence_.Concatenate((s).Dtor_events(), _dafny.SeqOf(Companion_Event_.Create_ECallW_((s).Dtor_regs()))))
+}
+func (_static *CompanionStruct_Default___) ReturnW(s1 CState, t CState, oracle _dafny.Sequence) CState {
+	var _0_regs _dafny.Sequence = _dafny.SeqCreate((Companion_Default___.NREGS()).Uint32(), func(coer6 func(_dafny.Int) uint64) func(_dafny.Int) interface{} {
+		return func(arg6 _dafny.Int) interface{} {
+			return coer6(arg6)
+		}
+	}((func(_1_t CState, _2_oracle _dafny.Sequence, _3_s1 CState) func(_dafny.Int) uint64 {
+		return func(_4_k _dafny.Int) uint64 {
+			return (func() uint64 {
+				if (_4_k).Sign() == 0 {
+					return ((_1_t).Dtor_regs()).Select(0).(uint64)
+				}
+				return (func() uint64 {
+					if (_4_k).Cmp(_dafny.IntOfInt64(5)) <= 0 {
+						return Companion_Default___.Orc(_2_oracle, ((_1_t).Dtor_oc()).Plus((_4_k).Minus(_dafny.One)))
+					}
+					return ((_3_s1).Dtor_regs()).Select((_4_k).Uint32()).(uint64)
+				})()
+			})()
+		}
+	})(t, oracle, s1)))
+	_ = _0_regs
+	return Companion_CState_.Create_CState_(((s1).Dtor_pc()).Plus(_dafny.One), _0_regs, (t).Dtor_stack(), _dafny.Companion_Sequence_.Concatenate((t).Dtor_log(), (_0_regs).Subsequence(1, 6)), ((t).Dtor_oc()).Plus(_dafny.IntOfInt64(5)), _dafny.Companion_Sequence_.Concatenate((t).Dtor_events(), _dafny.SeqOf(Companion_Event_.Create_ERet_(((t).Dtor_regs()).Select(0).(uint64)))))
+}
+func (_static *CompanionStruct_Default___) WPost(s1 CState, oracle _dafny.Sequence, o Outcome) Outcome {
+	var _source0 Outcome = o
+	_ = _source0
+	{
+		if _source0.Is_Exited() {
+			var _0_t CState = _source0.Get_().(Outcome_Exited).S
+			_ = _0_t
+			if (Companion_Default___.CWF(s1)) && (Companion_Default___.CWF(_0_t)) {
+				return Companion_Outcome_.Create_Done_(Companion_Default___.ReturnW(s1, _0_t, oracle))
+			} else {
+				return Companion_Outcome_.Create_Escaped_(_0_t)
+			}
+		}
+	}
+	{
+		if _source0.Is_Done() {
+			var _1_t CState = _source0.Get_().(Outcome_Done).S
+			_ = _1_t
+			return Companion_Outcome_.Create_Escaped_(_1_t)
+		}
+	}
+	{
+		return o
+	}
+}
+func (_static *CompanionStruct_Default___) CallW(raw _dafny.Sequence, wraw _dafny.Sequence, floor _dafny.Int, s1 CState, oracle _dafny.Sequence, fuel _dafny.Int) Outcome {
+	if (!(Companion_Default___.CWF(s1))) || (((s1).Dtor_pc()).Cmp((Companion_Default___.NumInsns(raw)).Minus(_dafny.One)) != 0) {
+		return Companion_Outcome_.Create_Escaped_(s1)
+	} else {
+		var _source0 m_Bits.Option = Companion_Default___.Decode(Companion_Default___.InsnAt(raw, (s1).Dtor_pc()))
+		_ = _source0
+		{
+			if _source0.Is_Some() {
+				var value0 Instr = _source0.Get_().(m_Bits.Option_Some).Value.(Instr)
+				_ = value0
+				if value0.Is_CallLocal() {
+					return Companion_Default___.WPost(s1, oracle, Companion_Default___.Run(wraw, floor, Companion_Default___.EnterW(s1, oracle), oracle, fuel))
+				}
+			}
+		}
+		{
+			return Companion_Outcome_.Create_Escaped_(s1)
+		}
+	}
+}
+func (_static *CompanionStruct_Default___) WPPost(raw _dafny.Sequence, wraw _dafny.Sequence, floor _dafny.Int, oracle _dafny.Sequence, fuel _dafny.Int, o Outcome) Outcome {
+	var _source0 Outcome = o
+	_ = _source0
+	{
+		if _source0.Is_Done() {
+			var _0_s1 CState = _source0.Get_().(Outcome_Done).S
+			_ = _0_s1
+			return Companion_Default___.CallW(raw, wraw, floor, _0_s1, oracle, fuel)
+		}
+	}
+	{
+		if _source0.Is_Escaped() {
+			var _1_s1 CState = _source0.Get_().(Outcome_Escaped).S
+			_ = _1_s1
+			if ((_1_s1).Dtor_pc()).Cmp(Companion_Default___.NumInsns(raw)) == 0 {
+				return Companion_Outcome_.Create_Done_(_1_s1)
+			} else {
+				return o
+			}
+		}
+	}
+	{
+		return o
+	}
+}
+func (_static *CompanionStruct_Default___) RunWrap(raw _dafny.Sequence, wraw _dafny.Sequence, floor _dafny.Int, s CState, oracle _dafny.Sequence, fuel _dafny.Int) Outcome {
+	if (Companion_Default___.NumInsns(raw)).Sign() == 0 {
+		return Companion_Outcome_.Create_Escaped_(s)
+	} else {
+		return Companion_Default___.WPPost(raw, wraw, floor, oracle, fuel, Companion_Default___.Run(Companion_Default___.WPart(raw), floor, s, oracle, fuel))
 	}
 }
 func (_static *CompanionStruct_Default___) InitState(regs _dafny.Sequence, stack _dafny.Sequence) CState {
@@ -1667,12 +1876,13 @@ type Event_EHelper struct {
 	Args       _dafny.Sequence
 	Ret        uint64
 	StackAfter _dafny.Sequence
+	Id         uint32
 }
 
 func (Event_EHelper) isEvent() {}
 
-func (CompanionStruct_Event_) Create_EHelper_(Args _dafny.Sequence, Ret uint64, StackAfter _dafny.Sequence) Event {
-	return Event{Event_EHelper{Args, Ret, StackAfter}}
+func (CompanionStruct_Event_) Create_EHelper_(Args _dafny.Sequence, Ret uint64, StackAfter _dafny.Sequence, Id uint32) Event {
+	return Event{Event_EHelper{Args, Ret, StackAfter, Id}}
 }
 
 func (_this Event) Is_EHelper() bool {
@@ -1691,6 +1901,36 @@ func (CompanionStruct_Event_) Create_EHook_() Event {
 
 func (_this Event) Is_EHook() bool {
 	_, ok := _this.Get_().(Event_EHook)
+	return ok
+}
+
+type Event_ECallW struct {
+	Regs _dafny.Sequence
+}
+
+func (Event_ECallW) isEvent() {}
+
+func (CompanionStruct_Event_) Create_ECallW_(Regs _dafny.Sequence) Event {
+	return Event{Event_ECallW{Regs}}
+}
+
+func (_this Event) Is_ECallW() bool {
+	_, ok := _this.Get_().(Event_ECallW)
+	return ok
+}
+
+type Event_ERet struct {
+	R0 uint64
+}
+
+func (Event_ERet) isEvent() {}
+
+func (CompanionStruct_Event_) Create_ERet_(R0 uint64) Event {
+	return Event{Event_ERet{R0}}
+}
+
+func (_this Event) Is_ERet() bool {
+	_, ok := _this.Get_().(Event_ERet)
 	return ok
 }
 
@@ -1718,6 +1958,18 @@ func (_this Event) Dtor_stackAfter() _dafny.Sequence {
 	return _this.Get_().(Event_EHelper).StackAfter
 }
 
+func (_this Event) Dtor_id() uint32 {
+	return _this.Get_().(Event_EHelper).Id
+}
+
+func (_this Event) Dtor_regs() _dafny.Sequence {
+	return _this.Get_().(Event_ECallW).Regs
+}
+
+func (_this Event) Dtor_r0() uint64 {
+	return _this.Get_().(Event_ERet).R0
+}
+
 func (_this Event) String() string {
 	switch data := _this.Get_().(type) {
 	case nil:
@@ -1728,11 +1980,19 @@ func (_this Event) String() string {
 		}
 	case Event_EHelper:
 		{
-			return "Semantics.Event.EHelper" + "(" + _dafny.String(data.Args) + ", " + _dafny.String(data.Ret) + ", " + _dafny.String(data.StackAfter) + ")"
+			return "Semantics.Event.EHelper" + "(" + _dafny.String(data.Args) + ", " + _dafny.String(data.Ret) + ", " + _dafny.String(data.StackAfter) + ", " + _dafny.String(data.Id) + ")"
 		}
 	case Event_EHook:
 		{
 			return "Semantics.Event.EHook"
+		}
+	case Event_ECallW:
+		{
+			return "Semantics.Event.ECallW" + "(" + _dafny.String(data.Regs) + ")"
+		}
+	case Event_ERet:
+		{
+			return "Semantics.Event.ERet" + "(" + _dafny.String(data.R0) + ")"
 		}
 	default:
 		{
@@ -1751,12 +2011,22 @@ func (_this Event) Equals(other Event) bool {
 	case Event_EHelper:
 		{
 			data2, ok := other.Get_().(Event_EHelper)
-			return ok && data1.Args.Equals(data2.Args) && data1.Ret == data2.Ret && data1.StackAfter.Equals(data2.StackAfter)
+			return ok && data1.Args.Equals(data2.Args) && data1.Ret == data2.Ret && data1.StackAfter.Equals(data2.StackAfter) && data1.Id == data2.Id
 		}
 	case Event_EHook:
 		{
 			_, ok := other.Get_().(Event_EHook)
 			return ok
+		}
+	case Event_ECallW:
+		{
+			data2, ok := other.Get_().(Event_ECallW)
+			return ok && data1.Regs.Equals(data2.Regs)
+		}
+	case Event_ERet:
+		{
+			data2, ok := other.Get_().(Event_ERet)
+			return ok && data1.R0 == data2.R0
 		}
 	default:
 		{

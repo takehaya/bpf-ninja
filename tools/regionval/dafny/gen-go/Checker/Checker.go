@@ -62,17 +62,17 @@ func (_static *CompanionStruct_Default___) SWF(ss SState) bool {
 	return (((_dafny.IntOfUint32(((ss).Dtor_regs()).Cardinality())).Cmp(m_Semantics.Companion_Default___.NREGS()) == 0) && ((_dafny.IntOfUint32(((ss).Dtor_stack()).Cardinality())).Cmp(m_Semantics.Companion_Default___.STACK()) == 0)) && ((_dafny.IntOfUint32(((ss).Dtor_snap()).Cardinality())).Cmp(m_Semantics.Companion_Default___.STACK()) == 0)
 }
 func (_static *CompanionStruct_Default___) SInit() SState {
-	var _0_st _dafny.Sequence = _dafny.SeqCreate((m_Semantics.Companion_Default___.STACK()).Uint32(), func(coer5 func(_dafny.Int) m_Terms.BTerm) func(_dafny.Int) interface{} {
-		return func(arg5 _dafny.Int) interface{} {
-			return coer5(arg5)
+	var _0_st _dafny.Sequence = _dafny.SeqCreate((m_Semantics.Companion_Default___.STACK()).Uint32(), func(coer7 func(_dafny.Int) m_Terms.BTerm) func(_dafny.Int) interface{} {
+		return func(arg7 _dafny.Int) interface{} {
+			return coer7(arg7)
 		}
 	}(func(_1_i _dafny.Int) m_Terms.BTerm {
 		return m_Terms.Companion_BTerm_.Create_BEntry_(_1_i)
 	}))
 	_ = _0_st
-	return Companion_SState_.Create_SState_(_dafny.SeqCreate((m_Semantics.Companion_Default___.NREGS()).Uint32(), func(coer6 func(_dafny.Int) m_Terms.Term) func(_dafny.Int) interface{} {
-		return func(arg6 _dafny.Int) interface{} {
-			return coer6(arg6)
+	return Companion_SState_.Create_SState_(_dafny.SeqCreate((m_Semantics.Companion_Default___.NREGS()).Uint32(), func(coer8 func(_dafny.Int) m_Terms.Term) func(_dafny.Int) interface{} {
+		return func(arg8 _dafny.Int) interface{} {
+			return coer8(arg8)
 		}
 	}(func(_2_k _dafny.Int) m_Terms.Term {
 		return m_Terms.Companion_Term_.Create_Entry_(_2_k)
@@ -162,9 +162,9 @@ func (_static *CompanionStruct_Default___) AddrTerm(ss SState, base _dafny.Int, 
 	return m_Terms.Companion_Default___.MkAdd(((ss).Dtor_regs()).Select((base).Uint32()).(m_Terms.Term), m_Terms.Companion_Term_.Create_Const_(m_Bits.Companion_Default___.Sext16(off)))
 }
 func (_static *CompanionStruct_Default___) FreshRegs(regs _dafny.Sequence, next _dafny.Int) _dafny.Sequence {
-	return _dafny.SeqCreate((m_Semantics.Companion_Default___.NREGS()).Uint32(), func(coer7 func(_dafny.Int) m_Terms.Term) func(_dafny.Int) interface{} {
-		return func(arg7 _dafny.Int) interface{} {
-			return coer7(arg7)
+	return _dafny.SeqCreate((m_Semantics.Companion_Default___.NREGS()).Uint32(), func(coer9 func(_dafny.Int) m_Terms.Term) func(_dafny.Int) interface{} {
+		return func(arg9 _dafny.Int) interface{} {
+			return coer9(arg9)
 		}
 	}((func(_0_next _dafny.Int, _1_regs _dafny.Sequence) func(_dafny.Int) m_Terms.Term {
 		return func(_2_k _dafny.Int) m_Terms.Term {
@@ -178,9 +178,9 @@ func (_static *CompanionStruct_Default___) FreshRegs(regs _dafny.Sequence, next 
 	})(next, regs)))
 }
 func (_static *CompanionStruct_Default___) WriteBT(st _dafny.Sequence, idx _dafny.Int, bs _dafny.Sequence) _dafny.Sequence {
-	return _dafny.SeqCreate((_dafny.IntOfUint32((st).Cardinality())).Uint32(), func(coer8 func(_dafny.Int) m_Terms.BTerm) func(_dafny.Int) interface{} {
-		return func(arg8 _dafny.Int) interface{} {
-			return coer8(arg8)
+	return _dafny.SeqCreate((_dafny.IntOfUint32((st).Cardinality())).Uint32(), func(coer10 func(_dafny.Int) m_Terms.BTerm) func(_dafny.Int) interface{} {
+		return func(arg10 _dafny.Int) interface{} {
+			return coer10(arg10)
 		}
 	}((func(_0_idx _dafny.Int, _1_bs _dafny.Sequence, _2_st _dafny.Sequence) func(_dafny.Int) m_Terms.BTerm {
 		return func(_3_i _dafny.Int) m_Terms.BTerm {
@@ -194,9 +194,9 @@ func (_static *CompanionStruct_Default___) WriteBT(st _dafny.Sequence, idx _dafn
 	})(idx, bs, st)))
 }
 func (_static *CompanionStruct_Default___) StoreBytes(v m_Terms.Term, w _dafny.Int) _dafny.Sequence {
-	return _dafny.SeqCreate((w).Uint32(), func(coer9 func(_dafny.Int) m_Terms.BTerm) func(_dafny.Int) interface{} {
-		return func(arg9 _dafny.Int) interface{} {
-			return coer9(arg9)
+	return _dafny.SeqCreate((w).Uint32(), func(coer11 func(_dafny.Int) m_Terms.BTerm) func(_dafny.Int) interface{} {
+		return func(arg11 _dafny.Int) interface{} {
+			return coer11(arg11)
 		}
 	}((func(_0_v m_Terms.Term, _1_w _dafny.Int) func(_dafny.Int) m_Terms.BTerm {
 		return func(_2_j _dafny.Int) m_Terms.BTerm {
@@ -300,6 +300,8 @@ func (_static *CompanionStruct_Default___) SymStep(sp m_Obligations.Spec, ins m_
 			_ = _9_off
 			if (((_7_dst).Cmp(_dafny.IntOfInt64(10)) >= 0) || ((_8_base).Cmp(m_Semantics.Companion_Default___.NREGS()) >= 0)) || ((_6_w).Cmp(_dafny.IntOfInt64(8)) > 0) {
 				return Companion_SR_.Create_SFail_(_dafny.UnicodeSeqOfUtf8Bytes("malformed load"))
+			} else if ((m_Terms.Companion_Default___.FpOff(Companion_Default___.AddrTerm(ss, _8_base, _9_off))).Is_Some()) && (!(m_Semantics.Companion_Default___.InFrame(m_Bits.Companion_Default___.Signed64((m_Terms.Companion_Default___.FpOff(Companion_Default___.AddrTerm(ss, _8_base, _9_off))).Dtor_value().(uint64)), _6_w))) {
+				return Companion_SR_.Create_SFail_(_dafny.UnicodeSeqOfUtf8Bytes("stack load outside the frame"))
 			} else {
 				var _10_v m_Terms.Term = func() m_Terms.Term {
 					var _source1 m_Bits.Option = m_Terms.Companion_Default___.FpOff(Companion_Default___.AddrTerm(ss, _8_base, _9_off))
@@ -368,31 +370,35 @@ func (_static *CompanionStruct_Default___) SymStep(sp m_Obligations.Spec, ins m_
 	}
 	{
 		if _source0.Is_CallHelper() {
+			var _23_id uint32 = _source0.Get_().(m_Semantics.Instr_CallHelper).Id
+			_ = _23_id
 			if !(((sp).Dtor_helper()).Is_Helper()) {
 				return Companion_SR_.Create_SFail_(_dafny.UnicodeSeqOfUtf8Bytes("helper call outside a site window"))
 			} else if ((ss).Dtor_helpers()).Sign() != 0 {
 				return Companion_SR_.Create_SFail_(_dafny.UnicodeSeqOfUtf8Bytes("second helper call on a path"))
 			} else if (((sp).Dtor_helper()).Dtor_checkArgs()) && (!_dafny.Companion_Sequence_.Equal(((ss).Dtor_regs()).Subsequence(1, 6), _dafny.SeqOf(m_Terms.Companion_Term_.Create_Entry_(_dafny.One), m_Terms.Companion_Term_.Create_Entry_(_dafny.IntOfInt64(2)), m_Terms.Companion_Term_.Create_Entry_(_dafny.IntOfInt64(3)), m_Terms.Companion_Term_.Create_Entry_(_dafny.IntOfInt64(4)), m_Terms.Companion_Term_.Create_Entry_(_dafny.IntOfInt64(5))))) {
 				return Companion_SR_.Create_SFail_(_dafny.UnicodeSeqOfUtf8Bytes("r1-r5 changed before the helper call"))
+			} else if (((sp).Dtor_wrap()).Is_Wrap()) && (!(((m_Bits.Companion_Option_.Create_Some_(_23_id)).Equals(m_Obligations.Companion_Default___.HelperIdOf(((sp).Dtor_wrap()).Dtor_helper()))) && (Companion_Default___.WrapArgsSym(_23_id, (ss).Dtor_regs())))) {
+				return Companion_SR_.Create_SFail_(_dafny.UnicodeSeqOfUtf8Bytes("W's helper call is not O[i] with the site's r1-r5"))
 			} else {
-				var _23_lo _dafny.Int = (m_Semantics.Companion_Default___.STACK()).Plus((sp).Dtor_floor())
-				_ = _23_lo
-				var _24_st _dafny.Sequence = _dafny.SeqCreate((m_Semantics.Companion_Default___.STACK()).Uint32(), func(coer10 func(_dafny.Int) m_Terms.BTerm) func(_dafny.Int) interface{} {
-					return func(arg10 _dafny.Int) interface{} {
-						return coer10(arg10)
+				var _24_lo _dafny.Int = (m_Semantics.Companion_Default___.STACK()).Plus((sp).Dtor_floor())
+				_ = _24_lo
+				var _25_st _dafny.Sequence = _dafny.SeqCreate((m_Semantics.Companion_Default___.STACK()).Uint32(), func(coer12 func(_dafny.Int) m_Terms.BTerm) func(_dafny.Int) interface{} {
+					return func(arg12 _dafny.Int) interface{} {
+						return coer12(arg12)
 					}
-				}((func(_25_lo _dafny.Int, _26_ss SState) func(_dafny.Int) m_Terms.BTerm {
-					return func(_27_i _dafny.Int) m_Terms.BTerm {
+				}((func(_26_lo _dafny.Int, _27_ss SState) func(_dafny.Int) m_Terms.BTerm {
+					return func(_28_i _dafny.Int) m_Terms.BTerm {
 						return (func() m_Terms.BTerm {
-							if (_27_i).Cmp(_25_lo) >= 0 {
-								return m_Terms.Companion_BTerm_.Create_BOf_(m_Terms.Companion_Term_.Create_Fresh_((((_26_ss).Dtor_next()).Plus(_dafny.IntOfInt64(6))).Plus((_27_i).Minus(_25_lo))), _dafny.Zero)
+							if (_28_i).Cmp(_26_lo) >= 0 {
+								return m_Terms.Companion_BTerm_.Create_BOf_(m_Terms.Companion_Term_.Create_Fresh_((((_27_ss).Dtor_next()).Plus(_dafny.IntOfInt64(6))).Plus((_28_i).Minus(_26_lo))), _dafny.Zero)
 							}
-							return ((_26_ss).Dtor_stack()).Select((_27_i).Uint32()).(m_Terms.BTerm)
+							return ((_27_ss).Dtor_stack()).Select((_28_i).Uint32()).(m_Terms.BTerm)
 						})()
 					}
-				})(_23_lo, ss)))
-				_ = _24_st
-				return Companion_SR_.Create_SOk_(Companion_SState_.Create_SState_(Companion_Default___.FreshRegs((ss).Dtor_regs(), (ss).Dtor_next()), _24_st, _24_st, (((ss).Dtor_next()).Plus(_dafny.IntOfInt64(6))).Plus((_dafny.Zero).Minus((sp).Dtor_floor())), _dafny.One, (ss).Dtor_hooks(), m_Terms.Companion_Term_.Create_Fresh_((ss).Dtor_next())))
+				})(_24_lo, ss)))
+				_ = _25_st
+				return Companion_SR_.Create_SOk_(Companion_SState_.Create_SState_(Companion_Default___.FreshRegs((ss).Dtor_regs(), (ss).Dtor_next()), _25_st, _25_st, (((ss).Dtor_next()).Plus(_dafny.IntOfInt64(6))).Plus((_dafny.Zero).Minus((sp).Dtor_floor())), _dafny.One, (ss).Dtor_hooks(), m_Terms.Companion_Term_.Create_Fresh_((ss).Dtor_next())))
 			}
 		}
 	}
@@ -404,14 +410,14 @@ func (_static *CompanionStruct_Default___) SymStep(sp m_Obligations.Spec, ins m_
 				return Companion_SR_.Create_SFail_(_dafny.UnicodeSeqOfUtf8Bytes("second hook call on a path"))
 			} else {
 				return Companion_SR_.Create_SOk_(func(_pat_let36_0 SState) SState {
-					return func(_28_dt__update__tmp_h2 SState) SState {
+					return func(_29_dt__update__tmp_h2 SState) SState {
 						return func(_pat_let37_0 _dafny.Int) SState {
-							return func(_29_dt__update_hhooks_h0 _dafny.Int) SState {
+							return func(_30_dt__update_hhooks_h0 _dafny.Int) SState {
 								return func(_pat_let38_0 _dafny.Int) SState {
-									return func(_30_dt__update_hnext_h1 _dafny.Int) SState {
+									return func(_31_dt__update_hnext_h1 _dafny.Int) SState {
 										return func(_pat_let39_0 _dafny.Sequence) SState {
-											return func(_31_dt__update_hregs_h2 _dafny.Sequence) SState {
-												return Companion_SState_.Create_SState_(_31_dt__update_hregs_h2, (_28_dt__update__tmp_h2).Dtor_stack(), (_28_dt__update__tmp_h2).Dtor_snap(), _30_dt__update_hnext_h1, (_28_dt__update__tmp_h2).Dtor_helpers(), _29_dt__update_hhooks_h0, (_28_dt__update__tmp_h2).Dtor_ret())
+											return func(_32_dt__update_hregs_h2 _dafny.Sequence) SState {
+												return Companion_SState_.Create_SState_(_32_dt__update_hregs_h2, (_29_dt__update__tmp_h2).Dtor_stack(), (_29_dt__update__tmp_h2).Dtor_snap(), _31_dt__update_hnext_h1, (_29_dt__update__tmp_h2).Dtor_helpers(), _30_dt__update_hhooks_h0, (_29_dt__update__tmp_h2).Dtor_ret())
 											}(_pat_let39_0)
 										}(Companion_Default___.FreshRegs((_pat_let_tv6).Dtor_regs(), (_pat_let_tv7).Dtor_next()))
 									}(_pat_let38_0)
@@ -426,6 +432,63 @@ func (_static *CompanionStruct_Default___) SymStep(sp m_Obligations.Spec, ins m_
 	{
 		return Companion_SR_.Create_SFail_(_dafny.UnicodeSeqOfUtf8Bytes("control instruction"))
 	}
+}
+func (_static *CompanionStruct_Default___) WrapArgsSym(id uint32, regs _dafny.Sequence) bool {
+	return ((((((regs).Select(1).(m_Terms.Term)).Equals(m_Terms.Companion_Term_.Create_Entry_(_dafny.One))) && (((regs).Select(2).(m_Terms.Term)).Equals(m_Terms.Companion_Term_.Create_Entry_(_dafny.IntOfInt64(2))))) && (((regs).Select(3).(m_Terms.Term)).Equals(m_Terms.Companion_Term_.Create_Entry_(_dafny.IntOfInt64(3))))) && (((regs).Select(5).(m_Terms.Term)).Equals(m_Terms.Companion_Term_.Create_Entry_(_dafny.IntOfInt64(5))))) && (!(!(m_Obligations.Companion_Default___.IsLookup(id))) || (((regs).Select(4).(m_Terms.Term)).Equals(m_Terms.Companion_Term_.Create_Entry_(_dafny.IntOfInt64(4)))))
+}
+func (_static *CompanionStruct_Default___) EnterWS(ss SState) SState {
+	var _0_dt__update__tmp_h0 SState = ss
+	_ = _0_dt__update__tmp_h0
+	var _1_dt__update_hnext_h0 _dafny.Int = ((ss).Dtor_next()).Plus(_dafny.IntOfInt64(5))
+	_ = _1_dt__update_hnext_h0
+	var _2_dt__update_hregs_h0 _dafny.Sequence = _dafny.SeqCreate((m_Semantics.Companion_Default___.NREGS()).Uint32(), func(coer13 func(_dafny.Int) m_Terms.Term) func(_dafny.Int) interface{} {
+		return func(arg13 _dafny.Int) interface{} {
+			return coer13(arg13)
+		}
+	}((func(_3_ss SState) func(_dafny.Int) m_Terms.Term {
+		return func(_4_k _dafny.Int) m_Terms.Term {
+			return (func() m_Terms.Term {
+				if (((_dafny.One).Cmp(_4_k) <= 0) && ((_4_k).Cmp(_dafny.IntOfInt64(5)) <= 0)) || ((_4_k).Cmp(_dafny.IntOfInt64(10)) == 0) {
+					return ((_3_ss).Dtor_regs()).Select((_4_k).Uint32()).(m_Terms.Term)
+				}
+				return m_Terms.Companion_Term_.Create_Fresh_(((_3_ss).Dtor_next()).Plus((func() _dafny.Int {
+					if (_4_k).Sign() == 0 {
+						return _dafny.Zero
+					}
+					return (_4_k).Minus(_dafny.IntOfInt64(5))
+				})()))
+			})()
+		}
+	})(ss)))
+	_ = _2_dt__update_hregs_h0
+	return Companion_SState_.Create_SState_(_2_dt__update_hregs_h0, (_0_dt__update__tmp_h0).Dtor_stack(), (_0_dt__update__tmp_h0).Dtor_snap(), _1_dt__update_hnext_h0, (_0_dt__update__tmp_h0).Dtor_helpers(), (_0_dt__update__tmp_h0).Dtor_hooks(), (_0_dt__update__tmp_h0).Dtor_ret())
+}
+func (_static *CompanionStruct_Default___) ReturnS(ss SState, caller _dafny.Sequence) SState {
+	var _0_dt__update__tmp_h0 SState = ss
+	_ = _0_dt__update__tmp_h0
+	var _1_dt__update_hnext_h0 _dafny.Int = ((ss).Dtor_next()).Plus(_dafny.IntOfInt64(5))
+	_ = _1_dt__update_hnext_h0
+	var _2_dt__update_hregs_h0 _dafny.Sequence = _dafny.SeqCreate((m_Semantics.Companion_Default___.NREGS()).Uint32(), func(coer14 func(_dafny.Int) m_Terms.Term) func(_dafny.Int) interface{} {
+		return func(arg14 _dafny.Int) interface{} {
+			return coer14(arg14)
+		}
+	}((func(_3_ss SState, _4_caller _dafny.Sequence) func(_dafny.Int) m_Terms.Term {
+		return func(_5_k _dafny.Int) m_Terms.Term {
+			return (func() m_Terms.Term {
+				if (_5_k).Sign() == 0 {
+					return ((_3_ss).Dtor_regs()).Select(0).(m_Terms.Term)
+				}
+				return (func() m_Terms.Term {
+					if (_5_k).Cmp(_dafny.IntOfInt64(5)) <= 0 {
+						return m_Terms.Companion_Term_.Create_Fresh_(((_3_ss).Dtor_next()).Plus((_5_k).Minus(_dafny.One)))
+					}
+					return (_4_caller).Select((_5_k).Uint32()).(m_Terms.Term)
+				})()
+			})()
+		}
+	})(ss, caller)))
+	_ = _2_dt__update_hregs_h0
+	return Companion_SState_.Create_SState_(_2_dt__update_hregs_h0, (_0_dt__update__tmp_h0).Dtor_stack(), (_0_dt__update__tmp_h0).Dtor_snap(), _1_dt__update_hnext_h0, (_0_dt__update__tmp_h0).Dtor_helpers(), (_0_dt__update__tmp_h0).Dtor_hooks(), (_0_dt__update__tmp_h0).Dtor_ret())
 }
 func (_static *CompanionStruct_Default___) Final(sp m_Obligations.Spec, ss SState, pc _dafny.Int) Verdict {
 	if ((ss).Dtor_helpers()).Cmp((func() _dafny.Int {
@@ -464,70 +527,116 @@ func (_static *CompanionStruct_Default___) Final(sp m_Obligations.Spec, ss SStat
 func (_static *CompanionStruct_Default___) Target(pc _dafny.Int, off uint16) _dafny.Int {
 	return ((pc).Plus(_dafny.One)).Plus(m_Bits.Companion_Default___.Signed16(off))
 }
-func (_static *CompanionStruct_Default___) SymExec(prog _dafny.Sequence, sp m_Obligations.Spec, pc _dafny.Int, ss SState) Verdict {
+func (_static *CompanionStruct_Default___) SymExec(prog _dafny.Sequence, sp m_Obligations.Spec, pc _dafny.Int, ss SState, m Mode) Verdict {
 	if (pc).Cmp(_dafny.IntOfUint32((prog).Cardinality())) == 0 {
-		if (sp).Dtor_exitMode() {
-			return Companion_Verdict_.Create_NotValidated_(pc, _dafny.UnicodeSeqOfUtf8Bytes("hook body falls through"))
-		} else {
-			return Companion_Default___.Final(sp, ss, pc)
-		}
-	} else {
-		var _source0 m_Semantics.Instr = (prog).Select((pc).Uint32()).(m_Semantics.Instr)
+		var _source0 Mode = m
 		_ = _source0
 		{
-			if _source0.Is_Exit() {
-				if !((sp).Dtor_exitMode()) {
-					return Companion_Verdict_.Create_NotValidated_(pc, _dafny.UnicodeSeqOfUtf8Bytes("exit outside a hook body"))
+			if _source0.Is_Top() {
+				if (sp).Dtor_exitMode() {
+					return Companion_Verdict_.Create_NotValidated_(pc, _dafny.UnicodeSeqOfUtf8Bytes("hook body falls through"))
 				} else {
 					return Companion_Default___.Final(sp, ss, pc)
 				}
 			}
 		}
 		{
-			if _source0.Is_Ja() {
-				var _0_off uint16 = _source0.Get_().(m_Semantics.Instr_Ja).Off
-				_ = _0_off
-				if ((m_Bits.Companion_Default___.Signed16(_0_off)).Sign() == -1) || ((Companion_Default___.Target(pc, _0_off)).Cmp(_dafny.IntOfUint32((prog).Cardinality())) > 0) {
-					return Companion_Verdict_.Create_NotValidated_(pc, _dafny.UnicodeSeqOfUtf8Bytes("jump not forward within the window"))
+			if _source0.Is_WP() {
+				var _0_wprog _dafny.Sequence = _source0.Get_().(Mode_WP).Wprog
+				_ = _0_wprog
+				if !(_dafny.Quantifier(_dafny.IntegerRange(_dafny.Zero, (_dafny.IntOfInt64(9)).Plus(_dafny.One)), true, func(_forall_var_0 _dafny.Int) bool {
+					var _1_k _dafny.Int
+					_1_k = interface{}(_forall_var_0).(_dafny.Int)
+					return !((((_1_k).Sign() != -1) && ((_1_k).Cmp(_dafny.IntOfInt64(9)) <= 0)) && ((_1_k).Cmp(_dafny.IntOfInt64(4)) != 0)) || ((((ss).Dtor_regs()).Select((_1_k).Uint32()).(m_Terms.Term)).Equals(m_Terms.Companion_Term_.Create_Entry_(_1_k)))
+				})) {
+					return Companion_Verdict_.Create_NotValidated_(pc, _dafny.UnicodeSeqOfUtf8Bytes("a register other than r4 changed before call W"))
 				} else {
-					return Companion_Default___.SymExec(prog, sp, Companion_Default___.Target(pc, _0_off), ss)
+					return Companion_Default___.SymExec(_0_wprog, sp, _dafny.Zero, Companion_Default___.EnterWS(ss), Companion_Mode_.Create_WBody_((ss).Dtor_regs()))
 				}
 			}
 		}
 		{
-			if _source0.Is_Jcond() {
-				var _1_dst _dafny.Int = _source0.Get_().(m_Semantics.Instr_Jcond).Dst
-				_ = _1_dst
-				var _2_off uint16 = _source0.Get_().(m_Semantics.Instr_Jcond).Off
-				_ = _2_off
-				if (((_1_dst).Cmp(m_Semantics.Companion_Default___.NREGS()) >= 0) || ((m_Bits.Companion_Default___.Signed16(_2_off)).Sign() == -1)) || ((Companion_Default___.Target(pc, _2_off)).Cmp(_dafny.IntOfUint32((prog).Cardinality())) > 0) {
-					return Companion_Verdict_.Create_NotValidated_(pc, _dafny.UnicodeSeqOfUtf8Bytes("branch not forward within the window"))
-				} else {
-					var _3_r Verdict = Companion_Default___.SymExec(prog, sp, (pc).Plus(_dafny.One), ss)
-					_ = _3_r
-					if (_3_r).Is_NotValidated() {
-						return _3_r
+			return Companion_Verdict_.Create_NotValidated_(pc, _dafny.UnicodeSeqOfUtf8Bytes("falls off the end of W"))
+		}
+	} else {
+		var _source1 m_Semantics.Instr = (prog).Select((pc).Uint32()).(m_Semantics.Instr)
+		_ = _source1
+		{
+			if _source1.Is_Exit() {
+				var _source2 Mode = m
+				_ = _source2
+				{
+					if _source2.Is_Top() {
+						if !((sp).Dtor_exitMode()) {
+							return Companion_Verdict_.Create_NotValidated_(pc, _dafny.UnicodeSeqOfUtf8Bytes("exit outside a hook body"))
+						} else {
+							return Companion_Default___.Final(sp, ss, pc)
+						}
+					}
+				}
+				{
+					if _source2.Is_WP() {
+						return Companion_Verdict_.Create_NotValidated_(pc, _dafny.UnicodeSeqOfUtf8Bytes("exit in WP"))
+					}
+				}
+				{
+					var _2_caller _dafny.Sequence = _source2.Get_().(Mode_WBody).Caller
+					_ = _2_caller
+					if !(((ss).Dtor_regs()).Select(0).(m_Terms.Term)).Equals((ss).Dtor_ret()) {
+						return Companion_Verdict_.Create_NotValidated_(pc, _dafny.UnicodeSeqOfUtf8Bytes("W does not return the helper result"))
+					} else if (_dafny.IntOfUint32((_2_caller).Cardinality())).Cmp(m_Semantics.Companion_Default___.NREGS()) != 0 {
+						return Companion_Verdict_.Create_NotValidated_(pc, _dafny.UnicodeSeqOfUtf8Bytes("internal"))
 					} else {
-						return Companion_Default___.SymExec(prog, sp, Companion_Default___.Target(pc, _2_off), ss)
+						return Companion_Default___.Final(sp, Companion_Default___.ReturnS(ss, _2_caller), pc)
 					}
 				}
 			}
 		}
 		{
-			var _source1 SR = Companion_Default___.SymStep(sp, (prog).Select((pc).Uint32()).(m_Semantics.Instr), ss)
-			_ = _source1
+			if _source1.Is_Ja() {
+				var _3_off uint16 = _source1.Get_().(m_Semantics.Instr_Ja).Off
+				_ = _3_off
+				if ((m_Bits.Companion_Default___.Signed16(_3_off)).Sign() == -1) || ((Companion_Default___.Target(pc, _3_off)).Cmp(_dafny.IntOfUint32((prog).Cardinality())) > 0) {
+					return Companion_Verdict_.Create_NotValidated_(pc, _dafny.UnicodeSeqOfUtf8Bytes("jump not forward within the window"))
+				} else {
+					return Companion_Default___.SymExec(prog, sp, Companion_Default___.Target(pc, _3_off), ss, m)
+				}
+			}
+		}
+		{
+			if _source1.Is_Jcond() {
+				var _4_dst _dafny.Int = _source1.Get_().(m_Semantics.Instr_Jcond).Dst
+				_ = _4_dst
+				var _5_off uint16 = _source1.Get_().(m_Semantics.Instr_Jcond).Off
+				_ = _5_off
+				if (((_4_dst).Cmp(m_Semantics.Companion_Default___.NREGS()) >= 0) || ((m_Bits.Companion_Default___.Signed16(_5_off)).Sign() == -1)) || ((Companion_Default___.Target(pc, _5_off)).Cmp(_dafny.IntOfUint32((prog).Cardinality())) > 0) {
+					return Companion_Verdict_.Create_NotValidated_(pc, _dafny.UnicodeSeqOfUtf8Bytes("branch not forward within the window"))
+				} else {
+					var _6_r Verdict = Companion_Default___.SymExec(prog, sp, (pc).Plus(_dafny.One), ss, m)
+					_ = _6_r
+					if (_6_r).Is_NotValidated() {
+						return _6_r
+					} else {
+						return Companion_Default___.SymExec(prog, sp, Companion_Default___.Target(pc, _5_off), ss, m)
+					}
+				}
+			}
+		}
+		{
+			var _source3 SR = Companion_Default___.SymStep(sp, (prog).Select((pc).Uint32()).(m_Semantics.Instr), ss)
+			_ = _source3
 			{
-				if _source1.Is_SFail() {
-					var _4_m _dafny.Sequence = _source1.Get_().(SR_SFail).Reason
-					_ = _4_m
-					return Companion_Verdict_.Create_NotValidated_(pc, _4_m)
+				if _source3.Is_SFail() {
+					var _7_msg _dafny.Sequence = _source3.Get_().(SR_SFail).Reason
+					_ = _7_msg
+					return Companion_Verdict_.Create_NotValidated_(pc, _7_msg)
 				}
 			}
 			{
-				var _5_ss_k SState = _source1.Get_().(SR_SOk).Ss
-				_ = _5_ss_k
-				if Companion_Default___.SWF(_5_ss_k) {
-					return Companion_Default___.SymExec(prog, sp, (pc).Plus(_dafny.One), _5_ss_k)
+				var _8_ss_k SState = _source3.Get_().(SR_SOk).Ss
+				_ = _8_ss_k
+				if Companion_Default___.SWF(_8_ss_k) {
+					return Companion_Default___.SymExec(prog, sp, (pc).Plus(_dafny.One), _8_ss_k, m)
 				} else {
 					return Companion_Verdict_.Create_NotValidated_(pc, _dafny.UnicodeSeqOfUtf8Bytes("internal"))
 				}
@@ -586,6 +695,26 @@ TAIL_CALL_START:
 		goto TAIL_CALL_START
 	}
 }
+func (_static *CompanionStruct_Default___) CountHelperCalls(prog _dafny.Sequence) _dafny.Int {
+	var _0___accumulator _dafny.Int = _dafny.Zero
+	_ = _0___accumulator
+	goto TAIL_CALL_START
+TAIL_CALL_START:
+	if (_dafny.IntOfUint32((prog).Cardinality())).Sign() == 0 {
+		return (_dafny.Zero).Plus(_0___accumulator)
+	} else {
+		_0___accumulator = (_0___accumulator).Plus((func() _dafny.Int {
+			if ((prog).Select(0).(m_Semantics.Instr)).Is_CallHelper() {
+				return _dafny.One
+			}
+			return _dafny.Zero
+		})())
+		var _in0 _dafny.Sequence = (prog).Drop(1)
+		_ = _in0
+		prog = _in0
+		goto TAIL_CALL_START
+	}
+}
 func (_static *CompanionStruct_Default___) Validate(raw _dafny.Sequence, sp m_Obligations.Spec) Verdict {
 	if !(m_Obligations.Companion_Default___.SpecWF(sp)) {
 		return Companion_Verdict_.Create_NotValidated_(_dafny.IntOfInt64(-1), _dafny.UnicodeSeqOfUtf8Bytes("bad window parameters"))
@@ -606,10 +735,56 @@ func (_static *CompanionStruct_Default___) Validate(raw _dafny.Sequence, sp m_Ob
 		{
 			var _1_prog _dafny.Sequence = _source0.Get_().(DR_DOk).Prog
 			_ = _1_prog
-			if (Companion_Default___.CountBranches(_1_prog)).Cmp(Companion_Default___.MAX__BRANCHES()) > 0 {
+			if ((sp).Dtor_wrap()).Is_Wrap() {
+				return Companion_Default___.ValidateWrap(_1_prog, sp)
+			} else if (Companion_Default___.CountBranches(_1_prog)).Cmp(Companion_Default___.MAX__BRANCHES()) > 0 {
 				return Companion_Verdict_.Create_NotValidated_(_dafny.IntOfInt64(-1), _dafny.UnicodeSeqOfUtf8Bytes("too many branches"))
 			} else {
-				return Companion_Default___.SymExec(_1_prog, sp, _dafny.Zero, Companion_Default___.SInit())
+				return Companion_Default___.SymExec(_1_prog, sp, _dafny.Zero, Companion_Default___.SInit(), Companion_Mode_.Create_Top_())
+			}
+		}
+	}
+}
+func (_static *CompanionStruct_Default___) ValidateWrap(prog _dafny.Sequence, sp m_Obligations.Spec) Verdict {
+	var _0_n _dafny.Int = _dafny.IntOfUint32((prog).Cardinality())
+	_ = _0_n
+	var _1_body _dafny.Sequence = ((sp).Dtor_wrap()).Dtor_body()
+	_ = _1_body
+	if ((_0_n).Sign() == 0) || (!(((prog).Select(((_0_n).Minus(_dafny.One)).Uint32()).(m_Semantics.Instr)).Is_CallLocal())) {
+		return Companion_Verdict_.Create_NotValidated_(_dafny.IntOfInt64(-1), _dafny.UnicodeSeqOfUtf8Bytes("P8 window does not end in call W"))
+	} else if !(_dafny.Quantifier(_dafny.IntegerRange(_dafny.Zero, (_0_n).Minus(_dafny.One)), true, func(_forall_var_0 _dafny.Int) bool {
+		var _2_j _dafny.Int
+		_2_j = interface{}(_forall_var_0).(_dafny.Int)
+		return !(((_2_j).Sign() != -1) && ((_2_j).Cmp((_0_n).Minus(_dafny.One)) < 0)) || ((m_Semantics.Companion_Default___.Writes((prog).Select((_2_j).Uint32()).(m_Semantics.Instr))).IsSubsetOf(_dafny.SetOf(_dafny.IntOfInt64(4))))
+	})) {
+		return Companion_Verdict_.Create_NotValidated_(_dafny.IntOfInt64(-1), _dafny.UnicodeSeqOfUtf8Bytes("WP writes a register other than r4"))
+	} else if (((_dafny.IntOfUint32((_1_body).Cardinality())).Modulo(_dafny.IntOfInt64(8))).Sign() != 0) || ((m_Semantics.Companion_Default___.NumInsns(_1_body)).Cmp(Companion_Default___.MAX__INSNS()) > 0) {
+		return Companion_Verdict_.Create_NotValidated_(_dafny.IntOfInt64(-1), _dafny.UnicodeSeqOfUtf8Bytes("bad W body"))
+	} else {
+		var _source0 DR = Companion_Default___.DecodeFrom(_1_body, _dafny.Zero)
+		_ = _source0
+		{
+			if _source0.Is_DBad() {
+				var _3_p _dafny.Int = _source0.Get_().(DR_DBad).Pc
+				_ = _3_p
+				return Companion_Verdict_.Create_NotValidated_(_3_p, _dafny.UnicodeSeqOfUtf8Bytes("W instruction outside the allowlist"))
+			}
+		}
+		{
+			var _4_wprog _dafny.Sequence = _source0.Get_().(DR_DOk).Prog
+			_ = _4_wprog
+			if !(_dafny.Quantifier(_dafny.IntegerRange(_dafny.Zero, _dafny.IntOfUint32((_4_wprog).Cardinality())), true, func(_forall_var_1 _dafny.Int) bool {
+				var _5_j _dafny.Int
+				_5_j = interface{}(_forall_var_1).(_dafny.Int)
+				return !(((_5_j).Sign() != -1) && ((_5_j).Cmp(_dafny.IntOfUint32((_4_wprog).Cardinality())) < 0)) || (m_Obligations.Companion_Default___.WInsnOk((_4_wprog).Select((_5_j).Uint32()).(m_Semantics.Instr), sp))
+			})) {
+				return Companion_Verdict_.Create_NotValidated_(_dafny.IntOfInt64(-1), _dafny.UnicodeSeqOfUtf8Bytes("W names r10 or calls a helper other than O[i]"))
+			} else if (Companion_Default___.CountHelperCalls(_4_wprog)).Cmp(_dafny.One) != 0 {
+				return Companion_Verdict_.Create_NotValidated_(_dafny.IntOfInt64(-1), _dafny.UnicodeSeqOfUtf8Bytes("W does not contain exactly one helper call (rule P8)"))
+			} else if ((Companion_Default___.CountBranches(prog)).Plus(Companion_Default___.CountBranches(_4_wprog))).Cmp(Companion_Default___.MAX__BRANCHES()) > 0 {
+				return Companion_Verdict_.Create_NotValidated_(_dafny.IntOfInt64(-1), _dafny.UnicodeSeqOfUtf8Bytes("too many branches"))
+			} else {
+				return Companion_Default___.SymExec((prog).Take(((_0_n).Minus(_dafny.One)).Uint32()), sp, _dafny.Zero, Companion_Default___.SInit(), Companion_Mode_.Create_WP_(_4_wprog))
 			}
 		}
 	}
@@ -999,6 +1174,154 @@ func (_this SR) ParentTraits_() []*_dafny.TraitID {
 var _ _dafny.TraitOffspring = SR{}
 
 // End of datatype SR
+
+// Definition of datatype Mode
+type Mode struct {
+	Data_Mode_
+}
+
+func (_this Mode) Get_() Data_Mode_ {
+	return _this.Data_Mode_
+}
+
+type Data_Mode_ interface {
+	isMode()
+}
+
+type CompanionStruct_Mode_ struct {
+}
+
+var Companion_Mode_ = CompanionStruct_Mode_{}
+
+type Mode_Top struct {
+}
+
+func (Mode_Top) isMode() {}
+
+func (CompanionStruct_Mode_) Create_Top_() Mode {
+	return Mode{Mode_Top{}}
+}
+
+func (_this Mode) Is_Top() bool {
+	_, ok := _this.Get_().(Mode_Top)
+	return ok
+}
+
+type Mode_WP struct {
+	Wprog _dafny.Sequence
+}
+
+func (Mode_WP) isMode() {}
+
+func (CompanionStruct_Mode_) Create_WP_(Wprog _dafny.Sequence) Mode {
+	return Mode{Mode_WP{Wprog}}
+}
+
+func (_this Mode) Is_WP() bool {
+	_, ok := _this.Get_().(Mode_WP)
+	return ok
+}
+
+type Mode_WBody struct {
+	Caller _dafny.Sequence
+}
+
+func (Mode_WBody) isMode() {}
+
+func (CompanionStruct_Mode_) Create_WBody_(Caller _dafny.Sequence) Mode {
+	return Mode{Mode_WBody{Caller}}
+}
+
+func (_this Mode) Is_WBody() bool {
+	_, ok := _this.Get_().(Mode_WBody)
+	return ok
+}
+
+func (CompanionStruct_Mode_) Default() Mode {
+	return Companion_Mode_.Create_Top_()
+}
+
+func (_this Mode) Dtor_wprog() _dafny.Sequence {
+	return _this.Get_().(Mode_WP).Wprog
+}
+
+func (_this Mode) Dtor_caller() _dafny.Sequence {
+	return _this.Get_().(Mode_WBody).Caller
+}
+
+func (_this Mode) String() string {
+	switch data := _this.Get_().(type) {
+	case nil:
+		return "null"
+	case Mode_Top:
+		{
+			return "Checker.Mode.Top"
+		}
+	case Mode_WP:
+		{
+			return "Checker.Mode.WP" + "(" + _dafny.String(data.Wprog) + ")"
+		}
+	case Mode_WBody:
+		{
+			return "Checker.Mode.WBody" + "(" + _dafny.String(data.Caller) + ")"
+		}
+	default:
+		{
+			return "<unexpected>"
+		}
+	}
+}
+
+func (_this Mode) Equals(other Mode) bool {
+	switch data1 := _this.Get_().(type) {
+	case Mode_Top:
+		{
+			_, ok := other.Get_().(Mode_Top)
+			return ok
+		}
+	case Mode_WP:
+		{
+			data2, ok := other.Get_().(Mode_WP)
+			return ok && data1.Wprog.Equals(data2.Wprog)
+		}
+	case Mode_WBody:
+		{
+			data2, ok := other.Get_().(Mode_WBody)
+			return ok && data1.Caller.Equals(data2.Caller)
+		}
+	default:
+		{
+			return false // unexpected
+		}
+	}
+}
+
+func (_this Mode) EqualsGeneric(other interface{}) bool {
+	typed, ok := other.(Mode)
+	return ok && _this.Equals(typed)
+}
+
+func Type_Mode_() _dafny.TypeDescriptor {
+	return type_Mode_{}
+}
+
+type type_Mode_ struct {
+}
+
+func (_this type_Mode_) Default() interface{} {
+	return Companion_Mode_.Default()
+}
+
+func (_this type_Mode_) String() string {
+	return "Checker.Mode"
+}
+func (_this Mode) ParentTraits_() []*_dafny.TraitID {
+	return [](*_dafny.TraitID){}
+}
+
+var _ _dafny.TraitOffspring = Mode{}
+
+// End of datatype Mode
 
 // Definition of datatype DR
 type DR struct {

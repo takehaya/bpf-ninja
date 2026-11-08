@@ -253,17 +253,68 @@ Dafny together with a proof that it is sound.
   missing from the list that `make dafny-verify` verifies.
 - `dafny/gen-go` is Go translated from the sources and is checked in.
   `dafny/regionvaldafny` is a small wrapper around it.
-- `dafny/xcheck` runs both cores on 28 hand-written windows and requires the
-  same verdicts. It does not yet run the Dafny core on the captures.
+- `dafny/xcheck` runs both cores on hand-written windows and requires the
+  same verdicts, and compares the Dafny semantics with `interp/` on random
+  inputs. It also runs both cores on every window of every capture in
+  `testdata`, fails if the Dafny core validates a window the Go core rejects,
+  and compares the two interpreters on every `site-P8` window.
 
-The regionval command still judges windows with the Go core in `core/`. The
-Dafny core does not model wrapper (`site-P8`) windows yet; it reports them as
-not validated.
+The Dafny core covers every window kind listed under Windows. For a wrapper
+site (`site-P8`) the window is the code before `call W` and the call itself,
+and the model runs W's body as a second frame: on entry W's r1 to r5 are the
+caller's and r0 and r6 to r9 are unknown values; on `exit` the caller gets
+W's r0, unknown r1 to r5 and its own r6 to r10. The proof shows that the helper that runs is the
+original call in every field and runs exactly once, that the code before
+`call W` writes only r4, that the helper's arguments (r4 aside for the lookup
+helpers) are the site's entry values, and that r0 at W's and the window's exit
+is the helper's result. W's own stack frame is not modelled; this is sound
+because a validated W never names r10.
 
-Beyond the list above, the Dafny core trusts Dafny's Go translation, the Go
-runtime `github.com/dafny-lang/DafnyRuntimeGo/v4` v4.11.0 and the wrapper. Its
-proof is about one window; the window cutting, kinds and hook checks stay with
-the Go code.
+The regionval command still judges windows with the Go core in `core/`. To
+use the Dafny core in its place, a caller does what the Go core does around
+it and then calls `Validate` with the spec for the window's kind:
+
+| Kind | Spec |
+|---|---|
+| `site` | `SiteSpec(f)` |
+| `site-P4` | `TailSiteSpec(f)`: r1 to r5 hold their entry values at `bpf_tail_call` |
+| `site-P8` | `WrapSiteSpec(f, W, O[i])`: W's instructions and the 8 bytes of the original helper call |
+| `prologue-P1` | `EntryPrologueSpec(f)` |
+| `prologue-P1b` | `CallbackPrologueSpec(f)` |
+| `prologue-P9` | `CustomSpec(f, nil, false, false, false, true, false, false)`: no register changes, stores allowed |
+| `passload-P9` | `CustomSpec(f, []int{r_G}, false, false, false, false, false, false)`: only r_G changes, no store |
+| `hook-P7` | `HookBodySpec()` |
+
+The caller passes W and O[i] as the target of `call W` and the original call
+it replaced, and keeps these checks outside `Validate`:
+
+- a window outside a hook has a floor;
+- every pseudo call is to a hook, except `call W` at the end of a wrapper
+  window, and including those inside W;
+- a helper call in a site window is its centre, and the centre of `site-P4`
+  is `bpf_tail_call`;
+- the `P9` certificate and the `S10` liveness check;
+- the rules on which registers instructions write, which the Dafny core
+  states only as exit values: a callback prologue writes only r0, a pass
+  prologue writes no register and a pass load only r_G, and a hook loads only
+  into r0 to r5;
+- a pass prologue executes its store on every path.
+
+`dafny/xcheck/corpus_test.go` implements these checks for the tests; they look
+at every instruction of the window, which is at least as strict as the Go
+core's check of the executed ones.
+
+With these checks, the Dafny core is stricter than the Go core in a few
+places: an entry prologue may not call a hook, the code before `call W` must
+write only r4 in every instruction rather than on the paths it takes, and a
+window may hold at most 10 branches (counting W for a wrapper site), where the
+Go core limits the number of paths.
+
+Beyond what regionval trusts (What it trusts), the Dafny core trusts Dafny's Go translation, the Go
+runtime `github.com/dafny-lang/DafnyRuntimeGo/v4` v4.11.0 and the wrapper,
+and that running W in the model as described matches the kernel. Its proof is
+about one window; the window cutting, kinds and hook checks stay with the Go
+code.
 
 ### Tools
 
@@ -275,7 +326,7 @@ bundles .NET and Z3 4.12.1. `dafny translate go` also needs `goimports`
 
 ```sh
 make check-trust       # no assume, axiom or extern
-make dafny-verify      # about 90 s
+make dafny-verify      # about 130 s
 make dafny-check-gen   # dafny/gen-go matches a fresh translation
 make dafny-gen         # regenerate dafny/gen-go after changing dafny/src
 ```
