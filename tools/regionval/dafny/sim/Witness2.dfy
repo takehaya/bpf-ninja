@@ -469,14 +469,17 @@ module SimWitness2 {
     }
   }
 
+  lemma A3bW2() ensures Pr.A3b(EnvW2(), TblW2) {}
+  lemma A5W2() ensures Pr.A5(W1.ObsvW) {}
+
   // Non-vacuity: every hypothesis of SegmentPreservation holds for this instance.
   lemma {:isolate_assertions} Witness2()
     ensures T.Hyp(PW2, DW2(), R.Layout(PW2, DW2()), EllW2, LiveW2, TblW2, EnvW2(), W1.SemW(), W1.ObsvW, AdmW2)
     ensures Pr.A8(OmW2) && AdmW2(W1.L0, OmW2)
   {
     ValidW2(); PremW2(); StructW2(); ShapeW2();
-    assert Pr.A3b(EnvW2(), TblW2);
-    assert Pr.A5(W1.ObsvW);
+    A3bW2();
+    A5W2();
     assert Pr.S0(PW2) && Pr.E0Shape(PW2);
     assert Pr.Structure(PW2, DW2(), R.Layout(PW2, DW2()), EllW2, LiveW2, TblW2);
     assert R.AllValidated(PW2, DW2(), EllW2);
