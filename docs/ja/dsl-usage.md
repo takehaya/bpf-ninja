@@ -83,6 +83,7 @@ eth/ipv4/udp/gtp/ipv4/tcp           # GTP-U の内側 IP
 | `gre`、`vxlan`、`geneve` | encapsulation |
 | `gtp` | GTP-U (固定 8 B + E/S/PN flag で optional 4 B + ext header 列) |
 | `srv6` | SRH (固定 8 B + segment list)。segment list は `srv6.segments[N]` で aux header stack として access できる |
+| `pfcp` | PFCP (UDP 8805)。固定 4 B の後に S flag で node 形式 (`pfcp.node`、4 B) か session 形式 (`pfcp.sess`、SEID 付き 12 B) の aux header。IE は解析しない |
 
 ### Quantifier
 

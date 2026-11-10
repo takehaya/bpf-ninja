@@ -10,7 +10,7 @@ offset と可変長構造の注記を併せて読んでください。
 式の書き方と型の詳細は、[DSL 文法](../../dsl-grammar.md)と[型の仕様](../../dsl-types.md)を参照してください。
 
 ```text
-Bundled protocols (17):
+Bundled protocols (18):
   cw        4 B  from mpls
   esp       8 B  from ipv4, ipv6
   eth      14 B  from cw, geneve, mpls, vxlan
@@ -22,6 +22,7 @@ Bundled protocols (17):
   ipv4     20 B  from eth, gre, qinq, srv6, vlan
   ipv6     40 B  from eth, gre, qinq, vlan
   mpls      4 B  from eth, qinq, vlan
+  pfcp      4 B  from udp
   qinq      4 B  from eth
   srv6      8 B  from ipv6
   tcp      20 B  from ipv4, ipv6, srv6
@@ -315,6 +316,38 @@ Dispatches to:
   via              -> cw, eth
 ```
 
+## pfcp
+
+```text
+pfcp — header 4 bytes minimum (variable layout, see Notes)
+
+Fields (bit width, running byte offset):
+  version              bit<3>    @0
+  spare                bit<2>    @0+3b
+  fo                   bit<1>    @0+5b
+  mp                   bit<1>    @0+6b
+  s                    bit<1>    @0+7b
+  msg_type             bit<8>    @1
+  length               bit<16>   @2
+
+Aux headers:
+  node (pfcp_node_h, 4 bytes @ +4 from layer start) (gated: (byte@0 & 0x1) == 0x0)
+    seq                  bit<24>   @0
+    spare                bit<8>    @3
+    use: pfcp.node.<field>  or  pfcp[node.<field> == X]
+  sess (pfcp_sess_h, 12 bytes @ +4 from layer start) (gated: (byte@0 & 0x1) != 0x0)
+    seid                 bit<64>   @0
+    seq                  bit<24>   @8
+    priority             bit<4>    @11
+    spare                bit<4>    @11+4b
+    use: pfcp.sess.<field>  or  pfcp[sess.<field> == X]
+
+Dispatched from: udp
+
+Notes:
+  parser state machine (variable extension headers or self-validation)
+```
+
 ## qinq
 
 ```text
@@ -456,7 +489,7 @@ Fields (bit width, running byte offset):
 
 Dispatched from: ipv4, ipv6, srv6
 Dispatches to:
-  via dport        -> geneve, gtp, vxlan
+  via dport        -> geneve, gtp, pfcp, vxlan
 ```
 
 ## vlan

@@ -328,6 +328,14 @@ Entries are never deleted; a rejected candidate stays in the log.
 - 決定 (ユーザー決定、2026-10-11): (b)。長さは ringbuf reserve の定数として host に渡るものであり (D-020 追記と同じ経路の制約)、dsl-usage / dsl-grammar は元から固定ヘッダ合計の意味で書かれている。option や拡張ヘッダまで欲しければ `headers+N` か `capture all` を使う。`capture <layer>` は D-020 のまま (仕様は instance の範囲、Go は静的な上限)。
 - 反映先: `Eval/Where.lean` `maxInstances` / `headersBound` / `evalCapture`、vectors `cap-headers-ipv4-options`, `cap-headers-tcp-options`, `cap-headers-quant-opt`, `cap-headers-quant-range`, `cap-headers-quant-plus`, `cap-headers-quant-open`, `cap-headers-quant-plus-clamped`, `cap-headers-alt-ipv6`, `cap-headers-alt-ipv4`, `cap-headers-plus-ipv4-options`, `cap-headers-ipv6-ext`, `cap-headers-plus-ipv6-ext`, `cap-headers-srv6`, `cap-headers-vxlan`; Go runner (`pkg/kunai/dsltest/spec_capture_test.go`) は `headers` / `absolute` 句だけの vector で `min(MaxCapLen, |P|)` と Lean の終端の最大を比べる; `dsl-types.md` §13.6、`dsl-usage.md` の capture 節、`spec/lean/README.md`
 
+## D-040: PFCP の vocab
+- 論点: PFCP (3GPP TS 29.244 §7.2.2、UDP 8805) を header だけ追加する。S flag で header の後半 (node 形式 / session 形式) の形が変わる。IE は解析するか。
+- 決定: 固定 4 byte (`version`, `spare`, `fo`, `mp`, `s`, `msg_type`, `length`) を primary とし、後半を s で gate された 2 つの aux にする: s = 0 は `node` (`seq` 24 bit + spare)、s = 1 は `sess` (`seid` 64 bit、`seq` 24 bit、`priority` 4 bit + spare)。2 つの aux は互いに排他で、不在の aux への比較は D-003 / D-027 どおり false。s が後半の形を決めるので、後半が packet に収まらなければ reject (node 形式なら足りる長さでも s = 1 なら reject)。dispatch は `udp.dport == 8805` だけ (応答の宛先 port は要求元の source port で、TS 29.244 は 8805 に固定しないため。GTP-U と同じ扱い)。
+- 落としたもの: IE (TLV 列) の walk。pfcp は終端 layer で、子 layer への edge は無い。IE の type は 16 bit で、p4lite の TLV walk が select key に使える lookahead は 8/16/24 bit だが、IE の長さは 16 bit で `pkt.advance` の lookahead は 1 byte の slice しか取れないため、IE を長さで読み飛ばす walk が書けない。
+- 現行 Go 実装の挙動: 3 byte の aux field (`pfcp.node.seq`, `pfcp.sess.seq`) を読む式は `ErrNotImplemented` ("field size 3 bytes not supported"、D-036 追記の 3〜7 byte の aux field と同じ制限)。64 bit の `pfcp.sess.seid` と 4 bit の `pfcp.sess.priority` は compile できる。
+- 状態: 提案中
+- 反映先: `pkg/kunai/protocols/pfcp.p4`, `Vectors/Protocols.lean` の vectors `pfcp-*` (`pfcp-node-seq`, `pfcp-sess-seq` は goStatus notImplemented)
+
 ## Go 側への issue 候補 (この作業では変更しない)
 
 `fix/kunai-spec-conformance` で対応済みのものは ✅、残りは `issues/` に本文がある。

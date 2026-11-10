@@ -170,7 +170,7 @@ userspace の `BPF_PROG_TEST_RUN` や独自 tracing のような他のホスト�
 
 ## 同梱 vocabulary
 
-ライブラリは `eth`, `vlan`, `qinq`, `cw`, `mpls`, `ipv4`, `ipv6`, `tcp`, `udp`, `icmp`, `icmp6`, `gre`, `esp`, `vxlan`, `geneve`, `gtp`, `srv6` の 17 プロトコル定義を同梱しています。[`protocols/`](./protocols/) 以下に `.p4` ファイルとして置かれ、ビルド時に `//go:embed` で埋め込まれます。
+ライブラリは `eth`, `vlan`, `qinq`, `cw`, `mpls`, `ipv4`, `ipv6`, `tcp`, `udp`, `icmp`, `icmp6`, `gre`, `esp`, `vxlan`, `geneve`, `gtp`, `srv6`, `pfcp` の 18 プロトコル定義を同梱しています。[`protocols/`](./protocols/) 以下に `.p4` ファイルとして置かれ、ビルド時に `//go:embed` で埋め込まれます。
 
 新しいプロトコルを追加するには、`<name>.p4` を `protocols/` に置き、dispatch 定数の命名規約に従います。命名規約の正規定義は [`pkg/kunai/vocab/loader.go`](./vocab/loader.go) の `classifyConsts` 周辺の regex 群です。loader は malformed な名前を起動時に reject します。
 

@@ -232,6 +232,18 @@ xdp_entry	eth/ipv4/udp/gtp[exts[1].ext_type == 0]/ipv4/tcp	-	code=30640dd43e3b10
 xdp_entry	eth/ipv4/udp/gtp[exts[1].ext_type in @types]/ipv4/tcp	types:16	code=d545fdd9f1b9bfd2 meta=521756d46fa3ce7f main=368 cb=55
 xdp_entry	eth/ipv4/udp/gtp[teid == 1, exts[1].ext_type == 7]/ipv4/tcp[dport == 80]	-	code=a639019937f9b057 meta=5ee214e8b4c27377 main=383 cb=55
 xdp_entry	eth/ipv4/udp/gtp[teid == 2, exts[1].ext_type == 7]/ipv4/tcp[dport == 80]	-	code=a231c5828b9042b8 meta=5ee214e8b4c27377 main=383 cb=55
+xdp_entry	eth/ipv4/udp/pfcp	-	code=08637ad8e7a5b472 meta=5ee214e8b4c27377 main=119 cb=0
+xdp_entry	eth/ipv4/udp/pfcp where (pfcp.version == 1) and ((pfcp.s == 1) and (pfcp.mp == 1))	-	code=62095eca82c5041d meta=5ee214e8b4c27377 main=155 cb=0
+xdp_entry	eth/ipv4/udp/pfcp where not (pfcp.sess.seid == 0)	-	code=216b8da411a1a4e6 meta=5ee214e8b4c27377 main=142 cb=0
+xdp_entry	eth/ipv4/udp/pfcp where pfcp.node.exists	-	code=4ae98228a8d7e5c0 meta=5ee214e8b4c27377 main=128 cb=0
+xdp_entry	eth/ipv4/udp/pfcp where pfcp.sess.exists	-	code=9402abf2ee93047f meta=5ee214e8b4c27377 main=128 cb=0
+xdp_entry	eth/ipv4/udp/pfcp where pfcp.sess.priority == 3	-	code=6c857cc30eba4e6b meta=5ee214e8b4c27377 main=141 cb=0
+xdp_entry	eth/ipv4/udp/pfcp where pfcp.sess.seid != 0	-	code=c5b9d86d0fcbab5e meta=5ee214e8b4c27377 main=140 cb=0
+xdp_entry	eth/ipv4/udp/pfcp where pfcp.sess.seid == 1234605616436508552	-	code=4813545f06ffb8e7 meta=5ee214e8b4c27377 main=140 cb=0
+xdp_entry	eth/ipv4/udp/pfcp where pfcp.sess.seid == 1234605616436508553	-	code=10088e9965d2ca26 meta=5ee214e8b4c27377 main=140 cb=0
+xdp_entry	eth/ipv4/udp/pfcp[msg_type == 50]	-	code=670acd33fe370407 meta=5ee214e8b4c27377 main=127 cb=0
+xdp_entry	eth/ipv4/udp/pfcp[sess.seid != 0]	-	code=f67ad97b2ff31e21 meta=5ee214e8b4c27377 main=135 cb=0
+xdp_entry	eth/ipv4/udp/pfcp[sess.seid == 1234605616436508552]	-	code=cb30512e44386b73 meta=5ee214e8b4c27377 main=136 cb=0
 xdp_entry	eth/ipv4/udp/vxlan	-	code=172c0b0b87b839a1 meta=5ee214e8b4c27377 main=91 cb=0
 xdp_entry	eth/ipv4/udp/vxlan/eth/ipv4/tcp	-	code=b935861f364e4de9 meta=5ee214e8b4c27377 main=234 cb=0
 xdp_entry	eth/ipv4/udp/vxlan/eth/ipv4/tcp capture headers	-	code=b935861f364e4de9 meta=1c8e57e8d007e351 main=234 cb=0
@@ -454,6 +466,7 @@ xdp_entry	eth/ipv6/tcp where ipv6.src >= ipv6.dst	-	code=8e081635bd4223fb meta=5
 xdp_entry	eth/ipv6/tcp where ipv6.traffic_class[0:6] == 46	-	code=3790e5cbee20e689 meta=5ee214e8b4c27377 main=215 cb=68
 xdp_entry	eth/ipv6/tcp where ipv6.traffic_class[0:6] >= 40	-	code=2d0522f764667e7f meta=5ee214e8b4c27377 main=215 cb=68
 xdp_entry	eth/ipv6/tcp where ipv6.traffic_class[6:8] == 1	-	code=7159590283abe030 meta=5ee214e8b4c27377 main=214 cb=68
+xdp_entry	eth/ipv6/udp/pfcp	-	code=afa7d4c7d5f89135 meta=5ee214e8b4c27377 main=194 cb=68
 xdp_entry	eth/ipv6/udp/vxlan/eth/(ipv4|ipv6)	-	code=38eb34fe3a667303 meta=5ee214e8b4c27377 main=422 cb=136
 xdp_entry	eth/ipv6[dst != 0000:0000:0000:0000:0000:0000:0000:0000/0]/tcp	-	code=7d12d95c77f19dc1 meta=5ee214e8b4c27377 main=214 cb=68
 xdp_entry	eth/ipv6[dst > fc00:0000:0000:0000:0000:0000:0000:0001]/tcp	-	code=c62dcdfaa98f157b meta=5ee214e8b4c27377 main=234 cb=68
