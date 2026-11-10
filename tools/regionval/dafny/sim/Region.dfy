@@ -69,14 +69,48 @@ module SimRegion {
     requires SameUpTo(o1, o2, s.oc + Need(floor, ins, s))
     ensures Step(floor, ins, s, o1) == Step(floor, ins, s, o2)
   {
+    if ins.Ldx? { SOLdx(floor, ins, s, o1, o2); }
+    else if ins.CallHelper? { SOHelper(floor, ins, s, o1, o2); }
+    else if ins.CallLocal? { SOHook(floor, ins, s, o1, o2); }
+    else { SOOther(floor, ins, s, o1, o2); }
+  }
+
+  lemma SOLdx(floor: int, ins: Instr, s: CState, o1: seq<bv64>, o2: seq<bv64>)
+    requires CWF(s) && -(STACK as int) <= floor <= 0 && ins.Ldx?
+    requires SameUpTo(o1, o2, s.oc + Need(floor, ins, s))
+    ensures Step(floor, ins, s, o1) == Step(floor, ins, s, o2)
+  {
     Soundness.StepEq(floor, ins, s, o1);
     Soundness.StepEq(floor, ins, s, o2);
-    match ins
-    case Ldx(w, dst, base, off) =>
-      if !(dst >= 10 || base > 10 || w > 8) { LdxLocal(s, w, dst, base, off, o1, o2); }
-    case CallHelper(id) => HelperLocal(floor, s, id, o1, o2);
-    case CallLocal(_) => HavocLocal(s, o1, o2);
-    case _ =>
+    if !(ins.dst >= 10 || ins.base > 10 || ins.size > 8) { LdxLocal(s, ins.size, ins.dst, ins.base, ins.off, o1, o2); }
+  }
+
+  lemma SOHelper(floor: int, ins: Instr, s: CState, o1: seq<bv64>, o2: seq<bv64>)
+    requires CWF(s) && -(STACK as int) <= floor <= 0 && ins.CallHelper?
+    requires SameUpTo(o1, o2, s.oc + Need(floor, ins, s))
+    ensures Step(floor, ins, s, o1) == Step(floor, ins, s, o2)
+  {
+    Soundness.StepEq(floor, ins, s, o1);
+    Soundness.StepEq(floor, ins, s, o2);
+    HelperLocal(floor, s, ins.id, o1, o2);
+  }
+
+  lemma SOHook(floor: int, ins: Instr, s: CState, o1: seq<bv64>, o2: seq<bv64>)
+    requires CWF(s) && -(STACK as int) <= floor <= 0 && ins.CallLocal?
+    requires SameUpTo(o1, o2, s.oc + Need(floor, ins, s))
+    ensures Step(floor, ins, s, o1) == Step(floor, ins, s, o2)
+  {
+    Soundness.StepEq(floor, ins, s, o1);
+    Soundness.StepEq(floor, ins, s, o2);
+    HavocLocal(s, o1, o2);
+  }
+
+  lemma SOOther(floor: int, ins: Instr, s: CState, o1: seq<bv64>, o2: seq<bv64>)
+    requires CWF(s) && -(STACK as int) <= floor <= 0 && !ins.Ldx? && !ins.CallHelper? && !ins.CallLocal?
+    ensures Step(floor, ins, s, o1) == Step(floor, ins, s, o2)
+  {
+    Soundness.StepEq(floor, ins, s, o1);
+    Soundness.StepEq(floor, ins, s, o2);
   }
 
   lemma {:isolate_assertions} LdxLocal(s: CState, w: nat, dst: nat, base: nat, off: bv16, o1: seq<bv64>, o2: seq<bv64>)
