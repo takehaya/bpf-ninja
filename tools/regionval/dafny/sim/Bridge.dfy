@@ -725,8 +725,7 @@ module SimBridge {
     var vals := R64(Top(c2))[0..6];
     StepHook(fl, imm, s, prefix + vals);
     var s' := S.HookStep(s, prefix + vals).s;
-    forall j | 0 <= j < 6 ensures S.Orc(prefix + vals, s.oc + j) == vals[j] {}
-    assert s'.regs == R64(Top(c2));
+    HookRegs(s, prefix, Top(c), Top(c2));
     assert s'.events == s.events + [e];
     SideFacts(w, c, s);
     SideEvent(w, c, s, c2, s', e);
@@ -736,6 +735,21 @@ module SimBridge {
   }
 
   lemma UndW(x: Ctx, c: Cfg, k: nat) requires x.m.MR? ensures Und(x, c, k).W? {}
+
+  // The region's registers after a hook call are the whole model's.
+  lemma HookRegs(s: S.CState, prefix: seq<bv64>, f: Frame, f2: Frame)
+    requires S.CWF(s) && s.oc == |prefix| && R64(f) == s.regs
+    requires |f.regs| == NR && |f2.regs| == NR && forall r | 6 <= r < NR :: f2.regs[r] == f.regs[r]
+    ensures S.HookStep(s, prefix + R64(f2)[0..6]).s.regs == R64(f2)
+  {
+    var vals := R64(f2)[0..6];
+    var s' := S.HookStep(s, prefix + vals).s;
+    assert s'.regs == S.HavocRegs(s.regs, prefix + vals, s.oc, 6);
+    forall k | 0 <= k < NR ensures s'.regs[k] == R64(f2)[k] {
+      if k < 6 { assert S.Orc(prefix + vals, s.oc + k) == vals[k]; }
+      else { assert s'.regs[k] == s.regs[k] == R64(f)[k]; }
+    }
+  }
 
   // The frame a hook call pushes, after the observer ran.
   ghost function HookEntry(x: Ctx, obsv: Observer, c: Cfg, imm: bv32): Cfg {
