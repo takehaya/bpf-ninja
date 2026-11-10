@@ -88,6 +88,7 @@ eth/ipv4/udp/gtp/ipv4/tcp           # GTP-U の内側 IP
 | `arp` | IPv4 の ARP (28 B、eth / vlan / qinq の ethertype 0x0806)。hlen = 6 かつ plen = 4 でなければ reject。htype と ptype は検査しない |
 | `nsh` | NSH (base + service path header の 8 B)。MD type 1 は context 16 B を `nsh.md1` で読める。MD type 2 は length 分の TLV を読み飛ばす。next_proto で ipv4 / ipv6 / eth / mpls へ |
 | `erspan` | GRE 上の ERSPAN type II (protocol type 0x88BE) と type III (0x22EB)。共通の 4 B の後、version で `erspan.v2` (4 B) か `erspan.v3` (8 B、O bit で platform subheader 8 B を読み飛ばす)。中身は `eth` |
+| `igmp` | IGMP v2 / v3 の共通 8 B (`type`, `max_resp_code`, `checksum`, `group`)。v3 report (type 0x22) は最初の group record の header を `igmp.record` で読める。v3 query の拡張部は読まない |
 
 ### Quantifier
 

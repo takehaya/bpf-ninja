@@ -1,7 +1,7 @@
 import Kunai.Vectors.AuxHeaders
 
 /-!
-# Protocol vectors: PFCP, SCTP, ARP, NSH, ERSPAN
+# Protocol vectors: PFCP, SCTP, ARP, NSH, ERSPAN, IGMP
 
 Presence, field comparisons, and truncation for each protocol added to the
 bundled vocabulary after the first seventeen (DECISIONS.md D-040 onwards).
@@ -464,6 +464,97 @@ def erspanVectors : List Vector := [
   erspanTsHit, erspanTsAbsent, erspanTsAbsentNot, erspanSgt, erspanOBracket, erspanOBracketMiss, erspanV2Exists,
   erspanV3ExistsAbsent, erspanIndex, erspanTruncBase, erspan2Exact, erspan2Trunc, erspan3Trunc, erspan3PlatformTrunc]
 
-def protocolVectors : List Vector := pfcpVectors ++ sctpVectors ++ arpVectors ++ nshVectors ++ erspanVectors
+-- IGMP (D-045) ---------------------------------------------------------------
+
+def igmpHdr (type : Nat) (group : Nat) (maxResp : Nat := 100) : Packet := [UInt8.ofNat type, UInt8.ofNat maxResp] ++ be 2 0 ++ be 4 group
+/-- v3 report header: the group word holds reserved (16) + number of records (16). -/
+def igmpV3Report (records : Nat) : Packet := [0x22, 0] ++ be 2 0 ++ be 2 0 ++ be 2 records
+def igmpRecord (recType mcast : Nat) (sources : List Nat := []) : Packet :=
+  [UInt8.ofNat recType, 0] ++ be 2 sources.length ++ be 4 mcast ++ (sources.map (be 4)).flatten
+/-- IGMP rides in an IPv4 header with the Router Alert option (RFC 2113, IHL 6). -/
+def igmpPkt (igmp : Packet) : Packet :=
+  eth 0x0800 (dst := 0x01005e010101) ++ ipv4 2 (ttl := 1) (dst := 0xef010101) (ihl := 6) (options := [148, 4, 0, 0]) ++ igmp
+def igmpV2Report : Packet := igmpPkt (igmpHdr 0x16 0xef010101 (maxResp := 0))
+def igmpQuery : Packet := igmpPkt (igmpHdr 0x11 0)
+/-- v3 report joining 239.1.1.1 (CHANGE_TO_EXCLUDE_MODE, no sources). -/
+def igmpV3Join : Packet := igmpPkt (igmpV3Report 1 ++ igmpRecord 4 0xef010101)
+def igmpL : List Layer := [P "eth", P "ipv4", P "igmp"]
+def igmpW (w : Where) : Filter := { layers := igmpL, cond := some w }
+def igmpPred (p : Predicate) : Filter := { layers := [P "eth", P "ipv4", .proto { name := "igmp", preds := [p] }] }
+
+vector igmpV2 := {
+  id := "igmp-v2-report", ast := { layers := igmpL }, packet := igmpV2Report, expected := .accept [] }
+vector igmpQ := {
+  id := "igmp-query", ast := { layers := igmpL }, packet := igmpQuery, expected := .accept [] }
+vector igmpV3 := {
+  id := "igmp-v3-report", ast := { layers := igmpL }, packet := igmpV3Join, expected := .accept [] }
+vector igmpVlan := {
+  id := "igmp-vlan", ast := { layers := [P "eth", P "vlan", P "ipv4", P "igmp"] },
+  packet := eth 0x8100 ++ vlan 100 0x0800 ++ ipv4 2 ++ igmpHdr 0x17 0xef010101, expected := .accept [],
+  note := "without the Router Alert option" }
+vector igmpProtoMiss := {
+  id := "igmp-proto-miss", ast := { layers := igmpL }, expected := .reject, note := "ipv4.protocol 6 is tcp" }
+vector igmpNotIcmp := {
+  id := "igmp-not-icmp", ast := { layers := [P "eth", P "ipv4", P "icmp"] }, packet := igmpV2Report, expected := .reject }
+vector igmpType := {
+  id := "igmp-pred-type", ast := igmpPred (.cmp (f "type") .eq (.int 0x16)), packet := igmpV2Report, expected := .accept [] }
+vector igmpTypeMiss := {
+  id := "igmp-pred-type-miss", ast := igmpPred (.cmp (f "type") .eq (.int 0x17)), packet := igmpV2Report, expected := .reject }
+vector igmpGroup := {
+  id := "igmp-where-group", ast := igmpW (.litCmp (ff "igmp" "group") .eq (.ipv4 0xef010101)), packet := igmpV2Report, expected := .accept [] }
+vector igmpGroupCidr := {
+  id := "igmp-where-group-cidr", ast := igmpW (.litCmp (ff "igmp" "group") .eq (.cidr4 0xef000000 8)), packet := igmpV2Report, expected := .accept [] }
+vector igmpGeneralQuery := {
+  id := "igmp-general-query", ast := igmpW (.and (cmp (fld "igmp" "type") .eq (k 0x11)) (cmp (fld "igmp" "group") .eq (k 0))),
+  packet := igmpQuery, expected := .accept [] }
+vector igmpMaxResp := {
+  id := "igmp-where-max-resp", ast := igmpW (cmp (fld "igmp" "max_resp_code") .gt (k 10)), packet := igmpQuery, expected := .accept [] }
+vector igmpRouterAlert := {
+  id := "igmp-ipv4-router-alert", ast := igmpW (cmp (fa ["ipv4", "options", "ROUTER_ALERT", "value"]) .eq (k 0)),
+  packet := igmpV2Report, expected := .accept [], note := "the ipv4 option walk runs before igmp" }
+vector igmpRecMcast := {
+  id := "igmp-v3-record-mcast", ast := igmpW (.litCmp (fp ["igmp", "record", "mcast"]) .eq (.ipv4 0xef010101)), packet := igmpV3Join, expected := .accept [] }
+vector igmpRecMcastMiss := {
+  id := "igmp-v3-record-mcast-miss", ast := igmpW (.litCmp (fp ["igmp", "record", "mcast"]) .eq (.ipv4 0xef010102)), packet := igmpV3Join, expected := .reject }
+vector igmpRecFields := {
+  id := "igmp-v3-record-type-sources", ast := igmpW (.and (cmp (fa ["igmp", "record", "record_type"]) .eq (k 4)) (cmp (fa ["igmp", "record", "num_sources"]) .eq (k 0))),
+  packet := igmpV3Join, expected := .accept [] }
+vector igmpRecSources := {
+  id := "igmp-v3-record-with-sources", ast := igmpW (cmp (fa ["igmp", "record", "num_sources"]) .eq (k 2)),
+  packet := igmpPkt (igmpV3Report 1 ++ igmpRecord 1 0xef010101 [0x0a000001, 0x0a000002]), expected := .accept [],
+  note := "the source list after the record header is not read" }
+vector igmpRecAbsent := {
+  id := "igmp-v3-record-absent", ast := igmpW (cmp (fa ["igmp", "record", "num_sources"]) .eq (k 0)), packet := igmpV2Report, expected := .reject,
+  note := "D-003/D-027: only type 0x22 has a record" }
+vector igmpRecAbsentNot := {
+  id := "igmp-v3-record-absent-not", ast := igmpW (.not (cmp (fa ["igmp", "record", "num_sources"]) .eq (k 0))), packet := igmpV2Report, expected := .accept [] }
+vector igmpRecBracket := {
+  id := "igmp-pred-v3-record-mcast", ast := igmpPred (.cmp (fp ["record", "mcast"]) .eq (.ipv4 0xef010101)), packet := igmpV3Join, expected := .accept [] }
+vector igmpRecExists := {
+  id := "igmp-v3-record-exists", ast := igmpW (.fieldExists (fp ["igmp", "record"])), packet := igmpV3Join, expected := .accept [] }
+vector igmpRecExistsAbsent := {
+  id := "igmp-v3-record-exists-absent", ast := igmpW (.fieldExists (fp ["igmp", "record"])), packet := igmpQuery, expected := .reject }
+vector igmpV3NoRecords := {
+  id := "igmp-v3-report-no-records", ast := { layers := igmpL }, packet := igmpPkt (igmpV3Report 0), expected := .reject,
+  note := "D-045: type 0x22 commits to a record header even when the count is 0" }
+vector igmpV3Query := {
+  id := "igmp-v3-query", ast := igmpW (cmp (fld "igmp" "group") .eq (k 0)),
+  packet := igmpPkt (igmpHdr 0x11 0 ++ [0x02, 125] ++ be 2 0), expected := .accept [],
+  note := "D-045: the v3 query extension after byte 8 is not read" }
+vector igmpTrunc := {
+  id := "igmp-truncated", ast := { layers := igmpL }, packet := igmpV2Report.take 45, expected := .reject, note := "7 of 8 bytes" }
+vector igmpExact := {
+  id := "igmp-exact-fit", ast := { layers := igmpL }, packet := igmpV2Report, expected := .accept [] }
+vector igmpV3RecTrunc := {
+  id := "igmp-v3-record-truncated", ast := { layers := igmpL }, packet := igmpV3Join.take 50, expected := .reject,
+  note := "4 of the 8 record-header bytes" }
+
+def igmpVectors : List Vector := [
+  igmpV2, igmpQ, igmpV3, igmpVlan, igmpProtoMiss, igmpNotIcmp, igmpType, igmpTypeMiss, igmpGroup, igmpGroupCidr,
+  igmpGeneralQuery, igmpMaxResp, igmpRouterAlert, igmpRecMcast, igmpRecMcastMiss, igmpRecFields, igmpRecSources,
+  igmpRecAbsent, igmpRecAbsentNot, igmpRecBracket, igmpRecExists, igmpRecExistsAbsent, igmpV3NoRecords, igmpV3Query,
+  igmpTrunc, igmpExact, igmpV3RecTrunc]
+
+def protocolVectors : List Vector := pfcpVectors ++ sctpVectors ++ arpVectors ++ nshVectors ++ erspanVectors ++ igmpVectors
 
 end Kunai

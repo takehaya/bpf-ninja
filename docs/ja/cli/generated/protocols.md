@@ -10,7 +10,7 @@ offset と可変長構造の注記を併せて読んでください。
 式の書き方と型の詳細は、[DSL 文法](../../dsl-grammar.md)と[型の仕様](../../dsl-types.md)を参照してください。
 
 ```text
-Bundled protocols (22):
+Bundled protocols (23):
   arp      28 B  from eth, qinq, vlan
   cw        4 B  from mpls
   erspan    4 B  from gre
@@ -21,6 +21,7 @@ Bundled protocols (22):
   gtp       8 B  from udp
   icmp      4 B  from ipv4
   icmp6     4 B  from ipv6
+  igmp      8 B  from ipv4
   ipv4     20 B  from eth, gre, nsh, qinq, srv6, vlan
   ipv6     40 B  from eth, gre, nsh, qinq, vlan
   mpls      4 B  from eth, nsh, qinq, vlan
@@ -272,6 +273,31 @@ Fields (bit width, running byte offset):
 Dispatched from: ipv6
 ```
 
+## igmp
+
+```text
+igmp — header 8 bytes minimum (variable layout, see Notes)
+
+Fields (bit width, running byte offset):
+  type                 bit<8>    @0
+  max_resp_code        bit<8>    @1
+  checksum             bit<16>   @2
+  group                bit<32>   @4
+
+Aux headers:
+  record (igmp_record_h, 8 bytes @ +8 from layer start) (gated: (byte@0 & 0xff) == 0x22)
+    record_type          bit<8>    @0
+    aux_len              bit<8>    @1
+    num_sources          bit<16>   @2
+    mcast                bit<32>   @4
+    use: igmp.record.<field>  or  igmp[record.<field> == X]
+
+Dispatched from: ipv4
+
+Notes:
+  parser state machine (variable extension headers or self-validation)
+```
+
 ## ipv4
 
 ```text
@@ -325,7 +351,7 @@ Options walk (parsed by parser block, 2 named options):
 
 Dispatched from: eth, gre, nsh, qinq, srv6, vlan
 Dispatches to:
-  via protocol     -> esp, gre, icmp, sctp, tcp, udp
+  via protocol     -> esp, gre, icmp, igmp, sctp, tcp, udp
 
 Notes:
   parser state machine (variable extension headers or self-validation)
