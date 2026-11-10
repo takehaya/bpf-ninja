@@ -50,7 +50,22 @@ module SimClasses {
     requires RelC(P, ell, c, c', er, lv)
     ensures RelC(P, ell, WriteLocal(c, p, bs), WriteLocal(c', p, bs), er, lv)
     ensures Top(WriteLocal(c, p, bs)) == Top(c) && Top(WriteLocal(c', p, bs)) == Top(c')
-  { reveal RelC(); }
+  {
+    var a := WriteLocal(c, p, bs);
+    var a' := WriteLocal(c', p, bs);
+    assert a.fr == c.fr && a'.fr == c'.fr && a.h == c.h && a'.h == c'.h;
+    assert Top(a) == Top(c) && Top(a') == Top(c');
+    RelCIs(P, ell, c, c', er, lv);
+    assert a'.L.mem == WriteMem(c.L.mem, p, bs) == a.L.mem;
+    assert a'.L == a.L;
+    assert Inv1(a) && RegRel(a, a', er, lv) && StkRel(a, a', Fl(P, ell, 0));
+    RelCIntro(P, ell, a, a', er, lv);
+  }
+
+  lemma SuccJ(P: seq<OInstr>, j: nat)
+    requires j < |P| && (P[j].Jcc? || P[j].MayGoto?)
+    ensures Succ(P, j) == {P[j].t, j + 1}
+  {}
 
   // The two runs share the environment, semantics and oracle.
   ghost predicate Pair(xP: Ctx, xR: Ctx) {
@@ -313,6 +328,7 @@ module SimClasses {
     var ins := P[j];
     var t := ins.t;
     assert Reloc(D, ins) == Jcc(ins.code, ins.srcs, E(D, t));
+    SuccJ(P, j);
     assert t in Succ(P, j) && j + 1 in Succ(P, j);
     assert OStep(xP, ins, j, c) == JccO(xP, c, ins.code, ins.srcs, t);
     assert OStep(xR, Reloc(D, ins), j, c') == JccO(xR, c', ins.code, ins.srcs, E(D, t));
@@ -357,6 +373,7 @@ module SimClasses {
     var j := Top(c).pc;
     var t := P[j].t;
     assert Reloc(D, P[j]) == MayGoto(E(D, t));
+    SuccJ(P, j);
     assert t in Succ(P, j) && j + 1 in Succ(P, j);
     var e := EMg(j);
     assert Wh(c) == Wh(c');

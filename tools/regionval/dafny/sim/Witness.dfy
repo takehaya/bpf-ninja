@@ -136,7 +136,7 @@ module SimWitness {
   // the hook's value argument is the result, and it runs only on a hit
   const BINDS: seq<Bind> := [Bind(8, 4, ValueArg), Bind(8, 4, HitCall)]
 
-  lemma SiteValid() ensures Validate(Cat(SITEL), Api.WithBinds(Api.SiteSpec(0), BINDS)) == Validated
+  lemma {:isolate_assertions} SiteValid() ensures Validate(Cat(SITEL), Api.WithBinds(Api.SiteSpec(0), BINDS)) == Validated
   {
     reveal HOOKLLit(), PROLLit(), PRELLit(), LOOKUPLit(), POSTLLit();
     assert SITEL == [PREL[0], LOOKUP] + POSTL;

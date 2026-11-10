@@ -329,6 +329,13 @@ module SimSites {
     if i > 0 { FootAccHas(c, addrs[1..], i - 1); assert addrs[1..][i - 1] == addrs[i]; }
   }
 
+  lemma HelperAccIs(x: Ctx, c: Cfg, idx: nat, id: bv32, n: nat, args: seq<bv64>, beta: seq<bv8>, v: Val, wr: map<int, bv8>)
+    requires n == x.env.arity(false, id) && Rds(Top(c), Upto(1, n)) == Some(args)
+    requires FootBytes(c, x.env.foot(false, id, args)) == FOk(beta)
+    requires x.om(c.h, ECall(idx, false, id, args, beta), Wh(c)) == RRet(v, wr)
+    ensures HelperAcc(x, c, idx, false, id) == FootAcc(c, x.env.foot(false, id, args)) + WrAcc(c, wr)
+  {}
+
   // What A1a says about the helper step of P at c.
   lemma {:isolate_assertions} HelperFloor(P: seq<OInstr>, x: Ctx, c: Cfg, ell: nat -> int, idx: nat, id: bv32,
                                           n: nat, args: seq<bv64>, beta: seq<bv8>, v: Val, wr: map<int, bv8>)
@@ -342,6 +349,7 @@ module SimSites {
   {
     var addrs := x.env.foot(false, id, args);
     assert Acc(P, x, c) == HelperAcc(x, c, idx, false, id);
+    HelperAccIs(x, c, idx, id, n, args, beta, v, wr);
     assert FootAcc(c, addrs) <= Acc(P, x, c);
     assert WrAcc(c, wr) <= Acc(P, x, c);
     forall i | 0 <= i < |addrs| ensures FootIn(c, addrs[i], ell(0)) {
