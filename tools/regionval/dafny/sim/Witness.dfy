@@ -239,15 +239,23 @@ module SimWitness {
     else M.Cfg([Fr(3, Regs2())], L0, [EV], 6, [])
   }
 
-  lemma Step0(om: M.Oracle)
+  lemma {:isolate_assertions} Step0(om: M.Oracle)
     ensures M.StepP(PW, M.CtxP(PW, EnvW(), SemW(), om), C(0)) == M.Go(C(1))
   {
-    assert Regs0()[10] == M.W(M.StackTop(0));
+    var x := M.CtxP(PW, EnvW(), SemW(), om);
+    var t := M.StackTop(0);
+    assert Regs0()[10] == M.W(t);
     F.RdsAll(M.Top(C(0)), [10]);
-    assert F.Words(M.Top(C(0)), [10]) == [M.StackTop(0)];
-    assert M.Rds(M.Top(C(0)), [10]) == Some([M.StackTop(0)]);
-    reveal M.AluO();
+    assert F.Words(M.Top(C(0)), [10]) == [t];
+    assert M.Rds(M.Top(C(0)), [10]) == Some([t]);
+    assert M.StepP(PW, x, C(0)) == M.AluO(x, C(0), 0, 2, [10]);
+    Alu0(x, C(0), t);
   }
+
+  lemma Alu0(x: M.Ctx, c: M.Cfg, t: bv64)
+    requires M.Rds(M.Top(c), [10]) == Some([t]) && x.sem == SemW()
+    ensures M.AluO(x, c, 0, 2, [10]) == M.SetDst(c, 2, 0)
+  { reveal M.AluO(); }
 
   lemma ApplyNone(c: M.Cfg) requires forall k | 0 <= k < |c.fr| :: |c.fr[k].stack| == M.STK
     ensures M.ApplyW(c, map[]) == c
