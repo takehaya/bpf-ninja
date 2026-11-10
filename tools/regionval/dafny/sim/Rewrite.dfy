@@ -95,8 +95,8 @@ module SimRewrite {
     var u := (v % 0x1_0000_0000) as bv64;
     [ByteOf(u, 0), ByteOf(u, 1), ByteOf(u, 2), ByteOf(u, 3)]
   }
-  // call helper id: opcode 0x85, src 0.
-  function EncHelper(id: bv32): seq<bv8> { [0x85, 0, 0, 0] + B4(id as int) }
+  // call helper id: opcode 0x85, src 0, imm = id (little-endian).
+  function EncHelper(id: bv32): seq<bv8> { [0x85, 0, 0, 0] + BytesOf(id as bv64, 4) }
   // BPF_PSEUDO_CALL with relative offset imm: opcode 0x85, src 1.
   function EncCallLocal(imm: int): seq<bv8> { [0x85, 0x10, 0, 0] + B4(imm) }
   // The central helper as the validator sees it (empty for a non-site).
@@ -149,7 +149,7 @@ module SimRewrite {
   function Opt<T>(m: map<nat, T>, i: nat, f: T -> seq<bv8>): seq<bv8> { if i in m then f(m[i]) else [] }
 
   // S2: the order of the pieces between kappa(i-1) and kappa(i).
-  function Block(P: seq<OInstr>, D: Decomp, i: nat): seq<TI> requires i < |P| {
+  opaque function Block(P: seq<OInstr>, D: Decomp, i: nat): seq<TI> requires i < |P| {
     FnsCode(P, D, FnsAt(D, i))
     + Ns(Opt(D.fp, i, (p: FProl) => p.code))
     + Ns(Opt(D.pl, i, (p: PassLoad) => p.code))
@@ -161,7 +161,7 @@ module SimRewrite {
     if i == |P| then [] else Block(P, D, i) + Blocks(P, D, i + 1)
   }
 
-  ghost function Layout(P: seq<OInstr>, D: Decomp): RwProg {
+  opaque ghost function Layout(P: seq<OInstr>, D: Decomp): RwProg {
     RwProg(Ns(D.pro0) + Blocks(P, D, 0) + FnsCode(P, D, D.tail),
            map g | g in FnSet(P) :: FE(D, g),
            Hooks(P, D),
@@ -188,7 +188,7 @@ module SimRewrite {
     if ins.Tail? then Api.TailSiteSpec(f) else Api.WithBinds(Api.SiteSpec(f), binds)
   }
 
-  ghost predicate Valid(raw: seq<bv8>, sp: Spec) { Checker.Validate(raw, sp) == Checker.Validated }
+  opaque ghost predicate Valid(raw: seq<bv8>, sp: Spec) { Checker.Validate(raw, sp) == Checker.Validated }
 
   // Every window of P' is validated by the region validator with the spec
   // of its kind (README.md, Dafny core; dafny/contract Spec).  S11: every
