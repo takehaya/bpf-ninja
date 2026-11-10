@@ -10,6 +10,19 @@ namespace Kunai
 
 def vocab : Vocab :=
   { protos := [
+      { name := "arp",
+        fields := [⟨"htype", 0, 16⟩, ⟨"ptype", 16, 16⟩, ⟨"hlen", 32, 8⟩, ⟨"plen", 40, 8⟩, ⟨"oper", 48, 16⟩, ⟨"sha", 64, 48⟩, ⟨"spa", 112, 32⟩, ⟨"tha", 144, 48⟩, ⟨"tpa", 192, 32⟩],
+        fixedLen := 28,
+        requires := [("hlen", [6]), ("plen", [4])],
+        machine := some {
+          states := [
+            { name := "start", extracts := [⟨"hdr", "arp_h", 28, false⟩], counters := [], advances := [], trans := .select { keys := [.field "hdr" false 32 8, .field "hdr" false 40 8], cases := [⟨[.val 6, .val 4], .accept⟩], default := .reject } }],
+          entry := 0,
+          headers := [⟨"arp_h", [⟨"htype", 0, 16⟩, ⟨"ptype", 16, 16⟩, ⟨"hlen", 32, 8⟩, ⟨"plen", 40, 8⟩, ⟨"oper", 48, 16⟩, ⟨"sha", 64, 48⟩, ⟨"spa", 112, 32⟩, ⟨"tha", 144, 48⟩, ⟨"tpa", 192, 32⟩], 28⟩],
+          options := [],
+          stacks := [],
+          tails := [],
+          writebacks := [] } },
       { name := "cw",
         fields := [⟨"first_nibble", 0, 4⟩, ⟨"flags", 4, 4⟩, ⟨"length", 8, 8⟩, ⟨"sequence", 16, 16⟩],
         fixedLen := 4 },
@@ -187,6 +200,9 @@ def vocab : Vocab :=
         fixedLen := 8 }
 ]
     edges := [
+      ⟨"arp", "eth", .field "ethertype" [2054]⟩,
+      ⟨"arp", "vlan", .field "ethertype" [2054]⟩,
+      ⟨"arp", "qinq", .field "ethertype" [2054]⟩,
       ⟨"cw", "mpls", .noCheck⟩,
       ⟨"esp", "ipv4", .field "protocol" [50]⟩,
       ⟨"esp", "ipv6", .field "next_header" [50]⟩,

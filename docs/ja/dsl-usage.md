@@ -85,6 +85,7 @@ eth/ipv4/udp/gtp/ipv4/tcp           # GTP-U の内側 IP
 | `srv6` | SRH (固定 8 B + segment list)。segment list は `srv6.segments[N]` で aux header stack として access できる |
 | `pfcp` | PFCP (UDP 8805)。固定 4 B の後に S flag で node 形式 (`pfcp.node`、4 B) か session 形式 (`pfcp.sess`、SEID 付き 12 B) の aux header。IE は解析しない |
 | `sctp` | SCTP。共通ヘッダ 12 B と最初の chunk の header (`sctp.chunk`、4 B)。2 つ目以降の chunk は読まない |
+| `arp` | IPv4 の ARP (28 B、eth / vlan / qinq の ethertype 0x0806)。hlen = 6 かつ plen = 4 でなければ reject。htype と ptype は検査しない |
 
 ### Quantifier
 

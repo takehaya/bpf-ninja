@@ -42,6 +42,7 @@ xdp_entry	eth/(ipv4@a|ipv4@b)/tcp where b.ttl == 64	-	code=0c265ed4b1aac425 meta
 xdp_entry	eth/(ipv4@a|ipv6)/tcp capture a	-	code=a4c78edce9d30250 meta=62e5651798acd4b3 main=275 cb=68
 xdp_entry	eth/(ipv4@a|ipv6)/tcp capture ipv6	-	code=a4c78edce9d30250 meta=eaba0a0732fdca28 main=275 cb=68
 xdp_entry	eth/(ipv4[ttl == 1]|ipv4)/tcp	-	code=ec9bcdf93852719b meta=633a1022efdee518 main=195 cb=0
+xdp_entry	eth/(ipv4|arp)	-	code=9b2be6847e818853 meta=5ee214e8b4c27377 main=89 cb=0
 xdp_entry	eth/(ipv4|ipv6)/(tcp|udp)	-	code=5feff18d54d501be meta=5ee214e8b4c27377 main=293 cb=68
 xdp_entry	eth/(ipv4|ipv6)/(tcp|udp) where (ipv4.ttl == 64) and (tcp.dport == 80)	-	code=e669d61487a30ea0 meta=5ee214e8b4c27377 main=322 cb=68
 xdp_entry	eth/(ipv4|ipv6)/(tcp|udp) where tcp.dport == 80	-	code=0906e1e2c3336de8 meta=5ee214e8b4c27377 main=312 cb=68
@@ -59,6 +60,17 @@ xdp_entry	eth/(vlan@v|qinq)/ipv4/tcp where v.tci == 100	-	code=3050c96dc4efc138 
 xdp_entry	eth/(vlan|qinq)/ipv4/tcp where not (vlan.tci == 100)	-	code=db99a34b98b783d2 meta=5ee214e8b4c27377 main=184 cb=0
 xdp_entry	eth/(vlan|qinq)/ipv4/tcp where vlan.tci == 100	-	code=3050c96dc4efc138 meta=5ee214e8b4c27377 main=182 cb=0
 xdp_entry	eth/(vlan|qinq)/vlan{0,0}/ipv4/tcp	-	code=dc5cce0b5df4e5b9 meta=5ee214e8b4c27377 main=167 cb=0
+xdp_entry	eth/arp	-	code=5e2ceaeb87cd75e8 meta=5ee214e8b4c27377 main=31 cb=0
+xdp_entry	eth/arp where (arp.oper == 2) and (arp.tha == 66:77:88:99:aa:bb)	-	code=85b93302f96e86d5 meta=5ee214e8b4c27377 main=52 cb=0
+xdp_entry	eth/arp where arp.sha == 66:77:88:99:aa:bb	-	code=2ebd98b0871f6033 meta=5ee214e8b4c27377 main=43 cb=0
+xdp_entry	eth/arp where arp.spa == 10.0.0.1	-	code=8fec9f06fc465818 meta=5ee214e8b4c27377 main=37 cb=0
+xdp_entry	eth/arp where arp.tpa == 10.0.0.0/24	-	code=3b3d1b63defdcf62 meta=5ee214e8b4c27377 main=38 cb=0
+xdp_entry	eth/arp where arp.tpa == 192.168.0.0/16	-	code=df442fe1027ccc64 meta=5ee214e8b4c27377 main=38 cb=0
+xdp_entry	eth/arp?	-	code=6d70036a7846a563 meta=5ee214e8b4c27377 main=32 cb=0
+xdp_entry	eth/arp[oper == 1]	-	code=71194d2a5dca32ae meta=5ee214e8b4c27377 main=39 cb=0
+xdp_entry	eth/arp[oper == 2]	-	code=5502a640319d08b1 meta=5ee214e8b4c27377 main=39 cb=0
+xdp_entry	eth/arp[ptype == 2048]	-	code=e1a359c86ba81545 meta=5ee214e8b4c27377 main=39 cb=0
+xdp_entry	eth/arp[tpa == 10.0.0.2]	-	code=9c5f37ad9d74f7ca meta=5ee214e8b4c27377 main=40 cb=0
 xdp_entry	eth/ipv4 where (ipv4.src == 10.0.0.0/8) and ((ipv4.dst != 192.168.1.1) and (eth.src == aa:bb:cc:dd:ee:ff))	-	code=9c01f045a88832f0 meta=5ee214e8b4c27377 main=90 cb=0
 xdp_entry	eth/ipv4+/tcp	-	code=4ddbd6486f34ce93 meta=5ee214e8b4c27377 main=606 cb=0
 xdp_entry	eth/ipv4+/tcp capture headers	-	code=4ddbd6486f34ce93 meta=25f4d2148f92c2e9 main=606 cb=0
@@ -550,6 +562,7 @@ xdp_entry	eth/ipv6{4,}/tcp	-	code=3010b4a0ddb7aec7 meta=5ee214e8b4c27377 main=72
 xdp_entry	eth/mpls+	-	code=4b08dfed38f854b4 meta=5ee214e8b4c27377 main=55 cb=29
 xdp_entry	eth/mpls+/ipv4	-	code=d493afd61c166701 meta=5ee214e8b4c27377 main=113 cb=29
 xdp_entry	eth/mpls+/ipv4/tcp capture headers	-	code=b34fae5dc7bb20c6 meta=9c668db809c48a55 main=183 cb=29
+xdp_entry	eth/mpls/arp	-	code=ae61edc2220f0673 meta=5ee214e8b4c27377 main=36 cb=0
 xdp_entry	eth/mpls/ipv4/tcp	-	code=a3195731343b596c meta=5ee214e8b4c27377 main=134 cb=0
 xdp_entry	eth/mpls/ipv4?	-	code=89bad94436b21f76 meta=5ee214e8b4c27377 main=83 cb=0
 xdp_entry	eth/mpls/mpls*/ipv4/tcp	-	code=2b9a9094ab5724a0 meta=5ee214e8b4c27377 main=208 cb=29
@@ -584,13 +597,16 @@ xdp_entry	eth/mpls{1,}/ipv4/tcp	-	code=b34fae5dc7bb20c6 meta=5ee214e8b4c27377 ma
 xdp_entry	eth/mpls{1,}/ipv4/tcp capture headers	-	code=b34fae5dc7bb20c6 meta=9c668db809c48a55 main=183 cb=29
 xdp_entry	eth/mpls{2,8}/ipv4/tcp	-	code=7e245ce2b71976ab meta=5ee214e8b4c27377 main=187 cb=29
 xdp_entry	eth/mpls{2,}/ipv4	-	code=0b47025ff506aa6c meta=5ee214e8b4c27377 main=117 cb=29
+xdp_entry	eth/qinq/vlan/arp	-	code=13b14a005db2bfb6 meta=5ee214e8b4c27377 main=49 cb=0
 xdp_entry	eth/qinq/vlan/ipv4/tcp where tcp.dport == 80	-	code=cd177eb2556ff2e6 meta=5ee214e8b4c27377 main=160 cb=0
 xdp_entry	eth/qinq?/vlan?/ipv4/tcp	-	code=a7cac655380fcccf meta=5ee214e8b4c27377 main=173 cb=0
 xdp_entry	eth/vlan*	-	code=21c3bd0bb10f0d41 meta=5ee214e8b4c27377 main=33 cb=28
 xdp_entry	eth/vlan*/ipv4	-	code=6cc0e1d23ac63a8b meta=5ee214e8b4c27377 main=120 cb=28
+xdp_entry	eth/vlan/arp	-	code=17e6a51972245eb1 meta=5ee214e8b4c27377 main=40 cb=0
 xdp_entry	eth/vlan/ipv4/tcp	-	code=4b5e7e3b6a0f5c14 meta=5ee214e8b4c27377 main=138 cb=0
 xdp_entry	eth/vlan?	-	code=f6d4c5203345dc1a meta=5ee214e8b4c27377 main=19 cb=0
 xdp_entry	eth/vlan?/(ipv4|ipv6)/tcp where ipv4.ttl == 64	-	code=a38f309fec6cffee meta=5ee214e8b4c27377 main=365 cb=68
+xdp_entry	eth/vlan?/arp	-	code=b489068357b3e0e8 meta=5ee214e8b4c27377 main=77 cb=0
 xdp_entry	eth/vlan?/ipv4	-	code=a6379d575e83366c meta=5ee214e8b4c27377 main=105 cb=0
 xdp_entry	eth/vlan?/ipv4/tcp	-	code=0a036b48b1482c4a meta=5ee214e8b4c27377 main=175 cb=0
 xdp_entry	eth/vlan?/ipv4/tcp capture headers	-	code=0a036b48b1482c4a meta=b7725a4fcbdbbf1b main=175 cb=0

@@ -1,7 +1,7 @@
 import Kunai.Vectors.AuxHeaders
 
 /-!
-# Protocol vectors: PFCP, SCTP
+# Protocol vectors: PFCP, SCTP, ARP
 
 Presence, field comparisons, and truncation for each protocol added to the
 bundled vocabulary after the first seventeen (DECISIONS.md D-040 onwards).
@@ -169,6 +169,98 @@ def sctpVectors : List Vector := [
   sctpChunkInit, sctpChunkInitMiss, sctpChunkFlags, sctpChunkBracket, sctpChunkBracketMiss, sctpChunkExists,
   sctpTruncCommon, sctpNoChunk, sctpTruncChunk, sctpChunkExact]
 
-def protocolVectors : List Vector := pfcpVectors ++ sctpVectors
+-- ARP (D-042) ----------------------------------------------------------------
+
+/-- ARP for IPv4; a request by default (who has 10.0.0.2, tell 10.0.0.1). -/
+def arpHdr (oper : Nat := 1) (htype : Nat := 1) (ptype : Nat := 0x0800) (hlen : Nat := 6) (plen : Nat := 4)
+    (sha : Nat := 0x66778899aabb) (spa : Nat := 0x0a000001) (tha : Nat := 0) (tpa : Nat := 0x0a000002) : Packet :=
+  be 2 htype ++ be 2 ptype ++ be 1 hlen ++ be 1 plen ++ be 2 oper ++ be 6 sha ++ be 4 spa ++ be 6 tha ++ be 4 tpa
+/-- Broadcast frame padded to the 60-byte Ethernet minimum. -/
+def arpPkt (arp : Packet := arpHdr) : Packet := eth 0x0806 (dst := 0xffffffffffff) ++ arp ++ List.replicate 18 0
+def arpL : List Layer := [P "eth", P "arp"]
+def arpW (w : Where) : Filter := { layers := arpL, cond := some w }
+def arpPred (p : Predicate) : Filter := { layers := [P "eth", .proto { name := "arp", preds := [p] }] }
+
+vector arpRequest := {
+  id := "arp-request", ast := { layers := arpL }, packet := arpPkt, expected := .accept [] }
+vector arpVlan := {
+  id := "arp-vlan", ast := { layers := [P "eth", P "vlan", P "arp"] },
+  packet := eth 0x8100 ++ vlan 100 0x0806 ++ arpHdr, expected := .accept [] }
+vector arpQinq := {
+  id := "arp-qinq", ast := { layers := [P "eth", P "qinq", P "vlan", P "arp"] },
+  packet := eth 0x88A8 ++ vlan 200 0x8100 ++ vlan 100 0x0806 ++ arpHdr, expected := .accept [] }
+vector arpOptVlanAbsent := {
+  id := "arp-opt-vlan-absent", ast := { layers := [P "eth", Pq "vlan" .opt, P "arp"] }, packet := arpPkt, expected := .accept [] }
+vector arpOptVlanPresent := {
+  id := "arp-opt-vlan-present", ast := { layers := [P "eth", Pq "vlan" .opt, P "arp"] },
+  packet := eth 0x8100 ++ vlan 100 0x0806 ++ arpHdr, expected := .accept [] }
+vector arpAlt := {
+  id := "arp-alt-second", ast := { layers := [P "eth", .alt [{ name := "ipv4" }, { name := "arp" }]] }, packet := arpPkt, expected := .accept [] }
+vector arpEthertypeMiss := {
+  id := "arp-ethertype-miss", ast := { layers := arpL }, expected := .reject, note := "eth.ethertype 0x0800 is ipv4" }
+vector arpNotIPv4 := {
+  id := "arp-not-ipv4", ast := { layers := chain3 }, packet := arpPkt, expected := .reject }
+vector arpOper := {
+  id := "arp-pred-oper", ast := arpPred (.cmp (f "oper") .eq (.int 1)), packet := arpPkt, expected := .accept [] }
+vector arpOperMiss := {
+  id := "arp-pred-oper-miss", ast := arpPred (.cmp (f "oper") .eq (.int 2)), packet := arpPkt, expected := .reject }
+vector arpTpaBracket := {
+  id := "arp-pred-tpa", ast := arpPred (.cmp (f "tpa") .eq (.ipv4 0x0a000002)), packet := arpPkt, expected := .accept [] }
+vector arpSpa := {
+  id := "arp-where-spa", ast := arpW (.litCmp (ff "arp" "spa") .eq (.ipv4 0x0a000001)), packet := arpPkt, expected := .accept [] }
+vector arpTpaCidr := {
+  id := "arp-where-tpa-cidr", ast := arpW (.litCmp (ff "arp" "tpa") .eq (.cidr4 0x0a000000 24)), packet := arpPkt, expected := .accept [] }
+vector arpTpaCidrMiss := {
+  id := "arp-where-tpa-cidr-miss", ast := arpW (.litCmp (ff "arp" "tpa") .eq (.cidr4 0xc0a80000 16)), packet := arpPkt, expected := .reject }
+vector arpSha := {
+  id := "arp-where-sha", ast := arpW (.litCmp (ff "arp" "sha") .eq (.mac 0x66778899aabb)), packet := arpPkt, expected := .accept [] }
+vector arpThaInt := {
+  id := "arp-where-tha-int", ast := arpW (cmp (fld "arp" "tha") .eq (k 0)), packet := arpPkt, expected := .accept [],
+  goStatus := .notImplemented, note := "D-042: Go compares no 6-byte field with an integer (a MAC literal works)" }
+vector arpReply := {
+  id := "arp-where-reply", ast := arpW (.and (cmp (fld "arp" "oper") .eq (k 2)) (.litCmp (ff "arp" "tha") .eq (.mac 0x66778899aabb))),
+  packet := arpPkt (arpHdr (oper := 2) (sha := 0x020000000001) (spa := 0x0a000002) (tha := 0x66778899aabb) (tpa := 0x0a000001)),
+  expected := .accept [] }
+vector arpPtype := {
+  id := "arp-pred-ptype", ast := arpPred (.cmp (f "ptype") .eq (.int 0x0800)), packet := arpPkt, expected := .accept [] }
+vector arpPtypeOther := {
+  id := "arp-pred-ptype-other", ast := arpPred (.cmp (f "ptype") .eq (.int 0x0800)), packet := arpPkt (arpHdr (ptype := 0x0801)),
+  expected := .reject, note := "D-042: ptype is not validated, so arp is present and the predicate fails" }
+vector arpPtypeOtherChain := {
+  id := "arp-ptype-not-validated", ast := { layers := arpL }, packet := arpPkt (arpHdr (ptype := 0x0801)), expected := .accept [],
+  note := "D-042: the layout does not depend on ptype" }
+vector arpHtypeIeee := {
+  id := "arp-htype-ieee802", ast := { layers := arpL }, packet := arpPkt (arpHdr (htype := 6)), expected := .accept [],
+  note := "D-042: htype is not validated" }
+vector arpHlenBad := {
+  id := "arp-hlen-reject", ast := { layers := arpL }, packet := arpPkt (arpHdr (hlen := 8)), expected := .reject,
+  note := "D-042/D-017: hlen 6 is required; the ethertype named arp, so this is broken, not absent" }
+vector arpPlenBad := {
+  id := "arp-plen-reject", ast := { layers := arpL }, packet := arpPkt (arpHdr (plen := 16)), expected := .reject }
+vector arpOptBroken := {
+  id := "arp-opt-broken", ast := { layers := [P "eth", Pq "arp" .opt] }, packet := arpPkt (arpHdr (hlen := 8)), expected := .reject,
+  note := "D-017 (c): the parent constant names arp, a failed self-validation rejects instead of skipping" }
+vector arpUnderMpls := {
+  id := "arp-under-mpls-selfvalidating", ast := { layers := [P "eth", P "mpls", P "arp"] },
+  packet := eth 0x8847 ++ mpls 5 1 ++ arpHdr, expected := .accept [],
+  note := "D-042: the hlen/plen check makes arp self-validating, so like ipv4 it may follow a parent without an edge" }
+vector arpUnderMplsBroken := {
+  id := "arp-under-mpls-selfvalidating-miss", ast := { layers := [P "eth", P "mpls", P "arp"] },
+  packet := mpls1, expected := .reject, note := "the ipv4 header after the label is not hlen 6 / plen 4" }
+vector arpExact := {
+  id := "arp-exact-fit", ast := { layers := arpL }, packet := eth 0x0806 ++ arpHdr, expected := .accept [] }
+vector arpTrunc := {
+  id := "arp-truncated", ast := { layers := arpL }, packet := (eth 0x0806 ++ arpHdr).take 41, expected := .reject,
+  note := "27 of 28 bytes" }
+vector arpTruncBeforeLens := {
+  id := "arp-truncated-before-lengths", ast := { layers := arpL }, packet := (eth 0x0806 ++ arpHdr).take 18, expected := .reject }
+
+def arpVectors : List Vector := [
+  arpRequest, arpVlan, arpQinq, arpOptVlanAbsent, arpOptVlanPresent, arpAlt, arpEthertypeMiss, arpNotIPv4,
+  arpOper, arpOperMiss, arpTpaBracket, arpSpa, arpTpaCidr, arpTpaCidrMiss, arpSha, arpThaInt, arpReply,
+  arpPtype, arpPtypeOther, arpPtypeOtherChain, arpHtypeIeee, arpHlenBad, arpPlenBad, arpOptBroken,
+  arpUnderMpls, arpUnderMplsBroken, arpExact, arpTrunc, arpTruncBeforeLens]
+
+def protocolVectors : List Vector := pfcpVectors ++ sctpVectors ++ arpVectors
 
 end Kunai

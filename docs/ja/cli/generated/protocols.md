@@ -10,7 +10,8 @@ offset と可変長構造の注記を併せて読んでください。
 式の書き方と型の詳細は、[DSL 文法](../../dsl-grammar.md)と[型の仕様](../../dsl-types.md)を参照してください。
 
 ```text
-Bundled protocols (19):
+Bundled protocols (20):
+  arp      28 B  from eth, qinq, vlan
   cw        4 B  from mpls
   esp       8 B  from ipv4, ipv6
   eth      14 B  from cw, geneve, mpls, vxlan
@@ -30,6 +31,28 @@ Bundled protocols (19):
   udp       8 B  from ipv4, ipv6, srv6
   vlan      4 B  from eth, qinq
   vxlan     8 B  from udp
+```
+
+## arp
+
+```text
+arp — header 28 bytes minimum (variable layout, see Notes)
+
+Fields (bit width, running byte offset):
+  htype                bit<16>   @0
+  ptype                bit<16>   @2
+  hlen                 bit<8>    @4
+  plen                 bit<8>    @5
+  oper                 bit<16>   @6
+  sha                  bit<48>   @8
+  spa                  bit<32>   @14
+  tha                  bit<48>   @18
+  tpa                  bit<32>   @24
+
+Dispatched from: eth, qinq, vlan
+
+Notes:
+  parser state machine (variable extension headers or self-validation)
 ```
 
 ## cw
@@ -72,7 +95,7 @@ Fields (bit width, running byte offset):
 
 Dispatched from: cw, geneve, mpls, vxlan
 Dispatches to:
-  via ethertype    -> ipv4, ipv6, mpls, qinq, vlan
+  via ethertype    -> arp, ipv4, ipv6, mpls, qinq, vlan
 ```
 
 ## geneve
@@ -360,7 +383,7 @@ Fields (bit width, running byte offset):
 
 Dispatched from: eth
 Dispatches to:
-  via ethertype    -> ipv4, ipv6, mpls, vlan
+  via ethertype    -> arp, ipv4, ipv6, mpls, vlan
 ```
 
 ## sctp
@@ -528,7 +551,7 @@ Fields (bit width, running byte offset):
 
 Dispatched from: eth, qinq
 Dispatches to:
-  via ethertype    -> ipv4, ipv6, mpls
+  via ethertype    -> arp, ipv4, ipv6, mpls
 ```
 
 ## vxlan

@@ -344,6 +344,15 @@ Entries are never deleted; a rejected candidate stays in the log.
 - 状態: 提案中
 - 反映先: `pkg/kunai/protocols/sctp.p4`, vectors `sctp-*`
 
+## D-042: ARP の vocab
+- 論点: ARP (RFC 826) は hardware / protocol address の長さを header 自身が持つ。Ethernet / IPv4 の形 (28 byte) だけを表すとき、何を検査するか。
+- 決定: `htype`, `ptype`, `hlen`, `plen`, `oper`, `sha` (48 bit), `spa`, `tha` (48 bit), `tpa` の固定 28 byte。start state が `(hlen, plen) == (6, 4)` 以外を reject する。field の位置を決めるのはこの 2 つだけなので、`htype` (Ethernet = 1 と IEEE 802 = 6 は同じ形) と `ptype` は検査しない。IPv4 の ARP に限りたいときは `arp[ptype == 0x0800]` と書く。dispatch は eth / vlan / qinq の ethertype 0x0806。
+- 帰結: start state の select の default が reject なので、arp は ipv4 と同じく self-validating になり、edge の無い親の後にも書ける (`eth/mpls/arp` は well-typed で、label の後ろが hlen 6 / plen 4 なら accept、vector `arp-under-mpls-selfvalidating`)。親に定数がある `eth/arp?` で長さが違えば skip ではなく reject (D-017 (c)、vector `arp-opt-broken`)。
+- 落としたもの: 6 / 4 以外の address 長の ARP (IPv6 の前の ATM ARP など) と RARP (ethertype 0x8035)。`ptype == 0x0800` も検査に入れる案は、Go の codegen が parser の select key に 1 byte を越える field (`select key arp_h.ptype straddles byte boundary`) を使えないため採らなかった。layout の正しさには不要なので失うものは無い。
+- 現行 Go 実装の挙動: 48 bit の `sha` / `tha` を整数と比べる式は `ErrNotImplemented` ("field size 6 bytes not supported"、`eth.dst` と同じ)。MAC リテラルとの比較は compile できる。
+- 状態: 提案中
+- 反映先: `pkg/kunai/protocols/arp.p4`, vectors `arp-*` (`arp-where-tha-int` は goStatus notImplemented)
+
 ## Go 側への issue 候補 (この作業では変更しない)
 
 `fix/kunai-spec-conformance` で対応済みのものは ✅、残りは `issues/` に本文がある。
