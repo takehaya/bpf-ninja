@@ -1,4 +1,4 @@
-.PHONY: ci build vet test lint check-trust dafny-verify dafny-gen dafny-check-gen corpus
+.PHONY: ci build vet test lint check-trust dafny-verify dafny-gen dafny-check-gen corpus verify-sim
 
 DAFNY ?= dafny
 # Z3's default case_split=3 loops on bv64 function unfoldings; 0 only changes
@@ -7,6 +7,9 @@ DFLAGS := --boogie -proverOpt:O:smt.case_split=0 --verification-time-limit 120
 # All files are listed: dafny verify does not verify included files otherwise.
 DFY := dafny/src/Bits.dfy dafny/src/Semantics.dfy dafny/src/Terms.dfy dafny/src/Obligations.dfy \
 	dafny/src/Checker.dfy dafny/src/Soundness.dfy dafny/src/Api.dfy
+# Whole-program simulation proof (dafny/sim); not part of the generated Go.
+SIM := dafny/sim/Model.dfy dafny/sim/Rewrite.dfy dafny/sim/Premises.dfy dafny/sim/Theorem.dfy
+TRUST_RE := '\bassume\b|\{: *axiom\b|@Axiom\b|\{: *verify +false|@Verify\b|\{: *extern\b|@Extern\b'
 GEN_MODULE := github.com/takehaya/bpf-ninja/tools/regionval/dafny/gen-go
 export CGO_ENABLED := 0
 
@@ -33,6 +36,12 @@ check-trust: ## Fail on assume, axioms, unverified or extern declarations, or a 
 
 dafny-verify: ## Verify the Dafny core and its soundness proof
 	$(DAFNY) verify $(DFLAGS) $(DFY)
+
+verify-sim: ## Verify the whole-program simulation proof; fails on trust escapes and bodiless lemmas
+	@for f in dafny/sim/*.dfy; do case " $(SIM) " in *" $$f "*) ;; *) echo "$$f is not listed in SIM"; exit 1;; esac; done
+	@rc=0; grep -nE $(TRUST_RE) $(SIM) || rc=$$?; \
+	case $$rc in 0) echo "trust escape found"; exit 1;; 1) ;; *) exit $$rc;; esac
+	$(DAFNY) verify $(DFLAGS) $(SIM)
 
 dafny-gen: ## Regenerate dafny/gen-go from the Dafny sources
 	@t=$$(mktemp -d); \
