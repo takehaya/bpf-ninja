@@ -10,7 +10,7 @@ offset と可変長構造の注記を併せて読んでください。
 式の書き方と型の詳細は、[DSL 文法](../../dsl-grammar.md)と[型の仕様](../../dsl-types.md)を参照してください。
 
 ```text
-Bundled protocols (18):
+Bundled protocols (19):
   cw        4 B  from mpls
   esp       8 B  from ipv4, ipv6
   eth      14 B  from cw, geneve, mpls, vxlan
@@ -24,6 +24,7 @@ Bundled protocols (18):
   mpls      4 B  from eth, qinq, vlan
   pfcp      4 B  from udp
   qinq      4 B  from eth
+  sctp     12 B  from ipv4, ipv6, srv6
   srv6      8 B  from ipv6
   tcp      20 B  from ipv4, ipv6, srv6
   udp       8 B  from ipv4, ipv6, srv6
@@ -262,7 +263,7 @@ Options walk (parsed by parser block, 2 named options):
 
 Dispatched from: eth, gre, qinq, srv6, vlan
 Dispatches to:
-  via protocol     -> esp, gre, icmp, tcp, udp
+  via protocol     -> esp, gre, icmp, sctp, tcp, udp
 
 Notes:
   parser state machine (variable extension headers or self-validation)
@@ -294,7 +295,7 @@ Aux header stacks:
 
 Dispatched from: eth, gre, qinq, vlan
 Dispatches to:
-  via next_header  -> esp, gre, icmp6, srv6, tcp, udp
+  via next_header  -> esp, gre, icmp6, sctp, srv6, tcp, udp
 
 Notes:
   parser state machine (variable extension headers or self-validation)
@@ -362,6 +363,30 @@ Dispatches to:
   via ethertype    -> ipv4, ipv6, mpls, vlan
 ```
 
+## sctp
+
+```text
+sctp — header 12 bytes minimum (variable layout, see Notes)
+
+Fields (bit width, running byte offset):
+  sport                bit<16>   @0
+  dport                bit<16>   @2
+  vtag                 bit<32>   @4
+  checksum             bit<32>   @8
+
+Aux headers:
+  chunk (sctp_chunk_h, 4 bytes @ +12 from layer start)
+    type                 bit<8>    @0
+    flags                bit<8>    @1
+    length               bit<16>   @2
+    use: sctp.chunk.<field>  or  sctp[chunk.<field> == X]
+
+Dispatched from: ipv4, ipv6, srv6
+
+Notes:
+  parser state machine (variable extension headers or self-validation)
+```
+
 ## srv6
 
 ```text
@@ -386,7 +411,7 @@ Aux header stacks:
 
 Dispatched from: ipv6
 Dispatches to:
-  via next_header  -> ipv4, tcp, udp
+  via next_header  -> ipv4, sctp, tcp, udp
 
 Notes:
   parser state machine (variable extension headers or self-validation)

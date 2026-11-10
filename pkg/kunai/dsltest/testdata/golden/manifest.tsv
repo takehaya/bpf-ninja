@@ -82,6 +82,14 @@ xdp_entry	eth/ipv4/ipv4*/tcp	-	code=abd85eba4c914eac meta=5ee214e8b4c27377 main=
 xdp_entry	eth/ipv4/ipv4?/ipv4?/tcp	-	code=03197839cab9b962 meta=5ee214e8b4c27377 main=305 cb=0
 xdp_entry	eth/ipv4/ipv4?/tcp	-	code=860d252b81d88b1b meta=5ee214e8b4c27377 main=210 cb=0
 xdp_entry	eth/ipv4/ipv4{0,0}/tcp	-	code=53e9dd4f863f24be meta=5ee214e8b4c27377 main=129 cb=0
+xdp_entry	eth/ipv4/sctp	-	code=c6b8046a6ecf8acb meta=5ee214e8b4c27377 main=84 cb=0
+xdp_entry	eth/ipv4/sctp where (sctp.chunk.flags == 3) and (sctp.chunk.length >= 20)	-	code=9e916143f890ea68 meta=5ee214e8b4c27377 main=108 cb=0
+xdp_entry	eth/ipv4/sctp where sctp.chunk.exists	-	code=fb88589fd52bbbe5 meta=5ee214e8b4c27377 main=85 cb=0
+xdp_entry	eth/ipv4/sctp where sctp.chunk.type == 1	-	code=a5ca3e21851362b6 meta=5ee214e8b4c27377 main=96 cb=0
+xdp_entry	eth/ipv4/sctp where sctp.vtag == 3735928559	-	code=4c7e9999c1fc4262 meta=5ee214e8b4c27377 main=97 cb=0
+xdp_entry	eth/ipv4/sctp[chunk.type == 0]	-	code=6c8e30a519c354bf meta=5ee214e8b4c27377 main=92 cb=0
+xdp_entry	eth/ipv4/sctp[dport == 36412]	-	code=f3524a6b923367bd meta=5ee214e8b4c27377 main=92 cb=0
+xdp_entry	eth/ipv4/sctp[dport == 38412]	-	code=bd49f29822f5d11e meta=5ee214e8b4c27377 main=92 cb=0
 xdp_entry	eth/ipv4/tcp	-	code=53e9dd4f863f24be meta=5ee214e8b4c27377 main=129 cb=0
 xdp_entry	eth/ipv4/tcp capture all capture headers capture headers+16 capture absolute 32 capture ipv4+4 capture tcp	-	code=42bee4a8af37c28d meta=20cfb7a18e76a800 main=130 cb=0
 xdp_entry	eth/ipv4/tcp capture all where tcp.dport == 80 capture headers where tcp.dport == 1	-	code=965ea2278f4af419 meta=eaba0a0732fdca28 main=154 cb=0
@@ -301,8 +309,10 @@ xdp_entry	eth/ipv4{8,}/tcp	-	code=7bd9f1a287b75a12 meta=5ee214e8b4c27377 main=60
 xdp_entry	eth/ipv6 where ipv6.dst[92:124] == 10.0.0.1	-	code=e3007f457b32d6db meta=5ee214e8b4c27377 main=151 cb=68
 xdp_entry	eth/ipv6+/tcp	-	code=02d509d9fb69e27d meta=5ee214e8b4c27377 main=724 cb=272
 xdp_entry	eth/ipv6/ipv6*/tcp	-	code=08fdb36d6c8a9501 meta=5ee214e8b4c27377 main=910 cb=340
+xdp_entry	eth/ipv6/sctp	-	code=382226f609afff51 meta=5ee214e8b4c27377 main=159 cb=68
 xdp_entry	eth/ipv6/srv6	-	code=b06f21b2b9bcca44 meta=5ee214e8b4c27377 main=198 cb=68
 xdp_entry	eth/ipv6/srv6 where any(srv6.segments.addr == fc00::1)	-	code=5491b8740d8f33df meta=5ee214e8b4c27377 main=215 cb=117
+xdp_entry	eth/ipv6/srv6/sctp	-	code=edb8832ea64d8293 meta=5ee214e8b4c27377 main=222 cb=68
 xdp_entry	eth/ipv6/srv6/tcp	-	code=bb1e7795a427e320 meta=5ee214e8b4c27377 main=267 cb=68
 xdp_entry	eth/ipv6/srv6/tcp capture headers	-	code=bb1e7795a427e320 meta=8f028ebd6a5a5c1f main=267 cb=68
 xdp_entry	eth/ipv6/srv6/tcp where all((srv6.segments.addr == fc00:0000:0000:0000:0000:0000:0000:0002) or true)	-	code=daeffd5a5344095d meta=5ee214e8b4c27377 main=357 cb=68

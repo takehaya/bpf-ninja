@@ -336,6 +336,14 @@ Entries are never deleted; a rejected candidate stays in the log.
 - 状態: 提案中
 - 反映先: `pkg/kunai/protocols/pfcp.p4`, `Vectors/Protocols.lean` の vectors `pfcp-*` (`pfcp-node-seq`, `pfcp-sess-seq` は goStatus notImplemented)
 
+## D-041: SCTP の vocab
+- 論点: SCTP (RFC 9260) の共通ヘッダと chunk header をどこまで表すか。
+- 決定: 共通ヘッダ 12 byte (`sport`, `dport`, `vtag`, `checksum`) を primary、最初の chunk の header (`type`, `flags`, `length`) を無条件に抽出する aux `chunk` とする。RFC 9260 §3 は chunk を 1 つ以上要求するので、共通ヘッダだけで終わる packet は reject (vector `sctp-no-chunk`)。dispatch は `ipv4.protocol` / `ipv6.next_header` / `srv6.next_header` == 132 (tcp / udp と同じ親)。
+- 落としたもの: 2 つ目以降の chunk と chunk の中身 (DATA の TSN、INIT の initiate tag など)。chunk は 16 bit の length を 4 の倍数に切り上げた分だけ読み飛ばすが、p4lite の `pkt.advance` が長さとして読めるのは 1 byte の field か lookahead の 1 byte の slice だけで、切り上げも書けない。sctp は終端 layer。
+- 現行 Go 実装の挙動: すべての vector が compile できる (Runner.Match は root が要るので CI)。
+- 状態: 提案中
+- 反映先: `pkg/kunai/protocols/sctp.p4`, vectors `sctp-*`
+
 ## Go 側への issue 候補 (この作業では変更しない)
 
 `fix/kunai-spec-conformance` で対応済みのものは ✅、残りは `issues/` に本文がある。

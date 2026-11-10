@@ -1,7 +1,7 @@
 import Kunai.Vectors.AuxHeaders
 
 /-!
-# Protocol vectors: PFCP
+# Protocol vectors: PFCP, SCTP
 
 Presence, field comparisons, and truncation for each protocol added to the
 bundled vocabulary after the first seventeen (DECISIONS.md D-040 onwards).
@@ -102,6 +102,73 @@ def pfcpVectors : List Vector := [
   pfcpPriority, pfcpBracketSeid, pfcpBracketSeidAbsent, pfcpNodeSeq, pfcpSessSeq,
   pfcpTruncCommon, pfcpNodeExact, pfcpTruncNode, pfcpTruncSess]
 
-def protocolVectors : List Vector := pfcpVectors
+-- SCTP (D-041) ---------------------------------------------------------------
+
+def sctpHdr (sport dport : Nat) (vtag : Nat := 0) : Packet := be 2 sport ++ be 2 dport ++ be 4 vtag ++ be 4 0
+def sctpChunk (type : Nat) (length : Nat) (flags : Nat := 0) : Packet := [UInt8.ofNat type, UInt8.ofNat flags] ++ be 2 length
+/-- INIT (type 1, 20 bytes) from 5000 to the NGAP port 38412, verification tag 0. -/
+def sctpInit : Packet := sctpHdr 5000 38412 ++ sctpChunk 1 20 ++ be 4 0x01020304 ++ be 4 65536 ++ be 2 10 ++ be 2 10 ++ be 4 1
+/-- DATA (type 0, flags B|E) on an established association. -/
+def sctpData : Packet := sctpHdr 5000 38412 (vtag := 0xdeadbeef) ++ sctpChunk 0 20 (flags := 3) ++ be 4 1 ++ be 2 0 ++ be 2 0 ++ be 4 60 ++ payload 4
+def sctpPkt (sctp : Packet) : Packet := eth 0x0800 ++ ipv4 132 ++ sctp
+def sctpL : List Layer := [P "eth", P "ipv4", P "sctp"]
+def sctpW (w : Where) : Filter := { layers := sctpL, cond := some w }
+def sctpPred (p : Predicate) : Filter := { layers := [P "eth", P "ipv4", .proto { name := "sctp", preds := [p] }] }
+def sctpChunkType := fa ["sctp", "chunk", "type"]
+
+vector sctpInitPresent := {
+  id := "sctp-init", ast := { layers := sctpL }, packet := sctpPkt sctpInit, expected := .accept [] }
+vector sctpIPv6 := {
+  id := "sctp-ipv6", ast := { layers := [P "eth", P "ipv6", P "sctp"] }, packet := eth 0x86DD ++ ipv6 132 ++ sctpData, expected := .accept [] }
+vector sctpSrv6 := {
+  id := "sctp-srv6", ast := { layers := [P "eth", P "ipv6", P "srv6", P "sctp"] },
+  packet := eth 0x86DD ++ ipv6 43 ++ srv6Hdr 132 0 ++ be 16 0xfc000000000000000000000000000003 ++ sctpData, expected := .accept [],
+  note := "KUNAI_SCTP_SRV6_NEXT_HEADER" }
+vector sctpProtoMiss := {
+  id := "sctp-proto-miss", ast := { layers := sctpL }, packet := eth 0x0800 ++ ipv4 17 ++ sctpInit, expected := .reject,
+  note := "ipv4.protocol 17 is udp" }
+vector sctpNotTcp := {
+  id := "sctp-not-tcp", ast := { layers := chain3 }, packet := sctpPkt sctpInit, expected := .reject }
+vector sctpDport := {
+  id := "sctp-pred-dport", ast := sctpPred (.cmp (f "dport") .eq (.int 38412)), packet := sctpPkt sctpInit, expected := .accept [] }
+vector sctpDportMiss := {
+  id := "sctp-pred-dport-miss", ast := sctpPred (.cmp (f "dport") .eq (.int 36412)), packet := sctpPkt sctpInit, expected := .reject }
+vector sctpVtag := {
+  id := "sctp-where-vtag", ast := sctpW (cmp (fa ["sctp", "vtag"]) .eq (k 0xdeadbeef)), packet := sctpPkt sctpData, expected := .accept [] }
+vector sctpVtagMiss := {
+  id := "sctp-where-vtag-miss", ast := sctpW (cmp (fa ["sctp", "vtag"]) .eq (k 0xdeadbeef)), packet := sctpPkt sctpInit, expected := .reject,
+  note := "INIT carries verification tag 0" }
+vector sctpChunkInit := {
+  id := "sctp-chunk-type", ast := sctpW (cmp sctpChunkType .eq (k 1)), packet := sctpPkt sctpInit, expected := .accept [] }
+vector sctpChunkInitMiss := {
+  id := "sctp-chunk-type-miss", ast := sctpW (cmp sctpChunkType .eq (k 1)), packet := sctpPkt sctpData, expected := .reject }
+vector sctpChunkFlags := {
+  id := "sctp-chunk-flags-length", ast := sctpW (.and (cmp (fa ["sctp", "chunk", "flags"]) .eq (k 3)) (cmp (fa ["sctp", "chunk", "length"]) .ge (k 20))),
+  packet := sctpPkt sctpData, expected := .accept [] }
+vector sctpChunkBracket := {
+  id := "sctp-pred-chunk-type", ast := sctpPred (.cmp (fp ["chunk", "type"]) .eq (.int 0)), packet := sctpPkt sctpData, expected := .accept [] }
+vector sctpChunkBracketMiss := {
+  id := "sctp-pred-chunk-type-miss", ast := sctpPred (.cmp (fp ["chunk", "type"]) .eq (.int 0)), packet := sctpPkt sctpInit, expected := .reject }
+vector sctpChunkExists := {
+  id := "sctp-chunk-exists", ast := sctpW (.fieldExists (fp ["sctp", "chunk"])), packet := sctpPkt sctpInit, expected := .accept [],
+  note := "the first chunk header is extracted unconditionally" }
+vector sctpTruncCommon := {
+  id := "sctp-truncated-common", ast := { layers := sctpL }, packet := (sctpPkt sctpInit).take 40, expected := .reject,
+  note := "6 of the 12 common-header bytes" }
+vector sctpNoChunk := {
+  id := "sctp-no-chunk", ast := { layers := sctpL }, packet := (sctpPkt sctpInit).take 46, expected := .reject,
+  note := "D-041: the common header alone is not an SCTP packet" }
+vector sctpTruncChunk := {
+  id := "sctp-truncated-chunk", ast := { layers := sctpL }, packet := (sctpPkt sctpInit).take 48, expected := .reject }
+vector sctpChunkExact := {
+  id := "sctp-chunk-exact-fit", ast := sctpW (cmp sctpChunkType .eq (k 1)), packet := (sctpPkt sctpInit).take 50, expected := .accept [],
+  note := "the chunk value is not read" }
+
+def sctpVectors : List Vector := [
+  sctpInitPresent, sctpIPv6, sctpSrv6, sctpProtoMiss, sctpNotTcp, sctpDport, sctpDportMiss, sctpVtag, sctpVtagMiss,
+  sctpChunkInit, sctpChunkInitMiss, sctpChunkFlags, sctpChunkBracket, sctpChunkBracketMiss, sctpChunkExists,
+  sctpTruncCommon, sctpNoChunk, sctpTruncChunk, sctpChunkExact]
+
+def protocolVectors : List Vector := pfcpVectors ++ sctpVectors
 
 end Kunai

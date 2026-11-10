@@ -148,7 +148,7 @@ parser IPv4Parser(packet_in pkt, out ipv4_h hdr) {
 }
 ```
 
-vocabulary をデータとして管理することで、kunai のコードを編集することなく、新 protocol を 1 ファイル drop で追加できます。現在は eth, ipv4, ipv6, tcp, udp, icmp/6, vlan, qinq, cw, mpls, gre, vxlan, geneve, gtp, srv6, esp, pfcp の 18 プロトコルが bundle されています。
+vocabulary をデータとして管理することで、kunai のコードを編集することなく、新 protocol を 1 ファイル drop で追加できます。現在は eth, ipv4, ipv6, tcp, udp, icmp/6, vlan, qinq, cw, mpls, gre, vxlan, geneve, gtp, srv6, esp, pfcp, sctp の 19 プロトコルが bundle されています。
 
 ### parser-block 自己検証という発想
 
