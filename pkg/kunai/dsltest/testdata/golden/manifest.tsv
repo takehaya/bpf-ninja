@@ -88,6 +88,7 @@ xdp_entry	eth/ipv4/(udp|tcp[options.valid])	-	code=93d98c64653f8ac9 meta=5ee214e
 xdp_entry	eth/ipv4/gre	-	code=8340310dac05c797 meta=5ee214e8b4c27377 main=110 cb=0
 xdp_entry	eth/ipv4/gre/ipv4/tcp	-	code=dc53e7b960ccb6dd meta=5ee214e8b4c27377 main=248 cb=0
 xdp_entry	eth/ipv4/gre/ipv4/tcp where tcp.dport == 80	-	code=12d519990e408392 meta=5ee214e8b4c27377 main=261 cb=0
+xdp_entry	eth/ipv4/gre/nsh/ipv4/tcp	-	code=80f8c92308290b74 meta=5ee214e8b4c27377 main=319 cb=0
 xdp_entry	eth/ipv4/gre?/ipv4/tcp	-	code=428b008cf8e82cdc meta=5ee214e8b4c27377 main=261 cb=0
 xdp_entry	eth/ipv4/icmp where icmp.type == 8	-	code=f95bb6b80c99c451 meta=5ee214e8b4c27377 main=85 cb=0
 xdp_entry	eth/ipv4/ipv4*/tcp	-	code=abd85eba4c914eac meta=5ee214e8b4c27377 main=687 cb=0
@@ -597,6 +598,22 @@ xdp_entry	eth/mpls{1,}/ipv4/tcp	-	code=b34fae5dc7bb20c6 meta=5ee214e8b4c27377 ma
 xdp_entry	eth/mpls{1,}/ipv4/tcp capture headers	-	code=b34fae5dc7bb20c6 meta=9c668db809c48a55 main=183 cb=29
 xdp_entry	eth/mpls{2,8}/ipv4/tcp	-	code=7e245ce2b71976ab meta=5ee214e8b4c27377 main=187 cb=29
 xdp_entry	eth/mpls{2,}/ipv4	-	code=0b47025ff506aa6c meta=5ee214e8b4c27377 main=117 cb=29
+xdp_entry	eth/nsh	-	code=64f68b5f9056dbf1 meta=5ee214e8b4c27377 main=62 cb=0
+xdp_entry	eth/nsh/eth/ipv4/tcp	-	code=46cf66d0dc85461c meta=5ee214e8b4c27377 main=209 cb=0
+xdp_entry	eth/nsh/ipv4/tcp	-	code=b7f8ee0ee1daced6 meta=5ee214e8b4c27377 main=194 cb=0
+xdp_entry	eth/nsh/ipv4/tcp where (nsh.ttl == 63) and (nsh.length == 6)	-	code=23624321ad132a5c meta=5ee214e8b4c27377 main=214 cb=0
+xdp_entry	eth/nsh/ipv4/tcp where not (nsh.md1.ctx1 == 1)	-	code=3e66c0edfb2c0e12 meta=5ee214e8b4c27377 main=211 cb=0
+xdp_entry	eth/nsh/ipv4/tcp where nsh.md1.ctx1 != 0	-	code=481222cc67a23bce meta=5ee214e8b4c27377 main=209 cb=0
+xdp_entry	eth/nsh/ipv4/tcp where nsh.md1.ctx1 == 1	-	code=f56100b51d5109eb meta=5ee214e8b4c27377 main=209 cb=0
+xdp_entry	eth/nsh/ipv4/tcp where nsh.md1.ctx1 == 2	-	code=8fe7e1edcb39fe72 meta=5ee214e8b4c27377 main=209 cb=0
+xdp_entry	eth/nsh/ipv4/tcp where nsh.md1.exists	-	code=17946b9e4e3b2fb9 meta=5ee214e8b4c27377 main=200 cb=0
+xdp_entry	eth/nsh/ipv4/tcp where tcp.dport == 80	-	code=38ceadb1ea3100b3 meta=5ee214e8b4c27377 main=207 cb=0
+xdp_entry	eth/nsh/ipv6/tcp	-	code=d90abf7ee241f720 meta=5ee214e8b4c27377 main=299 cb=68
+xdp_entry	eth/nsh/mpls/ipv4/tcp	-	code=5ed34bb0715c171f meta=5ee214e8b4c27377 main=199 cb=0
+xdp_entry	eth/nsh?/ipv4/tcp	-	code=2b946846ec8023c0 meta=5ee214e8b4c27377 main=213 cb=0
+xdp_entry	eth/nsh[md1.ctx2 == 2]/ipv4/tcp	-	code=1952e90988d15dc5 meta=5ee214e8b4c27377 main=211 cb=0
+xdp_entry	eth/nsh[si == 254]/ipv4/tcp	-	code=01973fe65a0b85bb meta=5ee214e8b4c27377 main=202 cb=0
+xdp_entry	eth/nsh[si == 255]/ipv4/tcp	-	code=c0fb0ec2b89bef78 meta=5ee214e8b4c27377 main=202 cb=0
 xdp_entry	eth/qinq/vlan/arp	-	code=13b14a005db2bfb6 meta=5ee214e8b4c27377 main=49 cb=0
 xdp_entry	eth/qinq/vlan/ipv4/tcp where tcp.dport == 80	-	code=cd177eb2556ff2e6 meta=5ee214e8b4c27377 main=160 cb=0
 xdp_entry	eth/qinq?/vlan?/ipv4/tcp	-	code=a7cac655380fcccf meta=5ee214e8b4c27377 main=173 cb=0
@@ -604,6 +621,7 @@ xdp_entry	eth/vlan*	-	code=21c3bd0bb10f0d41 meta=5ee214e8b4c27377 main=33 cb=28
 xdp_entry	eth/vlan*/ipv4	-	code=6cc0e1d23ac63a8b meta=5ee214e8b4c27377 main=120 cb=28
 xdp_entry	eth/vlan/arp	-	code=17e6a51972245eb1 meta=5ee214e8b4c27377 main=40 cb=0
 xdp_entry	eth/vlan/ipv4/tcp	-	code=4b5e7e3b6a0f5c14 meta=5ee214e8b4c27377 main=138 cb=0
+xdp_entry	eth/vlan/nsh/ipv4/tcp	-	code=f31140de82dcdc75 meta=5ee214e8b4c27377 main=203 cb=0
 xdp_entry	eth/vlan?	-	code=f6d4c5203345dc1a meta=5ee214e8b4c27377 main=19 cb=0
 xdp_entry	eth/vlan?/(ipv4|ipv6)/tcp where ipv4.ttl == 64	-	code=a38f309fec6cffee meta=5ee214e8b4c27377 main=365 cb=68
 xdp_entry	eth/vlan?/arp	-	code=b489068357b3e0e8 meta=5ee214e8b4c27377 main=77 cb=0

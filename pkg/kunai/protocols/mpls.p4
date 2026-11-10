@@ -19,6 +19,9 @@ const bit<16> KUNAI_MPLS_ETH_ETHERTYPE  = 0x8847;
 const bit<16> KUNAI_MPLS_VLAN_ETHERTYPE = 0x8847;
 const bit<16> KUNAI_MPLS_QINQ_ETHERTYPE = 0x8847;
 
+// Under NSH, next_proto 5 names MPLS (RFC 8300 §2.2).
+const bit<8>  KUNAI_MPLS_NSH_NEXT_PROTO = 5;
+
 // Stacked MPLS labels: the next label sits immediately after the
 // previous one with no boundary marker. The user opts in by writing
 // `mpls+` or `mpls{n,m}`. KUNAI_ marks this self-dispatch edge.

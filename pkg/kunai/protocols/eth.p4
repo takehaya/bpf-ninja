@@ -16,6 +16,9 @@ const bool KUNAI_ETH_CW_NO_CHECK     = true;
 const bool KUNAI_ETH_VXLAN_NO_CHECK  = true;
 const bool KUNAI_ETH_GENEVE_NO_CHECK = true;
 
+// Under NSH, next_proto 3 names Ethernet (RFC 8300 §2.2).
+const bit<8> KUNAI_ETH_NSH_NEXT_PROTO = 3;
+
 parser EthParser(packet_in pkt, out eth_h hdr) {
     state start {
         pkt.extract(hdr);

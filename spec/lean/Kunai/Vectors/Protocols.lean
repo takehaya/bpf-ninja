@@ -1,7 +1,7 @@
 import Kunai.Vectors.AuxHeaders
 
 /-!
-# Protocol vectors: PFCP, SCTP, ARP
+# Protocol vectors: PFCP, SCTP, ARP, NSH
 
 Presence, field comparisons, and truncation for each protocol added to the
 bundled vocabulary after the first seventeen (DECISIONS.md D-040 onwards).
@@ -261,6 +261,106 @@ def arpVectors : List Vector := [
   arpPtype, arpPtypeOther, arpPtypeOtherChain, arpHtypeIeee, arpHlenBad, arpPlenBad, arpOptBroken,
   arpUnderMpls, arpUnderMplsBroken, arpExact, arpTrunc, arpTruncBeforeLens]
 
-def protocolVectors : List Vector := pfcpVectors ++ sctpVectors ++ arpVectors
+-- NSH (D-043) ----------------------------------------------------------------
+
+/-- NSH base + service path header; `length` in 4-byte words. -/
+def nshHdr (mdType nextProto length : Nat) (spi : Nat := 100) (si : Nat := 255) (ttl : Nat := 63) : Packet :=
+  [UInt8.ofNat (ttl / 4), UInt8.ofNat ((ttl % 4) * 64 + length), UInt8.ofNat mdType, UInt8.ofNat nextProto] ++ be 3 spi ++ [UInt8.ofNat si]
+def nshMd1 (nextProto : Nat) : Packet := nshHdr 1 nextProto 6 ++ be 4 1 ++ be 4 2 ++ be 4 3 ++ be 4 4
+/-- MD type 2 with one 4-byte TLV (class 0, type 1, length 4). -/
+def nshMd2 (nextProto : Nat) (length : Nat := 4) : Packet := nshHdr 2 nextProto length ++ be 2 0 ++ [1, 4] ++ be 4 0xcafe
+def nshInner : Packet := ipv4 6 ++ tcp 12345 80 ++ payload 5
+def nshPkt (nsh : Packet) (inner : Packet := nshInner) : Packet := eth 0x894F ++ nsh ++ inner
+def nshL : List Layer := [P "eth", P "nsh", P "ipv4", P "tcp"]
+def nshW (w : Where) : Filter := { layers := nshL, cond := some w }
+def nshPred (p : Predicate) : Filter := { layers := [P "eth", .proto { name := "nsh", preds := [p] }, P "ipv4", P "tcp"] }
+def nshCtx1 := fa ["nsh", "md1", "ctx1"]
+
+vector nshMd1Chain := {
+  id := "nsh-md1", ast := nshW (cmp dport .eq (k 80)), packet := nshPkt (nshMd1 1), expected := .accept [] }
+vector nshMd2Chain := {
+  id := "nsh-md2", ast := nshW (cmp dport .eq (k 80)), packet := nshPkt (nshMd2 1), expected := .accept [],
+  note := "length 4 skips the 8 bytes of TLVs" }
+vector nshMd2Empty := {
+  id := "nsh-md2-no-context", ast := { layers := nshL }, packet := nshPkt (nshHdr 2 1 2), expected := .accept [] }
+vector nshTerminal := {
+  id := "nsh-terminal", ast := { layers := [P "eth", P "nsh"] }, packet := nshPkt (nshMd1 1), expected := .accept [] }
+vector nshIPv6 := {
+  id := "nsh-ipv6", ast := { layers := [P "eth", P "nsh", P "ipv6", P "tcp"] },
+  packet := nshPkt (nshMd1 2) (ipv6 6 ++ tcp 12345 80 ++ payload 5), expected := .accept [] }
+vector nshEth := {
+  id := "nsh-eth", ast := { layers := [P "eth", P "nsh", P "eth", P "ipv4", P "tcp"] },
+  packet := nshPkt (nshMd2 3) (eth 0x0800 ++ nshInner), expected := .accept [] }
+vector nshMpls := {
+  id := "nsh-mpls", ast := { layers := [P "eth", P "nsh", P "mpls", P "ipv4", P "tcp"] },
+  packet := nshPkt (nshMd1 5) (mpls 16 1 ++ nshInner), expected := .accept [] }
+vector nshNextProtoMiss := {
+  id := "nsh-next-proto-miss", ast := { layers := [P "eth", P "nsh", P "ipv6", P "tcp"] },
+  packet := nshPkt (nshMd1 1), expected := .reject, note := "next_proto 1 is ipv4" }
+vector nshVlan := {
+  id := "nsh-vlan", ast := { layers := [P "eth", P "vlan", P "nsh", P "ipv4", P "tcp"] },
+  packet := eth 0x8100 ++ vlan 100 0x894F ++ nshMd1 1 ++ nshInner, expected := .accept [] }
+vector nshGre := {
+  id := "nsh-gre", ast := { layers := [P "eth", P "ipv4", P "gre", P "nsh", P "ipv4", P "tcp"] },
+  packet := eth 0x0800 ++ ipv4 47 ++ be 2 0 ++ be 2 0x894F ++ nshMd1 1 ++ nshInner, expected := .accept [] }
+vector nshOptAbsent := {
+  id := "nsh-opt-absent", ast := { layers := [P "eth", Pq "nsh" .opt, P "ipv4", P "tcp"] }, expected := .accept [] }
+vector nshOptPresent := {
+  id := "nsh-opt-present", ast := { layers := [P "eth", Pq "nsh" .opt, P "ipv4", P "tcp"] }, packet := nshPkt (nshMd2 1), expected := .accept [] }
+vector nshMdTypeBad := {
+  id := "nsh-md-type-reject", ast := { layers := nshL }, packet := nshPkt (nshHdr 0 1 2), expected := .reject,
+  note := "D-043: MD types other than 1 and 2 reject" }
+vector nshMdTypeExperimental := {
+  id := "nsh-md-type-15-reject", ast := { layers := nshL }, packet := nshPkt (nshHdr 15 1 2), expected := .reject }
+vector nshMd2LengthShort := {
+  id := "nsh-md2-length-below-2", ast := { layers := nshL }, packet := nshPkt (nshHdr 2 1 1), expected := .reject,
+  note := "length counts the 8-byte base and service path headers" }
+vector nshMd2LengthWrong := {
+  id := "nsh-md2-length-short-of-tlvs", ast := { layers := nshL }, packet := nshPkt (nshMd2 1 (length := 3)), expected := .reject,
+  note := "the cursor lands inside the TLV and the ipv4 self-validation fails" }
+vector nshMd2LengthOverrun := {
+  id := "nsh-md2-length-past-end", ast := { layers := [P "eth", P "nsh"] }, packet := nshPkt (nshMd2 1 (length := 63)), expected := .reject,
+  note := "252 declared bytes do not fit" }
+vector nshSi := {
+  id := "nsh-pred-si", ast := nshPred (.cmp (f "si") .eq (.int 255)), packet := nshPkt (nshMd1 1), expected := .accept [] }
+vector nshSiMiss := {
+  id := "nsh-pred-si-miss", ast := nshPred (.cmp (f "si") .eq (.int 254)), packet := nshPkt (nshMd1 1), expected := .reject }
+vector nshTtl := {
+  id := "nsh-where-ttl", ast := nshW (.and (cmp (fld "nsh" "ttl") .eq (k 63)) (cmp (fld "nsh" "length") .eq (k 6))),
+  packet := nshPkt (nshMd1 1), expected := .accept [], note := "ttl straddles bytes 0 and 1" }
+vector nshCtx := {
+  id := "nsh-md1-ctx", ast := nshW (cmp nshCtx1 .eq (k 1)), packet := nshPkt (nshMd1 1), expected := .accept [] }
+vector nshCtxMiss := {
+  id := "nsh-md1-ctx-miss", ast := nshW (cmp nshCtx1 .eq (k 2)), packet := nshPkt (nshMd1 1), expected := .reject }
+vector nshCtxAbsent := {
+  id := "nsh-md1-ctx-absent", ast := nshW (cmp nshCtx1 .ne (k 0)), packet := nshPkt (nshMd2 1), expected := .reject,
+  note := "D-003/D-027: MD type 2 has no md1" }
+vector nshCtxAbsentNot := {
+  id := "nsh-md1-ctx-absent-not", ast := nshW (.not (cmp nshCtx1 .eq (k 1))), packet := nshPkt (nshMd2 1), expected := .accept [] }
+vector nshCtxBracket := {
+  id := "nsh-pred-md1-ctx", ast := nshPred (.cmp (fp ["md1", "ctx2"]) .eq (.int 2)), packet := nshPkt (nshMd1 1), expected := .accept [] }
+vector nshMd1ExistsAbsent := {
+  id := "nsh-md1-exists-absent", ast := nshW (.fieldExists (fp ["nsh", "md1"])), packet := nshPkt (nshMd2 1), expected := .reject }
+vector nshSpi := {
+  id := "nsh-where-spi", ast := nshW (cmp (fld "nsh" "spi") .eq (k 100)), packet := nshPkt (nshMd1 1), expected := .accept [],
+  goStatus := .notImplemented, note := "D-043: Go reads no 3-byte field in a comparison (as vxlan.vni)" }
+vector nshTruncBase := {
+  id := "nsh-truncated-base", ast := { layers := [P "eth", P "nsh"] }, packet := (nshPkt (nshMd1 1)).take 19, expected := .reject }
+vector nshTruncMd1 := {
+  id := "nsh-truncated-md1", ast := { layers := [P "eth", P "nsh"] }, packet := (nshPkt (nshMd1 1)).take 32, expected := .reject,
+  note := "10 of the 16 context bytes" }
+vector nshMd1Exact := {
+  id := "nsh-md1-exact-fit", ast := { layers := [P "eth", P "nsh"] }, packet := (nshPkt (nshMd1 1)).take 38, expected := .accept [] }
+vector nshTruncMd2 := {
+  id := "nsh-truncated-md2", ast := { layers := [P "eth", P "nsh"] }, packet := (nshPkt (nshMd2 1)).take 27, expected := .reject,
+  note := "5 of the 8 TLV bytes" }
+
+def nshVectors : List Vector := [
+  nshMd1Chain, nshMd2Chain, nshMd2Empty, nshTerminal, nshIPv6, nshEth, nshMpls, nshNextProtoMiss, nshVlan, nshGre,
+  nshOptAbsent, nshOptPresent, nshMdTypeBad, nshMdTypeExperimental, nshMd2LengthShort, nshMd2LengthWrong, nshMd2LengthOverrun,
+  nshSi, nshSiMiss, nshTtl, nshCtx, nshCtxMiss, nshCtxAbsent, nshCtxAbsentNot, nshCtxBracket, nshMd1ExistsAbsent, nshSpi,
+  nshTruncBase, nshTruncMd1, nshMd1Exact, nshTruncMd2]
+
+def protocolVectors : List Vector := pfcpVectors ++ sctpVectors ++ arpVectors ++ nshVectors
 
 end Kunai

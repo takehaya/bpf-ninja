@@ -353,6 +353,15 @@ Entries are never deleted; a rejected candidate stays in the log.
 - 状態: 提案中
 - 反映先: `pkg/kunai/protocols/arp.p4`, vectors `arp-*` (`arp-where-tha-int` は goStatus notImplemented)
 
+## D-043: NSH の vocab
+- 論点: NSH (RFC 8300) は MD type により context header の形が違う (type 1 は固定 16 byte、type 2 は可変長 TLV)。どこまで表すか。
+- 決定: base header と service path header の 8 byte (`version`, `o`, `u1`, `ttl`, `length`, `u2`, `md_type`, `next_proto`, `spi`, `si`) を primary とする。`md_type == 1` は 16 byte の context を aux `md1` (`ctx1`〜`ctx4`) として抽出し、`md_type == 2` は `length` (NSH 全体の 4 byte 単位の長さ) から 8 byte を引いた分を読み飛ばす。それ以外の MD type は reject。`length < 2` は reject (vector `nsh-md2-length-below-2`)。dispatch は eth / vlan / qinq の ethertype と gre の protocol_type の 0x894F。子は `next_proto` で ipv4 (1)、ipv6 (2)、eth (3)、mpls (5) (定数は子の .p4 に置く)。
+- 帰結: start state の select の default が reject なので nsh は self-validating (`requires md_type ∈ {1, 2}`)。親定数のある `eth/nsh?` で MD type が不正なら skip ではなく reject (D-017 (c))。
+- 落としたもの: MD type 2 の TLV の中身。TLV の長さは 4 byte 目の下位 7 bit (byte 単位で、値は 4 の倍数まで padding される) で、p4lite の lookahead による advance / counter decrement は 1 byte をそのまま (または shift して) 使うだけなので、U bit の mask と 4 の倍数への切り上げが書けず、TLV を 1 つずつ walk できない。MD type 1 で `length != 6` の packet も検査しない (16 byte の context を読んで先へ進む)。next_proto 4 (NSH in NSH) と 6〜8 (実験用) は子 protocol への edge を持たない。
+- 現行 Go 実装の挙動: 24 bit の `spi` を読む式 (bracket / where) は `ErrNotImplemented` ("field size 3 bytes not supported"、`vxlan.vni` と同じ)。`si`、6 bit で byte をまたぐ `ttl`、`md1.ctx*` は compile できる。
+- 状態: 提案中
+- 反映先: `pkg/kunai/protocols/nsh.p4` と `eth.p4` / `ipv4.p4` / `ipv6.p4` / `mpls.p4` の `KUNAI_*_NSH_NEXT_PROTO`, vectors `nsh-*` (`nsh-where-spi` は goStatus notImplemented)
+
 ## Go 側への issue 候補 (この作業では変更しない)
 
 `fix/kunai-spec-conformance` で対応済みのものは ✅、残りは `issues/` に本文がある。

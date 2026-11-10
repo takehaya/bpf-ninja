@@ -10,19 +10,20 @@ offset と可変長構造の注記を併せて読んでください。
 式の書き方と型の詳細は、[DSL 文法](../../dsl-grammar.md)と[型の仕様](../../dsl-types.md)を参照してください。
 
 ```text
-Bundled protocols (20):
+Bundled protocols (21):
   arp      28 B  from eth, qinq, vlan
   cw        4 B  from mpls
   esp       8 B  from ipv4, ipv6
-  eth      14 B  from cw, geneve, mpls, vxlan
+  eth      14 B  from cw, geneve, mpls, nsh, vxlan
   geneve    8 B  from udp
   gre       4 B  from ipv4, ipv6
   gtp       8 B  from udp
   icmp      4 B  from ipv4
   icmp6     4 B  from ipv6
-  ipv4     20 B  from eth, gre, qinq, srv6, vlan
-  ipv6     40 B  from eth, gre, qinq, vlan
-  mpls      4 B  from eth, qinq, vlan
+  ipv4     20 B  from eth, gre, nsh, qinq, srv6, vlan
+  ipv6     40 B  from eth, gre, nsh, qinq, vlan
+  mpls      4 B  from eth, nsh, qinq, vlan
+  nsh       8 B  from eth, gre, qinq, vlan
   pfcp      4 B  from udp
   qinq      4 B  from eth
   sctp     12 B  from ipv4, ipv6, srv6
@@ -93,9 +94,9 @@ Fields (bit width, running byte offset):
   src                  bit<48>   @6
   ethertype            bit<16>   @12
 
-Dispatched from: cw, geneve, mpls, vxlan
+Dispatched from: cw, geneve, mpls, nsh, vxlan
 Dispatches to:
-  via ethertype    -> arp, ipv4, ipv6, mpls, qinq, vlan
+  via ethertype    -> arp, ipv4, ipv6, mpls, nsh, qinq, vlan
 ```
 
 ## geneve
@@ -162,7 +163,7 @@ Fields (bit width, running byte offset):
 
 Dispatched from: ipv4, ipv6
 Dispatches to:
-  via protocol_type -> ipv4, ipv6
+  via protocol_type -> ipv4, ipv6, nsh
 
 Notes:
   flag-triggered optional fields gated on byte@0
@@ -284,7 +285,7 @@ Options walk (parsed by parser block, 2 named options):
     pointer              bit<8>    @2
     use: ipv4.options.RR.<field>
 
-Dispatched from: eth, gre, qinq, srv6, vlan
+Dispatched from: eth, gre, nsh, qinq, srv6, vlan
 Dispatches to:
   via protocol     -> esp, gre, icmp, sctp, tcp, udp
 
@@ -316,7 +317,7 @@ Aux header stacks:
          where any(ipv6.exts.<field> == X)  quantifier (∃)
          where all(ipv6.exts.<field> == X)  quantifier (∀)
 
-Dispatched from: eth, gre, qinq, vlan
+Dispatched from: eth, gre, nsh, qinq, vlan
 Dispatches to:
   via next_header  -> esp, gre, icmp6, sctp, srv6, tcp, udp
 
@@ -335,9 +336,43 @@ Fields (bit width, running byte offset):
   s                    bit<1>    @2+7b
   ttl                  bit<8>    @3
 
-Dispatched from: eth, qinq, vlan
+Dispatched from: eth, nsh, qinq, vlan
 Dispatches to:
   via              -> cw, eth
+```
+
+## nsh
+
+```text
+nsh — header 8 bytes minimum (variable layout, see Notes)
+
+Fields (bit width, running byte offset):
+  version              bit<2>    @0
+  o                    bit<1>    @0+2b
+  u1                   bit<1>    @0+3b
+  ttl                  bit<6>    @0+4b
+  length               bit<6>    @1+2b
+  u2                   bit<4>    @2
+  md_type              bit<4>    @2+4b
+  next_proto           bit<8>    @3
+  spi                  bit<24>   @4
+  si                   bit<8>    @7
+
+Aux headers:
+  md1 (nsh_md1_h, 16 bytes @ +8 from layer start) (gated: (byte@2 & 0xf) == 0x1)
+    ctx1                 bit<32>   @0
+    ctx2                 bit<32>   @4
+    ctx3                 bit<32>   @8
+    ctx4                 bit<32>   @12
+    use: nsh.md1.<field>  or  nsh[md1.<field> == X]
+
+Dispatched from: eth, gre, qinq, vlan
+Dispatches to:
+  via next_proto   -> eth, ipv4, ipv6, mpls
+
+Notes:
+  variable trailer: ((byte@1 & 0x3f) >> 0) * 4 - 8 bytes past fixed header
+  parser state machine (variable extension headers or self-validation)
 ```
 
 ## pfcp
@@ -383,7 +418,7 @@ Fields (bit width, running byte offset):
 
 Dispatched from: eth
 Dispatches to:
-  via ethertype    -> arp, ipv4, ipv6, mpls, vlan
+  via ethertype    -> arp, ipv4, ipv6, mpls, nsh, vlan
 ```
 
 ## sctp
@@ -551,7 +586,7 @@ Fields (bit width, running byte offset):
 
 Dispatched from: eth, qinq
 Dispatches to:
-  via ethertype    -> arp, ipv4, ipv6, mpls
+  via ethertype    -> arp, ipv4, ipv6, mpls, nsh
 ```
 
 ## vxlan

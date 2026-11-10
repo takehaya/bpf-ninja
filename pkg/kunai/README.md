@@ -192,7 +192,7 @@ Errors are returned as-is from each phase. Recognise them with `errors.As`/`erro
 
 ## Bundled vocabulary
 
-The library ships with 20 baked-in protocol definitions: `eth`, `vlan`, `qinq`, `cw`, `mpls`, `ipv4`, `ipv6`, `tcp`, `udp`, `icmp`, `icmp6`, `gre`, `esp`, `vxlan`, `geneve`, `gtp`, `srv6`, `pfcp`, `sctp`, `arp`. They live as `.p4` files under [`protocols/`](./protocols/) and are embedded at build time via `//go:embed`.
+The library ships with 21 baked-in protocol definitions: `eth`, `vlan`, `qinq`, `cw`, `mpls`, `ipv4`, `ipv6`, `tcp`, `udp`, `icmp`, `icmp6`, `gre`, `esp`, `vxlan`, `geneve`, `gtp`, `srv6`, `pfcp`, `sctp`, `arp`, `nsh`. They live as `.p4` files under [`protocols/`](./protocols/) and are embedded at build time via `//go:embed`.
 
 To add a new protocol, drop a `<name>.p4` file into `protocols/` and follow the dispatch-constant naming convention. The loader's regex tables in [`pkg/kunai/vocab/loader.go`](./vocab/loader.go) (search for `classifyConsts` and `re*` regexes) are the authoritative reference. Any malformed name is rejected at startup.
 

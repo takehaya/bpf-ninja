@@ -36,6 +36,9 @@ const bit<16> KUNAI_IPV6_QINQ_ETHERTYPE = 0x86DD;
 // Under GRE, dispatch on the EtherType-shaped protocol_type field.
 const bit<16> KUNAI_IPV6_GRE_PROTOCOL_TYPE = 0x86DD;
 
+// Under NSH, next_proto 2 names IPv6 (RFC 8300 §2.2).
+const bit<8>  KUNAI_IPV6_NSH_NEXT_PROTO = 2;
+
 // IPv6-in-IPv6 tunneling (RFC 2473): the outer ipv6's next_header is
 // 41 (IANA "IPv6"). Lets users write `eth/ipv6/ipv6/tcp` for v6-in-v6
 // tunnels without resorting to a chain quantifier — each ipv6 layer
