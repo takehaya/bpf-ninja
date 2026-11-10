@@ -679,12 +679,29 @@ module SimWitness {
   }
 
   // Non-vacuity: every hypothesis of SegmentPreservation holds for this instance.
-  lemma Witness()
+  lemma {:isolate_assertions} Witness()
     ensures T.Hyp(PW, DW(), R.Layout(PW, DW()), EllW, LiveW, TblW, EnvW(), SemW(), ObsvW, AdmW)
     ensures Pr.A8(OmW) && AdmW(L0, OmW)
   {
     ValidW(); RunsW(); StructW(); ShapeW();
     assert Pr.A3b(EnvW(), TblW);
     assert Pr.A5(ObsvW);
+    assert Pr.S0(PW) && Pr.E0Shape(PW);
+    assert Pr.Structure(PW, DW(), R.Layout(PW, DW()), EllW, LiveW, TblW);
+    assert R.AllValidated(PW, DW(), EllW);
+    assert Pr.E0(PW, EnvW(), SemW(), AdmW) && Pr.A1b(PW, EnvW(), SemW(), AdmW);
+    assert Pr.A1a(PW, EnvW(), SemW(), AdmW, EllW);
+    HypI(PW, DW(), R.Layout(PW, DW()), EllW, LiveW, TblW, EnvW(), SemW(), ObsvW, AdmW);
+    assert Pr.A8(OmW);
+    assert AdmW(L0, OmW);
   }
+
+  lemma HypI(P: seq<M.OInstr>, D: R.Decomp, Pp: M.RwProg, ell: nat -> int, live: nat -> set<nat>,
+             tbl: bv32 -> set<nat>, env: M.Env, sem: M.Sem, obsv: M.Observer, Adm: (M.Local, M.Oracle) -> bool)
+    requires Pr.S0(P) && Pr.Structure(P, D, Pp, ell, live, tbl) && R.AllValidated(P, D, ell)
+    requires Pr.E0Shape(P) && Pr.E0(P, env, sem, Adm) && Pr.A1a(P, env, sem, Adm, ell) && Pr.A1b(P, env, sem, Adm)
+    requires Pr.A3b(env, tbl) && Pr.A5(obsv)
+    ensures T.Hyp(P, D, Pp, ell, live, tbl, env, sem, obsv, Adm)
+  {}
+
 }

@@ -492,21 +492,28 @@ module SimBridge {
     decreases (if w.sp.hookCalls then 1 else 0), fuel, 0
   {
     WinPreFacts(w);
-    var rest' := Bridge(w, c', s', prefix + vals, fuel - 1);
+    var pv := prefix + vals;
+    var f1: nat := fuel - 1;
+    assert Pre(w, c', s', pv);
+    var rest' := Bridge(w, c', s', pv, f1);
     rest := vals + rest';
-    AdvanceRun(w, s, prefix, fuel, ins, vals, s', rest');
-    AdvancePost(w, c, s, prefix, fuel, vals, k, c', s', rest');
+    AdvancePost(w, c, s, prefix, fuel, ins, vals, k, c', s', pv, f1, rest');
   }
 
   // The tail of Advance, in a small context.
-  lemma AdvancePost(w: Win, c: Cfg, s: S.CState, prefix: seq<bv64>, fuel: nat, vals: seq<bv64>, k: nat, c': Cfg, s': S.CState,
-                    rest': seq<bv64>)
-    requires WinPre(w) && S.CWF(s) && S.CWF(s') && fuel > 0
+  lemma AdvancePost(w: Win, c: Cfg, s: S.CState, prefix: seq<bv64>, fuel: nat, ins: S.Instr, vals: seq<bv64>, k: nat, c': Cfg,
+                    s': S.CState, pv: seq<bv64>, f1: nat, rest': seq<bv64>)
+    requires WinPre(w) && S.CWF(s) && S.CWF(s') && fuel > 0 && 0 <= s.pc < S.NumInsns(w.raw)
+    requires pv == prefix + vals && f1 == fuel - 1
+    requires -(S.STACK as int) <= w.sp.floor <= 0
+    requires S.Decode(S.InsnAt(w.raw, s.pc)) == Some(ins)
+    requires s.oc + Need(w.sp.floor, ins, s) <= |prefix + vals|
+    requires S.Step(w.sp.floor, ins, s, prefix + vals) == S.Next(s')
     requires ReachR(w.Pp, w.x, w.obsv, c, k) == Some(c')
-    requires Post(w, c', s', prefix + vals, fuel - 1, rest')
-    requires S.Run(w.raw, w.sp.floor, s, prefix + (vals + rest'), fuel) == S.Run(w.raw, w.sp.floor, s', (prefix + vals) + rest', fuel - 1)
+    requires Post(w, c', s', pv, f1, rest')
     ensures Post(w, c, s, prefix, fuel, vals + rest')
   {
+    AdvanceRun(w, s, prefix, fuel, ins, vals, s', rest');
     var O := S.Run(w.raw, w.sp.floor, s, prefix + (vals + rest'), fuel);
     if (O.Done? || O.Exited?) && FinalOkO(w.sp, w.s0, O.s) {
       EndsPrefix(w, c, k, c', O.s, O.Exited?);

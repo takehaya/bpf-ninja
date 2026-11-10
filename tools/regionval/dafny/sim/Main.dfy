@@ -1,8 +1,9 @@
 // The theorem: segment preservation for the whole-program model.
 //
 // SimStep and SegmentPreservation have no proof yet; make verify-sim fails
-// on them until they do.  SimStepSingle (Step.dfy) proves SimStep for
-// single-function programs without wrapper or tail-call sites.
+// on them until they do.  SimStepGen (Step.dfy) proves the step for any
+// frame stack that satisfies the frame invariant Inv, for programs without
+// P8 wrapper and P4 tail-call sites.
 include "Step.dfy"
 
 module SimMain {

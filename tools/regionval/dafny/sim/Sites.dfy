@@ -1,9 +1,8 @@
 // A validated window of P', run in the whole model, ends where the region
 // model says, related to the step of P it replaces: site windows (P1c, P2
 // with MF, P3, P5) around an original helper call, and the entry prologue
-// (P1).  The site lemma is stated for single-function programs.
-include "Bridge.dfy"
-include "LayoutFacts.dfy"
+// (P1).
+include "Frames.dfy"
 
 module SimSites {
   import opened Bits
@@ -15,6 +14,7 @@ module SimSites {
   import opened SimTheorem
   import opened SimBridge
   import opened SimLayoutFacts
+  import opened SimFrames
   import SimFacts
   import Soundness
   import Checker
@@ -180,27 +180,6 @@ module SimSites {
 
   // ---------------- single-function programs ----------------
 
-  // The scope of the single-function step lemma: one function, no
-  // wrapper (P8) and no tail-call site (P4).
-  ghost predicate Single(P: seq<OInstr>, D: Decomp) {
-    FnSet(P) == {0} && (forall j | 0 <= j < |P| :: !P[j].Call? && !P[j].CbCall?)
-    && D.wrap == map[] && (forall i | i in D.site :: i < |P| && !P[i].Tail?)
-  }
-
-  // A reachable configuration of a single-function P: the main frame only, r10 intact.
-  ghost predicate Inv1(c: Cfg) {
-    |c.fr| == 1 && c.fr[0].fn == 0 && c.fr[0].kind == Main && |c.fr[0].regs| == NR && |c.fr[0].stack| == STK
-    && c.fr[0].regs[10] == W(StackTop(0))
-  }
-
-  lemma OwnerSingle(P: seq<OInstr>, i: nat)
-    requires FnSet(P) == {0}
-    ensures Owner(P, i) == 0
-    decreases i
-  {
-    if i > 0 { OwnerSingle(P, i - 1); }
-  }
-
   lemma Floor8Bounds(l: int)
     requires -(STK as int) <= l <= 0
     ensures -(STK as int) <= Floor8(l) <= l
@@ -208,36 +187,11 @@ module SimSites {
     assert l / 8 >= -64;
   }
 
-  ghost predicate RegRel(c: Cfg, c': Cfg, er: set<nat>, lv: set<nat>) {
-    forall r | 0 <= r < NR :: Rel(Reg(Top(c), r), Reg(Top(c'), r)) || (r in er && 1 <= r <= 5 && r !in lv)
-  }
-  ghost predicate StkRel(c: Cfg, c': Cfg, fl: int) {
-    |Top(c).stack| == STK && |Top(c').stack| == STK
-    && forall o | 0 <= o < STK && o - STK as int >= fl :: RelB(Top(c).stack[o], Top(c').stack[o])
-  }
-
-  lemma CorrIntro1(P: seq<OInstr>, D: Decomp, ell: nat -> int, live: nat -> set<nat>, c: Cfg, c': Cfg, er: set<nat>)
-    requires Inv1(c) && |c'.fr| == 1 && FrameOk(Top(c')) && Top(c').kind == Main
-    requires 0 <= Top(c).pc < |P| && Top(c').pc == E(D, Top(c).pc)
-    requires RegRel(c, c', er, live(Top(c).pc)) && StkRel(c, c', Fl(P, ell, 0))
-    requires c'.L == c.L && c'.h == c.h
-    ensures Corr(P, D, ell, live, c, c', er)
-  {
-    assert Top(c) == c.fr[0] && Top(c') == c'.fr[0];
-  }
-
-  lemma CorrElim1(P: seq<OInstr>, D: Decomp, ell: nat -> int, live: nat -> set<nat>, c: Cfg, c': Cfg, er: set<nat>)
-    requires Inv1(c) && Corr(P, D, ell, live, c, c', er)
-    ensures |c'.fr| == 1 && FrameOk(Top(c')) && Top(c').kind == Main
-    ensures 0 <= Top(c).pc < |P| && Top(c').pc == E(D, Top(c).pc)
-    ensures RegRel(c, c', er, live(Top(c).pc)) && StkRel(c, c', Fl(P, ell, 0))
-    ensures c'.L == c.L && c'.h == c.h
-  {
-    assert Top(c) == c.fr[0] && Top(c') == c'.fr[0];
-    forall k | 0 <= k < NR ensures c'.fr[0].regs[k].W? { assert Reg(c'.fr[0], k).W?; }
-  }
-
-  // ---------------- the helper step of P ----------------
+  // Corr for one frame on each side (the entry frame).
+  lemma LowRelOne(P: seq<OInstr>, D: Decomp, ell: nat -> int, c: Cfg, c': Cfg)
+    requires |c.fr| == 1 && |c'.fr| == 1
+    ensures LowRel(P, D, ell, c, c')
+  { reveal LowRel(); }
 
   lemma HelperGo(x: Ctx, c: Cfg, idx: nat, id: bv32, c1: Cfg)
     returns (n: nat, args: seq<bv64>, beta: seq<bv8>, v: Val, wr: map<int, bv8>)
@@ -268,59 +222,6 @@ module SimSites {
     }
   }
 
-  lemma FrameOfIn(p: bv64, w: nat, d: nat)
-    requires FrameOf(p, w, d).Some?
-    ensures FrameOf(p, w, d).value < MAXF_RW && S.InFrame(S.Rel(p, StackTop(FrameOf(p, w, d).value)), w)
-    decreases d
-  {
-    if !(d - 1 < MAXF_RW && S.InFrame(S.Rel(p, StackTop(d - 1)), w)) { FrameOfIn(p, w, d - 1); }
-  }
-
-  lemma ClassifyStack(p: bv64, w: nat, nfr: nat, dom: set<int>)
-    requires Classify(p, w, nfr, dom).InStack?
-    ensures Classify(p, w, nfr, dom).d < nfr && Classify(p, w, nfr, dom).o + w <= STK
-  {
-    reveal Classify();
-    assert FrameOf(p, w, nfr).Some?;
-    FrameOfIn(p, w, nfr);
-  }
-
-  // A footprint address in the stack is in the top frame at or above fl.
-  ghost predicate FootIn(c: Cfg, a: bv64, fl: int) {
-    match Classify(a, 1, |c.fr|, c.L.mem.Keys)
-    case InStack(d, o) => o as int - STK as int >= fl
-    case _ => true
-  }
-
-  lemma {:isolate_assertions} FootRel(c: Cfg, c': Cfg, addrs: seq<bv64>, fl: int)
-    requires |c.fr| == 1 && |c'.fr| == 1 && c'.L == c.L
-    requires StkRel(c, c', fl)
-    requires forall i | 0 <= i < |addrs| :: FootIn(c, addrs[i], fl)
-    requires FootBytes(c, addrs).FOk?
-    ensures FootBytes(c', addrs) == FootBytes(c, addrs)
-    decreases |addrs|
-  {
-    reveal FootBytes();
-    if |addrs| > 0 {
-      assert forall i | 0 <= i < |addrs[1..]| :: FootIn(c, addrs[1..][i], fl) by {
-        forall i | 0 <= i < |addrs[1..]| ensures FootIn(c, addrs[1..][i], fl) { assert addrs[1..][i] == addrs[i + 1]; }
-      }
-      var cl := Classify(addrs[0], 1, |c.fr|, c.L.mem.Keys);
-      assert Classify(addrs[0], 1, |c'.fr|, c'.L.mem.Keys) == cl;
-      assert FootBytes(c, addrs[1..]).FOk?;
-      FootRel(c, c', addrs[1..], fl);
-      match cl
-      case InStack(d, o) =>
-        ClassifyStack(addrs[0], 1, |c.fr|, c.L.mem.Keys);
-        assert d == 0 && o < STK && FootIn(c, addrs[0], fl);
-        assert Top(c) == c.fr[0] && Top(c') == c'.fr[0];
-        assert RelB(c.fr[0].stack[o], c'.fr[0].stack[o]);
-        assert StackBytes(c, d, o, 1) == [c.fr[0].stack[o]];
-        assert StackBytes(c', d, o, 1) == [c'.fr[0].stack[o]];
-      case _ =>
-    }
-  }
-
   lemma FootAccHas(c: Cfg, addrs: seq<bv64>, i: nat)
     requires i < |addrs| && Classify(addrs[i], 1, |c.fr|, c.L.mem.Keys).InStack?
     ensures (Classify(addrs[i], 1, |c.fr|, c.L.mem.Keys).d, Classify(addrs[i], 1, |c.fr|, c.L.mem.Keys).o) in FootAcc(c, addrs)
@@ -339,28 +240,28 @@ module SimSites {
   // What A1a says about the helper step of P at c.
   lemma {:isolate_assertions} HelperFloor(P: seq<OInstr>, x: Ctx, c: Cfg, ell: nat -> int, idx: nat, id: bv32,
                                           n: nat, args: seq<bv64>, beta: seq<bv8>, v: Val, wr: map<int, bv8>)
-    requires Inv1(c) && 0 <= Top(c).pc < |P| && P[Top(c).pc] == Hcall(false, id) && idx == Top(c).pc
+    requires 0 < |c.fr| <= MAXF && 0 <= Top(c).pc < |P| && P[Top(c).pc] == Hcall(false, id) && idx == Top(c).pc
+    requires Top(c) == c.fr[|c.fr| - 1]
     requires forall a | a in Acc(P, x, c) :: a.0 < |c.fr| && a.1 as int - STK as int >= ell(c.fr[a.0].fn)
     requires n == x.env.arity(false, id) && Rds(Top(c), Upto(1, n)) == Some(args)
     requires FootBytes(c, x.env.foot(false, id, args)) == FOk(beta)
     requires x.om(c.h, ECall(idx, false, id, args, beta), Wh(c)) == RRet(v, wr)
-    ensures forall i | 0 <= i < |x.env.foot(false, id, args)| :: FootIn(c, x.env.foot(false, id, args)[i], ell(0))
-    ensures forall o: nat | o < STK && o as int - STK as int < ell(0) :: SAddr(0, o) as int !in wr
+    ensures forall i | 0 <= i < |x.env.foot(false, id, args)| :: FootInF(ell, c, x.env.foot(false, id, args)[i])
+    ensures forall o: nat | o < STK && o as int - STK as int < ell(Top(c).fn) :: SAddr(|c.fr| - 1, o) as int !in wr
   {
     var addrs := x.env.foot(false, id, args);
+    var d := |c.fr| - 1;
     assert Acc(P, x, c) == HelperAcc(x, c, idx, false, id);
     HelperAccIs(x, c, idx, id, n, args, beta, v, wr);
     assert FootAcc(c, addrs) <= Acc(P, x, c);
     assert WrAcc(c, wr) <= Acc(P, x, c);
-    forall i | 0 <= i < |addrs| ensures FootIn(c, addrs[i], ell(0)) {
+    forall i | 0 <= i < |addrs| ensures FootInF(ell, c, addrs[i]) {
       if Classify(addrs[i], 1, |c.fr|, c.L.mem.Keys).InStack? { FootAccHas(c, addrs, i); }
     }
-    forall o: nat | o < STK && o as int - STK as int < ell(0) ensures SAddr(0, o) as int !in wr {
-      if SAddr(0, o) as int in wr { assert (0, o) in WrAcc(c, wr); }
+    forall o: nat | o < STK && o as int - STK as int < ell(Top(c).fn) ensures SAddr(d, o) as int !in wr {
+      if SAddr(d, o) as int in wr { assert (d, o) in WrAcc(c, wr); }
     }
   }
-
-  // ---------------- site windows ----------------
 
   // The window of a site helper at j, entered at c' (the region state is c''s top frame).
   ghost function SiteWin(P: seq<OInstr>, D: Decomp, Pp: RwProg, ell: nat -> int, xR: Ctx, obsv: Observer,
@@ -414,16 +315,17 @@ module SimSites {
 
   lemma {:isolate_assertions} SiteHelperOk(P: seq<OInstr>, ell: nat -> int, w: Win, c: Cfg, xP: Ctx,
                                            n: nat, args: seq<bv64>, beta: seq<bv8>, v: Val, wr: map<int, bv8>)
-    requires Inv1(c) && |w.c0.fr| == 1 && w.c0.L == c.L && w.c0.h == c.h && Top(w.c0).kind == Main
+    requires 0 < |c.fr| <= MAXF && Top(c) == c.fr[|c.fr| - 1]
+    requires |w.c0.fr| == |c.fr| && w.c0.L == c.L && w.c0.h == c.h && Top(w.c0).kind == Top(c).kind
     requires w.hins.Hcall? && !w.hins.kf && w.x.env == xP.env && w.x.om == xP.om
     requires n == xP.env.arity(false, w.hins.id) && n <= 5
     requires SimFacts.Words(Top(w.c0), Upto(1, n)) == args
     requires FootBytes(w.c0, xP.env.foot(false, w.hins.id, args)) == FOk(beta)
     requires xP.om(c.h, ECall(w.hidx, false, w.hins.id, args, beta), Wh(c)) == RRet(v, wr)
     requires w.hc == HCtx(n, xP.env.foot(false, w.hins.id, args), ECall(w.hidx, false, w.hins.id, args, beta), v, wr)
-    requires forall i | 0 <= i < |w.hc.addrs| :: FootIn(c, w.hc.addrs[i], ell(0))
-    requires forall o: nat | o < STK && o as int - STK as int < ell(0) :: SAddr(0, o) as int !in wr
-    requires w.sp.floor <= ell(0)
+    requires forall i | 0 <= i < |w.hc.addrs| :: FootInF(ell, c, w.hc.addrs[i])
+    requires forall o: nat | o < STK && o as int - STK as int < ell(Top(c).fn) :: SAddr(|c.fr| - 1, o) as int !in wr
+    requires w.sp.floor <= ell(Top(c).fn)
     ensures HelperOk(w)
   {
     assert Wh(w.c0) == Wh(c);
@@ -432,87 +334,153 @@ module SimSites {
       case InStack(d, o) => d == |w.c0.fr| - 1 ==> o >= STK as int + w.sp.floor
       case _ => true
     {
-      assert FootIn(c, w.hc.addrs[i], ell(0));
+      assert FootInF(ell, c, w.hc.addrs[i]);
     }
     assert FootTop(w.c0, w.hc.addrs, w.sp.floor);
     assert WrTop(w.c0, wr, w.sp.floor);
+  }
+
+  // The frames after a site window (or any helper finish): the invariant and the waiting frames.
+  lemma {:isolate_assertions} AfterFrames(P: seq<OInstr>, D: Decomp, ell: nat -> int, c: Cfg, c0: Cfg, ch: Cfg, wr: map<int, bv8>,
+                                          c1: Cfg, c2: Cfg)
+    requires Inv(P, c) && LowRel(P, D, ell, c, c0) && ch.fr == c.fr && |Top(c).regs| == NR
+    requires |c1.fr| == |c.fr| && Below(c1) == Below(ApplyW(ch, wr))
+    requires Top(c1).fn == Top(c).fn && Top(c1).kind == Top(c).kind && |Top(c1).regs| == NR && |Top(c1).stack| == STK
+    requires Top(c1).regs[10] == Top(c).regs[10] && 0 <= Top(c1).pc < |P| && Owner(P, Top(c1).pc) == Top(c).fn
+    requires |c2.fr| == |c0.fr| && Below(c2) == Below(ApplyW(c0, wr))
+    ensures Inv(P, c1) && LowRel(P, D, ell, c1, c2)
+  {
+    InvIs(P, c);
+    LowRelLen(P, D, ell, c, c0);
+    InvFields(P, c, ch);
+    InvApply(P, ch, wr);
+    ApplyWAt(ch, wr);
+    ApplyWAt(c0, wr);
+    var a := ApplyW(ch, wr);
+    var a0 := ApplyW(c0, wr);
+    assert FrInv(P, |c.fr| - 1, Top(c));
+    assert FrInv(P, |c.fr| - 1, Top(c1));
+    InvPut(P, a, c1);
+    LowRelSame(P, D, ell, c, c0, ch, c0);
+    LowRelApply(P, D, ell, ch, c0, wr);
+    LowRelSame(P, D, ell, a, a0, c1, c2);
+  }
+
+  // The registers after a site window: r0 is the helper's result, r1..r5 are unreadable in P, r6..r10 are kept.
+  lemma {:isolate_assertions} SiteAfterRegs(c: Cfg, c0: Cfg, c1: Cfg, c2: Cfg, sf: S.CState, s0: S.CState, v: Val,
+                                            er: set<nat>, lv: set<nat>)
+    requires |Top(c).regs| == NR && FrameOk(Top(c0)) && FrameOk(Top(c2)) && |Top(c1).regs| == NR && S.CWF(sf)
+    requires R64(Top(c2)) == sf.regs && s0.regs == R64(Top(c0))
+    requires forall r | 6 <= r <= 10 :: sf.regs[r] == s0.regs[r]
+    requires v.W? ==> sf.regs[0] == v.w
+    requires Top(c1).regs[0] == (if v.W? then v else Bot)
+    requires forall r | 1 <= r <= 5 :: Top(c1).regs[r] == Bot
+    requires forall r | 6 <= r < NR :: Top(c1).regs[r] == Top(c).regs[r]
+    requires RegRel(c, c0, er, lv)
+    ensures forall r | 0 <= r < NR :: Rel(Reg(Top(c1), r), Reg(Top(c2), r))
+  {
+    forall r | 0 <= r < NR ensures Rel(Reg(Top(c1), r), Reg(Top(c2), r)) {
+      assert Top(c2).regs[r] == W(sf.regs[r]);
+      if 6 <= r {
+        assert Top(c0).regs[r] == W(R64(Top(c0))[r]);
+        assert Rel(Reg(Top(c), r), Reg(Top(c0), r));
+      }
+    }
+  }
+
+  // The bytes at or above the floor after a site window: the helper's write set in both runs.
+  lemma {:isolate_assertions} SiteAfterStack(c: Cfg, c0: Cfg, c1: Cfg, c2: Cfg, sf: S.CState, s0: S.CState, wr: map<int, bv8>,
+                                             fl: int, d: nat)
+    requires |Top(c).stack| == STK && |Top(c0).stack| == STK && |Top(c2).stack| == STK && -(STK as int) <= fl <= 0
+    requires Top(c1).stack == ApplyF(Top(c), d, wr).stack && Plain(Top(c2).stack) == sf.stack && FrameOk(Top(c2))
+    requires |UpperBase(sf.events, s0.stack)| == STK
+    requires forall i | 0 <= i < STK && STK as int + fl <= i :: sf.stack[i] == UpperBase(sf.events, s0.stack)[i]
+    requires forall i | 0 <= i && STK as int + fl <= i < STK :: UpperBase(sf.events, s0.stack)[i] == Plain(ApplyF(Top(c0), d, wr).stack)[i]
+    requires forall o | 0 <= o < STK && o - STK as int >= fl :: RelB(Top(c).stack[o], Top(c0).stack[o])
+    ensures StkRel(c1, c2, fl)
+  {
+    forall o | 0 <= o < STK && o - STK as int >= fl ensures RelB(Top(c1).stack[o], Top(c2).stack[o]) {
+      assert Top(c2).stack[o] == B(sf.stack[o]);
+    }
   }
 
   // The configurations after a site window and after the helper step of P are related.
   lemma {:isolate_assertions} SiteAfter(P: seq<OInstr>, D: Decomp, ell: nat -> int, live: nat -> set<nat>,
       w: Win, c: Cfg, er: set<nat>, c1: Cfg, c2: Cfg, sf: S.CState, j: nat, xP: Ctx)
     requires xP.m.MP?
-    requires Inv1(c) && Corr(P, D, ell, live, c, w.c0, er) && Top(c).pc == j
-    requires WinPre(w) && w.sp.helper == Helper(true, true) && w.sp.floor == Fl(P, ell, 0)
+    requires Inv(P, c) && Corr(P, D, ell, live, c, w.c0, er) && Top(c).pc == j
+    requires WinPre(w) && w.sp.helper == Helper(true, true) && w.sp.floor == Fl(P, ell, Top(c).fn)
     requires w.s0 == S.InitState(R64(Top(w.c0)), Plain(Top(w.c0).stack))
-    requires w.base + S.NumInsns(w.raw) == E(D, j + 1) && j + 1 < |P|
+    requires w.base + S.NumInsns(w.raw) == E(D, j + 1) && j + 1 < |P| && Owner(P, j + 1) == Top(c).fn
     requires Finish(xP, c.(h := c.h + [w.hc.eh]), w.hc.v, w.hc.wr) == Go(c1)
     requires BR(c2, sf, w.base) && Side(w, c2, sf) && FinalOk(w.sp, w.s0, sf) && sf.pc == S.NumInsns(w.raw)
-    ensures Inv1(c1) && Corr(P, D, ell, live, c1, c2, {})
+    ensures Inv(P, c1) && Corr(P, D, ell, live, c1, c2, {})
   {
     var c0 := w.c0;
     var wr := w.hc.wr;
     var v := w.hc.v;
-    CorrElim1(P, D, ell, live, c, c0, er);
+    CorrElim(P, D, ell, live, c, c0, er);
+    InvIs(P, c);
+    LowRelLen(P, D, ell, c, c0);
+    var n := |c.fr|;
     var ch := c.(h := c.h + [w.hc.eh]);
     FinishFacts(xP, ch, v, wr);
-    ApplyWAt(ch, wr);
-    ApplyWAt(c0, wr);
+    WinPreFacts(w);
     SideFacts(w, c2, sf);
     assert CountHelpers(sf.events) == 1;
     Side1(w, c2, sf);
-    assert Top(ch) == Top(c);
-    assert |c1.fr| == 1 && Top(c1) == c1.fr[0];
-    assert |Top(c1).stack| == STK;
-    assert Inv1(c1);
-    assert Top(c2) == c2.fr[0] && |c2.fr| == 1;
-    forall r | 0 <= r < NR ensures Rel(Reg(Top(c1), r), Reg(Top(c2), r)) {
-      assert Top(c2).regs[r] == W(sf.regs[r]);
-      if r == 0 {
-        if v.W? { assert sf.regs[0] == HelperRet(sf.events) == v.w; }
-      } else if r <= 5 {
-        assert Top(c1).regs[r] == Und(xP, ch, r) == Bot;
-      } else {
-        assert Top(c1).regs[r] == Top(c).regs[r];
-        assert sf.regs[r] == w.s0.regs[r] == R64(Top(c0))[r];
-        assert Top(c0).regs[r] == W(R64(Top(c0))[r]);
-        assert Rel(Reg(Top(c), r), Reg(Top(c0), r));
-      }
-    }
+    assert Top(ch) == Top(c) && ch.fr == c.fr;
+    assert |c1.fr| == |c.fr| && Below(c1) == Below(ApplyW(ch, wr));
+    assert Top(c1).fn == Top(c).fn && Top(c1).kind == Top(c).kind && |Top(c1).regs| == NR;
+    assert |Top(c1).stack| == STK && Top(c1).regs[10] == Top(c).regs[10];
+    assert Top(c1).pc == j + 1;
+    assert Owner(P, Top(c1).pc) == Owner(P, j + 1);
+    assert |c2.fr| == |c0.fr| && Below(c2) == Below(ApplyW(c0, wr));
+    AfterFrames(P, D, ell, c, c0, ch, wr, c1, c2);
+    assert Top(c) == c.fr[n - 1] && Top(c0) == c0.fr[n - 1];
+    ApplyTop(c0, wr);
+    ApplyTop(ch, wr);
+    assert forall r | 1 <= r <= 5 :: Top(c1).regs[r] == Und(xP, ch, r) == Bot;
+    FinalFacts(w.sp, w.s0, sf);
+    SiteAfterRegs(c, c0, c1, c2, sf, w.s0, v, er, live(j));
     assert RegRel(c1, c2, {}, live(Top(c1).pc));
-    forall o | 0 <= o < STK && o - STK as int >= Fl(P, ell, 0) ensures RelB(Top(c1).stack[o], Top(c2).stack[o]) {
-      assert Top(c1).stack[o] == ApplyF(Top(c), 0, wr).stack[o];
-      assert Top(c2).stack[o] == B(sf.stack[o]);
-      assert sf.stack[o] == UpperBase(sf.events, w.s0.stack)[o];
-      assert Top(ApplyW(c0, wr)) == ApplyF(Top(c0), 0, wr);
-      assert sf.stack[o] == Plain(ApplyF(Top(c0), 0, wr).stack)[o];
-      assert RelB(Top(c).stack[o], Top(c0).stack[o]);
-    }
-    assert StkRel(c1, c2, Fl(P, ell, 0));
+    assert Top(c1).stack == ApplyF(Top(c), n - 1, wr).stack;
+    SiteAfterStack(c, c0, c1, c2, sf, w.s0, wr, w.sp.floor, n - 1);
     assert c2.L == c1.L && c2.h == c1.h;
     assert Top(c1).pc == j + 1 && Top(c2).pc == w.base + sf.pc;
-    assert 0 <= Top(c1).pc < |P| && Top(c2).pc == E(D, Top(c1).pc);
-    assert Top(c2).kind == Top(c0).kind == Main && FrameOk(Top(c2));
-    CorrIntro1(P, D, ell, live, c1, c2, {});
+    assert TopRel(P, D, ell, live, c1, c2, {});
+    CorrIntro(P, D, ell, live, c1, c2, {});
   }
+
+  // WinPre from its parts (the opaque part is revealed here only).
+  lemma WinPreIntro(w: Win)
+    requires w.x.m.MR? && SimPremises.A5(w.obsv) && SpecWF(w.sp) && w.sp.wrap.NoWrap?
+    requires WinAt(w) && HooksOk(w.Pp)
+    requires BR(w.c0, w.s0, w.base) && w.s0 == S.InitState(w.s0.regs, w.s0.stack)
+    requires HasHelper(w) ==> HelperOk(w) && w.sp.helper.Helper? && w.sp.helper.checkArgs
+    requires -(S.STACK as int) <= w.sp.floor <= 0 && S.CWF(w.s0)
+    ensures WinPre(w)
+  { reveal WinPreO(); }
 
   // The site lemma: the helper step of P at a site is matched by the run of its window.
   lemma {:isolate_assertions} SiteStep(P: seq<OInstr>, D: Decomp, Pp: RwProg, ell: nat -> int, live: nat -> set<nat>,
       tbl: bv32 -> set<nat>, env: Env, sem: Sem, obsv: Observer, om: Oracle, hv: nat -> bv64,
       c: Cfg, c': Cfg, er: set<nat>, c1: Cfg)
     requires Structure(P, D, Pp, ell, live, tbl) && AllValidated(P, D, ell) && E0Shape(P) && A3b(env, tbl) && A5(obsv)
-    requires Single(P, D) && Inv1(c)
+    requires D.wrap == map[] && Inv(P, c)
     requires forall a | a in Acc(P, CtxP(P, env, sem, om), c) :: a.0 < |c.fr| && a.1 as int - STK as int >= ell(c.fr[a.0].fn)
-    requires Corr(P, D, ell, live, c, c', er) && Top(c).pc in D.site
+    requires Corr(P, D, ell, live, c, c', er) && Top(c).pc in D.site && !P[Top(c).pc].Tail?
     requires StepP(P, CtxP(P, env, sem, om), c) == Go(c1)
-    ensures Inv1(c1)
+    ensures Inv(P, c1)
     ensures exists k: nat, c1': Cfg :: ReachR(Pp, CtxR(Pp, env, sem, om, hv), obsv, c', k) == Some(c1')
                                        && Corr(P, D, ell, live, c1, c1', {})
   {
     var xP := CtxP(P, env, sem, om);
     var xR := CtxR(Pp, env, sem, om, hv);
     var j := Top(c).pc;
-    CorrElim1(P, D, ell, live, c, c', er);
+    CorrElim(P, D, ell, live, c, c', er);
+    InvIs(P, c);
+    LowRelLen(P, D, ell, c, c');
     assert PiecesOk(P, D);
     assert j < |P| && P[j].Hcall? && !P[j].kf;
     var id := P[j].id;
@@ -520,12 +488,12 @@ module SimSites {
     var nA, args, beta, v, wr := HelperGo(xP, c, j, id, c1);
     var addrs := env.foot(false, id, args);
     var e := ECall(j, false, id, args, beta);
-    OwnerSingle(P, j);
+    var fn := Top(c).fn;
+    FlTop(P, ell, c);
     var fl := Fl(P, ell, j);
-    assert fl == Floor8(ell(0)) == Fl(P, ell, 0);
-    assert FloorsOk(P, ell) && 0 in FnSet(P);
-    Floor8Bounds(ell(0));
-    assert c.fr[0].fn == 0;
+    assert FloorsOk(P, ell);
+    FlFrame(P, ell, c, |c.fr| - 1);
+    assert fl == Fl(P, ell, fn) <= ell(fn);
     HelperFloor(P, xP, c, ell, j, id, nA, args, beta, v, wr);
     // P' reads the same arguments and the same footprint
     assert LiveOk(P, live, tbl);
@@ -540,8 +508,8 @@ module SimSites {
     forall i | 0 <= i < |Upto(1, nA)| ensures Reg(Top(c'), Upto(1, nA)[i]).W? { UptoAt(1, nA, i); }
     SimFacts.RdsAll(Top(c'), Upto(1, nA));
     assert SimFacts.Words(Top(c'), Upto(1, nA)) == args;
-    assert StkRel(c, c', ell(0));
-    FootRel(c, c', addrs, ell(0));
+    MemRelI(P, D, ell, c, c');
+    FootRelG(P, D, ell, c, c', addrs);
     // the window
     var hc := HCtx(nA, addrs, e, v, wr);
     var w := SiteWin(P, D, Pp, ell, xR, obsv, j, c', hc);
@@ -551,16 +519,14 @@ module SimSites {
     SiteWinAt(P, D, ell, live, tbl, w, j);
     HooksOkLayout(P, D, ell);
     SiteHelperOk(P, ell, w, c, xP, nA, args, beta, v, wr);
-    assert BR(w.c0, w.s0, w.base);
-    assert WinPre(w) by { reveal WinPreO(); }
+    assert Rel(Reg(Top(c), 10), Reg(Top(c'), 10));
+    BRInit(c', E(D, j));
+    WinPreIntro(w);
     var k, c2, sf := RunWindow(w);
     NextE(P, D, j);
+    assert Owner(P, j + 1) == Owner(P, j) by { assert j + 1 !in FnSet(P); }
     SiteAfter(P, D, ell, live, w, c, er, c1, c2, sf, j, xP);
   }
-
-  // ---------------- the entry prologue (P1) ----------------
-
-  lemma InitInv(L: Local) ensures Inv1(InitP(L)) {}
 
   // Corr at e(0) for a P' state whose top frame kept r1, r10 and L, h of the input.
   lemma {:isolate_assertions} InitCorr(P: seq<OInstr>, D: Decomp, ell: nat -> int, live: nat -> set<nat>, L: Local, c2: Cfg)
@@ -570,14 +536,26 @@ module SimSites {
     ensures Corr(P, D, ell, live, InitP(L), c2, {})
   {
     var c := InitP(L);
-    InitInv(L);
     forall r | 0 <= r < NR ensures Rel(Reg(Top(c), r), Reg(Top(c2), r)) {
       assert Top(c).regs[r] == if r == 1 then W(CTX) else if r == 10 then W(StackTop(0)) else Bot;
     }
     forall o | 0 <= o < STK ensures RelB(Top(c).stack[o], Top(c2).stack[o]) { assert Top(c).stack[o] == BBot; }
     assert RegRel(c, c2, {}, live(Top(c).pc));
-    assert StkRel(c, c2, Fl(P, ell, 0));
-    CorrIntro1(P, D, ell, live, c, c2, {});
+    assert StkRel(c, c2, Fl(P, ell, Top(c).fn));
+    LowRelOne(P, D, ell, c, c2);
+    assert TopRel(P, D, ell, live, c, c2, {});
+    CorrIntro(P, D, ell, live, c, c2, {});
+  }
+
+  // The initial configuration of P'.
+  lemma InitRFacts(L: Local, hv: nat -> bv64)
+    ensures var c0 := InitR(L, hv);
+      |c0.fr| == 1 && Top(c0) == c0.fr[0] && FrameOk(Top(c0)) && Top(c0).kind == Main && Top(c0).pc == 0
+      && Top(c0).regs[1] == W(CTX) && Top(c0).regs[10] == W(StackTop(0)) && c0.L == L && c0.h == []
+  {
+    var c0 := InitR(L, hv);
+    assert forall k | 0 <= k < NR :: Top(c0).regs[k].W?;
+    assert forall o | 0 <= o < STK :: Top(c0).stack[o].B?;
   }
 
   lemma {:isolate_assertions} EntryWinAt(P: seq<OInstr>, D: Decomp, ell: nat -> int, live: nat -> set<nat>,
@@ -619,9 +597,7 @@ module SimSites {
     var c0 := InitR(L, hv);
     assert PiecesOk(P, D);
     E0Pro(P, D);
-    assert Top(c0) == c0.fr[0];
-    forall k | 0 <= k < NR ensures Top(c0).regs[k].W? {}
-    forall o | 0 <= o < STK ensures Top(c0).stack[o].B? {}
+    InitRFacts(L, hv);
     if |D.pro0| == 0 {
       assert NI(D.pro0) == 0;
       InitCorr(P, D, ell, live, L, c0);
@@ -640,7 +616,7 @@ module SimSites {
       EntryWinAt(P, D, ell, live, tbl, w);
       HooksOkLayout(P, D, ell);
       assert BR(w.c0, w.s0, w.base);
-      assert WinPre(w) by { reveal WinPreO(); }
+      WinPreIntro(w);
       var k, c2, sf := RunWindow(w);
       SideFacts(w, c2, sf);
       assert CountHelpers(sf.events) == 0;
