@@ -15,6 +15,8 @@ const bool KUNAI_ETH_MPLS_NO_CHECK   = true;
 const bool KUNAI_ETH_CW_NO_CHECK     = true;
 const bool KUNAI_ETH_VXLAN_NO_CHECK  = true;
 const bool KUNAI_ETH_GENEVE_NO_CHECK = true;
+// ERSPAN always carries the mirrored Ethernet frame.
+const bool KUNAI_ETH_ERSPAN_NO_CHECK = true;
 
 // Under NSH, next_proto 3 names Ethernet (RFC 8300 §2.2).
 const bit<8> KUNAI_ETH_NSH_NEXT_PROTO = 3;

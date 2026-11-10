@@ -1,7 +1,7 @@
 import Kunai.Vectors.AuxHeaders
 
 /-!
-# Protocol vectors: PFCP, SCTP, ARP, NSH
+# Protocol vectors: PFCP, SCTP, ARP, NSH, ERSPAN
 
 Presence, field comparisons, and truncation for each protocol added to the
 bundled vocabulary after the first seventeen (DECISIONS.md D-040 onwards).
@@ -361,6 +361,109 @@ def nshVectors : List Vector := [
   nshSi, nshSiMiss, nshTtl, nshCtx, nshCtxMiss, nshCtxAbsent, nshCtxAbsentNot, nshCtxBracket, nshMd1ExistsAbsent, nshSpi,
   nshTruncBase, nshTruncMd1, nshMd1Exact, nshTruncMd2]
 
-def protocolVectors : List Vector := pfcpVectors ++ sctpVectors ++ arpVectors ++ nshVectors
+-- ERSPAN (D-044) -------------------------------------------------------------
+
+/-- GRE with the sequence-number bit set, as ERSPAN II and III send it. -/
+def greSeq (protoType : Nat) (seq : Nat := 1) : Packet := be 2 0x1000 ++ be 2 protoType ++ be 4 seq
+def erspanHdr (version : Nat) (sessionId : Nat := 100) (vlanId : Nat := 10) (t : Nat := 0) (cos : Nat := 0) (en : Nat := 0) : Packet :=
+  be 2 (version * 4096 + vlanId) ++ be 2 (cos * 8192 + en * 2048 + t * 1024 + sessionId)
+def erspanV2 (index : Nat := 7) : Packet := be 4 index
+def erspanV3 (ts : Nat := 0x01020304) (sgt : Nat := 50) (hwId : Nat := 3) (o : Nat := 0) : Packet :=
+  be 4 ts ++ be 2 sgt ++ be 2 (hwId * 16 + o)
+def erspanInner : Packet := eth 0x0800 ++ ipv4 6 ++ tcp 12345 80 ++ payload 5
+def erspanPkt (protoType : Nat) (erspan : Packet) (inner : Packet := erspanInner) : Packet :=
+  eth 0x0800 ++ ipv4 47 ++ greSeq protoType ++ erspan ++ inner
+def erspan2Pkt : Packet := erspanPkt 0x88BE (erspanHdr 1 ++ erspanV2)
+def erspan3Pkt : Packet := erspanPkt 0x22EB (erspanHdr 2 ++ erspanV3)
+def erspanL : List Layer := [P "eth", P "ipv4", P "gre", P "erspan", P "eth", P "ipv4", P "tcp"]
+def erspanW (w : Where) : Filter := { layers := erspanL, cond := some w }
+def erspanPred (p : Predicate) : Filter :=
+  { layers := [P "eth", P "ipv4", P "gre", .proto { name := "erspan", preds := [p] }, P "eth", P "ipv4", P "tcp"] }
+def erspanTs := fa ["erspan", "v3", "timestamp"]
+def erspanTermL : List Layer := [P "eth", P "ipv4", P "gre", P "erspan"]
+
+vector erspan2Chain := {
+  id := "erspan2", ast := erspanW (cmp dport .eq (k 80)), packet := erspan2Pkt, expected := .accept [] }
+vector erspan3Chain := {
+  id := "erspan3", ast := erspanW (cmp dport .eq (k 80)), packet := erspan3Pkt, expected := .accept [],
+  note := "KUNAI_ERSPAN_GRE_PROTOCOL_TYPE_ALT_TYPE3" }
+vector erspan3Platform := {
+  id := "erspan3-platform-subheader", ast := erspanW (cmp dport .eq (k 80)),
+  packet := erspanPkt 0x22EB (erspanHdr 2 ++ erspanV3 (o := 1) ++ be 8 0x0102030405060708), expected := .accept [],
+  note := "D-044: O = 1 skips the 8-byte platform-specific subheader" }
+vector erspan3PlatformMissing := {
+  id := "erspan3-platform-subheader-missing", ast := { layers := erspanL },
+  packet := erspanPkt 0x22EB (erspanHdr 2 ++ erspanV3 (o := 1)), expected := .reject,
+  note := "the inner frame is read 8 bytes late: its ethertype lands on the ipv4 flags" }
+vector erspanIPv6 := {
+  id := "erspan-ipv6-outer", ast := { layers := [P "eth", P "ipv6", P "gre", P "erspan", P "eth", P "ipv4", P "tcp"] },
+  packet := eth 0x86DD ++ ipv6 47 ++ greSeq 0x88BE ++ erspanHdr 1 ++ erspanV2 ++ erspanInner, expected := .accept [] }
+vector erspanInnerVlan := {
+  id := "erspan-inner-vlan", ast := { layers := [P "eth", P "ipv4", P "gre", P "erspan", P "eth", P "vlan", P "ipv4", P "tcp"] },
+  packet := erspanPkt 0x88BE (erspanHdr 1 ++ erspanV2) (eth 0x8100 ++ vlan 10 0x0800 ++ ipv4 6 ++ tcp 12345 80), expected := .accept [] }
+vector erspanGreMiss := {
+  id := "erspan-gre-type-miss", ast := { layers := erspanTermL }, packet := erspanPkt 0x6558 (erspanHdr 1 ++ erspanV2), expected := .reject,
+  note := "0x6558 is transparent Ethernet bridging" }
+vector erspanVersion0 := {
+  id := "erspan-version-0-reject", ast := { layers := erspanTermL }, packet := erspanPkt 0x88BE (erspanHdr 0 ++ erspanV2), expected := .reject }
+vector erspanVersion3 := {
+  id := "erspan-version-3-reject", ast := { layers := erspanTermL }, packet := erspanPkt 0x22EB (erspanHdr 3 ++ erspanV3), expected := .reject }
+vector erspanVersionCross := {
+  id := "erspan-version-over-gre-type", ast := erspanW (cmp erspanTs .eq (k 0x01020304)),
+  packet := erspanPkt 0x88BE (erspanHdr 2 ++ erspanV3), expected := .accept [],
+  note := "D-044: the version, not the GRE protocol type, picks the layout" }
+vector erspanSession := {
+  id := "erspan-pred-session", ast := erspanPred (.cmp (f "session_id") .eq (.int 100)), packet := erspan3Pkt, expected := .accept [] }
+vector erspanSessionMiss := {
+  id := "erspan-pred-session-miss", ast := erspanPred (.cmp (f "session_id") .eq (.int 101)), packet := erspan2Pkt, expected := .reject }
+vector erspanVlanT := {
+  id := "erspan-where-vlan-t", ast := erspanW (.and (cmp (fld "erspan" "vlan") .eq (k 10)) (cmp (fld "erspan" "t") .eq (k 1))),
+  packet := erspanPkt 0x88BE (erspanHdr 1 (t := 1) ++ erspanV2), expected := .accept [] }
+vector erspanCos := {
+  id := "erspan-where-cos-en", ast := erspanW (.and (cmp (fld "erspan" "cos") .eq (k 5)) (cmp (fld "erspan" "en") .eq (k 3))),
+  packet := erspanPkt 0x88BE (erspanHdr 1 (cos := 5) (en := 3) ++ erspanV2), expected := .accept [] }
+vector erspanTsHit := {
+  id := "erspan3-timestamp", ast := erspanW (cmp erspanTs .eq (k 0x01020304)), packet := erspan3Pkt, expected := .accept [] }
+vector erspanTsAbsent := {
+  id := "erspan3-timestamp-absent", ast := erspanW (cmp erspanTs .ne (k 0)), packet := erspan2Pkt, expected := .reject,
+  note := "D-003/D-027: type II has no v3" }
+vector erspanTsAbsentNot := {
+  id := "erspan3-timestamp-absent-not", ast := erspanW (.not (cmp erspanTs .eq (k 0))), packet := erspan2Pkt, expected := .accept [] }
+vector erspanSgt := {
+  id := "erspan3-sgt-hw-id", ast := erspanW (.and (cmp (fa ["erspan", "v3", "sgt"]) .eq (k 50)) (cmp (fa ["erspan", "v3", "hw_id"]) .eq (k 3))),
+  packet := erspan3Pkt, expected := .accept [] }
+vector erspanOBracket := {
+  id := "erspan3-pred-o", ast := erspanPred (.cmp (fp ["v3", "o"]) .eq (.int 1)),
+  packet := erspanPkt 0x22EB (erspanHdr 2 ++ erspanV3 (o := 1) ++ be 8 0), expected := .accept [] }
+vector erspanOBracketMiss := {
+  id := "erspan3-pred-o-miss", ast := erspanPred (.cmp (fp ["v3", "o"]) .eq (.int 1)), packet := erspan3Pkt, expected := .reject }
+vector erspanV2Exists := {
+  id := "erspan2-exists", ast := erspanW (.fieldExists (fp ["erspan", "v2"])), packet := erspan2Pkt, expected := .accept [] }
+vector erspanV3ExistsAbsent := {
+  id := "erspan3-exists-absent", ast := erspanW (.fieldExists (fp ["erspan", "v3"])), packet := erspan2Pkt, expected := .reject }
+vector erspanIndex := {
+  id := "erspan2-index", ast := erspanW (cmp (fa ["erspan", "v2", "index"]) .eq (k 7)), packet := erspan2Pkt, expected := .accept [],
+  goStatus := .notImplemented, note := "D-044: Go reads the 20-bit index through a 4-byte window past the 4-byte entry" }
+vector erspanTruncBase := {
+  id := "erspan-truncated-base", ast := { layers := erspanTermL }, packet := erspan2Pkt.take 44, expected := .reject }
+vector erspan2Exact := {
+  id := "erspan2-exact-fit", ast := { layers := erspanTermL }, packet := erspan2Pkt.take 50, expected := .accept [] }
+vector erspan2Trunc := {
+  id := "erspan2-truncated", ast := { layers := erspanTermL }, packet := erspan2Pkt.take 48, expected := .reject }
+vector erspan3Trunc := {
+  id := "erspan3-truncated", ast := { layers := erspanTermL }, packet := erspan3Pkt.take 52, expected := .reject,
+  note := "6 of the 8 type III bytes" }
+vector erspan3PlatformTrunc := {
+  id := "erspan3-platform-truncated", ast := { layers := erspanTermL },
+  packet := (erspanPkt 0x22EB (erspanHdr 2 ++ erspanV3 (o := 1) ++ be 8 0)).take 58, expected := .reject,
+  note := "4 of the 8 platform bytes" }
+
+def erspanVectors : List Vector := [
+  erspan2Chain, erspan3Chain, erspan3Platform, erspan3PlatformMissing, erspanIPv6, erspanInnerVlan, erspanGreMiss,
+  erspanVersion0, erspanVersion3, erspanVersionCross, erspanSession, erspanSessionMiss, erspanVlanT, erspanCos,
+  erspanTsHit, erspanTsAbsent, erspanTsAbsentNot, erspanSgt, erspanOBracket, erspanOBracketMiss, erspanV2Exists,
+  erspanV3ExistsAbsent, erspanIndex, erspanTruncBase, erspan2Exact, erspan2Trunc, erspan3Trunc, erspan3PlatformTrunc]
+
+def protocolVectors : List Vector := pfcpVectors ++ sctpVectors ++ arpVectors ++ nshVectors ++ erspanVectors
 
 end Kunai

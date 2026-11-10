@@ -10,11 +10,12 @@ offset と可変長構造の注記を併せて読んでください。
 式の書き方と型の詳細は、[DSL 文法](../../dsl-grammar.md)と[型の仕様](../../dsl-types.md)を参照してください。
 
 ```text
-Bundled protocols (21):
+Bundled protocols (22):
   arp      28 B  from eth, qinq, vlan
   cw        4 B  from mpls
+  erspan    4 B  from gre
   esp       8 B  from ipv4, ipv6
-  eth      14 B  from cw, geneve, mpls, nsh, vxlan
+  eth      14 B  from cw, erspan, geneve, mpls, nsh, vxlan
   geneve    8 B  from udp
   gre       4 B  from ipv4, ipv6
   gtp       8 B  from udp
@@ -72,6 +73,43 @@ Dispatches to:
   via              -> eth
 ```
 
+## erspan
+
+```text
+erspan — header 4 bytes minimum (variable layout, see Notes)
+
+Fields (bit width, running byte offset):
+  version              bit<4>    @0
+  vlan                 bit<12>   @0+4b
+  cos                  bit<3>    @2
+  en                   bit<2>    @2+3b
+  t                    bit<1>    @2+5b
+  session_id           bit<10>   @2+6b
+
+Aux headers:
+  v2 (erspan_v2_h, 4 bytes @ +4 from layer start) (gated: (byte@0 & 0xf0) == 0x1)
+    reserved             bit<12>   @0
+    index                bit<20>   @1+4b
+    use: erspan.v2.<field>  or  erspan[v2.<field> == X]
+  v3 (erspan_v3_h, 8 bytes @ +4 from layer start) (gated: (byte@0 & 0xf0) == 0x2)
+    timestamp            bit<32>   @0
+    sgt                  bit<16>   @4
+    p                    bit<1>    @6
+    ft                   bit<5>    @6+1b
+    hw_id                bit<6>    @6+6b
+    d                    bit<1>    @7+4b
+    gra                  bit<2>    @7+5b
+    o                    bit<1>    @7+7b
+    use: erspan.v3.<field>  or  erspan[v3.<field> == X]
+
+Dispatched from: gre
+Dispatches to:
+  via              -> eth
+
+Notes:
+  parser state machine (variable extension headers or self-validation)
+```
+
 ## esp
 
 ```text
@@ -94,7 +132,7 @@ Fields (bit width, running byte offset):
   src                  bit<48>   @6
   ethertype            bit<16>   @12
 
-Dispatched from: cw, geneve, mpls, nsh, vxlan
+Dispatched from: cw, erspan, geneve, mpls, nsh, vxlan
 Dispatches to:
   via ethertype    -> arp, ipv4, ipv6, mpls, nsh, qinq, vlan
 ```
@@ -163,7 +201,7 @@ Fields (bit width, running byte offset):
 
 Dispatched from: ipv4, ipv6
 Dispatches to:
-  via protocol_type -> ipv4, ipv6, nsh
+  via protocol_type -> erspan, ipv4, ipv6, nsh
 
 Notes:
   flag-triggered optional fields gated on byte@0
