@@ -66,8 +66,22 @@ module SimBridge {
     requires S.InFrame(S.Rel(a, StackTop(|c.fr| - 1)), w)
     ensures Classify(a, w, |c.fr|, c.L.mem.Keys) == InStack(|c.fr| - 1, S.Rel(a, StackTop(|c.fr| - 1)) + STK)
   {
-    reveal Classify();
+    var n := |c.fr|;
+    var rel := S.Rel(a, StackTop(n - 1));
+    FrameOfTop(a, w, n);
+    ClassifyFrame(a, w, n, c.L.mem.Keys, n - 1);
+    assert 0 <= rel + STK;
   }
+
+  lemma FrameOfTop(a: bv64, w: nat, n: nat)
+    requires 0 < n <= MAXF_RW && S.InFrame(S.Rel(a, StackTop(n - 1)), w)
+    ensures FrameOf(a, w, n) == Some(n - 1)
+  {}
+
+  lemma ClassifyFrame(a: bv64, w: nat, n: nat, dom: set<int>, d: nat)
+    requires FrameOf(a, w, n) == Some(d) && d < MAXF_RW
+    ensures Classify(a, w, n, dom) == (var o := S.Rel(a, StackTop(d)) + STK; if 0 <= o then InStack(d, o) else Bad)
+  { reveal Classify(); }
 
   // ---------------- one inserted step, region and whole ----------------
 
@@ -481,7 +495,19 @@ module SimBridge {
     var rest' := Bridge(w, c', s', prefix + vals, fuel - 1);
     rest := vals + rest';
     AdvanceRun(w, s, prefix, fuel, ins, vals, s', rest');
-    var O := S.Run(w.raw, w.sp.floor, s, prefix + rest, fuel);
+    AdvancePost(w, c, s, prefix, fuel, vals, k, c', s', rest');
+  }
+
+  // The tail of Advance, in a small context.
+  lemma AdvancePost(w: Win, c: Cfg, s: S.CState, prefix: seq<bv64>, fuel: nat, vals: seq<bv64>, k: nat, c': Cfg, s': S.CState,
+                    rest': seq<bv64>)
+    requires WinPre(w) && S.CWF(s) && S.CWF(s') && fuel > 0
+    requires ReachR(w.Pp, w.x, w.obsv, c, k) == Some(c')
+    requires Post(w, c', s', prefix + vals, fuel - 1, rest')
+    requires S.Run(w.raw, w.sp.floor, s, prefix + (vals + rest'), fuel) == S.Run(w.raw, w.sp.floor, s', (prefix + vals) + rest', fuel - 1)
+    ensures Post(w, c, s, prefix, fuel, vals + rest')
+  {
+    var O := S.Run(w.raw, w.sp.floor, s, prefix + (vals + rest'), fuel);
     if (O.Done? || O.Exited?) && FinalOkO(w.sp, w.s0, O.s) {
       EndsPrefix(w, c, k, c', O.s, O.Exited?);
     }
@@ -666,6 +692,14 @@ module SimBridge {
     ensures Need(fl, S.Ldx(wd, dst, rb, off), s) == if S.InFrame(S.Rel(s.regs[rb] + Sext16(off), s.regs[10]), wd) then 0 else 1
   {}
 
+  lemma IExecStore(x: Ctx, hooks: set<nat>, obsv: Observer, ins: S.Instr, c: Cfg, a: bv64, wd: nat, v: bv64)
+    requires ins.Stx? || ins.St?
+    requires wd == ins.size && wd <= 8
+    requires ins.Stx? ==> ins.base <= 10 && ins.src <= 10 && a == R64(Top(c))[ins.base] + Sext16(ins.off) && v == R64(Top(c))[ins.src]
+    requires ins.St? ==> ins.base <= 10 && a == R64(Top(c))[ins.base] + Sext16(ins.off) && v == Sext32(ins.imm)
+    ensures IExec(x, hooks, obsv, ins, c) == InsStore(c, a, wd, v)
+  {}
+
   lemma {:isolate_assertions} BStore(w: Win, c: Cfg, s: S.CState, prefix: seq<bv64>, fuel: nat, ins: S.Instr, a: bv64, wd: nat, v: bv64)
     returns (rest: seq<bv64>)
     requires Pre(w, c, s, prefix) && 0 <= s.pc < S.NumInsns(w.raw) && s.pc != w.hp && fuel > 0
@@ -696,7 +730,8 @@ module SimBridge {
     var o := S.Rel(a, s.regs[10]) + STK;
     assert o + wd <= STK as int + fl;
     SideEvent(w, c, s, c', s', e);
-    assert IExec(w.x, w.Pp.hooks, w.obsv, ins, c) == InsStore(c, a, wd, v);
+    assert R64(Top(c)) == s.regs;
+    IExecStore(w.x, w.Pp.hooks, w.obsv, ins, c, a, wd, v);
     StepGo(w, c, ins, Go(c'));
     assert prefix + [] == prefix;
     assert Pre(w, c', s', prefix + []);
