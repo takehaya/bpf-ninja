@@ -44,7 +44,14 @@ verify-sim: ## Verify the whole-program simulation proof; fails on trust escapes
 	@for f in dafny/sim/*.dfy; do case " $(SIM) " in *" $$f "*) ;; *) echo "$$f is not listed in SIM"; exit 1;; esac; done
 	@rc=0; grep -nE $(TRUST_RE) $(SIM) || rc=$$?; \
 	case $$rc in 0) echo "trust escape found"; exit 1;; 1) ;; *) exit $$rc;; esac
-	$(DAFNY) verify $(DFLAGS) $(SIM)
+	@# One invocation per file: an included file is not verified again (Dafny
+	@# verifies included files only with --verify-included-files), and every
+	@# file of SIM is passed once, so each file is verified exactly once.
+	@rc=0; for f in $(SIM); do s=$$(date +%s); \
+	  out=$$($(DAFNY) verify $(DFLAGS) $$f 2>&1); r=$$?; \
+	  echo "$$out" | grep -vE '^Dafny program verifier' | grep -E 'Error|Warning|error|warning' ; \
+	  echo "$$f: $$(echo "$$out" | grep -E 'verifier finished' | sed 's/Dafny program verifier finished with //') ($$(( $$(date +%s) - s )) s)"; \
+	  [ $$r -eq 0 ] || rc=1; done; exit $$rc
 
 dafny-gen: ## Regenerate dafny/gen-go from the Dafny sources
 	@t=$$(mktemp -d); \
