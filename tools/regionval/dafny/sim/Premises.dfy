@@ -245,6 +245,14 @@ module SimPremises {
     && forall i | i in D.pl :: i < |P| && P[i].Call? && 1 <= D.pl[i].reg <= 5 && D.pl[i].reg !in live(P[i].t)
   }
 
+  // L(P'), the length part: P' must load, and the kernel refuses a program
+  // longer than BPF_COMPLEXITY_LIMIT_INSNS (1000000, the privileged insn_cnt
+  // cap of bpf_prog_load).  The proof uses it only to bound the offset of
+  // call W_i (32 bits, EncCallLocal) at a wrapped site.
+  ghost predicate Loadable(P: seq<OInstr>, D: Decomp) {
+    |Layout(P, D).code| <= 1000000
+  }
+
   // All structural conditions the checker establishes.
   ghost predicate Structure(P: seq<OInstr>, D: Decomp, Pp: RwProg, ell: nat -> int,
                             live: nat -> set<nat>, tbl: bv32 -> set<nat>) {

@@ -45,7 +45,7 @@ module SimTheorem {
   // All hypotheses of the theorem, for the lemmas below.
   ghost predicate Hyp(P: seq<OInstr>, D: Decomp, Pp: RwProg, ell: nat -> int, live: nat -> set<nat>,
                       tbl: bv32 -> set<nat>, env: Env, sem: Sem, obsv: Observer, Adm: (Local, Oracle) -> bool) {
-    S0(P) && Structure(P, D, Pp, ell, live, tbl) && AllValidated(P, D, ell)
+    S0(P) && Structure(P, D, Pp, ell, live, tbl) && Loadable(P, D) && AllValidated(P, D, ell)
     && E0Shape(P) && E0(P, env, sem, Adm) && A1a(P, env, sem, Adm, ell) && A1b(P, env, sem, Adm)
     && A3b(env, tbl) && A5(obsv)
   }

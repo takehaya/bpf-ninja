@@ -49,6 +49,8 @@ module SimMain {
     // structural conditions the checker establishes
     requires S0(P)
     requires Structure(P, D, Pp, ell, live, tbl)
+    // P' loads: at most 1000000 instructions (kernel limit)
+    requires Loadable(P, D)
     // every inserted region is validated by the region validator
     requires AllValidated(P, D, ell)
     // premises
