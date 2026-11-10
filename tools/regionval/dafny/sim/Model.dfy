@@ -5,7 +5,8 @@
 // and of P' is.  Inserted instructions are decoded and computed with the
 // region-level definitions of Semantics.dfy; original instructions are
 // abstract classes whose value computations are parameters (Sem), so the
-// theorem holds for every choice of them.
+// theorem holds for every choice of them.  Opaque only keeps the solver
+// from unfolding every rule at once; proofs reveal the rule they need.
 include "../src/Api.dfy"
 
 module SimModel {
@@ -48,30 +49,47 @@ module SimModel {
   function FuncAddr(g: nat): bv64 requires g < 0x1_0000_0000 { (CODE0 + g) as bv64 }
 
   function AddrK(p: bv64, k: int): bv64 { ((p as int + k) % TWO64) as bv64 }
+  // The same address as an integer: the key of segment-local memory and of
+  // write sets (maps with bit-vector keys are not usable in proofs).
+  function AI(p: bv64, k: int): int { (p as int + k) % TWO64 }
 
-  ghost predicate InStackArea(a: bv64) { TOP0 - MAXF_RW * STRIDE <= a as int < TOP0 }
+  ghost predicate InStackArea(a: int) { TOP0 - MAXF_RW * STRIDE <= a < TOP0 }
 
-  // Where the w bytes at p are.  InStack(d, o): bytes o..o+w of live frame d.
-  // Bad: partly inside a stack window, outside a live frame's 512 bytes, or
+  // Where the w bytes at p are.  InStack(d, o): bytes o..o+w of live frame d,
+  // found from the top frame down with the region model's own test
+  // (Semantics.InFrame of the offset from that frame's r10).  Bad: any other
+  // access touching the stack area (a returned frame, a gap, a straddle), or
   // partly segment-local; the model has no rule for such an access.
   datatype Loc = InStack(d: nat, o: nat) | InLocal | Shared | Bad
 
-  ghost function Classify(p: bv64, w: nat, nfr: nat, dom: set<bv64>): Loc {
-    var a := p as int;
-    if a + w > TOP0 - MAXF_RW * STRIDE && a < TOP0 then
-      var d := (TOP0 - 1 - a) / STRIDE;
-      var top := TOP0 - d * STRIDE;
-      if d < nfr && top - STK <= a && a + w <= top then InStack(d, a - (top - STK)) else Bad
-    else if forall k :: 0 <= k < w ==> AddrK(p, k) in dom then InLocal
-    else if exists k :: 0 <= k < w && AddrK(p, k) in dom then Bad
-    else Shared
+  ghost function FrameOf(p: bv64, w: nat, d: nat): Bits.Option<nat>
+    ensures FrameOf(p, w, d).Some? ==> FrameOf(p, w, d).value < d && FrameOf(p, w, d).value < MAXF_RW
+    decreases d
+  {
+    if d == 0 then Bits.None
+    else if d - 1 < MAXF_RW && S.InFrame(S.Rel(p, StackTop(d - 1)), w) then Bits.Some(d - 1)
+    else FrameOf(p, w, d - 1)
+  }
+
+  ghost predicate TouchesStackArea(p: bv64, w: nat) {
+    exists k :: 0 <= k < w && InStackArea(AI(p, k))
+  }
+
+  opaque ghost function Classify(p: bv64, w: nat, nfr: nat, dom: set<int>): Loc {
+    match FrameOf(p, w, nfr)
+    case Some(d) => var o := S.Rel(p, StackTop(d)) + STK; if 0 <= o then InStack(d, o) else Bad
+    case None =>
+      if TouchesStackArea(p, w) then Bad
+      else if forall k :: 0 <= k < w ==> AI(p, k) in dom then InLocal
+      else if exists k :: 0 <= k < w && AI(p, k) in dom then Bad
+      else Shared
   }
 
   // ---------------- segment-local memory ----------------
 
   // Packet, metadata, context and helper state H as bytes at fixed
   // addresses (the input decides them), and the tail-call budget.
-  datatype Local = Local(mem: map<bv64, bv8>, budget: nat)
+  datatype Local = Local(mem: map<int, bv8>, budget: nat)
 
   // ---------------- original instructions (Table 1 classes) ----------------
 
@@ -120,7 +138,7 @@ module SimModel {
     | ECbRet(i: nat, v: bv64)
 
   datatype Resp =
-    | RRet(v: Val, wr: map<bv64, bv8>)   // v = Bot for RET_VOID; wr: write set on segment-local memory
+    | RRet(v: Val, wr: map<int, bv8>)   // v = Bot for RET_VOID; wr: write set on segment-local memory
     | RInvoke(c: bv64, u: seq<Val>)      // run the callback at c with r1..r5 = u
     | RTailOk(q: bv64) | RTailFail
     | RVal(val: bv64) | RUnit | RTaken | RFall
@@ -194,8 +212,8 @@ module SimModel {
   }
   ghost predicate AllDef(bs: seq<Byte>) { forall i :: 0 <= i < |bs| ==> bs[i].B? }
   ghost function Plain(bs: seq<Byte>): seq<bv8> { seq(|bs|, i requires 0 <= i < |bs| => if bs[i].B? then bs[i].b else 0) }
-  ghost function LBytes(m: map<bv64, bv8>, p: bv64, w: nat): seq<bv8> {
-    seq(w, k requires 0 <= k < w => if AddrK(p, k) in m then m[AddrK(p, k)] else 0)
+  ghost function LBytes(m: map<int, bv8>, p: bv64, w: nat): seq<bv8> {
+    seq(w, k requires 0 <= k < w => if AI(p, k) in m then m[AI(p, k)] else 0)
   }
 
   ghost function WriteStack(c: Cfg, d: nat, o: nat, bs: seq<Byte>): Cfg {
@@ -204,24 +222,24 @@ module SimModel {
       c.(fr := c.fr[d := c.fr[d].(stack := st[..o] + bs + st[o + |bs|..])])
     else c
   }
-  ghost function WriteMem(m: map<bv64, bv8>, p: bv64, bs: seq<bv8>): map<bv64, bv8> decreases |bs| {
-    if |bs| == 0 then m else WriteMem(m[p := bs[0]], AddrK(p, 1), bs[1..])
+  ghost function WriteMem(m: map<int, bv8>, p: bv64, bs: seq<bv8>): map<int, bv8> decreases |bs| {
+    if |bs| == 0 then m else WriteMem(m[p as int := bs[0]], AddrK(p, 1), bs[1..])
   }
   ghost function WriteLocal(c: Cfg, p: bv64, bs: seq<bv8>): Cfg { c.(L := c.L.(mem := WriteMem(c.L.mem, p, bs))) }
   ghost function Bytes(bs: seq<bv8>): seq<Byte> { seq(|bs|, i requires 0 <= i < |bs| => B(bs[i])) }
 
   // A helper's write set: bytes of live frames and of segment-local memory.
-  ghost function ApplyW(c: Cfg, wr: map<bv64, bv8>): Cfg {
+  opaque ghost function ApplyW(c: Cfg, wr: map<int, bv8>): Cfg {
     var fr' := seq(|c.fr|, d requires 0 <= d < |c.fr| =>
       c.fr[d].(stack := seq(|c.fr[d].stack|, o requires 0 <= o < |c.fr[d].stack| =>
-        if d < MAXF_RW && o < STK && SAddr(d, o) in wr then B(wr[SAddr(d, o)]) else c.fr[d].stack[o])));
+        if d < MAXF_RW && o < STK && SAddr(d, o) as int in wr then B(wr[SAddr(d, o) as int]) else c.fr[d].stack[o])));
     var mem' := map a | a in c.L.mem :: if a in wr && !InStackArea(a) then wr[a] else c.L.mem[a];
     c.(fr := fr', L := c.L.(mem := mem'))
   }
 
   // The footprint bytes: segment-local bytes at the addresses; shared ones are left to the oracle.
   datatype FootRes = FOk(bs: seq<bv8>) | FBot | FBad
-  ghost function FootBytes(c: Cfg, addrs: seq<bv64>): FootRes decreases |addrs| {
+  opaque ghost function FootBytes(c: Cfg, addrs: seq<bv64>): FootRes decreases |addrs| {
     if |addrs| == 0 then FOk([])
     else
       var rest := FootBytes(c, addrs[1..]);
@@ -238,7 +256,7 @@ module SimModel {
 
   // Push a frame entering at pc with r1..r5 = args (unreadable ones become
   // fresh), r10 = its stack top, and a fresh stack.
-  ghost function Push(x: Ctx, c: Cfg, fn: nat, pc: int, kind: Kind, args: seq<Val>): StepRes {
+  opaque ghost function Push(x: Ctx, c: Cfg, fn: nat, pc: int, kind: Kind, args: seq<Val>): StepRes {
     var d := |c.fr|;
     if d >= Limit(x) then Stuck(false)
     else
@@ -251,7 +269,7 @@ module SimModel {
 
   // The top frame resumes after a helper (or a return): apply the write
   // set, r0 := v, r1..r5 unreadable, next instruction.
-  ghost function Finish(x: Ctx, c: Cfg, v: Val, wr: map<bv64, bv8>): StepRes {
+  opaque ghost function Finish(x: Ctx, c: Cfg, v: Val, wr: map<int, bv8>): StepRes {
     var c1 := ApplyW(c, wr);
     var f := Top(c1);
     var regs := seq(|f.regs|, k requires 0 <= k < |f.regs| =>
@@ -259,7 +277,7 @@ module SimModel {
     Go(Put(c1, f.(pc := f.pc + 1, regs := regs)).(hc := c1.hc + 6))
   }
 
-  ghost function Invoke(x: Ctx, c: Cfg, i: nat, cv: bv64, u: seq<Val>): StepRes {
+  opaque ghost function Invoke(x: Ctx, c: Cfg, i: nat, cv: bv64, u: seq<Val>): StepRes {
     var g := cv as int - CODE0;
     if g >= 0 && g in x.fns then Push(x, c, x.fentry(g), x.fentry(g), Cb(i), u) else Stuck(false)
   }
@@ -267,7 +285,7 @@ module SimModel {
   ghost function Pop(c: Cfg): Cfg { if |c.fr| > 0 then c.(fr := c.fr[..|c.fr| - 1]) else c }
 
   // exit of the top frame with r0 = v.
-  ghost function ExitFrame(x: Ctx, c: Cfg, v: bv64): StepRes {
+  opaque ghost function ExitFrame(x: Ctx, c: Cfg, v: bv64): StepRes {
     match Top(c).kind
     case Main => Done(TRet(v, c.L, c.h))
     case Cb(i) =>
@@ -288,77 +306,116 @@ module SimModel {
 
   ghost function SetDst(c: Cfg, dst: nat, v: bv64): StepRes { Go(Put(c, Adv(SetR(Top(c), dst, W(v))))) }
 
+  // Dispatch on the class; each rule is its own opaque function.
   ghost function OStep(x: Ctx, ins: OInstr, idx: nat, c: Cfg): StepRes {
-    var f := Top(c);
     match ins
-    case Alu(code, dst, srcs) =>
-      if dst >= 10 then Stuck(false)
-      else (match Rds(f, srcs)
-        case Some(vs) => SetDst(c, dst, x.sem.alu(code, vs))
-        case None => Stuck(false))
-    case FRef(dst, g) =>
-      if dst >= 10 || g >= 0x1_0000_0000 then Stuck(false) else SetDst(c, dst, FuncAddr(g))
-    case Ld(dst, base, off, w, sx) =>
-      if dst >= 10 || !ValidW(w) then Stuck(false)
-      else (match Reg(f, base)
-        case Bot => Stuck(false)
-        case W(bv) => LdStep(x, c, idx, dst, AddrK(bv, off), w, sx))
-    case St(base, off, w, src) =>
-      if !ValidW(w) then Stuck(false)
-      else (match (Reg(f, base), if src.SR? then Reg(f, src.r) else W(src.k))
-        case (W(bv), W(v)) => StStep(x, c, idx, AddrK(bv, off), w, Trunc(v, w))
-        case _ => Stuck(false))
-    case Atom(op, base, off, w, src, fetch, cmpx) =>
-      if !(w == 4 || w == 8) || src >= 10 then Stuck(false)
-      else (match (Reg(f, base), Reg(f, src), Reg(f, 0))
-        case (W(bv), W(sv), r0) =>
-          if cmpx && r0.Bot? then Stuck(false)
-          else AtomStep(x, c, idx, op, AddrK(bv, off), w, src, fetch, cmpx, Trunc(sv, w),
-                        if cmpx then Bits.Some(Trunc(r0.w, w)) else Bits.None)
-        case _ => Stuck(false))
-    case Legacy(w, ix, off) =>
-      (match (Reg(f, 6), if ix.Some? then Reg(f, ix.value) else W(0))
-        case (W(r6), W(iv)) =>
-          (match x.sem.legacy(c.L, r6, if ix.Some? then Bits.Some(iv) else Bits.None, off, w)
-           case Some(v) => Finish(x, c, W(v), map[])  // r0 := v, r1..r5 unreadable
-           case None => ExitFrame(x, c, 0))           // out of bounds: r0 := 0 and exit the frame
-        case _ => Stuck(false))
-    case Jcc(code, srcs, t) =>
-      (match Rds(f, srcs)
-       case Some(vs) => Go(Put(c, f.(pc := if x.sem.cond(code, vs) then t else f.pc + 1)))
-       case None => Stuck(false))
-    case Ja(t) => Go(Put(c, f.(pc := t)))
-    case MayGoto(t) =>
-      var e := EMg(idx);
-      var c1 := c.(h := c.h + [e]);
-      (match x.om(c.h, e, Wh(c))
-       case RTaken => Go(Put(c1, f.(pc := t)))
-       case RFall => Go(Put(c1, Adv(f)))
-       case _ => Stuck(false))
+    case Alu(code, dst, srcs) => AluO(x, c, code, dst, srcs)
+    case FRef(dst, g) => FRefO(c, dst, g)
+    case Ld(dst, base, off, w, sx) => LdO(x, c, idx, dst, base, off, w, sx)
+    case St(base, off, w, src) => StO(x, c, idx, base, off, w, src)
+    case Atom(op, base, off, w, src, fetch, cmpx) => AtomO(x, c, idx, op, base, off, w, src, fetch, cmpx)
+    case Legacy(w, ix, off) => LegacyO(x, c, w, ix, off)
+    case Jcc(code, srcs, t) => JccO(x, c, code, srcs, t)
+    case Ja(t) => Go(Put(c, Top(c).(pc := t)))
+    case MayGoto(t) => MayGotoO(x, c, idx, t)
     case Hcall(kf, id) => HelperStep(x, c, idx, kf, id, false)
     case CbCall(id) => HelperStep(x, c, idx, false, id, true)
-    case Tail =>
-      (match Rds(f, [1, 2, 3])
-       case None => Stuck(false)
-       case Some(args) =>
-         var e := ECall(idx, false, 12, args, []);
-         var c1 := c.(h := c.h + [e]);
-         match x.om(c.h, e, Wh(c))
-         case RTailOk(q) =>
-           Done(TTail(q, args[0], c.L.(budget := if c.L.budget > 0 then c.L.budget - 1 else 0), c1.h))
-         case RTailFail =>
-           var regs := seq(|f.regs|, k requires 0 <= k < |f.regs| => if k <= 5 then Und(x, c1, k) else f.regs[k]);
-           Go(Put(c1, f.(pc := f.pc + 1, regs := regs)).(hc := c1.hc + 6))
-         case _ => Stuck(false))
-    case Call(t) =>
-      Push(x, c, t, t, Sub, seq(5, k requires 0 <= k < 5 => Reg(f, k + 1)))
-    case Exit =>
-      match Reg(f, 0)
-      case W(v) => ExitFrame(x, c, v)
-      case Bot => Stuck(false)
+    case Tail => TailO(x, c, idx)
+    case Call(t) => Push(x, c, t, t, Sub, seq(5, k requires 0 <= k < 5 => Reg(Top(c), k + 1)))
+    case Exit => ExitO(x, c)
   }
 
-  ghost function LdStep(x: Ctx, c: Cfg, idx: nat, dst: nat, p: bv64, w: nat, sx: bool): StepRes
+  opaque ghost function AluO(x: Ctx, c: Cfg, code: nat, dst: nat, srcs: seq<nat>): StepRes {
+    if dst >= 10 then Stuck(false)
+    else match Rds(Top(c), srcs)
+      case Some(vs) => SetDst(c, dst, x.sem.alu(code, vs))
+      case None => Stuck(false)
+  }
+
+  opaque ghost function FRefO(c: Cfg, dst: nat, g: nat): StepRes {
+    if dst >= 10 || g >= 0x1_0000_0000 then Stuck(false) else SetDst(c, dst, FuncAddr(g))
+  }
+
+  opaque ghost function LdO(x: Ctx, c: Cfg, idx: nat, dst: nat, base: nat, off: int, w: nat, sx: bool): StepRes {
+    if dst >= 10 || !ValidW(w) then Stuck(false)
+    else match Reg(Top(c), base)
+      case Bot => Stuck(false)
+      case W(bv) => LdStep(x, c, idx, dst, AddrK(bv, off), w, sx)
+  }
+
+  opaque ghost function StO(x: Ctx, c: Cfg, idx: nat, base: nat, off: int, w: nat, src: Src): StepRes {
+    var f := Top(c);
+    if !ValidW(w) then Stuck(false)
+    else match (Reg(f, base), if src.SR? then Reg(f, src.r) else W(src.k))
+      case (W(bv), W(v)) => StStep(x, c, idx, AddrK(bv, off), w, Trunc(v, w))
+      case _ => Stuck(false)
+  }
+
+  opaque ghost function AtomO(x: Ctx, c: Cfg, idx: nat, op: nat, base: nat, off: int, w: nat, src: nat,
+                              fetch: bool, cmpx: bool): StepRes {
+    var f := Top(c);
+    if !(w == 4 || w == 8) || src >= 10 then Stuck(false)
+    else match (Reg(f, base), Reg(f, src), Reg(f, 0))
+      case (W(bv), W(sv), r0) =>
+        if cmpx && r0.Bot? then Stuck(false)
+        else AtomStep(x, c, idx, op, AddrK(bv, off), w, src, fetch, cmpx, Trunc(sv, w),
+                      if cmpx then Bits.Some(Trunc(r0.w, w)) else Bits.None)
+      case _ => Stuck(false)
+  }
+
+  // In bounds: r0 := v, r1..r5 unreadable.  Out of bounds: r0 := 0 and exit the frame.
+  opaque ghost function LegacyO(x: Ctx, c: Cfg, w: nat, ix: Bits.Option<nat>, off: int): StepRes {
+    var f := Top(c);
+    match (Reg(f, 6), if ix.Some? then Reg(f, ix.value) else W(0))
+      case (W(r6), W(iv)) =>
+        (match x.sem.legacy(c.L, r6, if ix.Some? then Bits.Some(iv) else Bits.None, off, w)
+         case Some(v) => Finish(x, c, W(v), map[])
+         case None => ExitFrame(x, c, 0))
+      case _ => Stuck(false)
+  }
+
+  opaque ghost function JccO(x: Ctx, c: Cfg, code: nat, srcs: seq<nat>, t: nat): StepRes {
+    var f := Top(c);
+    match Rds(f, srcs)
+    case Some(vs) => Go(Put(c, f.(pc := if x.sem.cond(code, vs) then t else f.pc + 1)))
+    case None => Stuck(false)
+  }
+
+  opaque ghost function MayGotoO(x: Ctx, c: Cfg, idx: nat, t: nat): StepRes {
+    var f := Top(c);
+    var e := EMg(idx);
+    var c1 := c.(h := c.h + [e]);
+    match x.om(c.h, e, Wh(c))
+    case RTaken => Go(Put(c1, f.(pc := t)))
+    case RFall => Go(Put(c1, Adv(f)))
+    case _ => Stuck(false)
+  }
+
+  // bpf_tail_call: on success the segment ends; on failure r0..r5 become
+  // unreadable and the budget is unchanged (x86-64 JIT).
+  opaque ghost function TailO(x: Ctx, c: Cfg, idx: nat): StepRes {
+    var f := Top(c);
+    match Rds(f, [1, 2, 3])
+    case None => Stuck(false)
+    case Some(args) =>
+      var e := ECall(idx, false, 12, args, []);
+      var c1 := c.(h := c.h + [e]);
+      match x.om(c.h, e, Wh(c))
+      case RTailOk(q) =>
+        Done(TTail(q, args[0], c.L.(budget := if c.L.budget > 0 then c.L.budget - 1 else 0), c1.h))
+      case RTailFail =>
+        var regs := seq(|f.regs|, k requires 0 <= k < |f.regs| => if k <= 5 then Und(x, c1, k) else f.regs[k]);
+        Go(Put(c1, f.(pc := f.pc + 1, regs := regs)).(hc := c1.hc + 6))
+      case _ => Stuck(false)
+  }
+
+  opaque ghost function ExitO(x: Ctx, c: Cfg): StepRes {
+    match Reg(Top(c), 0)
+    case W(v) => ExitFrame(x, c, v)
+    case Bot => Stuck(false)
+  }
+
+  opaque ghost function LdStep(x: Ctx, c: Cfg, idx: nat, dst: nat, p: bv64, w: nat, sx: bool): StepRes
     requires ValidW(w)
   {
     var ext := (v: bv64) => if sx then SextW(v, w) else v;
@@ -375,7 +432,7 @@ module SimModel {
       case _ => Stuck(false)
   }
 
-  ghost function StStep(x: Ctx, c: Cfg, idx: nat, p: bv64, w: nat, v: bv64): StepRes
+  opaque ghost function StStep(x: Ctx, c: Cfg, idx: nat, p: bv64, w: nat, v: bv64): StepRes
     requires ValidW(w)
   {
     match Classify(p, w, |c.fr|, c.L.mem.Keys)
@@ -394,7 +451,7 @@ module SimModel {
     if cmpx then SetDst(c, 0, vold) else if fetch then SetDst(c, src, vold) else Go(Put(c, Adv(Top(c))))
   }
 
-  ghost function AtomStep(x: Ctx, c: Cfg, idx: nat, op: nat, p: bv64, w: nat, src: nat, fetch: bool, cmpx: bool,
+  opaque ghost function AtomStep(x: Ctx, c: Cfg, idx: nat, op: nat, p: bv64, w: nat, src: nat, fetch: bool, cmpx: bool,
                           n: bv64, xv: Bits.Option<bv64>): StepRes
     requires w == 4 || w == 8
   {
@@ -418,7 +475,7 @@ module SimModel {
 
   // Helper, kfunc or callback helper: reads r1..r_n and its footprint,
   // issues the call event, and finishes, or starts a callback.
-  ghost function HelperStep(x: Ctx, c: Cfg, idx: nat, kf: bool, id: bv32, cb: bool): StepRes {
+  opaque ghost function HelperStep(x: Ctx, c: Cfg, idx: nat, kf: bool, id: bv32, cb: bool): StepRes {
     var n := x.env.arity(kf, id);
     if n > 5 then Stuck(false)
     else match Rds(Top(c), Upto(1, n))
@@ -445,7 +502,7 @@ module SimModel {
 
   // Inserted code reads segment-local memory as it is; any other load
   // returns an unconstrained value and issues no event (A2').
-  ghost function InsLoad(x: Ctx, c: Cfg, p: bv64, w: nat): (bv64, nat) requires w <= 8 {
+  opaque ghost function InsLoad(x: Ctx, c: Cfg, p: bv64, w: nat): (bv64, nat) requires w <= 8 {
     match Classify(p, w, |c.fr|, c.L.mem.Keys)
     case InStack(d, o) => (LE(Plain(StackBytes(c, d, o, w))), 0)
     case InLocal => (LE(LBytes(c.L.mem, p, w)), 0)
@@ -453,7 +510,7 @@ module SimModel {
   }
 
   // Inserted stores write segment-local memory; the model has no rule for others.
-  ghost function InsStore(c: Cfg, p: bv64, w: nat, v: bv64): StepRes requires w <= 8 {
+  opaque ghost function InsStore(c: Cfg, p: bv64, w: nat, v: bv64): StepRes requires w <= 8 {
     match Classify(p, w, |c.fr|, c.L.mem.Keys)
     case InStack(d, o) => var c1 := WriteStack(c, d, o, Bytes(BytesOf(v, w))); Go(Put(c1, Adv(Top(c1))))
     case InLocal => var c1 := WriteLocal(c, p, BytesOf(v, w)); Go(Put(c1, Adv(Top(c1))))
@@ -462,40 +519,52 @@ module SimModel {
 
   // hooks: entry positions of hook functions; a call to one first runs the observer.
   ghost function IStep(x: Ctx, hooks: set<nat>, obsv: Observer, b: seq<bv8>, c: Cfg): StepRes {
-    var f := Top(c);
-    var rs := R64(f);
     if |b| != 8 then Stuck(false)
     else match S.Decode(b)
       case None => Stuck(false)
-      case Some(ins) =>
-        match ins
-        case Alu(is64, op, dst, opnd) =>
-          if dst >= 10 then Stuck(false)
-          else SetDst(c, dst, S.AluVal(is64, op, rs[dst], S.OperandVal(is64, opnd, rs)))
-        case Ldx(w, dst, base, off) =>
-          if dst >= 10 || base > 10 || w > 8 then Stuck(false)
-          else
-            var (v, k) := InsLoad(x, c, rs[base] + Sext16(off), w);
-            SetDst(c.(hc := c.hc + k), dst, v)
-        case Stx(w, base, src, off) =>
-          if base > 10 || src > 10 || w > 8 then Stuck(false) else InsStore(c, rs[base] + Sext16(off), w, rs[src])
-        case St(w, base, off, imm) =>
-          if base > 10 || w > 8 then Stuck(false) else InsStore(c, rs[base] + Sext16(off), w, Sext32(imm))
-        case Ja(off) => Go(Put(c, f.(pc := f.pc + 1 + Signed16(off))))
-        case Jcond(cnd, dst, imm, off) =>
-          if dst > 10 then Stuck(false)
-          else Go(Put(c, f.(pc := if S.CondHolds(cnd, rs[dst], imm) then f.pc + 1 + Signed16(off) else f.pc + 1)))
-        case CallHelper(_) => Stuck(false)
-        case CallLocal(imm) =>
-          var t := f.pc + 1 + Signed32(imm);
-          if t < 0 then Stuck(false)
-          else (match Push(x, c, t, t, Ins, seq(5, k requires 0 <= k < 5 => Reg(f, k + 1)))
-            case Go(c1) => if t in hooks then Go(obsv(c1, rs[1..6])) else Go(c1)
-            case r => r)
-        case Exit =>
-          match Reg(f, 0)
-          case W(v) => ExitFrame(x, c, v)
-          case Bot => Stuck(false)
+      case Some(ins) => IExec(x, hooks, obsv, ins, c)
+  }
+
+  ghost function IExec(x: Ctx, hooks: set<nat>, obsv: Observer, ins: S.Instr, c: Cfg): StepRes {
+    match ins
+    case Alu(is64, op, dst, opnd) => IAlu(c, is64, op, dst, opnd)
+    case Ldx(w, dst, base, off) => ILdx(x, c, w, dst, base, off)
+    case Stx(w, base, src, off) =>
+      if base > 10 || src > 10 || w > 8 then Stuck(false) else InsStore(c, R64(Top(c))[base] + Sext16(off), w, R64(Top(c))[src])
+    case St(w, base, off, imm) =>
+      if base > 10 || w > 8 then Stuck(false) else InsStore(c, R64(Top(c))[base] + Sext16(off), w, Sext32(imm))
+    case Ja(off) => Go(Put(c, Top(c).(pc := Top(c).pc + 1 + Signed16(off))))
+    case Jcond(cnd, dst, imm, off) => IJcond(c, cnd, dst, imm, off)
+    case CallHelper(_) => Stuck(false)
+    case CallLocal(imm) => ICall(x, hooks, obsv, c, imm)
+    case Exit => ExitO(x, c)
+  }
+
+  opaque ghost function IAlu(c: Cfg, is64: bool, op: S.AluOp, dst: nat, opnd: S.Operand): StepRes {
+    var rs := R64(Top(c));
+    if dst >= 10 then Stuck(false) else SetDst(c, dst, S.AluVal(is64, op, rs[dst], S.OperandVal(is64, opnd, rs)))
+  }
+
+  opaque ghost function ILdx(x: Ctx, c: Cfg, w: nat, dst: nat, base: nat, off: bv16): StepRes {
+    if dst >= 10 || base > 10 || w > 8 then Stuck(false)
+    else
+      var r := InsLoad(x, c, R64(Top(c))[base] + Sext16(off), w);
+      SetDst(c.(hc := c.hc + r.1), dst, r.0)
+  }
+
+  opaque ghost function IJcond(c: Cfg, cnd: S.Cond, dst: nat, imm: bv32, off: bv16): StepRes {
+    var f := Top(c);
+    if dst > 10 then Stuck(false)
+    else Go(Put(c, f.(pc := if S.CondHolds(cnd, R64(f)[dst], imm) then f.pc + 1 + Signed16(off) else f.pc + 1)))
+  }
+
+  opaque ghost function ICall(x: Ctx, hooks: set<nat>, obsv: Observer, c: Cfg, imm: bv32): StepRes {
+    var f := Top(c);
+    var t := f.pc + 1 + Signed32(imm);
+    if t < 0 then Stuck(false)
+    else match Push(x, c, t, t, Ins, seq(5, k requires 0 <= k < 5 => Reg(f, k + 1)))
+      case Go(c1) => if t in hooks then Go(obsv(c1, R64(f)[1..6])) else Go(c1)
+      case r => r
   }
 
   // ---------------- programs and runs ----------------

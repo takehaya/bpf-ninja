@@ -64,8 +64,8 @@ module SimPremises {
   ghost function FootAcc(c: Cfg, addrs: seq<bv64>): set<(nat, nat)> decreases |addrs| {
     if |addrs| == 0 then {} else MemAcc(c, addrs[0], 1) + FootAcc(c, addrs[1..])
   }
-  ghost function WrAcc(c: Cfg, wr: map<bv64, bv8>): set<(nat, nat)> {
-    set d: nat, o: nat | d < |c.fr| && d < MAXF_RW && o < STK && SAddr(d, o) in wr :: (d, o)
+  ghost function WrAcc(c: Cfg, wr: map<int, bv8>): set<(nat, nat)> {
+    set d: nat, o: nat | d < |c.fr| && d < MAXF_RW && o < STK && SAddr(d, o) as int in wr :: (d, o)
   }
   ghost function RespAcc(c: Cfg, r: Resp): set<(nat, nat)> { if r.RRet? then WrAcc(c, r.wr) else {} }
 
