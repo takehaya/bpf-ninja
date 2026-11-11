@@ -1157,6 +1157,18 @@ module SimBridge {
     SideFacts(w, c, s); Side0(w, c, s);
     var e :| s'.events == s.events + [e] && e.EHelper? && e.stackAfter == Plain(Top(c').stack) && e.ret == R64(Top(c'))[0];
     Soundness.EventsSnoc(s.events, e, w.s0.stack);
+    SideHelperBelow(w, c, c');
+    SideHelperL(w, c, c');
+    SideHelperUpper(w, c, c', s');
+    SideIntro1(w, c', s');
+  }
+
+  // The frames below the top after the helper are the entry's with the write set applied.
+  lemma {:isolate_assertions} SideHelperBelow(w: Win, c: Cfg, c': Cfg)
+    requires |c.fr| == |w.c0.fr| > 0 && Below(c) == Below(w.c0)
+    requires |c'.fr| == |c.fr| && Below(c') == Below(ApplyW(c, w.hc.wr))
+    ensures Below(c') == Below(ApplyW(w.c0, w.hc.wr))
+  {
     var a := ApplyW(w.c0, w.hc.wr);
     ApplyWAt(w.c0, w.hc.wr);
     ApplyWAt(c, w.hc.wr);
@@ -1164,14 +1176,47 @@ module SimBridge {
     forall d | 0 <= d < t ensures Below(c')[d] == Below(a)[d] {
       assert c.fr[d] == Below(c)[d] == Below(w.c0)[d] == w.c0.fr[d];
     }
+  }
+
+  lemma SideHelperL(w: Win, c: Cfg, c': Cfg)
+    requires c.L == w.c0.L && c'.L == ApplyL(c.L, w.hc.wr)
+    ensures c'.L == ApplyW(w.c0, w.hc.wr).L
+  { ApplyWAt(w.c0, w.hc.wr); }
+
+  // The bytes at or above the floor after the helper: the helper's view of the stack.
+  lemma {:isolate_assertions} SideHelperUpper(w: Win, c: Cfg, c': Cfg, s': S.CState)
+    requires |c.fr| == |w.c0.fr| > 0 && |Top(c).stack| == STK && |Top(w.c0).stack| == STK && |Top(c').stack| == STK
+    requires forall i | 0 <= i && STK as int + w.sp.floor <= i < STK :: Top(c).stack[i] == Top(w.c0).stack[i]
+    requires forall o | 0 <= o < STK :: Top(c').stack[o] == ApplyF(Top(c), |c.fr| - 1, w.hc.wr).stack[o]
+    requires UpperBase(s'.events, w.s0.stack) == Plain(Top(c').stack)
+    ensures |UpperBase(s'.events, w.s0.stack)| == STK && |Top(ApplyW(w.c0, w.hc.wr)).stack| == STK
+    ensures forall i | 0 <= i && STK as int + w.sp.floor <= i < STK ::
+      UpperBase(s'.events, w.s0.stack)[i] == Plain(Top(ApplyW(w.c0, w.hc.wr)).stack)[i]
+  {
+    var t := |c.fr| - 1;
+    ApplyWAt(w.c0, w.hc.wr);
+    var a := ApplyW(w.c0, w.hc.wr);
     assert Top(a) == ApplyF(Top(w.c0), t, w.hc.wr);
     forall i | 0 <= i && STK as int + w.sp.floor <= i < STK
       ensures UpperBase(s'.events, w.s0.stack)[i] == Plain(Top(a).stack)[i]
     {
       assert Top(c).stack[i] == Top(w.c0).stack[i];
+      assert Top(c').stack[i] == ApplyF(Top(c), t, w.hc.wr).stack[i] == ApplyF(Top(w.c0), t, w.hc.wr).stack[i];
     }
-    reveal Side();
   }
+
+  // Side after the helper, from its parts.
+  lemma SideIntro1(w: Win, c: Cfg, s: S.CState)
+    requires !TailOkW(w) && CountHelpers(s.events) == 1
+    requires |c.fr| == |w.c0.fr| && Top(c).kind == Top(w.c0).kind && Top(c).fn == Top(w.c0).fn
+    requires |Top(c).stack| == STK && |Top(w.c0).stack| == STK
+    requires Below(c) == Below(ApplyW(w.c0, w.hc.wr)) && c.L == ApplyW(w.c0, w.hc.wr).L && c.h == w.c0.h + [w.hc.eh]
+    requires w.hc.v.W? ==> HelperRet(s.events) == w.hc.v.w
+    requires |UpperBase(s.events, w.s0.stack)| == STK && |Top(ApplyW(w.c0, w.hc.wr)).stack| == STK
+    requires forall i | 0 <= i && STK as int + w.sp.floor <= i < STK ::
+      UpperBase(s.events, w.s0.stack)[i] == Plain(Top(ApplyW(w.c0, w.hc.wr)).stack)[i]
+    ensures Side(w, c, s)
+  { reveal Side(); }
 
   lemma UptoAt(lo: nat, hi: nat, i: nat)
     requires i < |Upto(lo, hi)|
