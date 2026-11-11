@@ -737,7 +737,7 @@ module SimWrap {
     requires WWPre(ww) && BRW(c, s, ww.wbase) && 0 <= s.pc < S.NumInsns(ww.wraw)
     requires S.Decode(S.InsnAt(ww.wraw, s.pc)) == Some(ins) && !ins.CallHelper?
     ensures AtIns(ww.Pp, c, ins)
-  {    reveal BRWO();
+  {    BRWE(c, s, ww.wbase);
 
     WWAtW(ww, s.pc);
     assert !IsHelperCall(S.InsnAt(ww.wraw, s.pc));
@@ -750,7 +750,7 @@ module SimWrap {
     ensures var s' := S.Step(floor, S.Alu(is64, op, dst, opnd), s, oracle).s;
       IAlu(c, is64, op, dst, opnd).Go? && BRW(IAlu(c, is64, op, dst, opnd).c, s', wbase)
       && TopOnly(c, IAlu(c, is64, op, dst, opnd).c) && s'.events == s.events && s'.oc == s.oc
-  {    reveal BRWO();
+  {    BRWE(c, s, wbase);
 
     StepAluEq(floor, is64, op, dst, opnd, s, oracle);
     reveal IAlu();
@@ -774,7 +774,7 @@ module SimWrap {
     ensures var s' := S.Step(floor, S.Ja(off), s, oracle).s;
       var c' := Put(c, Top(c).(pc := Top(c).pc + 1 + Signed16(off)));
       BRW(c', s', wbase) && TopOnly(c, c') && s'.events == s.events && s'.oc == s.oc
-  {    reveal BRWO();
+  {    BRWE(c, s, wbase);
 
     Soundness.StepEq(floor, S.Ja(off), s, oracle);
     var c' := Put(c, Top(c).(pc := Top(c).pc + 1 + Signed16(off)));
@@ -789,7 +789,7 @@ module SimWrap {
     ensures var s' := S.Step(floor, S.Jcond(cnd, dst, imm, off), s, oracle).s;
       IJcond(c, cnd, dst, imm, off).Go? && BRW(IJcond(c, cnd, dst, imm, off).c, s', wbase)
       && TopOnly(c, IJcond(c, cnd, dst, imm, off).c) && s'.events == s.events && s'.oc == s.oc
-  {    reveal BRWO();
+  {    BRWE(c, s, wbase);
 
     Soundness.StepEq(floor, S.Jcond(cnd, dst, imm, off), s, oracle);
     reveal IJcond();
@@ -805,7 +805,7 @@ module SimWrap {
     requires BRW(c, s, wbase) && (w == 1 || w == 2 || w == 4 || w == 8)
     requires !S.InFrame(S.Rel(a, s.regs[10]), w) ==> S.Orc(oracle, s.oc) == LoadedW(x, c, a, w)
     ensures S.LoadVal(s, a, w, oracle) == LoadedW(x, c, a, w)
-  {    reveal BRWO();
+  {    BRWE(c, s, wbase);
 
     reveal InsLoad(), S.LoadVal();
     var n := |c.fr|;
@@ -833,7 +833,7 @@ module SimWrap {
       ILdx(x, c, w, dst, rb, off).Go? && BRW(ILdx(x, c, w, dst, rb, off).c, s', wbase)
       && TopOnly(c, ILdx(x, c, w, dst, rb, off).c) && s'.events == s.events
       && s'.oc == s.oc + (if S.InFrame(S.Rel(s.regs[rb] + Sext16(off), s.regs[10]), w) then 0 else 1)
-  {    reveal BRWO();
+  {    BRWE(c, s, wbase);
 
     StepLdx(floor, w, dst, rb, off, s, oracle);
     var a := s.regs[rb] + Sext16(off);
@@ -1029,7 +1029,7 @@ module SimWrap {
     requires S.Decode(S.InsnAt(ww.wraw, s.pc)) == Some(S.Ldx(wd, dst, rb, off))
     ensures PostW(ww, s1, c, s, prefix, fuel, rest)
     decreases fuel, 1
-  {    reveal BRWO();
+  {    BRWE(c, s, ww.wbase);
 
     var fl := ww.sp.floor;
     var ins := S.Ldx(wd, dst, rb, off);
@@ -1085,7 +1085,7 @@ module SimWrap {
     ensures Top(c2).kind == Top(c).kind && Top(c2).fn == Top(c).fn
     ensures forall r | 6 <= r < NR :: Top(c2).regs[r] == Top(c).regs[r]
   {
-    reveal BRWO();
+    BRWE(c, s, ww.wbase);
     WWAtW(ww, s.pc);
     AtW(ww, c, s, S.CallLocal(imm));
     WWHooks(ww);
@@ -1148,7 +1148,7 @@ module SimWrap {
     requires HelperOkW(ww)
     ensures StepR(ww.Pp, ww.x, ww.obsv, c) == HelperStep(ww.x, c, ww.hidx, false, ww.hins.id, false)
   {
-    reveal BRWO();
+    BRWE(c, s, ww.wbase);
     WWAtW(ww, s.pc);
     assert ww.Pp.code[Top(c).pc] == O(Hcall(false, ww.hins.id), ww.hidx);
   }
@@ -1271,8 +1271,8 @@ module SimWrap {
     ensures BRW(c', s', wbase) && s'.oc == |prefix + vals| && s.oc + Need(fl, S.CallHelper(id), s) <= |prefix + vals|
     ensures s'.events == s.events + [S.EHelper(s.regs[1..6], s'.regs[0], s'.stack, id)]
     ensures s'.regs[0] == R64(Top(c'))[0] && s'.stack == Plain(c'.fr[|c.fr| - 2].stack)
-  {    reveal BRWO();
-
+  {
+    BRWE(c, s, wbase);
     var n := |c.fr|;
     var f2 := Top(c');
     var cf2 := c'.fr[n - 2];
@@ -1284,13 +1284,33 @@ module SimWrap {
     forall j | 0 <= j < 6 + up ensures S.Orc(prefix + vals, s.oc + j) == vals[j] {}
     assert s'.regs == S.HavocRegs(s.regs, prefix + vals, s.oc, 6);
     assert s'.stack == S.HelperStack(fl, s, prefix + vals);
-    forall k | 0 <= k < 10 ensures s'.regs[k] == R64(f2)[k] {
-      if k >= 6 { assert s'.regs[k] == s.regs[k]; assert R64(f2)[k] == R64(Top(c))[k]; }
-      else { assert s'.regs[k] == S.Orc(prefix + vals, s.oc + k) == vals[k]; }
-    }
-    assert s'.regs[10] == s.regs[10];
+    HelperRegsW(s, prefix, vals, Top(c), f2);
     HelperStackW(fl, s, prefix, vals, cf2.stack, c.fr[n - 2].stack);
     assert s'.stack == Plain(cf2.stack);
+    assert s'.pc == s.pc + 1;
+    BRWIntro(c', s', wbase);
+  }
+
+  lemma BRWIntro(c: Cfg, s: S.CState, wbase: int)
+    requires 1 < |c.fr| <= MAXF_RW && S.CWF(s) && FrameOk(Top(c)) && FrameOk(c.fr[|c.fr| - 2]) && Top(c).kind == Ins
+    requires Top(c).pc == wbase + s.pc
+    requires forall k | 0 <= k < 10 :: R64(Top(c))[k] == s.regs[k]
+    requires s.regs[10] == StackTop(|c.fr| - 2) && Plain(c.fr[|c.fr| - 2].stack) == s.stack
+    ensures BRW(c, s, wbase)
+  { reveal BRWO(); }
+
+  lemma {:isolate_assertions} HelperRegsW(s: S.CState, prefix: seq<bv64>, vals: seq<bv64>, f: Frame, f2: Frame)
+    requires S.CWF(s) && s.oc == |prefix| && |vals| >= 6 && vals[0..6] == R64(f2)[0..6]
+    requires |f.regs| == NR && |f2.regs| == NR && (forall k | 0 <= k < 10 :: R64(f)[k] == s.regs[k])
+    requires forall k | 6 <= k < NR :: f2.regs[k] == f.regs[k]
+    ensures var r := S.HavocRegs(s.regs, prefix + vals, s.oc, 6);
+      (forall k | 0 <= k < 10 :: r[k] == R64(f2)[k]) && r[10] == s.regs[10]
+  {
+    var r := S.HavocRegs(s.regs, prefix + vals, s.oc, 6);
+    forall k | 0 <= k < 10 ensures r[k] == R64(f2)[k] {
+      if k >= 6 { assert r[k] == s.regs[k] == R64(f)[k]; }
+      else { assert r[k] == S.Orc(prefix + vals, s.oc + k) == vals[k]; }
+    }
   }
 
   lemma {:isolate_assertions} HelperStackW(fl: int, s: S.CState, prefix: seq<bv64>, vals: seq<bv64>,
@@ -1339,7 +1359,7 @@ module SimWrap {
     requires S.Decode(S.InsnAt(ww.wraw, s.pc)) == Some(S.CallHelper(id))
     ensures PostW(ww, s1, c, s, prefix, fuel, rest)
     decreases fuel, 1
-  {    reveal BRWO();
+  {    BRWE(c, s, ww.wbase);
 
     var fl := ww.sp.floor;
     var ins := S.CallHelper(id);
@@ -1428,7 +1448,7 @@ module SimWrap {
     requires PreW(ww, s1, c, s, prefix) && 0 <= s.pc < S.NumInsns(ww.wraw) && fuel > 0
     requires S.Decode(S.InsnAt(ww.wraw, s.pc)) == Some(S.Exit)
     ensures PostW(ww, s1, c, s, prefix, fuel, rest)
-  {    reveal BRWO();
+  {    BRWE(c, s, ww.wbase);
 
     var fl := ww.sp.floor;
     AtW(ww, c, s, S.Exit);
@@ -1835,19 +1855,39 @@ module SimWrap {
     assert S.Decode(S.InsnAt(ww.raw, n - 1)).value.CallLocal?;
   }
 
-  lemma AtCallW(ww: WW, c: Cfg, s: S.CState) returns (imm: bv32)
+  lemma {:isolate_assertions} AtCallW(ww: WW, c: Cfg, s: S.CState) returns (imm: bv32)
     requires WWPre(ww) && BR(c, s, ww.base) && s.pc == S.NumInsns(ww.raw) - 1
     ensures AtIns(ww.Pp, c, S.CallLocal(imm)) && Top(c).pc + 1 + Signed32(imm) == ww.wbase
   {
     var n := S.NumInsns(ww.raw);
-    WWCall(ww); WWAtP(ww, n - 1);
-    imm := S.Decode(S.InsnAt(ww.raw, n - 1)).value.imm;
+    var pc := Top(c).pc;
+    assert pc == ww.base + (n - 1);
+    var b := CallWBytes(ww);
+    imm := S.Decode(b).value.imm;
+    AtCode(ww.Pp, c, pc, b, S.CallLocal(imm));
   }
+
+  // The bytes of call W at kappa(i).
+  lemma CallWBytes(ww: WW) returns (b: seq<bv8>)
+    requires WWPre(ww)
+    ensures var n := S.NumInsns(ww.raw);
+      0 <= ww.base + (n - 1) < |ww.Pp.code| && ww.Pp.code[ww.base + (n - 1)] == N(b) && |b| == 8
+      && S.Decode(b).Some? && S.Decode(b).value.CallLocal? && ww.base + n + Signed32(S.Decode(b).value.imm) == ww.wbase
+  {
+    var n := S.NumInsns(ww.raw);
+    WWCall(ww); WWAtP(ww, n - 1);
+    b := S.InsnAt(ww.raw, n - 1);
+  }
+
+  lemma AtCode(Pp: RwProg, c: Cfg, pc: int, b: seq<bv8>, ins: S.Instr)
+    requires Top(c).pc == pc && 0 <= pc < |Pp.code| && Pp.code[pc] == N(b) && |b| == 8 && S.Decode(b) == Some(ins)
+    ensures AtIns(Pp, c, ins)
+  {}
 
   lemma {:isolate_assertions} CallWStep(ww: WW, c: Cfg, s: S.CState, prefix: seq<bv64>, fuel: nat) returns (rest: seq<bv64>)
     requires PreP(ww, c, s, prefix) && s.pc == S.NumInsns(ww.raw) - 1
     ensures PostP(ww, c, s, prefix, fuel, rest)
-  {    reveal BRWO();
+  {    
 
     var n := S.NumInsns(ww.raw);
     var fl := ww.sp.floor;
@@ -1864,7 +1904,7 @@ module SimWrap {
     EnterWRegs(s, prefix, f, Top(c));
     var sW := S.EnterW(s, prefix + vals);
     assert cW.fr[|cW.fr| - 2] == Top(c);
-    assert BRW(cW, sW, ww.wbase);
+    BRWIntro(cW, sW, ww.wbase);
     assert CallSt(ww, s);
     Soundness.EventsSnoc(s.events, S.ECallW(s.regs), ww.s0.stack);
     var d := |ww.c0.fr|;
@@ -1979,15 +2019,27 @@ module SimWrap {
     assert CallWAt(ww);
     var k := WPlaced(P, D, j);
     forall r | 0 <= r < S.NumInsns(ww.wraw) ensures WCodeAt(ww, r) {
-      assert WAt(P, D, j, r);
-      assert S.InsnAt(ww.wraw, r) == Slice(wr.body, r);
-      var p := ww.wbase + r;
-      var b := S.InsnAt(ww.wraw, r);
-      if S.Decode(b).Some? && S.Decode(b).value.CallLocal? {
-        assert ww.Pp.code[p] == N(b);
-        WNotK(P, D, j, k, r);
-        assert p + 1 + Signed32(S.Decode(b).value.imm) in ww.Pp.hooks;
-      }
+      WCodeOne(P, D, ww, j, k, r);
+    }
+  }
+
+  lemma {:isolate_assertions} WCodeOne(P: seq<OInstr>, D: Decomp, ww: WW, j: nat, k: nat, r: nat)
+    requires ww.Pp == Layout(P, D) && PiecesOk(P, D) && CallsOk(D, ww.Pp)
+    requires j in D.wrap && j < |P| && ww.wraw == D.wrap[j].body && ww.wbase == WStart(P, D, j)
+    requires ww.hins == P[j] && ww.hidx == j
+    requires k < |AllFns(P, D)| && AllFns(P, D)[k] == (WrapFn(j), WStart(P, D, j))
+    requires forall r | 0 <= r < NI(D.wrap[j].body) :: WAt(P, D, j, r)
+    requires r < S.NumInsns(ww.wraw)
+    ensures WCodeAt(ww, r)
+  {
+    assert WAt(P, D, j, r);
+    assert S.InsnAt(ww.wraw, r) == Slice(D.wrap[j].body, r);
+    var p := ww.wbase + r;
+    var b := S.InsnAt(ww.wraw, r);
+    if S.Decode(b).Some? && S.Decode(b).value.CallLocal? {
+      assert ww.Pp.code[p] == N(b);
+      WNotK(P, D, j, k, r);
+      assert p + 1 + Signed32(S.Decode(b).value.imm) in ww.Pp.hooks;
     }
   }
 
