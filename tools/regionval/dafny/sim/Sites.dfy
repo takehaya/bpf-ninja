@@ -753,14 +753,36 @@ module SimSites {
       assert BR(w.c0, w.s0, w.base);
       WinPreIntro(w);
       var k, c2, sf := RunWindow(w);
-      SideFacts(w, c2, sf);
-      assert CountHelpers(sf.events) == 0;
-      Side0(w, c2, sf);
-      assert |c2.fr| == 1 && Top(c2) == c2.fr[0];
-      assert Top(c2).regs[1] == W(sf.regs[1]) && sf.regs[1] == s0.regs[1] == CTX;
-      assert Top(c2).regs[10] == W(sf.regs[10]) && sf.regs[10] == s0.regs[10] == StackTop(0);
+      EntryEnd(w, c2, sf, L, hv);
       InitCorr(P, D, ell, live, L, c2);
     }
+  }
+
+  lemma R64At(f: Frame, k: nat, v: bv64)
+    requires |f.regs| == NR && k < NR && f.regs[k] == W(v)
+    ensures R64(f)[k] == v
+  {}
+
+  // The configuration after the entry prologue: r1, r10, L and h of the input.
+  lemma {:isolate_assertions} EntryEnd(w: Win, c2: Cfg, sf: S.CState, L: Local, hv: nat -> bv64)
+    requires w.c0 == InitR(L, hv) && w.s0 == S.InitState(R64(Top(w.c0)), Plain(Top(w.c0).stack)) && w.base == 0
+    requires WinPre(w) && w.sp.helper.NoHelper? && 1 !in w.sp.free
+    requires BR(c2, sf, w.base) && Side(w, c2, sf) && FinalOk(w.sp, w.s0, sf) && sf.pc == S.NumInsns(w.raw)
+    ensures |c2.fr| == 1 && FrameOk(Top(c2)) && Top(c2).kind == Main && Top(c2).pc == S.NumInsns(w.raw)
+    ensures Top(c2).regs[1] == W(CTX) && Top(c2).regs[10] == W(StackTop(0)) && c2.L == L && c2.h == []
+  {
+    InitRFacts(L, hv);
+    var c0 := w.c0;
+    SideFacts(w, c2, sf);
+    FinalFacts(w.sp, w.s0, sf);
+    assert CountHelpers(sf.events) == 0;
+    Side0(w, c2, sf);
+    R64At(Top(c0), 1, CTX);
+    R64At(Top(c0), 10, StackTop(0));
+    assert sf.regs[1] == w.s0.regs[1] == CTX;
+    assert sf.regs[10] == w.s0.regs[10] == StackTop(0);
+    assert Top(c2).regs[1] == W(sf.regs[1]);
+    assert Top(c2).regs[10] == W(sf.regs[10]);
   }
 
   lemma OwnerSingle0(P: seq<OInstr>) ensures Owner(P, 0) == 0 {}
