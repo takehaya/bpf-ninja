@@ -190,19 +190,18 @@ module SimWitness4 {
     assert R.FnsLen(D4(), []) == 0;
   }
 
-  lemma {:isolate_assertions} AllFnsW4() ensures R.AllFns(PW4, D4()) == []
+  lemma AllFnsEmpty4(D: R.Decomp, n: nat, i: nat)
+    requires D.fns == map[] && D.tail == []
+    ensures R.AllFnsFrom(D, n, i) == []
+    decreases n - i
+  {
+    if i < n { AllFnsEmpty4(D, n, i + 1); assert R.FnsAt(D, i) == []; }
+  }
+
+  lemma AllFnsW4() ensures R.AllFns(PW4, D4()) == []
   {
     reveal D4();
-    StartW4();
-    var D := D4();
-    assert R.FnStarts(D, [], 0) == [] && R.FnStarts(D, [], 1) == [] && R.FnStarts(D, [], 2) == [];
-    assert R.FnStarts(D, [], 3) == [] && R.FnStarts(D, [], 4) == [] && R.FnStarts(D, [], 5) == [];
-    assert R.AllFnsFrom(D, 5, 5) == [];
-    assert R.AllFnsFrom(D, 5, 4) == [];
-    assert R.AllFnsFrom(D, 5, 3) == [];
-    assert R.AllFnsFrom(D, 5, 2) == [];
-    assert R.AllFnsFrom(D, 5, 1) == [];
-    assert R.AllFnsFrom(D, 5, 0) == [];
+    AllFnsEmpty4(D4(), 5, 0);
   }
 
   lemma WFW4() ensures LF.AllFnsWF(PW4, D4()) && R.FnsLen(D4(), D4().tail) == 0 { reveal D4(); }

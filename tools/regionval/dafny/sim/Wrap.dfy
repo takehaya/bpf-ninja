@@ -114,6 +114,13 @@ module SimWrap {
     ClassifyFrame(a, w, n + 1, dom, n - 1);
   }
 
+  lemma ClassifyUp2(a: bv64, w: nat, k: nat, n: nat, dom: set<int>)
+    requires n == k + 2 && n <= MAXF_RW && 1 <= w && S.InFrame(S.Rel(a, StackTop(k)), w)
+    ensures Classify(a, w, n, dom) == InStack(k, S.Rel(a, StackTop(k)) + STK)
+  {
+    ClassifyUp(a, w, k + 1, dom);
+  }
+
   lemma {:isolate_assertions} ClassifyPush(a: bv64, n: nat, dom: set<int>)
     requires n + 1 <= MAXF_RW && Classify(a, 1, n, dom) != Bad
     ensures Classify(a, 1, n + 1, dom) == Classify(a, 1, n, dom)
@@ -798,25 +805,47 @@ module SimWrap {
   }
 
   // The region's loaded value is the whole model's (the caller's frame is the region's).
-  lemma {:isolate_assertions} LdxValW(x: Ctx, c: Cfg, s: S.CState, wbase: int, a: bv64, w: nat, oracle: seq<bv64>)
+  lemma LdxValW(x: Ctx, c: Cfg, s: S.CState, wbase: int, a: bv64, w: nat, oracle: seq<bv64>)
     requires BRW(c, s, wbase) && (w == 1 || w == 2 || w == 4 || w == 8)
     requires !S.InFrame(S.Rel(a, s.regs[10]), w) ==> S.Orc(oracle, s.oc) == LoadedW(x, c, a, w)
     ensures S.LoadVal(s, a, w, oracle) == LoadedW(x, c, a, w)
-  {    BRWE(c, s, wbase);
+  {
+    BRWE(c, s, wbase);
+    if S.InFrame(S.Rel(a, s.regs[10]), w) {
+      LdxInW(x, c, s, a, w, oracle);
+    } else {
+      LdxOutW(x, c, s, a, w, oracle);
+    }
+  }
 
+  // A load the region places in the caller's frame reads the caller's bytes.
+  lemma {:isolate_assertions} LdxInW(x: Ctx, c: Cfg, s: S.CState, a: bv64, w: nat, oracle: seq<bv64>)
+    requires 1 < |c.fr| <= MAXF_RW && S.CWF(s) && (w == 1 || w == 2 || w == 4 || w == 8) && FrameOk(c.fr[|c.fr| - 2])
+    requires s.regs[10] == StackTop(|c.fr| - 2) && Plain(c.fr[|c.fr| - 2].stack) == s.stack
+    requires S.InFrame(S.Rel(a, s.regs[10]), w)
+    ensures S.LoadVal(s, a, w, oracle) == LoadedW(x, c, a, w)
+  {
     reveal InsLoad(), S.LoadVal();
     var n := |c.fr|;
-    if S.InFrame(S.Rel(a, s.regs[10]), w) {
-      ClassifyUp(a, w, n - 1, c.L.mem.Keys);
-      var o := S.Rel(a, s.regs[10]) + STK;
-      PlainSlice(c.fr[n - 2].stack, o, w);
-      assert StackBytes(c, n - 2, o, w) == c.fr[n - 2].stack[o .. o + w];
-    } else {
-      match Classify(a, w, |c.fr|, c.L.mem.Keys)
-      case InStack(d, o) => BytesOfLE(Plain(StackBytes(c, d, o, w)));
-      case InLocal => BytesOfLE(LBytes(c.L.mem, a, w));
-      case _ => BytesOfLE(BytesOf(HV(x, c), w));
-    }
+    var k: nat := n - 2;
+    assert S.InFrame(S.Rel(a, StackTop(k)), w);
+    ClassifyUp2(a, w, k, n, c.L.mem.Keys);
+    var o := S.Rel(a, s.regs[10]) + STK;
+    PlainSlice(c.fr[n - 2].stack, o, w);
+    assert StackBytes(c, n - 2, o, w) == c.fr[n - 2].stack[o .. o + w];
+  }
+
+  // Any other load: the oracle value is the whole model's.
+  lemma {:isolate_assertions} LdxOutW(x: Ctx, c: Cfg, s: S.CState, a: bv64, w: nat, oracle: seq<bv64>)
+    requires S.CWF(s) && (w == 1 || w == 2 || w == 4 || w == 8)
+    requires !S.InFrame(S.Rel(a, s.regs[10]), w) && S.Orc(oracle, s.oc) == LoadedW(x, c, a, w)
+    ensures S.LoadVal(s, a, w, oracle) == LoadedW(x, c, a, w)
+  {
+    reveal InsLoad(), S.LoadVal();
+    match Classify(a, w, |c.fr|, c.L.mem.Keys)
+    case InStack(d, o) => BytesOfLE(Plain(StackBytes(c, d, o, w)));
+    case InLocal => BytesOfLE(LBytes(c.L.mem, a, w));
+    case _ => BytesOfLE(BytesOf(HV(x, c), w));
   }
 
   lemma {:isolate_assertions} LdxW(x: Ctx, c: Cfg, s: S.CState, wbase: int, floor: int,
