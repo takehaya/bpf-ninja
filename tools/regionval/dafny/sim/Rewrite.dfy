@@ -180,10 +180,6 @@ module SimRewrite {
 
   // ---------------- the windows and their specs ----------------
 
-  // prologue-P9: no register changes, stores allowed (contract.go KindPass).
-  function PassProSpec(f: int): Spec { Spec(f, {}, NoHelper, true, false, false, NoWrap, []) }
-  // passload-P9: only r_G changes, no store (contract.go KindPassLoad).
-  function PassLoadSpec(f: int, g: nat): Spec { Spec(f, {g}, NoHelper, false, false, false, NoWrap, []) }
   function SiteSpecFor(ins: OInstr, f: int, binds: seq<Bind>): Spec {
     if ins.Tail? then Api.TailSiteSpec(f) else Api.WithBinds(Api.SiteSpec(f), binds)
   }
@@ -197,8 +193,8 @@ module SimRewrite {
     (|D.pro0| > 0 ==> Valid(D.pro0, Api.EntryPrologueSpec(Fl(P, ell, 0))))
     && (forall g | g in D.fp ::
           if D.fp[g].kind == FP1b then Valid(D.fp[g].code, Api.CallbackPrologueSpec(Fl(P, ell, g)))
-          else Valid(D.fp[g].code, PassProSpec(Fl(P, ell, g))))
-    && (forall i | i in D.pl :: Valid(D.pl[i].code, PassLoadSpec(Fl(P, ell, i), D.pl[i].reg)))
+          else Valid(D.fp[g].code, Api.PassPrologueSpec(Fl(P, ell, g))))
+    && (forall i | i in D.pl :: Valid(D.pl[i].code, Api.PassLoadSpec(Fl(P, ell, i), D.pl[i].reg)))
     && (forall i | i in D.site && i !in D.wrap && i < |P| ::
           Valid(D.site[i].pre + Enc(P[i]) + D.site[i].post, SiteSpecFor(P[i], Fl(P, ell, i), D.site[i].binds)))
     && (forall i | i in D.wrap && i < |P| ::

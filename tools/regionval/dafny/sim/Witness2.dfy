@@ -41,12 +41,12 @@ module SimWitness2 {
     ensures |PLL| == 1 && |F9L| == 1 && |FBL| == 2 && W1.All8(PLL) && W1.All8(F9L) && W1.All8(FBL)
   { reveal PLLLit(), F9LLit(), FBLLit(); }
 
-  lemma PLValid() ensures Validate(W1.Cat(PLL), R.PassLoadSpec(0, 2)) == Validated
+  lemma PLValid() ensures Validate(W1.Cat(PLL), Api.PassLoadSpec(0, 2)) == Validated
   {
     reveal PLLLit();
     assert Decode(PLL[0]) == Some(PLP[0]);
     W1.DecodeCat(PLL, PLP, 0);
-    var sp := R.PassLoadSpec(0, 2);
+    var sp := Api.PassLoadSpec(0, 2);
     var s0 := SInit();
     assert SymStep(sp, PLP[0], s0).SOk?;
     var s1 := SymStep(sp, PLP[0], s0).ss;
@@ -55,12 +55,12 @@ module SimWitness2 {
     assert SymExec(PLP, sp, 0, s0, Top) == Validated;
   }
 
-  lemma F9Valid() ensures Validate(W1.Cat(F9L), R.PassProSpec(0)) == Validated
+  lemma F9Valid() ensures Validate(W1.Cat(F9L), Api.PassPrologueSpec(0)) == Validated
   {
     reveal F9LLit();
     assert Decode(F9L[0]) == Some(F9P[0]);
     W1.DecodeCat(F9L, F9P, 0);
-    var sp := R.PassProSpec(0);
+    var sp := Api.PassPrologueSpec(0);
     var s0 := SInit();
     reveal Signed64();
     assert FpOff(AddrTerm(s0, 10, 0xfff8)) == Some(0xffff_ffff_ffff_fff8);

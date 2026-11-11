@@ -320,8 +320,8 @@ wrong.
   windows and assigns each window's kind (`layout.go`) is outside the proof,
   and so is `dafny/contract`, which makes the checks outside `Validate` and
   picks the spec for each kind. The contract rejects an unknown kind.
-- **The specs.** The presets in `dafny/src/Api.dfy` and the `CustomSpec`
-  arguments in `dafny/contract` say which obligations each window kind gets.
+- **The specs.** The presets in `dafny/src/Api.dfy` say which obligations
+  each window kind gets.
   The proof holds for any spec; whether a spec asks enough of its kind is
   outside it.
 - **The verdict merge.** `result.go` takes each window's verdict from the
@@ -406,8 +406,8 @@ checks. It calls `Validate` with the spec for the window's kind:
 | `site-P8` | `WrapSiteSpec(f, W, O[i])`: W's instructions and the 8 bytes of the original helper call; `RB` binds as for `site` |
 | `prologue-P1` | `EntryPrologueSpec(f)`: r1 kept, at most one hook call per path |
 | `prologue-P1b` | `CallbackPrologueSpec(f)` |
-| `prologue-P9` | `CustomSpec(f, nil, false, false, false, true, false, false)`: no register changes, stores allowed |
-| `passload-P9` | `CustomSpec(f, []int{r_G}, false, false, false, false, false, false)`: only r_G changes, no store |
+| `prologue-P9` | `PassPrologueSpec(f)`: no register changes, stores allowed |
+| `passload-P9` | `PassLoadSpec(f, r_G)`: only r_G changes, no store |
 | `hook-P7` | `HookBodySpec()` |
 
 Before that it makes these checks, which `Validate` does not:

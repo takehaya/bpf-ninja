@@ -32,8 +32,19 @@ module Api {
     Spec(floor, {0}, NoHelper, true, false, false, NoWrap, [])
   }
 
-  // only rG may change; stores below the floor are allowed.  The windows
-  // prologue-P9 and passload-P9 use CustomSpec (README.md, Dafny core).
+  // pass prologue (prologue-P9): no register may change; stores below the
+  // floor are allowed.
+  function PassPrologueSpec(floor: int): Spec {
+    Spec(floor, {}, NoHelper, true, false, false, NoWrap, [])
+  }
+
+  // pass load (passload-P9): only rG may change; no store.
+  function PassLoadSpec(floor: int, g: nat): Spec {
+    Spec(floor, {g}, NoHelper, false, false, false, NoWrap, [])
+  }
+
+  // only rG may change; stores below the floor are allowed.  No window kind
+  // uses it.
   function PassSpec(floor: int, g: nat): Spec {
     Spec(floor, {g}, NoHelper, true, false, false, NoWrap, [])
   }

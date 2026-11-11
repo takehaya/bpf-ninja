@@ -84,10 +84,10 @@ module SimCalls {
 
   // The registers a pass load keeps.
   lemma PassLoadRegs(f: int, G: nat, s0: S.CState, sf: S.CState)
-    requires S.CWF(s0) && FinalOk(PassLoadSpec(f, G), s0, sf)
+    requires S.CWF(s0) && FinalOk(Api.PassLoadSpec(f, G), s0, sf)
     ensures S.CWF(sf) && forall k | 0 <= k <= 10 && k != G :: sf.regs[k] == s0.regs[k]
   {
-    var sp := PassLoadSpec(f, G);
+    var sp := Api.PassLoadSpec(f, G);
     FinalFacts(sp, s0, sf);
     assert !R0Special(sp) && sp.free == {G};
   }
@@ -95,7 +95,7 @@ module SimCalls {
   // ---------------- the prologue of a function entry ----------------
 
   ghost function FPSpec(P: seq<OInstr>, D: Decomp, ell: nat -> int, g: nat): Spec requires g in D.fp {
-    if D.fp[g].kind == FP1b then Api.CallbackPrologueSpec(Fl(P, ell, g)) else PassProSpec(Fl(P, ell, g))
+    if D.fp[g].kind == FP1b then Api.CallbackPrologueSpec(Fl(P, ell, g)) else Api.PassPrologueSpec(Fl(P, ell, g))
   }
 
   // After the prologue: only r0 may differ (it is unreadable in P at an entry), bytes below the floor.
@@ -254,7 +254,7 @@ module SimCalls {
     var fn := Top(c).fn;
     FlTop(P, ell, c);
     FlFrame(P, ell, c, |c.fr| - 1);
-    var sp := PassLoadSpec(Fl(P, ell, j), G);
+    var sp := Api.PassLoadSpec(Fl(P, ell, j), G);
     var s0 := S.InitState(R64(Top(c')), Plain(Top(c').stack));
     var w := Win(Pp, xR, obsv, code, sp, E(D, j), -1, Exit, 0, HCtx(0, [], EMg(0), Bot, map[]), c', s0);
     assert Valid(code, sp);

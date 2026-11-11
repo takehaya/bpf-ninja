@@ -45,9 +45,6 @@ func Validate(cw core.Window, insns, body, helper []byte) rd.Verdict {
 // window.
 func Spec(cw core.Window, body, helper []byte) (rd.Spec, bool) {
 	f := int(cw.Floor)
-	// CustomSpec arguments: no central helper call (so no argument or r0
-	// check), no hook call, not a hook body.
-	const centre, checkArgs, restoreR0, hookCalls, exitMode = false, false, false, false, false
 	switch cw.Kind {
 	case core.KindWrap:
 		if cw.Callee == nil || len(helper) != 8 {
@@ -63,13 +60,13 @@ func Spec(cw core.Window, body, helper []byte) (rd.Spec, bool) {
 	case core.KindCallback:
 		return rd.CallbackPrologueSpec(f), true
 	case core.KindPass: // no register changes; stores allowed
-		return rd.CustomSpec(f, nil, centre, checkArgs, restoreR0, true, hookCalls, exitMode), true
+		return rd.PassPrologueSpec(f), true
 	case core.KindPassLoad: // only r_G changes; no store
 		g := core.SpillSource(cw.PassPrologue)
 		if g == 0 {
 			return rd.Spec{}, false
 		}
-		return rd.CustomSpec(f, []int{g}, centre, checkArgs, restoreR0, false, hookCalls, exitMode), true
+		return rd.PassLoadSpec(f, g), true
 	case core.KindHook:
 		return rd.HookBodySpec(), true
 	}
