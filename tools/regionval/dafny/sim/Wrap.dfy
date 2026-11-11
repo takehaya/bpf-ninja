@@ -1282,10 +1282,9 @@ module SimWrap {
     var cf2 := c'.fr[n - 2];
     var lo := STK as int + fl;
     var up := -fl;
-    vals := R64(f2)[0..6] + seq(up, j requires 0 <= j < up => Zext8(Plain(cf2.stack)[lo + j]));
+    vals := HelperValsW(R64(f2)[0..6], cf2.stack, fl);
     StepHelper(fl, id, s, prefix + vals);
     s' := S.HelperStep(fl, s, prefix + vals, id).s;
-    forall j | 0 <= j < 6 + up ensures S.Orc(prefix + vals, s.oc + j) == vals[j] {}
     assert s'.regs == S.HavocRegs(s.regs, prefix + vals, s.oc, 6);
     assert s'.stack == S.HelperStack(fl, s, prefix + vals);
     HelperRegsW(s, prefix, vals, Top(c), f2);
@@ -1302,6 +1301,16 @@ module SimWrap {
     requires s.regs[10] == StackTop(|c.fr| - 2) && Plain(c.fr[|c.fr| - 2].stack) == s.stack
     ensures BRW(c, s, wbase)
   { reveal BRWO(); }
+
+  // The oracle values of W's helper step: r0..r5, then the bytes at or above the floor.
+  lemma HelperValsW(r: seq<bv64>, st: seq<Byte>, fl: int) returns (vals: seq<bv64>)
+    requires |r| == 6 && |st| == STK && -(STK as int) <= fl <= 0
+    ensures |vals| == 6 - fl && vals[0..6] == r
+    ensures forall j {:nowarn} | 0 <= j < -fl :: vals[6 + j] == Zext8(Plain(st)[STK as int + fl + j])
+  {
+    var lo := STK as int + fl;
+    vals := r + seq(-fl, j requires 0 <= j < -fl => Zext8(Plain(st)[lo + j]));
+  }
 
   lemma {:isolate_assertions} HelperRegsW(s: S.CState, prefix: seq<bv64>, vals: seq<bv64>, f: Frame, f2: Frame)
     requires S.CWF(s) && s.oc == |prefix| && |vals| >= 6 && vals[0..6] == R64(f2)[0..6]
