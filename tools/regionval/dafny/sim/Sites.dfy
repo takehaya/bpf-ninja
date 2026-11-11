@@ -310,22 +310,41 @@ module SimSites {
       ensures w.sp.hookCalls && S.Decode(S.InsnAt(w.raw, r)).Some? && S.Decode(S.InsnAt(w.raw, r)).value.CallLocal? ==>
                 w.base + r + 1 + Signed32(S.Decode(S.InsnAt(w.raw, r)).value.imm) in Pp.hooks
     {
-      RawAt(site.pre, Enc(P[j]), site.post, r);
-      if r < NI(site.pre) {
-        assert Pp.code[w.base + r] == N(Slice(site.pre, r));
-      } else {
-        var q := r - NI(site.pre) - 1;
-        assert w.base + r == K(D, j) + 1 + q;
-        assert Pp.code[w.base + r] == N(Slice(site.post, q));
-      }
-      var p := w.base + r;
-      assert E(D, j) <= p <= K(D, j) + PostLen(D, j) && p != K(D, j);
-      forall i | i in D.wrap ensures p != K(D, i) {
-        assert i != j && i < |P|;
-        InBlockNotK(D, j, p, i);
-      }
-      assert !(exists i :: i in D.wrap && p == K(D, i));
+      SiteSlot(P, D, w, j, r);
     }
+  }
+
+  // One slot of a site window other than its centre.
+  lemma {:isolate_assertions} SiteSlot(P: seq<OInstr>, D: Decomp, w: Win, j: nat, r: nat)
+    requires PiecesOk(P, D) && CallsOk(D, w.Pp) && w.Pp == Layout(P, D) && AllFnsWF(P, D)
+    requires j in D.site && j < |P| && j !in D.pl && ((P[j].Hcall? && !P[j].kf) || P[j].Tail?)
+    requires w.raw == D.site[j].pre + Enc(P[j]) + D.site[j].post && w.base == E(D, j) && w.hp == NI(D.site[j].pre)
+    requires |Enc(P[j])| == 8 && Bytes8(D.site[j].pre) && Bytes8(D.site[j].post)
+    requires NoHelperIn(D.site[j].pre) && NoHelperIn(D.site[j].post)
+    requires r < NI(D.site[j].pre) + 1 + NI(D.site[j].post) && r != w.hp
+    ensures w.base + r < |w.Pp.code| && S.NumInsns(w.raw) == NI(D.site[j].pre) + 1 + NI(D.site[j].post)
+    ensures w.Pp.code[w.base + r] == N(S.InsnAt(w.raw, r)) && !IsHelperCall(S.InsnAt(w.raw, r))
+    ensures w.sp.hookCalls && S.Decode(S.InsnAt(w.raw, r)).Some? && S.Decode(S.InsnAt(w.raw, r)).value.CallLocal? ==>
+              w.base + r + 1 + Signed32(S.Decode(S.InsnAt(w.raw, r)).value.imm) in w.Pp.hooks
+  {
+    var site := D.site[j];
+    var Pp := w.Pp;
+    SiteCode(P, D, j);
+    RawAt(site.pre, Enc(P[j]), site.post, r);
+    if r < NI(site.pre) {
+      assert Pp.code[w.base + r] == N(Slice(site.pre, r));
+    } else {
+      var q := r - NI(site.pre) - 1;
+      assert w.base + r == K(D, j) + 1 + q;
+      assert Pp.code[w.base + r] == N(Slice(site.post, q));
+    }
+    var p := w.base + r;
+    assert E(D, j) <= p <= K(D, j) + PostLen(D, j) && p != K(D, j);
+    forall i | i in D.wrap ensures p != K(D, i) {
+      assert i != j && i < |P|;
+      InBlockNotK(D, j, p, i);
+    }
+    assert !(exists i :: i in D.wrap && p == K(D, i));
   }
 
   lemma {:isolate_assertions} SiteHelperOk(P: seq<OInstr>, ell: nat -> int, w: Win, c: Cfg, xP: Ctx,
