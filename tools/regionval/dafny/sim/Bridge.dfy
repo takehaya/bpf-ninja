@@ -1143,30 +1143,63 @@ module SimBridge {
     ensures s'.regs == R64(Top(c')) && s'.stack == Plain(Top(c').stack)
   {
     var f2 := Top(c');
-    var lo := STK as int + fl;
-    var up := -fl;
-    vals := R64(f2)[0..6] + seq(up, j requires 0 <= j < up => Zext8(Plain(f2.stack)[lo + j]));
+    vals := HelperVals(R64(f2)[0..6], f2.stack, fl);
     StepHelper(fl, id, s, prefix + vals);
     s' := S.HelperStep(fl, s, prefix + vals, id).s;
-    forall j | 0 <= j < 6 + up ensures S.Orc(prefix + vals, s.oc + j) == vals[j] {}
     assert s'.regs == S.HavocRegs(s.regs, prefix + vals, s.oc, 6);
     assert s'.stack == S.HelperStack(fl, s, prefix + vals);
-    forall k | 0 <= k < NR ensures s'.regs[k] == R64(f2)[k] {
-      if k >= 6 { assert s'.regs[k] == s.regs[k]; assert R64(f2)[k] == R64(Top(c))[k]; }
-      else { assert s'.regs[k] == S.Orc(prefix + vals, s.oc + k) == vals[k]; }
-    }
-    forall i | 0 <= i < S.STACK ensures s'.stack[i] == Plain(f2.stack)[i] {
-      if i >= lo {
-        assert s'.stack[i] == ByteOf(S.Orc(prefix + vals, s.oc + 6 + (i - lo)), 0);
-        assert S.Orc(prefix + vals, s.oc + 6 + (i - lo)) == vals[6 + (i - lo)] == Zext8(Plain(f2.stack)[i]);
-        ByteOfZext(Plain(f2.stack)[i]);
-      } else {
-        assert s'.stack[i] == s.stack[i];
-        assert f2.stack[i] == Top(c).stack[i];
-      }
-    }
+    HelperRegs(s, prefix, vals, Top(c), f2);
+    HelperStackB(fl, s, prefix, vals, f2.stack, Top(c).stack);
     assert s'.regs == R64(f2);
     assert s'.stack == Plain(f2.stack);
+  }
+
+  // The oracle values of a helper step: r0..r5, then the bytes at or above the floor.
+  lemma HelperVals(r: seq<bv64>, st: seq<Byte>, fl: int) returns (vals: seq<bv64>)
+    requires |r| == 6 && |st| == STK && -(STK as int) <= fl <= 0
+    ensures |vals| == 6 - fl && vals[0..6] == r
+    ensures forall j {:nowarn} | 0 <= j < -fl :: vals[6 + j] == Zext8(Plain(st)[STK as int + fl + j])
+  {
+    var lo := STK as int + fl;
+    vals := r + seq(-fl, j requires 0 <= j < -fl => Zext8(Plain(st)[lo + j]));
+  }
+
+  lemma {:isolate_assertions} HelperRegs(s: S.CState, prefix: seq<bv64>, vals: seq<bv64>, f: Frame, f2: Frame)
+    requires S.CWF(s) && s.oc == |prefix| && |vals| >= 6 && vals[0..6] == R64(f2)[0..6]
+    requires |f.regs| == NR && |f2.regs| == NR && R64(f) == s.regs
+    requires forall k | 6 <= k < NR :: f2.regs[k] == f.regs[k]
+    ensures S.HavocRegs(s.regs, prefix + vals, s.oc, 6) == R64(f2)
+  {
+    var r := S.HavocRegs(s.regs, prefix + vals, s.oc, 6);
+    forall k | 0 <= k < NR ensures r[k] == R64(f2)[k] {
+      if k >= 6 { assert r[k] == s.regs[k] == R64(f)[k]; }
+      else { assert r[k] == S.Orc(prefix + vals, s.oc + k) == vals[k]; }
+    }
+  }
+
+  lemma {:isolate_assertions} HelperStackB(fl: int, s: S.CState, prefix: seq<bv64>, vals: seq<bv64>,
+                                           st2: seq<Byte>, st1: seq<Byte>)
+    requires S.CWF(s) && -(S.STACK as int) <= fl <= 0 && s.oc == |prefix|
+    requires |st2| == STK && |st1| == STK && Plain(st1) == s.stack
+    requires forall o {:nowarn} | 0 <= o < STK && o < STK as int + fl :: st2[o] == st1[o]
+    requires |vals| == 6 - fl
+    requires forall j {:nowarn} | 0 <= j < -fl :: vals[6 + j] == Zext8(Plain(st2)[STK as int + fl + j])
+    ensures S.HelperStack(fl, s, prefix + vals) == Plain(st2)
+  {
+    var lo := STK as int + fl;
+    var hs := S.HelperStack(fl, s, prefix + vals);
+    forall i | 0 <= i < S.STACK ensures hs[i] == Plain(st2)[i] {
+      if i >= lo {
+        var j := i - lo;
+        assert vals[6 + j] == Zext8(Plain(st2)[STK as int + fl + j]);
+        assert hs[i] == ByteOf(S.Orc(prefix + vals, s.oc + 6 + (i - lo)), 0);
+        assert S.Orc(prefix + vals, s.oc + 6 + (i - lo)) == vals[6 + (i - lo)] == Zext8(Plain(st2)[i]);
+        ByteOfZext(Plain(st2)[i]);
+      } else {
+        assert hs[i] == s.stack[i];
+        assert st2[i] == st1[i];
+      }
+    }
   }
 
   lemma {:isolate_assertions} SideHelper(w: Win, c: Cfg, s: S.CState, c': Cfg, s': S.CState)
