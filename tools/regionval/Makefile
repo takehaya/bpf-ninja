@@ -42,7 +42,7 @@ check-trust: ## Fail on assume, axioms, unverified or extern declarations, or a 
 dafny-verify: ## Verify the Dafny core and its soundness proof
 	$(DAFNY) verify $(DFLAGS) $(DFY)
 
-verify-sim: ## Verify the whole-program simulation proof; fails on trust escapes and bodiless lemmas
+verify-sim: ## Verify the whole-program simulation proof; fails on trust escapes and bodiless lemmas (SIMLOG=dir: a CSV log per file)
 	@for f in dafny/sim/*.dfy; do case " $(SIM) " in *" $$f "*) ;; *) echo "$$f is not listed in SIM"; exit 1;; esac; done
 	@rc=0; grep -nE $(TRUST_RE) $(SIM) || rc=$$?; \
 	case $$rc in 0) echo "trust escape found"; exit 1;; 1) ;; *) exit $$rc;; esac
@@ -50,7 +50,8 @@ verify-sim: ## Verify the whole-program simulation proof; fails on trust escapes
 	@# verifies included files only with --verify-included-files), and every
 	@# file of SIM is passed once, so each file is verified exactly once.
 	@rc=0; for f in $(SIM); do s=$$(date +%s); \
-	  out=$$($(DAFNY) verify $(DFLAGS) $$f 2>&1); r=$$?; \
+	  csv=; [ -n "$(SIMLOG)" ] && csv="--log-format=csv;LogFileName=$(SIMLOG)/$$(basename $$f .dfy).csv"; \
+	  out=$$($(DAFNY) verify $(DFLAGS) $$csv $$f 2>&1); r=$$?; \
 	  echo "$$out" | grep -vE '^Dafny program verifier' | grep -E 'Error|Warning|error|warning' ; \
 	  echo "$$f: $$(echo "$$out" | grep -E 'verifier finished' | sed 's/Dafny program verifier finished with //') ($$(( $$(date +%s) - s )) s)"; \
 	  [ $$r -eq 0 ] || rc=1; done; exit $$rc
