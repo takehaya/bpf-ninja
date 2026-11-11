@@ -427,7 +427,9 @@ module SimWrap {
 
   // Inside W: W's frame is on top; the region sees W's registers with the
   // caller's r10, and the caller's stack.
-  ghost predicate BRW(c: Cfg, s: S.CState, wbase: int) { 1 < |c.fr| <= MAXF_RW && S.CWF(s) && BRWO(c, s, wbase) }
+  ghost predicate BRW(c: Cfg, s: S.CState, wbase: int) {
+    1 < |c.fr| <= MAXF_RW && S.CWF(s) && |Top(c).regs| == NR && |Top(c).stack| == STK && BRWO(c, s, wbase)
+  }
 
   opaque ghost predicate BRWO(c: Cfg, s: S.CState, wbase: int) {
     var n := |c.fr|;
@@ -702,6 +704,7 @@ module SimWrap {
   {
     var pv := prefix + vals;
     var f1: nat := fuel - 1;
+    assert PreW(ww, s1, c', s', pv);
     var rest' := BridgeW(ww, s1, c', s', pv, f1);
     rest := vals + rest';
     AdvWPost(ww, s1, c, s, prefix, fuel, ins, vals, k, c', s', rest');
@@ -1061,29 +1064,58 @@ module SimWrap {
     requires S.Decode(S.InsnAt(ww.wraw, s.pc)) == Some(S.CallLocal(imm))
     ensures PostW(ww, s1, c, s, prefix, fuel, rest)
     decreases fuel, 1
-  {    reveal BRWO();
-
+  {
     var fl := ww.sp.floor;
     var ins := S.CallLocal(imm);
+    var k, c2 := HookRunW(ww, s1, c, s, imm);
+    var vals := R64(Top(c2))[0..6];
+    var s' := HookAfterW(ww, s1, c, s, prefix, imm, c2);
+    assert PreW(ww, s1, c2, s', prefix + vals);
+    StepHook(fl, imm, s, prefix + vals);
+    rest := AdvW(ww, s1, c, s, prefix, fuel, ins, vals, k, c2, s');
+  }
+
+  // A hook call in W runs the hook and returns to W.
+  lemma {:isolate_assertions} HookRunW(ww: WW, s1: S.CState, c: Cfg, s: S.CState, imm: bv32) returns (k: nat, c2: Cfg)
+    requires WWPre(ww) && BRW(c, s, ww.wbase) && SideW(ww, s1, c, s) && 0 <= s.pc < S.NumInsns(ww.wraw)
+    requires S.Decode(S.InsnAt(ww.wraw, s.pc)) == Some(S.CallLocal(imm))
+    ensures ReachR(ww.Pp, ww.x, ww.obsv, c, k) == Some(c2)
+    ensures |c2.fr| == |c.fr| && Below(c2) == Below(c) && c2.L == c.L && c2.h == c.h
+    ensures FrameOk(Top(c2)) && Top(c2).pc == Top(c).pc + 1 && Top(c2).stack == Top(c).stack
+    ensures Top(c2).kind == Top(c).kind && Top(c2).fn == Top(c).fn
+    ensures forall r | 6 <= r < NR :: Top(c2).regs[r] == Top(c).regs[r]
+  {
+    reveal BRWO();
     WWAtW(ww, s.pc);
-    AtW(ww, c, s, ins);
+    AtW(ww, c, s, S.CallLocal(imm));
     WWHooks(ww);
     WWInit(ww);
     WWA5(ww);
     SideWE(ww, s1, c, s);
     assert Top(c).pc + 1 + Signed32(imm) in ww.Pp.hooks;
-    var k, c2 := HookRun(ww.Pp, ww.x, ww.obsv, c, imm);
+    k, c2 := HookRun(ww.Pp, ww.x, ww.obsv, c, imm);
+  }
+
+  // The region state after the hook call, and the window's relation kept.
+  lemma {:isolate_assertions} HookAfterW(ww: WW, s1: S.CState, c: Cfg, s: S.CState, prefix: seq<bv64>, imm: bv32, c2: Cfg)
+    returns (s': S.CState)
+    requires PreW(ww, s1, c, s, prefix)
+    requires |c2.fr| == |c.fr| && Below(c2) == Below(c) && c2.L == c.L && c2.h == c.h
+    requires FrameOk(Top(c2)) && Top(c2).pc == Top(c).pc + 1 && Top(c2).stack == Top(c).stack
+    requires Top(c2).kind == Top(c).kind && Top(c2).fn == Top(c).fn
+    requires forall r | 6 <= r < NR :: Top(c2).regs[r] == Top(c).regs[r]
+    ensures s' == S.HookStep(s, prefix + R64(Top(c2))[0..6]).s
+    ensures PreW(ww, s1, c2, s', prefix + R64(Top(c2))[0..6])
+  {
     var vals := R64(Top(c2))[0..6];
-    StepHook(fl, imm, s, prefix + vals);
-    var s' := S.HookStep(s, prefix + vals).s;
+    s' := S.HookStep(s, prefix + vals).s;
+    BRWE(c, s, ww.wbase);
     HookRegsW(s, prefix, Top(c), Top(c2));
     var e := S.EHook(s.pc, s.regs[1..6], s.regs[0], s.regs[10]);
     assert s'.events == s.events + [e];
     assert TopOnly(c, c2);
     BRWKeep(c, s, c2, s', ww.wbase);
     SideWEvent(ww, s1, c, s, c2, s', e);
-    assert PreW(ww, s1, c2, s', prefix + vals);
-    rest := AdvW(ww, s1, c, s, prefix, fuel, ins, vals, k, c2, s');
   }
 
   // W's helper (the original lookup I_i) in the whole model.
@@ -1095,19 +1127,43 @@ module SimWrap {
     ensures StepR(ww.Pp, ww.x, ww.obsv, c) == Go(c')
     ensures Finish(ww.x, c.(h := c.h + [ww.hc.eh]), ww.hc.v, ww.hc.wr) == Go(c')
   {
-    reveal BRWO();
-
-    WWHelper(ww); WWAtW(ww, s.pc); WWInit(ww); WWA8(ww);
+    WWHelper(ww); WWA8(ww);
     SideWE(ww, s1, c, s); SideW0(ww, s1, c, s);
     var x := ww.x;
-    var c0 := ww.c0;
-    var d := |c0.fr|;
     var id := ww.hins.id;
+    HelperAtW(ww, c, s);
+    HelperArgsW(ww, c, s);
+    HelperFootW(ww, c);
+    assert x.om(c.h, ww.hc.eh, Wh(c)) == x.om(c.h, ww.hc.eh, Wh(ww.c0));
+    HelperStepFin(x, c, ww.hidx, id, ww.hc.n, SimFacts.Words(Top(ww.c0), Upto(1, ww.hc.n)), ww.hc.addrs,
+                  FootBytes(ww.c0, ww.hc.addrs).bs, ww.hc.v, ww.hc.wr);
+    var c1 := c.(h := c.h + [ww.hc.eh]);
+    FinishFacts(x, c1, ww.hc.v, ww.hc.wr);
+    c' := Finish(x, c1, ww.hc.v, ww.hc.wr).c;
+  }
+
+  // The step at a helper slice of W is the original lookup.
+  lemma HelperAtW(ww: WW, c: Cfg, s: S.CState)
+    requires WWPre(ww) && BRW(c, s, ww.wbase) && 0 <= s.pc < S.NumInsns(ww.wraw) && IsHelperCall(S.InsnAt(ww.wraw, s.pc))
+    requires HelperOkW(ww)
+    ensures StepR(ww.Pp, ww.x, ww.obsv, c) == HelperStep(ww.x, c, ww.hidx, false, ww.hins.id, false)
+  {
+    reveal BRWO();
+    WWAtW(ww, s.pc);
+    assert ww.Pp.code[Top(c).pc] == O(Hcall(false, ww.hins.id), ww.hidx);
+  }
+
+  // W's r1..r3 are the window's entry values.
+  lemma {:isolate_assertions} HelperArgsW(ww: WW, c: Cfg, s: S.CState)
+    requires WWPre(ww) && BRW(c, s, ww.wbase) && HelperOkW(ww)
+    requires s.regs[1] == ww.s0.regs[1] && s.regs[2] == ww.s0.regs[2] && s.regs[3] == ww.s0.regs[3]
+    ensures Rds(Top(c), Upto(1, ww.hc.n)) == Some(SimFacts.Words(Top(ww.c0), Upto(1, ww.hc.n)))
+  {
+    BRWE(c, s, ww.wbase);
+    WWInit(ww);
     var n := ww.hc.n;
     var f := Top(c);
-    var f0 := Top(c0);
-    assert ww.Pp.code[f.pc] == O(Hcall(false, id), ww.hidx);
-    assert StepR(ww.Pp, x, ww.obsv, c) == HelperStep(x, c, ww.hidx, false, id, false);
+    var f0 := Top(ww.c0);
     forall i | 0 <= i < |Upto(1, n)| ensures Reg(f, Upto(1, n)[i]).W? && Reg(f, Upto(1, n)[i]) == Reg(f0, Upto(1, n)[i]) {
       UptoAt(1, n, i);
       var r := Upto(1, n)[i];
@@ -1115,19 +1171,32 @@ module SimWrap {
       assert R64(f)[r] == s.regs[r] == ww.s0.regs[r] == R64(f0)[r];
     }
     SimFacts.RdsAll(f, Upto(1, n));
-    var args := SimFacts.Words(f, Upto(1, n));
-    assert args == SimFacts.Words(f0, Upto(1, n));
+    assert SimFacts.Words(f, Upto(1, n)) == SimFacts.Words(f0, Upto(1, n));
+  }
+
+  // The footprint is read as at the window's entry.
+  lemma {:isolate_assertions} HelperFootW(ww: WW, c: Cfg)
+    requires 0 < |ww.c0.fr| && |c.fr| == |ww.c0.fr| + 1 <= MAXF_RW && |Top(ww.c0).stack| == STK
+    requires c.fr[..|ww.c0.fr| - 1] == Below(ww.c0) && c.fr[|ww.c0.fr| - 1].stack == Top(ww.c0).stack && c.L == ww.c0.L
+    requires FootBytes(ww.c0, ww.hc.addrs).FOk?
+    ensures FootBytes(c, ww.hc.addrs) == FootBytes(ww.c0, ww.hc.addrs)
+  {
+    var c0 := ww.c0;
+    var d := |c0.fr|;
     forall k | 0 <= k < d ensures c.fr[k].stack == c0.fr[k].stack {
       if k < d - 1 { assert c.fr[k] == c.fr[..d - 1][k] == Below(c0)[k] == c0.fr[k]; }
       else { assert c0.fr[k] == Top(c0); }
     }
     FootPush(c0, c, ww.hc.addrs);
-    assert x.om(c.h, ww.hc.eh, Wh(c)) == x.om(c.h, ww.hc.eh, Wh(c0));
-    var c1 := c.(h := c.h + [ww.hc.eh]);
-    assert HelperStep(x, c, ww.hidx, false, id, false) == Finish(x, c1, ww.hc.v, ww.hc.wr) by { reveal HelperStep(); }
-    FinishFacts(x, c1, ww.hc.v, ww.hc.wr);
-    c' := Finish(x, c1, ww.hc.v, ww.hc.wr).c;
   }
+
+  lemma HelperStepFin(x: Ctx, c: Cfg, idx: nat, id: bv32, n: nat, args: seq<bv64>, addrs: seq<bv64>,
+                      beta: seq<bv8>, v: Val, wr: map<int, bv8>)
+    requires n == x.env.arity(false, id) && n <= 5 && Rds(Top(c), Upto(1, n)) == Some(args)
+    requires addrs == x.env.foot(false, id, args) && FootBytes(c, addrs) == FOk(beta)
+    requires x.om(c.h, ECall(idx, false, id, args, beta), Wh(c)) == RRet(v, wr)
+    ensures HelperStep(x, c, idx, false, id, false) == Finish(x, c.(h := c.h + [ECall(idx, false, id, args, beta)]), v, wr)
+  { reveal HelperStep(); }
 
   // The configuration after W's helper.
   lemma {:isolate_assertions} HelperAfterW(ww: WW, c: Cfg, c': Cfg)
@@ -1380,19 +1449,46 @@ module SimWrap {
     }
     SideW1(ww, s1, c, s);
     WWInit(ww);
+    ExitEndW(ww, s1, c, s, prefix, vals, c2, sf);
+    EndsWHere(ww, c2, sf);
+    EndsWPrefix(ww, c, 1, c2, sf);
+  }
+
+  // The state after W's EXIT is the window's end.
+  lemma {:isolate_assertions} ExitEndW(ww: WW, s1: S.CState, c: Cfg, s: S.CState, prefix: seq<bv64>, vals: seq<bv64>,
+                                       c2: Cfg, sf: S.CState)
+    requires 0 < |ww.c0.fr| && |c.fr| == |ww.c0.fr| + 1 && S.CWF(ww.s0) && BR(ww.c0, ww.s0, ww.base)
+    requires CallSt(ww, s1) && S.CWF(s) && s.oc == |prefix| && |Top(c).regs| == NR
+    requires R64(Top(c))[0] == s.regs[0]
+    requires var cf := c.fr[|ww.c0.fr| - 1];
+      FrameOk(cf) && Plain(cf.stack) == s.stack && cf.pc == ww.base + s1.pc && R64(cf) == s1.regs
+      && cf.kind == Top(ww.c0).kind && cf.fn == Top(ww.c0).fn && cf.stack == StAfter(ww)
+    requires c.fr[..|ww.c0.fr| - 1] == Below(ApplyW(ww.c0, ww.hc.wr))
+    requires c.L == ApplyL(ww.c0.L, ww.hc.wr) && c.h == ww.c0.h + [ww.hc.eh]
+    requires ww.hc.v.W? ==> HelperRet(s.events) == ww.hc.v.w
+    requires UpperBase(s.events, ww.s0.stack) == Plain(StAfter(ww))
+    requires |c2.fr| == |c.fr| - 1 && Below(c2) == c.fr[..|c.fr| - 2] && c2.L == c.L && c2.h == c.h
+    requires var cf := c.fr[|ww.c0.fr| - 1];
+      FrameOk(Top(c2)) && Top(c2).pc == cf.pc + 1 && Top(c2).stack == cf.stack
+      && Top(c2).kind == cf.kind && Top(c2).fn == cf.fn && Top(c2).regs[0] == Top(c).regs[0]
+      && (forall r | 6 <= r < NR :: Top(c2).regs[r] == cf.regs[r])
+    requires vals == R64(Top(c2))[1..6] && sf == S.ReturnW(s1, s, prefix + vals)
+    ensures EndOk(ww, c2, sf)
+  {
     var d := |ww.c0.fr|;
     var cf := c.fr[d - 1];
+    var o := prefix + vals;
     forall k | 0 <= k < NR ensures R64(Top(c2))[k] == sf.regs[k] {
-      if k == 0 { assert R64(Top(c))[0] == s.regs[0]; }
+      if k == 0 { assert R64(Top(c2))[0] == R64(Top(c))[0]; }
       else if k <= 5 { assert S.Orc(o, s.oc + (k - 1)) == vals[k - 1]; }
       else { assert sf.regs[k] == s1.regs[k] == R64(cf)[k]; }
     }
     assert sf.stack == s.stack == Plain(cf.stack);
     assert BR(c2, sf, ww.base);
+    var e := S.ERet(s.regs[0]);
+    assert sf.events == s.events + [e];
+    Soundness.EventsSnoc(s.events, e, ww.s0.stack);
     reveal EndOk();
-    assert EndOk(ww, c2, sf);
-    EndsWHere(ww, c2, sf);
-    EndsWPrefix(ww, c, 1, c2, sf);
   }
 
   // ---------------- glue, phase WP ----------------
@@ -1458,6 +1554,7 @@ module SimWrap {
   {
     var pv := prefix + vals;
     var f1: nat := fuel - 1;
+    assert PreP(ww, c', s', pv);
     var rest' := BridgeP(ww, c', s', pv, f1);
     rest := vals + rest';
     AdvPPost(ww, c, s, prefix, fuel, ins, vals, k, c', s', rest');
@@ -1777,8 +1874,20 @@ module SimWrap {
     assert SideW(ww, s, cW, sW);
     var restW := BridgeW(ww, s, cW, sW, prefix + vals, ww.F);
     rest := vals + restW;
-    var o := prefix + rest;
-    assert o == (prefix + vals) + restW;
+    CallWPost(ww, c, s, prefix, fuel, vals, cW, sW, restW);
+  }
+
+  // The window's run from call W is W's run: PostW at W's entry gives PostP at call W.
+  lemma {:isolate_assertions} CallWPost(ww: WW, c: Cfg, s: S.CState, prefix: seq<bv64>, fuel: nat, vals: seq<bv64>,
+                                        cW: Cfg, sW: S.CState, restW: seq<bv64>)
+    requires WWPre(ww) && S.CWF(s) && S.CWF(sW) && s.pc == S.NumInsns(ww.raw) - 1 && s.oc == |prefix| && |vals| == 5
+    requires sW == S.EnterW(s, prefix + vals)
+    requires ReachR(ww.Pp, ww.x, ww.obsv, c, 1) == Some(cW)
+    requires PostW(ww, s, cW, sW, prefix + vals, ww.F, restW)
+    ensures PostP(ww, c, s, prefix, fuel, vals + restW)
+  {
+    var o := prefix + (vals + restW);
+    SeqAssoc(prefix, vals, restW);
     assert SameUpTo(o, prefix + vals, s.oc + 5);
     EnterWLocal(s, o, prefix + vals);
     CallWOut(ww, s, o, fuel, sW);
@@ -1787,6 +1896,8 @@ module SimWrap {
       EndsWPrefix(ww, c, 1, cW, O.s);
     }
   }
+
+  lemma SeqAssoc(a: seq<bv64>, b: seq<bv64>, c: seq<bv64>) ensures a + (b + c) == (a + b) + c {}
 
   lemma WWAtWBase(ww: WW) requires WWPre(ww) ensures 0 <= ww.wbase { reveal WWPreO(); }
 
@@ -1984,14 +2095,7 @@ module SimWrap {
     var ch := c.(h := c.h + [ww.hc.eh]);
     FinishFacts(xP, ch, v, wr);
     EndOkE(ww, c2, sf);
-    assert Top(ch) == Top(c) && ch.fr == c.fr;
-    assert |c1.fr| == |c.fr| && Below(c1) == Below(ApplyW(ch, wr));
-    assert Top(c1).fn == Top(c).fn && Top(c1).kind == Top(c).kind && |Top(c1).regs| == NR;
-    assert |Top(c1).stack| == STK && Top(c1).regs[10] == Top(c).regs[10];
-    assert Top(c1).pc == j + 1;
-    assert Owner(P, Top(c1).pc) == Owner(P, j + 1);
-    assert |c2.fr| == |c0.fr| && Below(c2) == Below(ApplyW(c0, wr));
-    AfterFrames(P, D, ell, c, c0, ch, wr, c1, c2);
+    WrapAfterFrames(P, D, ell, c, c0, ch, v, wr, c1, c2, j, xP);
     assert Top(c) == c.fr[n - 1] && Top(c0) == c0.fr[n - 1];
     ApplyTop(c0, wr);
     ApplyTop(ch, wr);
@@ -2009,6 +2113,161 @@ module SimWrap {
     CorrIntro(P, D, ell, live, c1, c2, {});
   }
 
+  lemma {:isolate_assertions} WrapAfterFrames(P: seq<OInstr>, D: Decomp, ell: nat -> int, c: Cfg, c0: Cfg, ch: Cfg,
+                                              v: Val, wr: map<int, bv8>, c1: Cfg, c2: Cfg, j: nat, xP: Ctx)
+    requires Inv(P, c) && LowRel(P, D, ell, c, c0) && ch.fr == c.fr && Top(c).pc == j
+    requires j + 1 < |P| && Owner(P, j + 1) == Top(c).fn
+    requires Finish(xP, ch, v, wr) == Go(c1)
+    requires |c2.fr| == |c0.fr| && Below(c2) == Below(ApplyW(c0, wr))
+    ensures Inv(P, c1) && LowRel(P, D, ell, c1, c2)
+  {
+    InvIs(P, c);
+    assert Top(ch) == Top(c);
+    FinishFacts(xP, ch, v, wr);
+    assert |c1.fr| == |c.fr| && Below(c1) == Below(ApplyW(ch, wr));
+    assert Top(c1).fn == Top(c).fn && Top(c1).kind == Top(c).kind && |Top(c1).regs| == NR;
+    assert |Top(c1).stack| == STK && Top(c1).regs[10] == Top(c).regs[10];
+    assert Top(c1).pc == j + 1;
+    AfterFrames(P, D, ell, c, c0, ch, wr, c1, c2);
+  }
+
+  // Everything WrapAfter needs, folded.
+  opaque ghost predicate WrapReady(P: seq<OInstr>, D: Decomp, ell: nat -> int, live: nat -> set<nat>,
+                                   ww: WW, c: Cfg, er: set<nat>, c1: Cfg, xP: Ctx) {
+    var j := Top(c).pc;
+    xP.m.MP? && Inv(P, c) && Corr(P, D, ell, live, c, ww.c0, er) && 0 <= j
+    && WWPre(ww) && ww.sp.floor == Fl(P, ell, Top(c).fn)
+    && ww.s0 == S.InitState(R64(Top(ww.c0)), Plain(Top(ww.c0).stack))
+    && ww.base + S.NumInsns(ww.raw) == E(D, j + 1) && j + 1 < |P| && Owner(P, j + 1) == Top(c).fn
+    && Finish(xP, c.(h := c.h + [ww.hc.eh]), ww.hc.v, ww.hc.wr) == Go(c1)
+    && Checker.Validate(ww.raw, ww.sp) == Checker.Validated && ww.F == S.NumInsns(ww.raw) + WrapLen(ww.sp) + 1
+  }
+
+  // The run of the window and the relation after it.
+  lemma {:isolate_assertions} WrapRun(P: seq<OInstr>, D: Decomp, ell: nat -> int, live: nat -> set<nat>,
+                                      ww: WW, c: Cfg, er: set<nat>, c1: Cfg, xP: Ctx) returns (k: nat, c2: Cfg)
+    requires WrapReady(P, D, ell, live, ww, c, er, c1, xP)
+    ensures ReachR(ww.Pp, ww.x, ww.obsv, ww.c0, k) == Some(c2)
+    ensures Inv(P, c1) && Corr(P, D, ell, live, c1, c2, {})
+  {
+    reveal WrapReady();
+    var sf;
+    k, c2, sf := RunWrapWin(ww);
+    WrapAfter(P, D, ell, live, ww, c, er, c1, c2, sf, Top(c).pc, xP);
+  }
+
+  // What P's helper step at a wrapped site gives, and what A1a and Corr say about it.
+  lemma {:isolate_assertions} WrapArgs(P: seq<OInstr>, D: Decomp, Pp: RwProg, ell: nat -> int, live: nat -> set<nat>,
+      tbl: bv32 -> set<nat>, env: Env, sem: Sem, om: Oracle, c: Cfg, c': Cfg, er: set<nat>, c1: Cfg)
+    returns (nA: nat, args: seq<bv64>, beta: seq<bv8>, v: Val, wr: map<int, bv8>)
+    requires Structure(P, D, Pp, ell, live, tbl) && E0Shape(P) && A3b(env, tbl) && Inv(P, c)
+    requires forall a | a in Acc(P, CtxP(P, env, sem, om), c) :: a.0 < |c.fr| && a.1 as int - STK as int >= ell(c.fr[a.0].fn)
+    requires Corr(P, D, ell, live, c, c', er) && Top(c).pc in D.wrap
+    requires StepP(P, CtxP(P, env, sem, om), c) == Go(c1)
+    ensures 0 <= Top(c).pc < |P| && P[Top(c).pc].Hcall? && !P[Top(c).pc].kf && IsLookup(P[Top(c).pc].id)
+    ensures 0 < |c.fr| <= MAXF && Top(c) == c.fr[|c.fr| - 1] && |c'.fr| == |c.fr| && c'.h == c.h
+    ensures nA == env.arity(false, P[Top(c).pc].id) && nA <= 5
+    ensures SimFacts.Words(Top(c'), Upto(1, nA)) == args
+    ensures FootBytes(c', env.foot(false, P[Top(c).pc].id, args)) == FOk(beta)
+    ensures om(c.h, ECall(Top(c).pc, false, P[Top(c).pc].id, args, beta), Wh(c)) == RRet(v, wr)
+    ensures Finish(CtxP(P, env, sem, om), c.(h := c.h + [ECall(Top(c).pc, false, P[Top(c).pc].id, args, beta)]), v, wr) == Go(c1)
+    ensures forall o: nat {:nowarn} | o < STK && o as int - STK as int < ell(Top(c).fn) :: SAddr(|c.fr| - 1, o) as int !in wr
+    ensures Fl(P, ell, Top(c).pc) == Fl(P, ell, Top(c).fn) == Floor8(ell(Top(c).fn)) <= ell(Top(c).fn)
+    ensures -(STK as int) <= ell(Top(c).fn) <= 0
+  {
+    var xP := CtxP(P, env, sem, om);
+    var j := Top(c).pc;
+    CorrElim(P, D, ell, live, c, c', er);
+    InvIs(P, c);
+    LowRelLen(P, D, ell, c, c');
+    assert PiecesOk(P, D);
+    assert j < |P| && P[j].Hcall? && !P[j].kf && IsLookup(P[j].id);
+    var id := P[j].id;
+    assert StepP(P, xP, c) == HelperStep(xP, c, j, false, id, false);
+    nA, args, beta, v, wr := HelperGo(xP, c, j, id, c1);
+    var addrs := env.foot(false, id, args);
+    var fn := Top(c).fn;
+    FlTop(P, ell, c);
+    assert FloorsOk(P, ell);
+    FlFrame(P, ell, c, |c.fr| - 1);
+    HelperFloor(P, xP, c, ell, j, id, nA, args, beta, v, wr);
+    assert LiveOk(P, live, tbl);
+    assert ReadsL(P[j], live, tbl) <= live(j);
+    forall i | 0 <= i < |Upto(1, nA)| ensures Rel(Reg(Top(c), Upto(1, nA)[i]), Reg(Top(c'), Upto(1, nA)[i])) {
+      UptoAt(1, nA, i);
+      var r := 1 + i;
+      assert r in tbl(id);
+      assert r in live(j);
+    }
+    RdsRel(Top(c), Top(c'), Upto(1, nA));
+    forall i | 0 <= i < |Upto(1, nA)| ensures Reg(Top(c'), Upto(1, nA)[i]).W? { UptoAt(1, nA, i); }
+    SimFacts.RdsAll(Top(c'), Upto(1, nA));
+    MemRelI(P, D, ell, c, c');
+    FootRelG(P, D, ell, c, c', addrs);
+  }
+
+  // The window of the site, with every precondition of its run.
+  lemma {:isolate_assertions} WrapPrep(P: seq<OInstr>, D: Decomp, Pp: RwProg, ell: nat -> int, live: nat -> set<nat>,
+      tbl: bv32 -> set<nat>, env: Env, sem: Sem, obsv: Observer, om: Oracle, hv: nat -> bv64,
+      c: Cfg, c': Cfg, er: set<nat>, c1: Cfg,
+      nA: nat, args: seq<bv64>, beta: seq<bv8>, v: Val, wr: map<int, bv8>) returns (ww: WW)
+    requires Structure(P, D, Pp, ell, live, tbl) && Loadable(P, D) && AllValidated(P, D, ell) && E0Shape(P)
+    requires A3b(env, tbl) && A5(obsv) && A8(om) && Inv(P, c)
+    requires Corr(P, D, ell, live, c, c', er) && Top(c).pc in D.wrap
+    requires 0 <= Top(c).pc < |P| && P[Top(c).pc].Hcall? && !P[Top(c).pc].kf && IsLookup(P[Top(c).pc].id)
+    requires 0 < |c.fr| <= MAXF && Top(c) == c.fr[|c.fr| - 1] && |c'.fr| == |c.fr| && c'.h == c.h
+    requires nA == env.arity(false, P[Top(c).pc].id) && nA <= 5
+    requires SimFacts.Words(Top(c'), Upto(1, nA)) == args
+    requires FootBytes(c', env.foot(false, P[Top(c).pc].id, args)) == FOk(beta)
+    requires om(c.h, ECall(Top(c).pc, false, P[Top(c).pc].id, args, beta), Wh(c)) == RRet(v, wr)
+    requires Finish(CtxP(P, env, sem, om), c.(h := c.h + [ECall(Top(c).pc, false, P[Top(c).pc].id, args, beta)]), v, wr) == Go(c1)
+    requires forall o: nat {:nowarn} | o < STK && o as int - STK as int < ell(Top(c).fn) :: SAddr(|c.fr| - 1, o) as int !in wr
+    requires Fl(P, ell, Top(c).pc) == Fl(P, ell, Top(c).fn) == Floor8(ell(Top(c).fn)) <= ell(Top(c).fn)
+    requires -(STK as int) <= ell(Top(c).fn) <= 0
+    ensures WrapReady(P, D, ell, live, ww, c, er, c1, CtxP(P, env, sem, om))
+    ensures ww.Pp == Pp && ww.x == CtxR(Pp, env, sem, om, hv) && ww.obsv == obsv && ww.c0 == c'
+  {
+    var xP := CtxP(P, env, sem, om);
+    var xR := CtxR(Pp, env, sem, om, hv);
+    var j := Top(c).pc;
+    var id := P[j].id;
+    var addrs := env.foot(false, id, args);
+    var e := ECall(j, false, id, args, beta);
+    var hc := HCtx(nA, addrs, e, v, wr);
+    ww := WrapWin(P, D, Pp, ell, xR, obsv, j, c', hc);
+    WrapWinPre(P, D, Pp, ell, live, tbl, xR, obsv, j, c', hc);
+    WrapHelperOk(P, ell, ww, c, xP, tbl, nA, args, beta, v, wr);
+    WrapEntry(P, D, ell, live, c, c', er);
+    BRInit(c', E(D, j));
+    Floor8Bounds(ell(Top(c).fn));
+    assert WWBasic(ww);
+    WWPreIntro(ww);
+    WrapNext(P, D, j);
+    InvIs(P, c);
+    assert Owner(P, j) == Top(c).fn;
+    reveal WrapReady();
+  }
+
+  lemma WrapEntry(P: seq<OInstr>, D: Decomp, ell: nat -> int, live: nat -> set<nat>, c: Cfg, c': Cfg, er: set<nat>)
+    requires Inv(P, c) && Corr(P, D, ell, live, c, c', er)
+    ensures 0 < |c'.fr| <= MAXF_RW && FrameOk(Top(c')) && Top(c').pc == E(D, Top(c).pc)
+    ensures Top(c').regs[10] == W(StackTop(|c'.fr| - 1))
+  {
+    CorrElim(P, D, ell, live, c, c', er);
+    InvIs(P, c);
+    LowRelLen(P, D, ell, c, c');
+    assert Rel(Reg(Top(c), 10), Reg(Top(c'), 10));
+  }
+
+  lemma WrapNext(P: seq<OInstr>, D: Decomp, j: nat)
+    requires PiecesOk(P, D) && E0Shape(P) && j in D.wrap
+    ensures j + 1 < |P| && E(D, j + 1) == K(D, j) + 1 && Owner(P, j + 1) == Owner(P, j)
+  {
+    NextE(P, D, j);
+    assert PostLen(D, j) == 0;
+    assert j + 1 !in FnSet(P);
+  }
+
   // The wrapper lemma: the helper step of P at a P8 site is matched by the run of WP . call W . W.
   lemma {:isolate_assertions} WrapStep(P: seq<OInstr>, D: Decomp, Pp: RwProg, ell: nat -> int, live: nat -> set<nat>,
       tbl: bv32 -> set<nat>, env: Env, sem: Sem, obsv: Observer, om: Oracle, hv: nat -> bv64,
@@ -2022,53 +2281,8 @@ module SimWrap {
     ensures exists k: nat, c1': Cfg :: ReachR(Pp, CtxR(Pp, env, sem, om, hv), obsv, c', k) == Some(c1')
                                        && Corr(P, D, ell, live, c1, c1', {})
   {
-    var xP := CtxP(P, env, sem, om);
-    var xR := CtxR(Pp, env, sem, om, hv);
-    var j := Top(c).pc;
-    CorrElim(P, D, ell, live, c, c', er);
-    InvIs(P, c);
-    LowRelLen(P, D, ell, c, c');
-    assert PiecesOk(P, D);
-    assert j < |P| && P[j].Hcall? && !P[j].kf && IsLookup(P[j].id);
-    var id := P[j].id;
-    assert StepP(P, xP, c) == HelperStep(xP, c, j, false, id, false);
-    var nA, args, beta, v, wr := HelperGo(xP, c, j, id, c1);
-    var addrs := env.foot(false, id, args);
-    var e := ECall(j, false, id, args, beta);
-    var fn := Top(c).fn;
-    FlTop(P, ell, c);
-    var fl := Fl(P, ell, j);
-    assert FloorsOk(P, ell);
-    FlFrame(P, ell, c, |c.fr| - 1);
-    assert fl == Fl(P, ell, fn) <= ell(fn);
-    HelperFloor(P, xP, c, ell, j, id, nA, args, beta, v, wr);
-    assert LiveOk(P, live, tbl);
-    assert ReadsL(P[j], live, tbl) <= live(j);
-    forall i | 0 <= i < |Upto(1, nA)| ensures Rel(Reg(Top(c), Upto(1, nA)[i]), Reg(Top(c'), Upto(1, nA)[i])) {
-      UptoAt(1, nA, i);
-      var r := 1 + i;
-      assert r in tbl(id);
-      assert r in live(j);
-    }
-    RdsRel(Top(c), Top(c'), Upto(1, nA));
-    forall i | 0 <= i < |Upto(1, nA)| ensures Reg(Top(c'), Upto(1, nA)[i]).W? { UptoAt(1, nA, i); }
-    SimFacts.RdsAll(Top(c'), Upto(1, nA));
-    assert SimFacts.Words(Top(c'), Upto(1, nA)) == args;
-    MemRelI(P, D, ell, c, c');
-    FootRelG(P, D, ell, c, c', addrs);
-    var hc := HCtx(nA, addrs, e, v, wr);
-    var ww := WrapWin(P, D, Pp, ell, xR, obsv, j, c', hc);
-    WrapWinPre(P, D, Pp, ell, live, tbl, xR, obsv, j, c', hc);
-    WrapHelperOk(P, ell, ww, c, xP, tbl, nA, args, beta, v, wr);
-    assert Rel(Reg(Top(c), 10), Reg(Top(c'), 10));
-    BRInit(c', E(D, j));
-    Floor8Bounds(ell(fn));
-    assert WWBasic(ww);
-    WWPreIntro(ww);
-    var k, c2, sf := RunWrapWin(ww);
-    NextE(P, D, j);
-    assert PostLen(D, j) == 0;
-    assert Owner(P, j + 1) == Owner(P, j) by { assert j + 1 !in FnSet(P); }
-    WrapAfter(P, D, ell, live, ww, c, er, c1, c2, sf, j, xP);
+    var nA, args, beta, v, wr := WrapArgs(P, D, Pp, ell, live, tbl, env, sem, om, c, c', er, c1);
+    var ww := WrapPrep(P, D, Pp, ell, live, tbl, env, sem, obsv, om, hv, c, c', er, c1, nA, args, beta, v, wr);
+    var k, c2 := WrapRun(P, D, ell, live, ww, c, er, c1, CtxP(P, env, sem, om));
   }
 }
