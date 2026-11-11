@@ -230,7 +230,7 @@ module SimCalls {
       tbl: bv32 -> set<nat>, env: Env, sem: Sem, obsv: Observer, om: Oracle, hv: nat -> bv64,
       c: Cfg, c': Cfg, er: set<nat>) returns (k1: nat, c2: Cfg)
     requires Structure(P, D, Pp, ell, live, tbl) && AllValidated(P, D, ell) && E0Shape(P) && A5(obsv)
-    requires Inv(P, c) && CorrK(P, D, ell, live, c, c', er) && Top(c).pc in D.pl && D.wrap == map[]
+    requires Inv(P, c) && CorrK(P, D, ell, live, c, c', er) && Top(c).pc in D.pl
     ensures ReachR(Pp, CtxR(Pp, env, sem, om, hv), obsv, c', k1) == Some(c2)
     ensures PLDone(P, D, ell, live, c, c2, er)
   {
@@ -314,7 +314,7 @@ module SimCalls {
       c: Cfg, c': Cfg, er: set<nat>, c1: Cfg, c2: Cfg) returns (c3: Cfg)
     requires Structure(P, D, Pp, ell, live, tbl) && E0Shape(P)
     requires PairX(P, D, CtxP(P, env, sem, om), CtxR(Pp, env, sem, om, hv))
-    requires Inv(P, c) && D.wrap == map[]
+    requires Inv(P, c)
     requires StepP(P, CtxP(P, env, sem, om), c) == Go(c1)
     requires PLDone(P, D, ell, live, c, c2, er)
     ensures 0 <= Top(c).pc && Top(c).pc in D.pl
@@ -346,7 +346,7 @@ module SimCalls {
       c: Cfg, c': Cfg, er: set<nat>, c1: Cfg) returns (k: nat, c1': Cfg, er': set<nat>)
     requires Structure(P, D, Pp, ell, live, tbl) && AllValidated(P, D, ell) && E0Shape(P) && A5(obsv)
     requires PairX(P, D, CtxP(P, env, sem, om), CtxR(Pp, env, sem, om, hv))
-    requires Inv(P, c) && CorrK(P, D, ell, live, c, c', er) && Top(c).pc in D.pl && D.wrap == map[]
+    requires Inv(P, c) && CorrK(P, D, ell, live, c, c', er) && Top(c).pc in D.pl
     requires StepP(P, CtxP(P, env, sem, om), c) == Go(c1)
     ensures Inv(P, c1)
     ensures Reaches(Pp, CtxR(Pp, env, sem, om, hv), obsv, c', k, c1')
@@ -366,7 +366,7 @@ module SimCalls {
       c: Cfg, c': Cfg, er: set<nat>, c1: Cfg)
     requires Structure(P, D, Pp, ell, live, tbl) && AllValidated(P, D, ell) && E0Shape(P) && A5(obsv)
     requires PairX(P, D, CtxP(P, env, sem, om), CtxR(Pp, env, sem, om, hv))
-    requires Inv(P, c) && Corr(P, D, ell, live, c, c', er) && Top(c).pc in D.pl && D.wrap == map[]
+    requires Inv(P, c) && Corr(P, D, ell, live, c, c', er) && Top(c).pc in D.pl
     requires StepP(P, CtxP(P, env, sem, om), c) == Go(c1)
     ensures Inv(P, c1)
     ensures exists k: nat, c1': Cfg, er': set<nat> :: ReachR(Pp, CtxR(Pp, env, sem, om, hv), obsv, c', k) == Some(c1')

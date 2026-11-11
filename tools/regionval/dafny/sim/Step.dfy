@@ -1,8 +1,8 @@
 // The simulation step: one step of P from a reachable configuration is
 // matched by finitely many steps of P', for any frame stack (calls,
-// callbacks, returns, P1b and P9 entries), so far without wrapper (P8) and
-// tail-call (P4) sites.
-include "Calls.dfy"
+// callbacks, returns, P1b and P9 entries) and every form (P1, P1b, P1c,
+// P2 with MF, P3, P4, P5, P7, P8, P9).
+include "Wrap.dfy"
 
 module SimStep1 {
   import opened Bits
@@ -16,11 +16,7 @@ module SimStep1 {
   import opened SimSites
   import opened SimClasses
   import opened SimCalls
-
-  // The scope of the step lemma so far: no P8 wrapper and no P4 tail-call site.
-  ghost predicate Scope(P: seq<OInstr>, D: Decomp) {
-    D.wrap == map[] && (forall i | i in D.site :: i < |P| && !P[i].Tail?)
-  }
+  import opened SimWrap
 
   lemma SuccOk(P: seq<OInstr>, live: nat -> set<nat>, tbl: bv32 -> set<nat>, j: nat)
     requires E0Shape(P) && LiveOk(P, live, tbl) && j < |P| && (!P[j].Exit? && !P[j].Ja? ==> j + 1 < |P|)
@@ -57,9 +53,9 @@ module SimStep1 {
 
   lemma {:isolate_assertions} ClassHyp(P: seq<OInstr>, D: Decomp, Pp: RwProg, ell: nat -> int, live: nat -> set<nat>,
       tbl: bv32 -> set<nat>, xP: Ctx, c: Cfg, c': Cfg, er: set<nat>)
-    requires Structure(P, D, Pp, ell, live, tbl) && E0Shape(P) && D.wrap == map[] && Inv(P, c)
+    requires Structure(P, D, Pp, ell, live, tbl) && E0Shape(P) && Inv(P, c)
     requires forall a | a in Acc(P, xP, c) :: a.0 < |c.fr| && a.1 as int - STK as int >= ell(c.fr[a.0].fn)
-    requires Corr(P, D, ell, live, c, c', er) && Top(c).pc !in D.site && Top(c).pc !in D.pl
+    requires Corr(P, D, ell, live, c, c', er) && Top(c).pc !in D.site && Top(c).pc !in D.pl && Top(c).pc !in D.wrap
     ensures CHyp(P, D, ell, live, tbl, xP, c, c', er)
     ensures Top(c').pc == K(D, Top(c).pc) && Top(c').pc < |Pp.code| && Pp.code[Top(c').pc] == O(Reloc(D, P[Top(c).pc]), Top(c).pc)
   {
@@ -143,9 +139,9 @@ module SimStep1 {
   lemma {:isolate_assertions} SiteBranch(P: seq<OInstr>, D: Decomp, Pp: RwProg, ell: nat -> int, live: nat -> set<nat>,
       tbl: bv32 -> set<nat>, env: Env, sem: Sem, obsv: Observer, om: Oracle, hv: nat -> bv64, c: Cfg, c': Cfg, er: set<nat>)
     requires Structure(P, D, Pp, ell, live, tbl) && AllValidated(P, D, ell) && E0Shape(P) && A3b(env, tbl) && A5(obsv)
-    requires Scope(P, D) && Inv(P, c)
+    requires Inv(P, c)
     requires forall a | a in Acc(P, CtxP(P, env, sem, om), c) :: a.0 < |c.fr| && a.1 as int - STK as int >= ell(c.fr[a.0].fn)
-    requires Corr(P, D, ell, live, c, c', er) && Top(c).pc in D.site
+    requires Corr(P, D, ell, live, c, c', er) && Top(c).pc in D.site && !P[Top(c).pc].Tail?
     ensures StepP(P, CtxP(P, env, sem, om), c).Go? ==> Inv(P, StepP(P, CtxP(P, env, sem, om), c).c)
     ensures match StepP(P, CtxP(P, env, sem, om), c)
       case Go(c1) => exists k: nat, c1': Cfg, er': set<nat> ::
@@ -171,11 +167,43 @@ module SimStep1 {
     case Stuck(_) =>
   }
 
+  // The wrapper branch (P8).
+  lemma {:isolate_assertions} WrapBranch(P: seq<OInstr>, D: Decomp, Pp: RwProg, ell: nat -> int, live: nat -> set<nat>,
+      tbl: bv32 -> set<nat>, env: Env, sem: Sem, obsv: Observer, om: Oracle, hv: nat -> bv64, c: Cfg, c': Cfg, er: set<nat>)
+    requires Structure(P, D, Pp, ell, live, tbl) && Loadable(P, D) && AllValidated(P, D, ell) && E0Shape(P)
+    requires A3b(env, tbl) && A5(obsv) && A8(om) && Inv(P, c)
+    requires forall a | a in Acc(P, CtxP(P, env, sem, om), c) :: a.0 < |c.fr| && a.1 as int - STK as int >= ell(c.fr[a.0].fn)
+    requires Corr(P, D, ell, live, c, c', er) && Top(c).pc in D.wrap
+    ensures StepP(P, CtxP(P, env, sem, om), c).Go? ==> Inv(P, StepP(P, CtxP(P, env, sem, om), c).c)
+    ensures match StepP(P, CtxP(P, env, sem, om), c)
+      case Go(c1) => exists k: nat, c1': Cfg, er': set<nat> ::
+        ReachR(Pp, CtxR(Pp, env, sem, om, hv), obsv, c', k) == Bits.Some(c1') && Corr(P, D, ell, live, c1, c1', er')
+      case Done(t) => exists k: nat :: RunR(Pp, CtxR(Pp, env, sem, om, hv), obsv, c', k) == Fin(t)
+      case Stuck(_) => true
+  {
+    var xP := CtxP(P, env, sem, om);
+    var xR := CtxR(Pp, env, sem, om, hv);
+    var j := Top(c).pc;
+    CorrElim(P, D, ell, live, c, c', er);
+    InvIs(P, c);
+    assert StepP(P, xP, c) == OStep(xP, P[j], j, c);
+    assert PiecesOk(P, D);
+    assert P[j].Hcall? && !P[j].kf;
+    assert OStep(xP, P[j], j, c) == HelperStep(xP, c, j, false, P[j].id, false);
+    SimClasses.HelperNotDone(xP, c, j, false, P[j].id);
+    match StepP(P, xP, c)
+    case Go(c1) =>
+      WrapStep(P, D, Pp, ell, live, tbl, env, sem, obsv, om, hv, c, c', er, c1);
+      var k: nat, c1': Cfg :| ReachR(Pp, xR, obsv, c', k) == Some(c1') && Corr(P, D, ell, live, c1, c1', {});
+    case Done(t) =>
+    case Stuck(_) =>
+  }
+
   // The pass-load branch (a call with PL(j), P9).
   lemma {:isolate_assertions} PassBranch(P: seq<OInstr>, D: Decomp, Pp: RwProg, ell: nat -> int, live: nat -> set<nat>,
       tbl: bv32 -> set<nat>, env: Env, sem: Sem, obsv: Observer, om: Oracle, hv: nat -> bv64, c: Cfg, c': Cfg, er: set<nat>)
     requires Structure(P, D, Pp, ell, live, tbl) && AllValidated(P, D, ell) && E0Shape(P) && A5(obsv)
-    requires Scope(P, D) && Inv(P, c)
+    requires Inv(P, c)
     requires Corr(P, D, ell, live, c, c', er) && Top(c).pc in D.pl
     ensures StepP(P, CtxP(P, env, sem, om), c).Go? ==> Inv(P, StepP(P, CtxP(P, env, sem, om), c).c)
     ensures match StepP(P, CtxP(P, env, sem, om), c)
@@ -207,12 +235,12 @@ module SimStep1 {
     ensures forall a | a in Acc(P, CtxP(P, env, sem, om), c) :: a.0 < |c.fr| && a.1 as int - STK as int >= ell(c.fr[a.0].fn)
   {}
 
-  // One step of P from any reachable configuration (with the frame invariant), in the scope above.
+  // One step of P from any reachable configuration (with the frame invariant).
   lemma {:isolate_assertions} SimStepGen(P: seq<OInstr>, D: Decomp, Pp: RwProg, ell: nat -> int, live: nat -> set<nat>,
                 tbl: bv32 -> set<nat>, env: Env, sem: Sem, obsv: Observer, Adm: (Local, Oracle) -> bool,
                 L: Local, om: Oracle, hv: nat -> bv64, n: nat, c: Cfg, c': Cfg, er: set<nat>)
     requires Hyp(P, D, Pp, ell, live, tbl, env, sem, obsv, Adm) && A8(om) && Adm(L, om)
-    requires Scope(P, D) && Inv(P, c)
+    requires Inv(P, c)
     requires ReachP(P, CtxP(P, env, sem, om), InitP(L), n) == Bits.Some(c)
     requires Corr(P, D, ell, live, c, c', er)
     ensures StepP(P, CtxP(P, env, sem, om), c).Go? ==> Inv(P, StepP(P, CtxP(P, env, sem, om), c).c)
@@ -227,8 +255,13 @@ module SimStep1 {
     assert Structure(P, D, Pp, ell, live, tbl) && AllValidated(P, D, ell) && E0Shape(P) && A3b(env, tbl) && A5(obsv);
     A1aAt(P, env, sem, Adm, ell, L, om, n, c);
     InvIs(P, c);
-    if Top(c).pc in D.site {
+    assert PiecesOk(P, D);
+    if Top(c).pc in D.site && P[Top(c).pc].Tail? {
+      TailStep(P, D, Pp, ell, live, tbl, env, sem, obsv, om, hv, c, c', er);
+    } else if Top(c).pc in D.site {
       SiteBranch(P, D, Pp, ell, live, tbl, env, sem, obsv, om, hv, c, c', er);
+    } else if Top(c).pc in D.wrap {
+      WrapBranch(P, D, Pp, ell, live, tbl, env, sem, obsv, om, hv, c, c', er);
     } else if Top(c).pc in D.pl {
       PassBranch(P, D, Pp, ell, live, tbl, env, sem, obsv, om, hv, c, c', er);
     } else {

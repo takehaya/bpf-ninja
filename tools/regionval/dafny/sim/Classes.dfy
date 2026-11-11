@@ -552,7 +552,7 @@ module SimClasses {
     ensures b[o .. o + w] == a[o .. o + w]
   {
     assert |b[o .. o + w]| == w == |a[o .. o + w]|;
-    forall k | 0 <= k < w ensures b[o .. o + w][k] == a[o .. o + w][k] {
+    forall k {:nowarn} | 0 <= k < w ensures b[o .. o + w][k] == a[o .. o + w][k] {
       assert b[o .. o + w][k] == b[o + k] && a[o .. o + w][k] == a[o + k];
     }
   }

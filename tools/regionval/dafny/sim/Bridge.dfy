@@ -66,11 +66,18 @@ module SimBridge {
     requires S.InFrame(S.Rel(a, StackTop(|c.fr| - 1)), w)
     ensures Classify(a, w, |c.fr|, c.L.mem.Keys) == InStack(|c.fr| - 1, S.Rel(a, StackTop(|c.fr| - 1)) + STK)
   {
-    var n := |c.fr|;
+    InFrameClassifyN(a, w, |c.fr|, c.L.mem.Keys);
+  }
+
+  lemma {:isolate_assertions} InFrameClassifyN(a: bv64, w: nat, n: nat, dom: set<int>)
+    requires 0 < n <= MAXF_RW
+    requires S.InFrame(S.Rel(a, StackTop(n - 1)), w)
+    ensures Classify(a, w, n, dom) == InStack(n - 1, S.Rel(a, StackTop(n - 1)) + STK)
+  {
     var rel := S.Rel(a, StackTop(n - 1));
-    FrameOfTop(a, w, n);
-    ClassifyFrame(a, w, n, c.L.mem.Keys, n - 1);
     assert 0 <= rel + STK;
+    FrameOfTop(a, w, n);
+    ClassifyFrame(a, w, n, dom, n - 1);
   }
 
   lemma FrameOfTop(a: bv64, w: nat, n: nat)
@@ -260,9 +267,12 @@ module SimBridge {
           && (w.sp.hookCalls && S.Decode(S.InsnAt(w.raw, r)).Some? && S.Decode(S.InsnAt(w.raw, r)).value.CallLocal? ==>
                 w.base + r + 1 + Signed32(S.Decode(S.InsnAt(w.raw, r)).value.imm) in w.Pp.hooks))
     && (HasHelper(w) ==>
-          w.hins.Hcall? && !w.hins.kf && w.Pp.code[w.base + w.hp] == O(w.hins, w.hidx)
-          && S.Decode(S.InsnAt(w.raw, w.hp)) == Some(S.CallHelper(w.hins.id)))
+          ((w.hins.Hcall? && !w.hins.kf) || w.hins.Tail?) && w.Pp.code[w.base + w.hp] == O(w.hins, w.hidx)
+          && S.Decode(S.InsnAt(w.raw, w.hp)) == Some(S.CallHelper(HId(w.hins))))
   }
+
+  // The helper id of a central helper (bpf_tail_call is helper 12).
+  function HId(ins: OInstr): bv32 requires ins.Hcall? || ins.Tail? { if ins.Tail? then 12 else ins.id }
 
   // A hook body laid out at t and validated as a P7 body.
   ghost predicate HookAt(Pp: RwProg, t: nat, body: seq<bv8>) {
@@ -282,10 +292,31 @@ module SimBridge {
   }
   ghost predicate WrTop(c: Cfg, wr: map<int, bv8>, floor: int) {
     0 < |c.fr| <= MAXF_RW &&
-    forall o: nat | o < STK && o < STK as int + floor :: SAddr(|c.fr| - 1, o) as int !in wr
+    forall o: nat {:nowarn} | o < STK && o < STK as int + floor :: SAddr(|c.fr| - 1, o) as int !in wr
+  }
+
+  // P4: the centre is bpf_tail_call; it either ends the segment or fails
+  // (no write set, r0..r5 unreadable afterwards).
+  ghost predicate TailHOk(w: Win) {
+    var args := SimFacts.Words(Top(w.c0), [1, 2, 3]);
+    var r := w.x.om(w.c0.h, w.hc.eh, Wh(w.c0));
+    w.hc.eh == ECall(w.hidx, false, 12, args, []) && w.hc.v == Bot && w.hc.wr == map[]
+    && (r.RTailOk? || r.RTailFail?)
+  }
+
+  // The window's tail call succeeds: the segment ends at the centre.
+  ghost predicate TailOkW(w: Win) {
+    w.hins.Tail? && HasHelper(w) && w.x.om(w.c0.h, w.hc.eh, Wh(w.c0)).RTailOk?
+  }
+
+  ghost function TailT(w: Win): Term requires TailOkW(w) {
+    var args := SimFacts.Words(Top(w.c0), [1, 2, 3]);
+    TTail(w.x.om(w.c0.h, w.hc.eh, Wh(w.c0)).q, args[0],
+          w.c0.L.(budget := if w.c0.L.budget > 0 then w.c0.L.budget - 1 else 0), w.c0.h + [w.hc.eh])
   }
 
   ghost predicate HelperOk(w: Win) {
+    if w.hins.Tail? then TailHOk(w) else
     var args := SimFacts.Words(Top(w.c0), Upto(1, w.hc.n));
     w.hins.Hcall? && w.hc.n == w.x.env.arity(false, w.hins.id) && w.hc.n <= 5
     && w.hc.addrs == w.x.env.foot(false, w.hins.id, args)
@@ -311,7 +342,13 @@ module SimBridge {
           && |UpperBase(s.events, w.s0.stack)| == STK && |Top(a).stack| == STK
           && forall i | 0 <= i && lo <= i < STK :: UpperBase(s.events, w.s0.stack)[i] == Plain(Top(a).stack)[i])
     && CountHelpers(s.events) <= 1
+    && (TailOkW(w) ==> CountHelpers(s.events) == 0)
   }
+
+  lemma SideTail(w: Win, c: Cfg, s: S.CState)
+    requires Side(w, c, s) && TailOkW(w)
+    ensures CountHelpers(s.events) == 0
+  { reveal Side(); }
 
   lemma SideFacts(w: Win, c: Cfg, s: S.CState)
     requires Side(w, c, s)
@@ -398,12 +435,15 @@ module SimBridge {
   }
 
   // From c the whole run reaches a configuration whose top frame is the region state sf.
+  // (A window whose tail call succeeds: the whole run ends with TailT.)
   opaque ghost predicate Ends(w: Win, c: Cfg, sf: S.CState, exited: bool) {
-    exists k: nat, c2: Cfg :: ReachR(w.Pp, w.x, w.obsv, c, k) == Some(c2)
+    if TailOkW(w) then exists k: nat :: RunR(w.Pp, w.x, w.obsv, c, k) == Fin(TailT(w))
+    else exists k: nat, c2: Cfg :: ReachR(w.Pp, w.x, w.obsv, c, k) == Some(c2)
       && BR(c2, sf, w.base) && Side(w, c2, sf) && (exited ==> AtIns(w.Pp, c2, S.Exit))
   }
 
   lemma EndsHere(w: Win, c: Cfg, sf: S.CState, exited: bool)
+    requires !TailOkW(w)
     requires BR(c, sf, w.base) && Side(w, c, sf) && (exited ==> AtIns(w.Pp, c, S.Exit))
     ensures Ends(w, c, sf, exited)
   {
@@ -411,17 +451,43 @@ module SimBridge {
     assert ReachR(w.Pp, w.x, w.obsv, c, 0) == Some(c);
   }
 
+  lemma RunAfterReach(Pp: RwProg, x: Ctx, obsv: Observer, c: Cfg, a: nat, c1: Cfg, b: nat, t: Term)
+    requires ReachR(Pp, x, obsv, c, a) == Some(c1) && RunR(Pp, x, obsv, c1, b) == Fin(t)
+    ensures RunR(Pp, x, obsv, c, a + b) == Fin(t)
+    decreases a
+  {
+    if a > 0 {
+      match StepR(Pp, x, obsv, c)
+      case Go(c') => RunAfterReach(Pp, x, obsv, c', a - 1, c1, b, t);
+      case _ =>
+    }
+  }
+
   lemma EndsPrefix(w: Win, c: Cfg, k: nat, c': Cfg, sf: S.CState, exited: bool)
     requires ReachR(w.Pp, w.x, w.obsv, c, k) == Some(c') && Ends(w, c', sf, exited)
     ensures Ends(w, c, sf, exited)
   {
     reveal Ends();
-    var k2: nat, c2: Cfg :| ReachR(w.Pp, w.x, w.obsv, c', k2) == Some(c2)
-      && BR(c2, sf, w.base) && Side(w, c2, sf) && (exited ==> AtIns(w.Pp, c2, S.Exit));
-    ReachAdd(w.Pp, w.x, w.obsv, c, k, k2, c');
+    if TailOkW(w) {
+      var k2: nat :| RunR(w.Pp, w.x, w.obsv, c', k2) == Fin(TailT(w));
+      RunAfterReach(w.Pp, w.x, w.obsv, c, k, c', k2, TailT(w));
+    } else {
+      var k2: nat, c2: Cfg :| ReachR(w.Pp, w.x, w.obsv, c', k2) == Some(c2)
+        && BR(c2, sf, w.base) && Side(w, c2, sf) && (exited ==> AtIns(w.Pp, c2, S.Exit));
+      ReachAdd(w.Pp, w.x, w.obsv, c, k, k2, c');
+    }
+  }
+
+  lemma EndsTail(w: Win, c: Cfg, sf: S.CState, exited: bool) returns (k: nat)
+    requires TailOkW(w) && Ends(w, c, sf, exited)
+    ensures RunR(w.Pp, w.x, w.obsv, c, k) == Fin(TailT(w))
+  {
+    reveal Ends();
+    k :| RunR(w.Pp, w.x, w.obsv, c, k) == Fin(TailT(w));
   }
 
   lemma EndsGet(w: Win, c: Cfg, sf: S.CState, exited: bool) returns (k: nat, c2: Cfg)
+    requires !TailOkW(w)
     requires Ends(w, c, sf, exited)
     ensures ReachR(w.Pp, w.x, w.obsv, c, k) == Some(c2)
     ensures BR(c2, sf, w.base) && Side(w, c2, sf) && (exited ==> AtIns(w.Pp, c2, S.Exit))
@@ -534,13 +600,17 @@ module SimBridge {
       Soundness.RunEnd(w.raw, w.sp.floor, s, prefix, fuel);
       rest := [];
       assert prefix + rest == prefix;
-      EndsHere(w, c, s, false);
+      EndHere(w, c, s, false);
       return;
     }
     if s.pc < 0 || s.pc > n || fuel == 0 {
       reveal S.Run();
       rest := [];
       assert prefix + rest == prefix;
+      return;
+    }
+    if s.pc == w.hp && w.hins.Tail? {
+      rest := BTail(w, c, s, prefix, fuel);
       return;
     }
     if s.pc == w.hp {
@@ -554,6 +624,21 @@ module SimBridge {
       assert prefix + rest == prefix;
     case Some(ins) =>
       rest := BIns(w, c, s, prefix, fuel, ins);
+  }
+
+  // The window's run ends at c: Ends, or (tail call succeeds) the obligations fail.
+  lemma EndHere(w: Win, c: Cfg, s: S.CState, exited: bool)
+    requires WinPre(w) && BR(c, s, w.base) && Side(w, c, s) && (exited ==> AtIns(w.Pp, c, S.Exit))
+    ensures TailOkW(w) ==> !FinalOkO(w.sp, w.s0, s)
+    ensures !TailOkW(w) ==> Ends(w, c, s, exited)
+  {
+    if TailOkW(w) {
+      SideTail(w, c, s);
+      WinPreFacts(w);
+      reveal FinalOkO();
+    } else {
+      EndsHere(w, c, s, exited);
+    }
   }
 
   // A step that changed only the top frame's registers and pc keeps Pre.
@@ -651,7 +736,7 @@ module SimBridge {
       Soundness.RunAt(w.raw, fl, s, prefix, fuel, ins);
       rest := [];
       assert prefix + rest == prefix;
-      EndsHere(w, c, s, true);
+      EndHere(w, c, s, true);
   }
 
   // Memory instructions decode with a width of 1, 2, 4 or 8.
@@ -971,7 +1056,7 @@ module SimBridge {
 
   lemma {:isolate_assertions} HelperWhole(w: Win, c: Cfg, s: S.CState) returns (c': Cfg)
     requires WinPre(w) && HasHelper(w) && BR(c, s, w.base) && Side(w, c, s) && CountHelpers(s.events) == 0
-    requires s.pc == w.hp && s.regs[1..6] == w.s0.regs[1..6]
+    requires s.pc == w.hp && s.regs[1..6] == w.s0.regs[1..6] && !w.hins.Tail?
     ensures StepR(w.Pp, w.x, w.obsv, c) == Go(c')
     ensures |c'.fr| == |c.fr| && FrameOk(Top(c')) && Top(c').pc == Top(c).pc + 1
     ensures Top(c').kind == Top(c).kind && Top(c').fn == Top(c).fn
@@ -1059,7 +1144,7 @@ module SimBridge {
   }
 
   lemma {:isolate_assertions} SideHelper(w: Win, c: Cfg, s: S.CState, c': Cfg, s': S.CState)
-    requires WinPre(w) && Side(w, c, s) && CountHelpers(s.events) == 0
+    requires WinPre(w) && Side(w, c, s) && CountHelpers(s.events) == 0 && !TailOkW(w)
     requires |Top(c').stack| == STK && |Top(c).stack| == STK && |Top(c').regs| == NR
     requires |c'.fr| == |c.fr| && Top(c').kind == Top(c).kind && Top(c').fn == Top(c).fn
     requires forall o | 0 <= o < STK :: Top(c').stack[o] == ApplyF(Top(c), |c.fr| - 1, w.hc.wr).stack[o]
@@ -1097,7 +1182,7 @@ module SimBridge {
   }
 
   lemma {:isolate_assertions} BHelper(w: Win, c: Cfg, s: S.CState, prefix: seq<bv64>, fuel: nat) returns (rest: seq<bv64>)
-    requires Pre(w, c, s, prefix) && s.pc == w.hp && 0 <= s.pc < S.NumInsns(w.raw) && fuel > 0
+    requires Pre(w, c, s, prefix) && s.pc == w.hp && 0 <= s.pc < S.NumInsns(w.raw) && fuel > 0 && !w.hins.Tail?
     ensures Post(w, c, s, prefix, fuel, rest)
     decreases (if w.sp.hookCalls then 1 else 0), fuel, 1
   {
@@ -1126,6 +1211,123 @@ module SimBridge {
     var e := S.EHelper(s.regs[1..6], s'.regs[0], s'.stack, id);
     assert s'.events == s.events + [e];
     SideFacts(w, c, s);
+    SideHelper(w, c, s, c', s');
+    assert Pre(w, c', s', prefix + vals);
+    ReachOne(w.Pp, w.x, w.obsv, c, c');
+    rest := Advance(w, c, s, prefix, fuel, ins, vals, 1, c', s');
+  }
+
+  // ---------------- the central tail call (P4) ----------------
+
+  ghost function TailFailC(x: Ctx, c: Cfg, e: Ev): Cfg {
+    var cA := c.(h := c.h + [e]);
+    var f := Top(c);
+    var regs := seq(|f.regs|, k requires 0 <= k < |f.regs| => if k <= 5 then Und(x, cA, k) else f.regs[k]);
+    Put(cA, f.(pc := f.pc + 1, regs := regs)).(hc := cA.hc + 6)
+  }
+
+  lemma TailIsB(x: Ctx, c: Cfg, j: nat)
+    requires Rds(Top(c), [1, 2, 3]).Some?
+    ensures var args := Rds(Top(c), [1, 2, 3]).value; var e := ECall(j, false, 12, args, []);
+      TailO(x, c, j) == match x.om(c.h, e, Wh(c))
+        case RTailOk(q) => Done(TTail(q, args[0], c.L.(budget := if c.L.budget > 0 then c.L.budget - 1 else 0), c.h + [e]))
+        case RTailFail => Go(TailFailC(x, c, e))
+        case _ => Stuck(false)
+  { reveal TailO(); }
+
+  // A failed tail call is a helper finish with no result and no write set.
+  lemma TailFailFinish(x: Ctx, c: Cfg, e: Ev)
+    requires |c.fr| > 0
+    ensures Finish(x, c.(h := c.h + [e]), Bot, map[]) == Go(TailFailC(x, c, e))
+  {
+    reveal Finish();
+    var cA := c.(h := c.h + [e]);
+    SimFacts.ApplyNone(cA);
+    var f := Top(cA);
+    var r1 := seq(|f.regs|, k requires 0 <= k < |f.regs| =>
+      if k == 0 then Und(x, cA, 0) else if k <= 5 then Und(x, cA, k) else f.regs[k]);
+    var r2 := seq(|f.regs|, k requires 0 <= k < |f.regs| => if k <= 5 then Und(x, cA, k) else f.regs[k]);
+    assert r1 == r2;
+  }
+
+  lemma ApplyNoneF(f: Frame, d: nat) ensures ApplyF(f, d, map[]) == f {
+    assert ApplyF(f, d, map[]).stack == f.stack;
+  }
+  lemma ApplyNoneL(l: Local) ensures ApplyL(l, map[]) == l {
+    assert ApplyL(l, map[]).mem == l.mem;
+  }
+
+  lemma {:isolate_assertions} BTail(w: Win, c: Cfg, s: S.CState, prefix: seq<bv64>, fuel: nat) returns (rest: seq<bv64>)
+    requires Pre(w, c, s, prefix) && s.pc == w.hp && 0 <= s.pc < S.NumInsns(w.raw) && fuel > 0 && w.hins.Tail?
+    ensures Post(w, c, s, prefix, fuel, rest)
+    decreases (if w.sp.hookCalls then 1 else 0), fuel, 1
+  {
+    WinPreFacts(w); WinPreAt(w);
+    var fl := w.sp.floor;
+    var ins := S.CallHelper(12);
+    assert HasHelper(w);
+    WinPreHelper(w);
+    assert TailHOk(w);
+    assert S.Decode(S.InsnAt(w.raw, s.pc)) == Some(ins);
+    StepHelper(fl, 12, s, prefix);
+    var sB := S.HelperStep(fl, s, prefix, 12).s;
+    var eB := S.EHelper(s.regs[1..6], S.HavocRegs(s.regs, prefix, s.oc, 6)[0], S.HelperStack(fl, s, prefix), 12);
+    assert sB.events == s.events + [eB];
+    Soundness.EventsSnoc(s.events, eB, w.s0.stack);
+    rest := [];
+    assert prefix + rest == prefix;
+    if CountHelpers(s.events) != 0 {
+      BadPost(w, c, s, prefix, fuel, ins, sB);
+      return;
+    }
+    if s.regs[1..6] != w.s0.regs[1..6] {
+      assert !EventOk(w.sp, w.s0, eB);
+      BadPost(w, c, s, prefix, fuel, ins, sB);
+      return;
+    }
+    SideFacts(w, c, s); Side0(w, c, s);
+    var x := w.x;
+    var f := Top(c);
+    var f0 := Top(w.c0);
+    assert w.Pp.code[f.pc] == O(Tail, w.hidx);
+    assert StepR(w.Pp, x, w.obsv, c) == TailO(x, c, w.hidx);
+    forall i | 0 <= i < 3 ensures Reg(f, [1, 2, 3][i]).W? && Reg(f, [1, 2, 3][i]) == Reg(f0, [1, 2, 3][i]) {
+      var r := [1, 2, 3][i];
+      assert R64(f)[r] == s.regs[r] == w.s0.regs[r] == R64(f0)[r];
+    }
+    SimFacts.RdsAll(f, [1, 2, 3]);
+    var args := SimFacts.Words(f, [1, 2, 3]);
+    assert args == SimFacts.Words(f0, [1, 2, 3]);
+    var e := ECall(w.hidx, false, 12, args, []);
+    assert e == w.hc.eh;
+    assert Wh(c) == Wh(w.c0);
+    TailIsB(x, c, w.hidx);
+    if TailOkW(w) {
+      assert StepR(w.Pp, x, w.obsv, c) == Done(TailT(w));
+      assert RunR(w.Pp, x, w.obsv, c, 1) == Fin(TailT(w));
+      assert Ends(w, c, S.Run(w.raw, fl, s, prefix, fuel).s, S.Run(w.raw, fl, s, prefix, fuel).Exited?) by { reveal Ends(); }
+      return;
+    }
+    assert x.om(c.h, e, Wh(c)).RTailFail?;
+    var c' := TailFailC(x, c, e);
+    assert StepR(w.Pp, x, w.obsv, c) == Go(c');
+    TailFailFinish(x, c, e);
+    var c1 := c.(h := c.h + [e]);
+    FinishFacts(x, c1, Bot, map[]);
+    SimFacts.ApplyNone(c1);
+    ApplyNoneF(Top(c), |c.fr| - 1);
+    ApplyNoneL(c.L);
+    SimFacts.ApplyNone(c);
+    assert Below(c') == Below(c1) == Below(c);
+    forall k | 0 <= k < NR ensures Top(c').regs[k].W? {
+      if 6 <= k { assert Top(c').regs[k] == f.regs[k]; } else { UndW(x, c1, k); }
+    }
+    assert FrameOk(Top(c'));
+    var vals, s' := HelperBR(fl, 12, c, s, w.base, c', prefix);
+    SideFacts(w, c, s);
+    assert Top(c').stack == ApplyF(Top(c), |c.fr| - 1, w.hc.wr).stack;
+    assert Below(c') == Below(ApplyW(c, w.hc.wr));
+    assert c'.L == ApplyL(c.L, w.hc.wr);
     SideHelper(w, c, s, c', s');
     assert Pre(w, c', s', prefix + vals);
     ReachOne(w.Pp, w.x, w.obsv, c, c');

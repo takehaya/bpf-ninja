@@ -10,7 +10,7 @@ DFY := dafny/src/Bits.dfy dafny/src/Semantics.dfy dafny/src/Terms.dfy dafny/src/
 # Whole-program simulation proof (dafny/sim); not part of the generated Go.
 SIM := dafny/sim/Model.dfy dafny/sim/Rewrite.dfy dafny/sim/Premises.dfy dafny/sim/Theorem.dfy \
 	dafny/sim/Facts.dfy dafny/sim/Region.dfy dafny/sim/Bridge.dfy dafny/sim/LayoutFacts.dfy dafny/sim/Frames.dfy \
-	dafny/sim/Sites.dfy dafny/sim/Classes.dfy dafny/sim/Calls.dfy dafny/sim/Step.dfy dafny/sim/Witness.dfy dafny/sim/Witness2.dfy \
+	dafny/sim/Sites.dfy dafny/sim/Classes.dfy dafny/sim/Calls.dfy dafny/sim/Wrap.dfy dafny/sim/Step.dfy dafny/sim/Witness.dfy dafny/sim/Witness2.dfy dafny/sim/Witness3.dfy dafny/sim/Witness4.dfy \
 	dafny/sim/Main.dfy
 TRUST_RE := '\bassume\b|\{: *axiom\b|@Axiom\b|\{: *verify +false|@Verify\b|\{: *extern\b|@Extern\b'
 GEN_MODULE := github.com/takehaya/bpf-ninja/tools/regionval/dafny/gen-go

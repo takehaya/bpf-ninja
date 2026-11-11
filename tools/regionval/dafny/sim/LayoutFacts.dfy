@@ -51,7 +51,7 @@ module SimLayoutFacts {
       && (forall k | 0 <= k < fl :: b[k] == FnsCode(P, D, FnsAt(D, i))[k])
       && (forall k | 0 <= k < fp :: b[fl + k] == N(Slice(D.fp[i].code, k)))
       && (forall k | 0 <= k < pl :: b[fl + fp + k] == N(Slice(D.pl[i].code, k)))
-      && (forall k | 0 <= k < pre :: b[fl + fp + pl + k] ==
+      && (forall k {:nowarn} | 0 <= k < pre :: b[fl + fp + pl + k] ==
             N(Slice(if i in D.wrap then D.wrap[i].wp else D.site[i].pre, k)))
       && b[fl + fp + pl + pre] == KappaTI(P, D, i)
       && (forall k | 0 <= k < post :: b[fl + fp + pl + pre + 1 + k] == N(Slice(D.site[i].post, k)))

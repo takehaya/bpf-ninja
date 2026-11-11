@@ -42,7 +42,7 @@ module SimSites {
   // A validated window that is not a hook body runs to its end, and the
   // obligations hold for the region state it ends in.
   lemma RunWindow(w: Win) returns (k: nat, c2: Cfg, sf: S.CState)
-    requires WinPre(w) && Checker.Validate(w.raw, w.sp) == Checker.Validated && !w.sp.exitMode
+    requires WinPre(w) && Checker.Validate(w.raw, w.sp) == Checker.Validated && !w.sp.exitMode && !w.hins.Tail?
     requires w.sp.hookCalls ==> |w.c0.fr| < MAXF_RW
     ensures ReachR(w.Pp, w.x, w.obsv, w.c0, k) == Some(c2)
     ensures BR(c2, sf, w.base) && Side(w, c2, sf) && FinalOk(w.sp, w.s0, sf) && sf.pc == S.NumInsns(w.raw)
@@ -159,7 +159,7 @@ module SimSites {
       var pm := pre + mid;
       assert raw == pm + post && |pm| == 8 * NI(pre) + 8;
       assert 8 * r == |pm| + 8 * q;
-      forall k | 0 <= k < 8 ensures raw[8 * r + k] == post[8 * q + k] { assert raw[|pm| + (8 * q + k)] == post[8 * q + k]; }
+      forall k {:nowarn} | 0 <= k < 8 ensures raw[8 * r + k] == post[8 * q + k] { assert raw[|pm| + (8 * q + k)] == post[8 * q + k]; }
       assert raw[8 * r .. 8 * r + 8] == post[8 * q .. 8 * q + 8];
     }
   }
@@ -247,7 +247,7 @@ module SimSites {
     requires FootBytes(c, x.env.foot(false, id, args)) == FOk(beta)
     requires x.om(c.h, ECall(idx, false, id, args, beta), Wh(c)) == RRet(v, wr)
     ensures forall i | 0 <= i < |x.env.foot(false, id, args)| :: FootInF(ell, c, x.env.foot(false, id, args)[i])
-    ensures forall o: nat | o < STK && o as int - STK as int < ell(Top(c).fn) :: SAddr(|c.fr| - 1, o) as int !in wr
+    ensures forall o: nat {:nowarn} | o < STK && o as int - STK as int < ell(Top(c).fn) :: SAddr(|c.fr| - 1, o) as int !in wr
   {
     var addrs := x.env.foot(false, id, args);
     var d := |c.fr| - 1;
@@ -273,10 +273,20 @@ module SimSites {
         NI(D.site[j].pre), P[j], j, hc, c', S.InitState(R64(Top(c')), Plain(Top(c').stack)))
   }
 
+  // A position of block j other than kappa(j) is no kappa.
+  lemma InBlockNotK(D: Decomp, j: nat, p: int, i: nat)
+    requires E(D, j) <= p <= K(D, j) + PostLen(D, j) && p != K(D, j) && i != j
+    ensures p != K(D, i)
+  {
+    assert Start(D, j + 1) == K(D, j) + 1 + PostLen(D, j);
+    assert Start(D, i) + FnsLen(D, FnsAt(D, i)) <= K(D, i) < Start(D, i + 1);
+    if i < j { StartMono(D, i + 1, j); } else { StartMono(D, j + 1, i); }
+  }
+
   lemma {:isolate_assertions} SiteWinAt(P: seq<OInstr>, D: Decomp, ell: nat -> int, live: nat -> set<nat>,
                                         tbl: bv32 -> set<nat>, w: Win, j: nat)
     requires Structure(P, D, w.Pp, ell, live, tbl)
-    requires j in D.site && j < |P| && D.wrap == map[] && P[j].Hcall? && !P[j].kf
+    requires j in D.site && j < |P| && ((P[j].Hcall? && !P[j].kf) || P[j].Tail?)
     requires w.raw == D.site[j].pre + Enc(P[j]) + D.site[j].post && w.base == E(D, j) && w.hp == NI(D.site[j].pre)
     requires w.hins == P[j] && w.hidx == j
     ensures WinAt(w) && HasHelper(w)
@@ -290,8 +300,8 @@ module SimSites {
     AllFnsWFOk(P, D);
     assert j !in D.pl;
     SiteCode(P, D, j);
-    DecodeEncHelper(P[j].id);
-    assert Enc(P[j]) == EncHelper(P[j].id);
+    DecodeEncHelper(HId(P[j]));
+    assert Enc(P[j]) == EncHelper(HId(P[j]));
     var n := NI(site.pre) + 1 + NI(site.post);
     RawAt(site.pre, Enc(P[j]), site.post, w.hp);
     assert Reloc(D, P[j]) == P[j];
@@ -309,6 +319,11 @@ module SimSites {
         assert Pp.code[w.base + r] == N(Slice(site.post, q));
       }
       var p := w.base + r;
+      assert E(D, j) <= p <= K(D, j) + PostLen(D, j) && p != K(D, j);
+      forall i | i in D.wrap ensures p != K(D, i) {
+        assert i != j && i < |P|;
+        InBlockNotK(D, j, p, i);
+      }
       assert !(exists i :: i in D.wrap && p == K(D, i));
     }
   }
@@ -324,7 +339,7 @@ module SimSites {
     requires xP.om(c.h, ECall(w.hidx, false, w.hins.id, args, beta), Wh(c)) == RRet(v, wr)
     requires w.hc == HCtx(n, xP.env.foot(false, w.hins.id, args), ECall(w.hidx, false, w.hins.id, args, beta), v, wr)
     requires forall i | 0 <= i < |w.hc.addrs| :: FootInF(ell, c, w.hc.addrs[i])
-    requires forall o: nat | o < STK && o as int - STK as int < ell(Top(c).fn) :: SAddr(|c.fr| - 1, o) as int !in wr
+    requires forall o: nat {:nowarn} | o < STK && o as int - STK as int < ell(Top(c).fn) :: SAddr(|c.fr| - 1, o) as int !in wr
     requires w.sp.floor <= ell(Top(c).fn)
     ensures HelperOk(w)
   {
@@ -409,7 +424,7 @@ module SimSites {
       w: Win, c: Cfg, er: set<nat>, c1: Cfg, c2: Cfg, sf: S.CState, j: nat, xP: Ctx)
     requires xP.m.MP?
     requires Inv(P, c) && Corr(P, D, ell, live, c, w.c0, er) && Top(c).pc == j
-    requires WinPre(w) && w.sp.helper == Helper(true, true) && w.sp.floor == Fl(P, ell, Top(c).fn)
+    requires WinPre(w) && w.sp.helper.Helper? && (w.hc.v.W? ==> w.sp.helper.restoreR0) && w.sp.floor == Fl(P, ell, Top(c).fn)
     requires w.s0 == S.InitState(R64(Top(w.c0)), Plain(Top(w.c0).stack))
     requires w.base + S.NumInsns(w.raw) == E(D, j + 1) && j + 1 < |P| && Owner(P, j + 1) == Top(c).fn
     requires Finish(xP, c.(h := c.h + [w.hc.eh]), w.hc.v, w.hc.wr) == Go(c1)
@@ -442,6 +457,7 @@ module SimSites {
     ApplyTop(ch, wr);
     assert forall r | 1 <= r <= 5 :: Top(c1).regs[r] == Und(xP, ch, r) == Bot;
     FinalFacts(w.sp, w.s0, sf);
+    assert v.W? ==> sf.regs[0] == v.w;
     SiteAfterRegs(c, c0, c1, c2, sf, w.s0, v, er, live(j));
     assert RegRel(c1, c2, {}, live(Top(c1).pc));
     assert Top(c1).stack == ApplyF(Top(c), n - 1, wr).stack;
@@ -467,7 +483,7 @@ module SimSites {
       tbl: bv32 -> set<nat>, env: Env, sem: Sem, obsv: Observer, om: Oracle, hv: nat -> bv64,
       c: Cfg, c': Cfg, er: set<nat>, c1: Cfg)
     requires Structure(P, D, Pp, ell, live, tbl) && AllValidated(P, D, ell) && E0Shape(P) && A3b(env, tbl) && A5(obsv)
-    requires D.wrap == map[] && Inv(P, c)
+    requires Inv(P, c)
     requires forall a | a in Acc(P, CtxP(P, env, sem, om), c) :: a.0 < |c.fr| && a.1 as int - STK as int >= ell(c.fr[a.0].fn)
     requires Corr(P, D, ell, live, c, c', er) && Top(c).pc in D.site && !P[Top(c).pc].Tail?
     requires StepP(P, CtxP(P, env, sem, om), c) == Go(c1)
@@ -526,6 +542,106 @@ module SimSites {
     NextE(P, D, j);
     assert Owner(P, j + 1) == Owner(P, j) by { assert j + 1 !in FnSet(P); }
     SiteAfter(P, D, ell, live, w, c, er, c1, c2, sf, j, xP);
+  }
+
+  // ---------------- tail-call sites (P4) ----------------
+
+  lemma {:isolate_assertions} TailArgs(P: seq<OInstr>, live: nat -> set<nat>, tbl: bv32 -> set<nat>, c: Cfg, c': Cfg,
+                                       er: set<nat>, j: nat)
+    requires j < |P| && P[j].Tail? && LiveOk(P, live, tbl) && {1, 2, 3} <= tbl(12) && Top(c).pc == j
+    requires forall r | 0 <= r < NR :: Rel(Reg(Top(c), r), Reg(Top(c'), r)) || (r in er && 1 <= r <= 5 && r !in live(j))
+    requires FrameOk(Top(c')) && Rds(Top(c), [1, 2, 3]).Some?
+    ensures Rds(Top(c'), [1, 2, 3]) == Rds(Top(c), [1, 2, 3])
+    ensures SimFacts.Words(Top(c'), [1, 2, 3]) == Rds(Top(c), [1, 2, 3]).value
+  {
+    assert ReadsL(P[j], live, tbl) <= live(j);
+    forall i | 0 <= i < 3 ensures Rel(Reg(Top(c), [1, 2, 3][i]), Reg(Top(c'), [1, 2, 3][i])) {
+      assert [1, 2, 3][i] in tbl(12);
+    }
+    RdsRel(Top(c), Top(c'), [1, 2, 3]);
+    forall i | 0 <= i < 3 ensures Reg(Top(c'), [1, 2, 3][i]).W? {}
+    SimFacts.RdsAll(Top(c'), [1, 2, 3]);
+  }
+
+  // The tail-call step of P at a P4 site is matched by the run of its window:
+  // P' ends with the same tail transfer, or passes the failed call.
+  lemma {:isolate_assertions} TailStep(P: seq<OInstr>, D: Decomp, Pp: RwProg, ell: nat -> int, live: nat -> set<nat>,
+      tbl: bv32 -> set<nat>, env: Env, sem: Sem, obsv: Observer, om: Oracle, hv: nat -> bv64,
+      c: Cfg, c': Cfg, er: set<nat>)
+    requires Structure(P, D, Pp, ell, live, tbl) && AllValidated(P, D, ell) && E0Shape(P) && A3b(env, tbl) && A5(obsv)
+    requires Inv(P, c)
+    requires Corr(P, D, ell, live, c, c', er) && Top(c).pc in D.site && P[Top(c).pc].Tail?
+    ensures StepP(P, CtxP(P, env, sem, om), c).Go? ==> Inv(P, StepP(P, CtxP(P, env, sem, om), c).c)
+    ensures match StepP(P, CtxP(P, env, sem, om), c)
+      case Go(c1) => exists k: nat, c1': Cfg :: ReachR(Pp, CtxR(Pp, env, sem, om, hv), obsv, c', k) == Some(c1')
+                                               && Corr(P, D, ell, live, c1, c1', {})
+      case Done(t) => exists k: nat :: RunR(Pp, CtxR(Pp, env, sem, om, hv), obsv, c', k) == Fin(t)
+      case Stuck(_) => true
+  {
+    var xP := CtxP(P, env, sem, om);
+    var xR := CtxR(Pp, env, sem, om, hv);
+    var j := Top(c).pc;
+    CorrElim(P, D, ell, live, c, c', er);
+    InvIs(P, c);
+    LowRelLen(P, D, ell, c, c');
+    assert PiecesOk(P, D);
+    assert StepP(P, xP, c) == TailO(xP, c, j);
+    if Rds(Top(c), [1, 2, 3]).None? {
+      assert TailO(xP, c, j).Stuck? by { reveal TailO(); }
+      return;
+    }
+    var args := Rds(Top(c), [1, 2, 3]).value;
+    var e := ECall(j, false, 12, args, []);
+    TailIsB(xP, c, j);
+    var r := om(c.h, e, Wh(c));
+    if !(r.RTailOk? || r.RTailFail?) { return; }
+    assert LiveOk(P, live, tbl);
+    TailArgs(P, live, tbl, c, c', er, j);
+    FlTop(P, ell, c);
+    assert FloorsOk(P, ell);
+    FlFrame(P, ell, c, |c.fr| - 1);
+    var hc := HCtx(0, [], e, Bot, map[]);
+    var w := SiteWin(P, D, Pp, ell, xR, obsv, j, c', hc);
+    assert w.sp == Api.TailSiteSpec(Fl(P, ell, j));
+    assert Valid(w.raw, w.sp);
+    assert Checker.Validate(w.raw, w.sp) == Checker.Validated by { reveal Valid(); }
+    Soundness.ValidateOk(w.raw, w.sp);
+    SiteWinAt(P, D, ell, live, tbl, w, j);
+    HooksOkLayout(P, D, ell);
+    assert Wh(w.c0) == Wh(c);
+    assert TailHOk(w);
+    assert HelperOk(w);
+    assert Rel(Reg(Top(c), 10), Reg(Top(c'), 10));
+    BRInit(c', E(D, j));
+    WinPreIntro(w);
+    WinPreFacts(w);
+    SideInit(w);
+    var fuel := S.NumInsns(w.raw) + 1;
+    var rest := Bridge(w, w.c0, w.s0, [], fuel);
+    Soundness.Soundness(w.raw, w.sp, w.s0.regs, w.s0.stack, rest, fuel);
+    assert [] + rest == rest;
+    var O := S.Run(w.raw, w.sp.floor, w.s0, rest, fuel);
+    assert WindowRun(w.raw, w.sp, S.InitState(w.s0.regs, w.s0.stack), rest, fuel) == O;
+    assert O.Done? && FinalOk(w.sp, w.s0, O.s);
+    assert FinalOkO(w.sp, w.s0, O.s) by { reveal FinalOkO(); }
+    if r.RTailOk? {
+      assert TailOkW(w);
+      var k := EndsTail(w, w.c0, O.s, false);
+      assert TailT(w) == TTail(r.q, args[0], c.L.(budget := if c.L.budget > 0 then c.L.budget - 1 else 0), c.h + [e]);
+      assert StepP(P, xP, c) == Done(TailT(w));
+    } else {
+      assert !TailOkW(w);
+      RunDonePc(w.raw, w.sp.floor, w.s0, rest, fuel);
+      var k, c2 := EndsGet(w, w.c0, O.s, false);
+      var sf := O.s;
+      var c1 := TailFailC(xP, c, e);
+      assert StepP(P, xP, c) == Go(c1);
+      TailFailFinish(xP, c, e);
+      NextE(P, D, j);
+      assert Owner(P, j + 1) == Owner(P, j) by { assert j + 1 !in FnSet(P); }
+      assert w.base + S.NumInsns(w.raw) == E(D, j + 1);
+      SiteAfter(P, D, ell, live, w, c, er, c1, c2, sf, j, xP);
+    }
   }
 
   // Corr at e(0) for a P' state whose top frame kept r1, r10 and L, h of the input.
