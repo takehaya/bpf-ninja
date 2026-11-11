@@ -356,17 +356,29 @@ module SimFrames {
 
   // ---------------- footprints in any frame ----------------
 
+  // One step of FrameOf: the frame below d is hit, or the search goes on.
+  lemma FrameOfStep(p: bv64, w: nat, d: nat, hit: bool)
+    requires 0 < d && hit == (d - 1 < MAXF_RW && S.InFrame(S.Rel(p, StackTop(d - 1)), w))
+    ensures FrameOf(p, w, d) == (if hit then Some(d - 1) else FrameOf(p, w, d - 1))
+  {}
+
+  ghost predicate InFr(p: bv64, w: nat, k: nat) { k < MAXF_RW && S.InFrame(S.Rel(p, StackTop(k)), w) }
+
   lemma FrameOfIn(p: bv64, w: nat, d: nat)
     requires FrameOf(p, w, d).Some?
     ensures FrameOf(p, w, d).value < MAXF_RW && S.InFrame(S.Rel(p, StackTop(FrameOf(p, w, d).value)), w)
+  {
+    FrameOfInP(p, w, d);
+  }
+
+  lemma FrameOfInP(p: bv64, w: nat, d: nat)
+    requires FrameOf(p, w, d).Some?
+    ensures InFr(p, w, FrameOf(p, w, d).value)
     decreases d
   {
-    if d - 1 < MAXF_RW && S.InFrame(S.Rel(p, StackTop(d - 1)), w) {
-      assert FrameOf(p, w, d) == Some(d - 1);
-    } else {
-      assert FrameOf(p, w, d) == FrameOf(p, w, d - 1);
-      FrameOfIn(p, w, d - 1);
-    }
+    var hit := d > 0 && InFr(p, w, d - 1);
+    if d > 0 { FrameOfStep(p, w, d, hit); }
+    if !hit { FrameOfInP(p, w, d - 1); }
   }
 
   lemma ClassifyStack(p: bv64, w: nat, nfr: nat, dom: set<int>)
