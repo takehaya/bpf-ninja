@@ -302,6 +302,17 @@ module SimClasses {
   {}
 
   // Both runs write the same register with the same value and go on to j + 1.
+  // SetDstClose with the instruction index named (the callers' form).
+  lemma SetDstCloseJ(P: seq<OInstr>, D: Decomp, ell: nat -> int, live: nat -> set<nat>,
+                     c: Cfg, c': Cfg, er: set<nat>, j: nat, dst: nat, v: bv64)
+    requires Top(c).pc == j && RelC(P, D, ell, c, c', er, live(j)) && dst <= 9
+    requires j + 1 < |P| && Top(c').pc + 1 == E(D, j + 1) && Owner(P, j + 1) == Top(c).fn
+    requires live(j + 1) - {dst} <= live(j)
+    ensures Inv(P, SetDst(c, dst, v).c) && CorrK(P, D, ell, live, SetDst(c, dst, v).c, SetDst(c', dst, v).c, er)
+  {
+    SetDstClose(P, D, ell, live, c, c', er, dst, v);
+  }
+
   lemma {:isolate_assertions} SetDstClose(P: seq<OInstr>, D: Decomp, ell: nat -> int, live: nat -> set<nat>,
                                           c: Cfg, c': Cfg, er: set<nat>, dst: nat, v: bv64)
     requires 0 <= Top(c).pc && RelC(P, D, ell, c, c', er, live(Top(c).pc)) && dst <= 9
@@ -734,7 +745,7 @@ module SimClasses {
         var v := Ext(sx, w, LE(Plain(StackBytes(c, d, o, w))));
         assert LdStep(xP, c, j, dst, p, w, sx) == SetDst(c, dst, v) by { reveal LdStep(); }
         assert LdStep(xR, c', j, dst, p, w, sx) == SetDst(c', dst, v) by { reveal LdStep(); }
-        SetDstClose(P, D, ell, live, c, c', er, dst, v);
+        SetDstCloseJ(P, D, ell, live, c, c', er, j, dst, v);
       } else {
         assert LdStep(xP, c, j, dst, p, w, sx).Stuck? by { reveal LdStep(); }
       }
@@ -742,7 +753,7 @@ module SimClasses {
       var v := Ext(sx, w, LE(LBytes(c.L.mem, p, w)));
       assert LdStep(xP, c, j, dst, p, w, sx) == SetDst(c, dst, v) by { reveal LdStep(); }
       assert LdStep(xR, c', j, dst, p, w, sx) == SetDst(c', dst, v) by { reveal LdStep(); }
-      SetDstClose(P, D, ell, live, c, c', er, dst, v);
+      SetDstCloseJ(P, D, ell, live, c, c', er, j, dst, v);
     case Shared =>
       var e := ELoad(j, p, w);
       assert Wh(c) == Wh(c');
@@ -766,7 +777,7 @@ module SimClasses {
     requires CHyp(P, D, ell, live, tbl, xP, c, c', er) && Pair(xP, xR) && 0 <= Top(c).pc < |P| && P[Top(c).pc].Ld?
     ensures CRes(P, D, ell, live, xP, xR, c, c', er)
   {
-    CHypFacts(P, D, ell, live, tbl, xP, c, c', er);
+    CHypBase(P, D, ell, live, tbl, xP, c, c', er);
     RelCShape(P, D, ell, c, c', er, live(Top(c).pc));
     var j := Top(c).pc;
     var ins := P[j];
@@ -780,10 +791,9 @@ module SimClasses {
       assert LdO(xP, c, j, dst, base, off, w, sx) == LdStep(xP, c, j, dst, p, w, sx) by { reveal LdO(); }
       assert LdO(xR, c', j, dst, base, off, w, sx) == LdStep(xR, c', j, dst, p, w, sx) by { reveal LdO(); }
       CHypAcc(P, D, ell, live, tbl, xP, c, c', er);
-      assert Acc(P, xP, c) == MemAcc(c, p, w);
+      AccLd(P, xP, c, j, base, off, w);
       AccMem(P, xP, c, ell, p, w);
-      assert j + 1 < |P| && Top(c').pc + 1 == E(D, j + 1);
-      assert Owner(P, j + 1) == Top(c).fn;
+      CHypNext(P, D, ell, live, tbl, xP, c, c', er);
       assert FloorsOk(P, ell) && Top(c).pc == j;
       LdStepRel(P, D, ell, live, xP, xR, c, c', er, j, dst, p, w, sx);
       var r := LdStep(xP, c, j, dst, p, w, sx);
@@ -845,7 +855,7 @@ module SimClasses {
     requires CHyp(P, D, ell, live, tbl, xP, c, c', er) && Pair(xP, xR) && 0 <= Top(c).pc < |P| && P[Top(c).pc].St?
     ensures CRes(P, D, ell, live, xP, xR, c, c', er)
   {
-    CHypFacts(P, D, ell, live, tbl, xP, c, c', er);
+    CHypBase(P, D, ell, live, tbl, xP, c, c', er);
     RelCShape(P, D, ell, c, c', er, live(Top(c).pc));
     var j := Top(c).pc;
     var ins := P[j];
@@ -865,9 +875,8 @@ module SimClasses {
       var v := Trunc(sv.w, w);
       assert StO(xP, c, j, base, off, w, src) == StStep(xP, c, j, p, w, v) by { reveal StO(); }
       assert StO(xR, c', j, base, off, w, src) == StStep(xR, c', j, p, w, v) by { reveal StO(); }
-      assert j + 1 < |P| && Top(c').pc + 1 == E(D, j + 1);
-      assert Owner(P, j + 1) == Top(c).fn;
-      assert FloorsOk(P, ell) && Top(c).pc == j;
+      CHypNext(P, D, ell, live, tbl, xP, c, c', er);
+      StNext(P, live, j);
       StStepRel(P, D, ell, live, xP, xR, c, c', er, j, p, w, v);
       var r := StStep(xP, c, j, p, w, v);
       if r.Go? { CResGo(P, D, ell, live, xP, xR, c, c', er, r.c, StStep(xR, c', j, p, w, v).c); }
@@ -949,12 +958,51 @@ module SimClasses {
       assert AtomStep(xP, c, j, op, p, w, rs, fetch, cmpx, n, xv).Stuck? by { reveal AtomStep(); }
   }
 
+  lemma AccLd(P: seq<OInstr>, x: Ctx, c: Cfg, j: nat, base: nat, off: int, w: nat)
+    requires |c.fr| > 0 && Top(c).pc == j && j < |P| && P[j].Ld? && P[j].base == base && P[j].off == off && P[j].w == w
+    requires Reg(Top(c), base).W?
+    ensures Acc(P, x, c) == MemAcc(c, AddrK(Reg(Top(c), base).w, off), w)
+  {}
+
+  lemma StNext(P: seq<OInstr>, live: nat -> set<nat>, j: nat)
+    requires j + 1 < |P| && P[j].St? && live(j + 1) - WritesL(P[j]) <= live(j)
+    ensures live(j + 1) <= live(j)
+  {}
+
+  lemma AccAtom(P: seq<OInstr>, x: Ctx, c: Cfg, j: nat, base: nat, off: int, w: nat)
+    requires |c.fr| > 0 && Top(c).pc == j && j < |P| && P[j].Atom? && P[j].base == base && P[j].off == off && P[j].w == w
+    requires Reg(Top(c), base).W?
+    ensures Acc(P, x, c) == MemAcc(c, AddrK(Reg(Top(c), base).w, off), w)
+  {}
+
+  // CHypFacts without its quantified successor clause.
+  lemma CHypBase(P: seq<OInstr>, D: Decomp, ell: nat -> int, live: nat -> set<nat>, tbl: bv32 -> set<nat>,
+                 xP: Ctx, c: Cfg, c': Cfg, er: set<nat>)
+    requires CHyp(P, D, ell, live, tbl, xP, c, c', er)
+    ensures var j := Top(c).pc;
+      0 <= j < |P| && RelC(P, D, ell, c, c', er, live(j)) && Top(c').pc == E(D, j) && K(D, j) == E(D, j)
+      && RegsOk(P[j]) && ReadsL(P[j], live, tbl) <= live(j)
+    ensures |c'.fr| == |c.fr| > 0 && Top(c) == c.fr[|c.fr| - 1] && Top(c') == c'.fr[|c'.fr| - 1]
+    ensures |Top(c).regs| == NR && |Top(c').regs| == NR
+    ensures FloorsOk(P, ell) && -(STK as int) <= Fl(P, ell, Top(c).fn) <= ell(Top(c).fn) <= 0
+    ensures forall r | r in ReadsL(P[Top(c).pc], live, tbl) && r < NR :: Rel(Reg(Top(c), r), Reg(Top(c'), r))
+    ensures Rel(Reg(Top(c), 0), Reg(Top(c'), 0))
+  { CHypFacts(P, D, ell, live, tbl, xP, c, c', er); }
+
+  // The next instruction after one that is not exit or ja.
+  lemma CHypNext(P: seq<OInstr>, D: Decomp, ell: nat -> int, live: nat -> set<nat>, tbl: bv32 -> set<nat>,
+                 xP: Ctx, c: Cfg, c': Cfg, er: set<nat>)
+    requires CHyp(P, D, ell, live, tbl, xP, c, c', er) && 0 <= Top(c).pc < |P| && !P[Top(c).pc].Exit? && !P[Top(c).pc].Ja?
+    ensures var j := Top(c).pc;
+      j + 1 < |P| && Top(c').pc + 1 == E(D, j + 1) && live(j + 1) - WritesL(P[j]) <= live(j) && Owner(P, j + 1) == Top(c).fn
+  { CHypFacts(P, D, ell, live, tbl, xP, c, c', er); }
+
   lemma {:isolate_assertions} ClassAtom(P: seq<OInstr>, D: Decomp, ell: nat -> int, live: nat -> set<nat>, tbl: bv32 -> set<nat>,
                                         xP: Ctx, xR: Ctx, c: Cfg, c': Cfg, er: set<nat>)
     requires CHyp(P, D, ell, live, tbl, xP, c, c', er) && Pair(xP, xR) && 0 <= Top(c).pc < |P| && P[Top(c).pc].Atom?
     ensures CRes(P, D, ell, live, xP, xR, c, c', er)
   {
-    CHypFacts(P, D, ell, live, tbl, xP, c, c', er);
+    CHypBase(P, D, ell, live, tbl, xP, c, c', er);
     RelCShape(P, D, ell, c, c', er, live(Top(c).pc));
     var j := Top(c).pc;
     var ins := P[j];
@@ -974,10 +1022,9 @@ module SimClasses {
       assert AtomO(xP, c, j, op, base, off, w, rs, fetch, cmpx) == AtomStep(xP, c, j, op, p, w, rs, fetch, cmpx, n, xv) by { reveal AtomO(); }
       assert AtomO(xR, c', j, op, base, off, w, rs, fetch, cmpx) == AtomStep(xR, c', j, op, p, w, rs, fetch, cmpx, n, xv) by { reveal AtomO(); }
       CHypAcc(P, D, ell, live, tbl, xP, c, c', er);
-      assert Acc(P, xP, c) == MemAcc(c, p, w);
+      AccAtom(P, xP, c, j, base, off, w);
       AccMem(P, xP, c, ell, p, w);
-      assert j + 1 < |P| && Top(c').pc + 1 == E(D, j + 1);
-      assert Owner(P, j + 1) == Top(c).fn;
+      CHypNext(P, D, ell, live, tbl, xP, c, c', er);
       assert FloorsOk(P, ell) && Top(c).pc == j;
       AtomStepRel(P, D, ell, live, xP, xR, c, c', er, j, op, p, w, rs, fetch, cmpx, n, xv);
       var r := AtomStep(xP, c, j, op, p, w, rs, fetch, cmpx, n, xv);
