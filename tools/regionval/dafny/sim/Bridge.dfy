@@ -851,27 +851,63 @@ module SimBridge {
     ensures Post(w, c, s, prefix, fuel, rest)
     decreases (if w.sp.hookCalls then 1 else 0), fuel, 1
   {
-    WinPreFacts(w); WinPreAt(w);
+    WinPreFacts(w);
     var fl := w.sp.floor;
     var ins := S.CallLocal(imm);
-    AtFromWin(w, c, s, ins);
-    var e := S.EHook(s.pc, s.regs[1..6], s.regs[0], s.regs[10]);
     StepHook(fl, imm, s, prefix);
     if !w.sp.hookCalls {
       BadPost(w, c, s, prefix, fuel, ins, S.HookStep(s, prefix).s); rest := [];
       return;
     }
-    var k, c2 := HookRun(w.Pp, w.x, w.obsv, c, imm);
+    var k, c2 := HookCallB(w, c, s, prefix, imm);
     var vals := R64(Top(c2))[0..6];
+    var s' := HookAfterB(w, c, s, prefix, imm, c2);
     StepHook(fl, imm, s, prefix + vals);
-    var s' := S.HookStep(s, prefix + vals).s;
+    rest := Advance(w, c, s, prefix, fuel, ins, vals, k, c2, s');
+  }
+
+  // A hook call in the window runs the hook and returns.
+  lemma {:isolate_assertions} HookCallB(w: Win, c: Cfg, s: S.CState, prefix: seq<bv64>, imm: bv32) returns (k: nat, c2: Cfg)
+    requires Pre(w, c, s, prefix) && 0 <= s.pc < S.NumInsns(w.raw) && s.pc != w.hp && w.sp.hookCalls
+    requires S.Decode(S.InsnAt(w.raw, s.pc)) == Some(S.CallLocal(imm))
+    ensures ReachR(w.Pp, w.x, w.obsv, c, k) == Some(c2)
+    ensures |c2.fr| == |c.fr| && Below(c2) == Below(c) && c2.L == c.L && c2.h == c.h
+    ensures FrameOk(Top(c2)) && Top(c2).pc == Top(c).pc + 1 && Top(c2).stack == Top(c).stack
+    ensures Top(c2).kind == Top(c).kind && Top(c2).fn == Top(c).fn
+    ensures forall r | 6 <= r < NR :: Top(c2).regs[r] == Top(c).regs[r]
+    decreases 1, 0, 1
+  {
+    WinPreFacts(w); WinPreAt(w);
+    AtFromWin(w, c, s, S.CallLocal(imm));
+    HookTargetB(w, s.pc, imm);
+    assert Top(c).pc == w.base + s.pc;
+    k, c2 := HookRun(w.Pp, w.x, w.obsv, c, imm);
+  }
+
+  lemma HookTargetB(w: Win, r: nat, imm: bv32)
+    requires WinPre(w) && w.sp.hookCalls && r < S.NumInsns(w.raw) && r != w.hp
+    requires S.Decode(S.InsnAt(w.raw, r)) == Some(S.CallLocal(imm))
+    ensures w.base + r + 1 + Signed32(imm) in w.Pp.hooks
+  { WinPreAt(w); }
+
+  // The region state after the hook call, and Pre kept.
+  lemma {:isolate_assertions} HookAfterB(w: Win, c: Cfg, s: S.CState, prefix: seq<bv64>, imm: bv32, c2: Cfg) returns (s': S.CState)
+    requires Pre(w, c, s, prefix)
+    requires |c2.fr| == |c.fr| && Below(c2) == Below(c) && c2.L == c.L && c2.h == c.h
+    requires FrameOk(Top(c2)) && Top(c2).pc == Top(c).pc + 1 && Top(c2).stack == Top(c).stack
+    requires Top(c2).kind == Top(c).kind && Top(c2).fn == Top(c).fn
+    requires forall r | 6 <= r < NR :: Top(c2).regs[r] == Top(c).regs[r]
+    ensures s' == S.HookStep(s, prefix + R64(Top(c2))[0..6]).s
+    ensures Pre(w, c2, s', prefix + R64(Top(c2))[0..6])
+  {
+    var vals := R64(Top(c2))[0..6];
+    s' := S.HookStep(s, prefix + vals).s;
     HookRegs(s, prefix, Top(c), Top(c2));
+    var e := S.EHook(s.pc, s.regs[1..6], s.regs[0], s.regs[10]);
     assert s'.events == s.events + [e];
     SideFacts(w, c, s);
     SideEvent(w, c, s, c2, s', e);
     assert BR(c2, s', w.base);
-    assert Pre(w, c2, s', prefix + vals);
-    rest := Advance(w, c, s, prefix, fuel, ins, vals, k, c2, s');
   }
 
   lemma UndW(x: Ctx, c: Cfg, k: nat) requires x.m.MR? ensures Und(x, c, k).W? {}
