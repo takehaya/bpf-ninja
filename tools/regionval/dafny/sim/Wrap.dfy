@@ -459,24 +459,24 @@ module SimWrap {
 
   lemma SideWE(ww: WW, s1: S.CState, c: Cfg, s: S.CState)
     requires SideW(ww, s1, c, s)
-    ensures var d := |ww.c0.fr|; 0 < d && |c.fr| == d + 1 && |Top(ww.c0).stack| == STK
+    ensures var d := |ww.c0.fr|; (0 < d && |c.fr| == d + 1 && |Top(ww.c0).stack| == STK
           && c.fr[d - 1].pc == ww.base + s1.pc && |c.fr[d - 1].regs| == NR && R64(c.fr[d - 1]) == s1.regs
-          && c.fr[d - 1].kind == Top(ww.c0).kind && c.fr[d - 1].fn == Top(ww.c0).fn && CountHelpers(s.events) <= 1
+          && c.fr[d - 1].kind == Top(ww.c0).kind && c.fr[d - 1].fn == Top(ww.c0).fn && CountHelpers(s.events) <= 1)
   { reveal SideW(); }
 
   lemma SideW0(ww: WW, s1: S.CState, c: Cfg, s: S.CState)
     requires SideW(ww, s1, c, s) && CountHelpers(s.events) == 0
-    ensures var d := |ww.c0.fr|; 0 < d && |c.fr| == d + 1
-          && c.fr[..d - 1] == Below(ww.c0) && c.fr[d - 1].stack == Top(ww.c0).stack && c.L == ww.c0.L && c.h == ww.c0.h
+    ensures var d := |ww.c0.fr|; (0 < d && |c.fr| == d + 1
+          && c.fr[..d - 1] == Below(ww.c0) && c.fr[d - 1].stack == Top(ww.c0).stack && c.L == ww.c0.L && c.h == ww.c0.h)
   { reveal SideW(); }
 
   lemma SideW1(ww: WW, s1: S.CState, c: Cfg, s: S.CState)
     requires SideW(ww, s1, c, s) && CountHelpers(s.events) == 1
-    ensures var d := |ww.c0.fr|; 0 < d && |c.fr| == d + 1
+    ensures var d := |ww.c0.fr|; (0 < d && |c.fr| == d + 1
           && c.fr[..d - 1] == Below(ApplyW(ww.c0, ww.hc.wr)) && c.fr[d - 1].stack == StAfter(ww)
           && c.L == ApplyL(ww.c0.L, ww.hc.wr) && c.h == ww.c0.h + [ww.hc.eh]
           && (ww.hc.v.W? ==> HelperRet(s.events) == ww.hc.v.w)
-          && UpperBase(s.events, ww.s0.stack) == Plain(StAfter(ww))
+          && UpperBase(s.events, ww.s0.stack) == Plain(StAfter(ww)))
   { reveal SideW(); }
 
   // A step that changes only W's frame (registers, pc), with no helper event.
@@ -1230,7 +1230,7 @@ module SimWrap {
     requires |st2| == STK && |st1| == STK && Plain(st1) == s.stack
     requires forall o {:nowarn} | 0 <= o < STK && o < STK as int + fl :: st2[o] == st1[o]
     requires |vals| == 6 - fl
-    requires forall j | 0 <= j < -fl :: vals[6 + j] == Zext8(Plain(st2)[STK as int + fl + j])
+    requires forall j {:nowarn} | 0 <= j < -fl :: vals[6 + j] == Zext8(Plain(st2)[STK as int + fl + j])
     ensures S.HelperStack(fl, s, prefix + vals) == Plain(st2)
   {
     var lo := STK as int + fl;

@@ -438,8 +438,8 @@ module SimBridge {
   // (A window whose tail call succeeds: the whole run ends with TailT.)
   opaque ghost predicate Ends(w: Win, c: Cfg, sf: S.CState, exited: bool) {
     if TailOkW(w) then exists k: nat :: RunR(w.Pp, w.x, w.obsv, c, k) == Fin(TailT(w))
-    else exists k: nat, c2: Cfg :: ReachR(w.Pp, w.x, w.obsv, c, k) == Some(c2)
-      && BR(c2, sf, w.base) && Side(w, c2, sf) && (exited ==> AtIns(w.Pp, c2, S.Exit))
+    else (exists k: nat, c2: Cfg :: ReachR(w.Pp, w.x, w.obsv, c, k) == Some(c2)
+                                     && BR(c2, sf, w.base) && Side(w, c2, sf) && (exited ==> AtIns(w.Pp, c2, S.Exit)))
   }
 
   lemma EndsHere(w: Win, c: Cfg, sf: S.CState, exited: bool)
