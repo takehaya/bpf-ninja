@@ -682,6 +682,7 @@ module SimBridge {
       } else {
         AluSim(c, s, w.base, fl, is64, op, dst, opnd, prefix);
         var r := IAlu(c, is64, op, dst, opnd);
+        AluExec(w.x, w.Pp.hooks, w.obsv, c, is64, op, dst, opnd);
         StepGo(w, c, ins, r);
         var s' := S.Step(fl, ins, s, prefix).s;
         assert prefix + [] == prefix;
@@ -691,6 +692,7 @@ module SimBridge {
     case Ja(off) =>
       JaSim(c, s, w.base, fl, off, prefix);
       var c' := Put(c, Top(c).(pc := Top(c).pc + 1 + Signed16(off)));
+      JaExec(w.x, w.Pp.hooks, w.obsv, c, off);
       StepGo(w, c, ins, Go(c'));
       var s' := S.Step(fl, ins, s, prefix).s;
       assert prefix + [] == prefix;
@@ -703,6 +705,7 @@ module SimBridge {
       } else {
         JcondSim(c, s, w.base, fl, cnd, dst, imm, off, prefix);
         var r := IJcond(c, cnd, dst, imm, off);
+        JcondExec(w.x, w.Pp.hooks, w.obsv, c, cnd, dst, imm, off);
         StepGo(w, c, ins, r);
         var s' := S.Step(fl, ins, s, prefix).s;
         assert prefix + [] == prefix;
@@ -738,6 +741,16 @@ module SimBridge {
       assert prefix + rest == prefix;
       EndHere(w, c, s, true);
   }
+
+  lemma AluExec(x: Ctx, hooks: set<nat>, obsv: Observer, c: Cfg, is64: bool, op: S.AluOp, dst: nat, opnd: S.Operand)
+    ensures IExec(x, hooks, obsv, S.Alu(is64, op, dst, opnd), c) == IAlu(c, is64, op, dst, opnd)
+  {}
+  lemma JaExec(x: Ctx, hooks: set<nat>, obsv: Observer, c: Cfg, off: bv16)
+    ensures IExec(x, hooks, obsv, S.Ja(off), c) == Go(Put(c, Top(c).(pc := Top(c).pc + 1 + Signed16(off))))
+  {}
+  lemma JcondExec(x: Ctx, hooks: set<nat>, obsv: Observer, c: Cfg, cnd: S.Cond, dst: nat, imm: bv32, off: bv16)
+    ensures IExec(x, hooks, obsv, S.Jcond(cnd, dst, imm, off), c) == IJcond(c, cnd, dst, imm, off)
+  {}
 
   // Memory instructions decode with a width of 1, 2, 4 or 8.
   lemma DecodeWidth(b: seq<bv8>)
@@ -1098,10 +1111,23 @@ module SimBridge {
     forall o | 0 <= o < STK && o < STK as int + w.sp.floor ensures Top(c').stack[o] == Top(c).stack[o] {
       assert SAddr(t, o) as int !in w.hc.wr;
     }
+    FinishFrameOkB(x, c1, w.hc.v, w.hc.wr);
+  }
+
+  // After a helper finish in P', the top frame has no unreadable value.
+  lemma {:isolate_assertions} FinishFrameOkB(x: Ctx, c: Cfg, v: Val, wr: map<int, bv8>)
+    requires x.m.MR? && |c.fr| > 0 && FrameOk(Top(c))
+    ensures Finish(x, c, v, wr).Go? && FrameOk(Top(Finish(x, c, v, wr).c))
+  {
+    FinishFacts(x, c, v, wr);
+    var c' := Finish(x, c, v, wr).c;
+    ApplyWAt(c, wr);
     forall k | 0 <= k < NR ensures Top(c').regs[k].W? {
-      if 6 <= k { assert Top(c').regs[k] == f.regs[k]; }
+      if 6 <= k { assert Top(c').regs[k] == Top(c).regs[k]; } else { UndW(x, c, k); }
     }
-    forall o | 0 <= o < STK ensures Top(c').stack[o].B? {}
+    forall o | 0 <= o < STK ensures Top(c').stack[o].B? {
+      assert Top(c').stack[o] == ApplyF(Top(c), |c.fr| - 1, wr).stack[o];
+    }
   }
 
   // The region's helper step from the whole model's result.
