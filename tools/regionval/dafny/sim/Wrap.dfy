@@ -702,10 +702,7 @@ module SimWrap {
     ensures PostW(ww, s1, c, s, prefix, fuel, rest)
     decreases fuel, 0
   {
-    var pv := prefix + vals;
-    var f1: nat := fuel - 1;
-    assert PreW(ww, s1, c', s', pv);
-    var rest' := BridgeW(ww, s1, c', s', pv, f1);
+    var rest' := BridgeW(ww, s1, c', s', prefix + vals, fuel - 1);
     rest := vals + rest';
     AdvWPost(ww, s1, c, s, prefix, fuel, ins, vals, k, c', s', rest');
   }
@@ -1086,14 +1083,21 @@ module SimWrap {
     ensures forall r | 6 <= r < NR :: Top(c2).regs[r] == Top(c).regs[r]
   {
     BRWE(c, s, ww.wbase);
-    WWAtW(ww, s.pc);
     AtW(ww, c, s, S.CallLocal(imm));
     WWHooks(ww);
     WWInit(ww);
     WWA5(ww);
     SideWE(ww, s1, c, s);
-    assert Top(c).pc + 1 + Signed32(imm) in ww.Pp.hooks;
+    HookTargetW(ww, s.pc, imm);
+    assert Top(c).pc == ww.wbase + s.pc;
     k, c2 := HookRun(ww.Pp, ww.x, ww.obsv, c, imm);
+  }
+
+  lemma HookTargetW(ww: WW, pc: nat, imm: bv32)
+    requires WWPre(ww) && pc < S.NumInsns(ww.wraw) && S.Decode(S.InsnAt(ww.wraw, pc)) == Some(S.CallLocal(imm))
+    ensures ww.wbase + pc + 1 + Signed32(imm) in ww.Pp.hooks
+  {
+    WWAtW(ww, pc);
   }
 
   // The region state after the hook call, and the window's relation kept.
@@ -1572,10 +1576,7 @@ module SimWrap {
     ensures PostP(ww, c, s, prefix, fuel, rest)
     decreases fuel, 0
   {
-    var pv := prefix + vals;
-    var f1: nat := fuel - 1;
-    assert PreP(ww, c', s', pv);
-    var rest' := BridgeP(ww, c', s', pv, f1);
+    var rest' := BridgeP(ww, c', s', prefix + vals, fuel - 1);
     rest := vals + rest';
     AdvPPost(ww, c, s, prefix, fuel, ins, vals, k, c', s', rest');
   }
@@ -1887,7 +1888,7 @@ module SimWrap {
   lemma {:isolate_assertions} CallWStep(ww: WW, c: Cfg, s: S.CState, prefix: seq<bv64>, fuel: nat) returns (rest: seq<bv64>)
     requires PreP(ww, c, s, prefix) && s.pc == S.NumInsns(ww.raw) - 1
     ensures PostP(ww, c, s, prefix, fuel, rest)
-  {    
+  {
 
     var n := S.NumInsns(ww.raw);
     var fl := ww.sp.floor;
