@@ -2,8 +2,10 @@
 
 DAFNY ?= dafny
 # Z3's default case_split=3 loops on bv64 function unfoldings; 0 only changes
-# the search strategy, not what counts as a proof.
-DFLAGS := --boogie -proverOpt:O:smt.case_split=0 --verification-time-limit 120
+# the search strategy, not what counts as a proof.  normalizeDeclarationOrder:0
+# keeps Boogie's declaration order, so Z3 gets the same input on every run
+# (otherwise the order is shuffled per run and a goal's cost varies widely).
+DFLAGS := --boogie -proverOpt:O:smt.case_split=0 --boogie /normalizeDeclarationOrder:0 --verification-time-limit 120
 # All files are listed: dafny verify does not verify included files otherwise.
 DFY := dafny/src/Bits.dfy dafny/src/Semantics.dfy dafny/src/Terms.dfy dafny/src/Obligations.dfy \
 	dafny/src/Checker.dfy dafny/src/Soundness.dfy dafny/src/Api.dfy
