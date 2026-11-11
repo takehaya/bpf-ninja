@@ -1997,6 +1997,17 @@ module SimWrap {
   }
 
   // The code facts of a wrapper window.
+  // One slot of WP . call W in P'.
+  lemma {:isolate_assertions} WPSlot(Pp: RwProg, raw: seq<bv8>, wp: seq<bv8>, cw: seq<bv8>, base: int, kap: int, r: nat)
+    requires raw == wp + cw && |wp| % 8 == 0 && |cw| == 8 && r < NI(wp) + 1 && kap == base + NI(wp)
+    requires forall q | 0 <= q < NI(wp) :: SimCalls.PlacedAt(Pp, base, wp, q)
+    requires 0 <= kap < |Pp.code| && Pp.code[kap] == N(cw)
+    ensures 0 <= base + r < |Pp.code| && Pp.code[base + r] == N(S.InsnAt(raw, r))
+  {
+    WrapRawAt(wp, cw, r);
+    if r < NI(wp) { assert SimCalls.PlacedAt(Pp, base, wp, r); }
+  }
+
   lemma {:isolate_assertions} WrapWinCode(P: seq<OInstr>, D: Decomp, ell: nat -> int, live: nat -> set<nat>,
                                           tbl: bv32 -> set<nat>, ww: WW, j: nat)
     requires ww.Pp == Layout(P, D) && PiecesOk(P, D) && CallsOk(D, ww.Pp) && Loadable(P, D)
@@ -2021,8 +2032,7 @@ module SimWrap {
     var n := NI(wr.wp) + 1;
     WrapRawAt(wr.wp, cw, 0);
     forall r | 0 <= r < n ensures ww.Pp.code[ww.base + r] == N(S.InsnAt(ww.raw, r)) {
-      WrapRawAt(wr.wp, cw, r);
-      if r < NI(wr.wp) { assert SimCalls.PlacedAt(ww.Pp, E(D, j), wr.wp, r); }
+      WPSlot(ww.Pp, ww.raw, wr.wp, cw, ww.base, K(D, j), r);
     }
     WrapRawAt(wr.wp, cw, n - 1);
     assert S.InsnAt(ww.raw, n - 1) == cw;
