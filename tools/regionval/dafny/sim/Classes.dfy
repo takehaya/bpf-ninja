@@ -699,27 +699,58 @@ module SimClasses {
         case _ => Stuck(false)
   { reveal TailO(); }
 
+  // The configuration after a failed tail call.
+  lemma {:isolate_assertions} TailFailFacts(x: Ctx, c: Cfg, e: Ev)
+    requires |c.fr| > 0 && |Top(c).regs| == NR
+    ensures var c1 := TailFail(x, c, e);
+      |c1.fr| == |c.fr| && Below(c1) == Below(c) && c1.L == c.L && c1.h == c.h + [e]
+      && Top(c1).fn == Top(c).fn && Top(c1).kind == Top(c).kind && Top(c1).stack == Top(c).stack
+      && Top(c1).pc == Top(c).pc + 1 && |Top(c1).regs| == NR
+      && (forall r | 6 <= r < NR :: Top(c1).regs[r] == Top(c).regs[r])
+      && (forall r | 0 <= r <= 5 :: Top(c1).regs[r] == Und(x, c.(h := c.h + [e]), r))
+  {
+    var cA := c.(h := c.h + [e]);
+    var f := Top(c);
+    var regs := seq(|f.regs|, k requires 0 <= k < |f.regs| => if k <= 5 then Und(x, cA, k) else f.regs[k]);
+    PutTop(cA, f.(pc := f.pc + 1, regs := regs));
+  }
+
   lemma {:isolate_assertions} TailClose(P: seq<OInstr>, D: Decomp, ell: nat -> int, live: nat -> set<nat>, xP: Ctx, xR: Ctx,
                                         c: Cfg, c': Cfg, er: set<nat>, j: nat, e: Ev)
     requires RelC(P, D, ell, c, c', er, live(j)) && Top(c).pc == j && Pair(xP, xR)
     requires j + 1 < |P| && Top(c').pc + 1 == E(D, j + 1) && Owner(P, j + 1) == Top(c).fn && live(j + 1) - {0, 1, 2, 3, 4, 5} <= live(j)
     ensures Inv(P, TailFail(xP, c, e)) && CorrK(P, D, ell, live, TailFail(xP, c, e), TailFail(xR, c', e), er)
   {
-    RelCIs(P, D, ell, c, c', er, live(j));
+    RelCFrame(P, D, ell, c, c', er, live(j));
     var c1 := TailFail(xP, c, e);
     var c1' := TailFail(xR, c', e);
-    var f := Top(c);
-    var f' := Top(c');
-    var cA := c.(h := c.h + [e]);
-    var cA' := c'.(h := c'.h + [e]);
-    var regs := seq(|f.regs|, k requires 0 <= k < |f.regs| => if k <= 5 then Und(xP, cA, k) else f.regs[k]);
-    var regs' := seq(|f'.regs|, k requires 0 <= k < |f'.regs| => if k <= 5 then Und(xR, cA', k) else f'.regs[k]);
-    assert Top(c1) == f.(pc := f.pc + 1, regs := regs) && Top(c1') == f'.(pc := f'.pc + 1, regs := regs');
+    TailFailFacts(xP, c, e);
+    TailFailFacts(xR, c', e);
     forall r | 0 <= r < NR && r in {0, 1, 2, 3, 4, 5} ensures Rel(Top(c1).regs[r], Top(c1').regs[r]) {
-      assert Top(c1).regs[r] == Bot;
+      assert Top(c1).regs[r] == Und(xP, c.(h := c.h + [e]), r) == Bot;
+    }
+    forall r | 0 <= r < NR ensures Top(c1').regs[r].W? {
+      if r <= 5 { assert Top(c1').regs[r] == Und(xR, c'.(h := c'.h + [e]), r); }
     }
     assert FrameOk(Top(c1'));
     SameStk(P, ell, c, c', c1, c1');
+    TailCloseEnd(P, D, ell, live, c, c', er, c1, c1', j);
+  }
+
+  lemma TailCloseEnd(P: seq<OInstr>, D: Decomp, ell: nat -> int, live: nat -> set<nat>,
+                     c: Cfg, c': Cfg, er: set<nat>, c1: Cfg, c1': Cfg, j: nat)
+    requires Top(c).pc == j && RelC(P, D, ell, c, c', er, live(j))
+    requires |c1.fr| == |c.fr| && |c1'.fr| == |c'.fr| && Below(c1) == Below(c) && Below(c1') == Below(c')
+    requires Top(c1).fn == Top(c).fn && Top(c1).kind == Top(c).kind && Top(c1').kind == Top(c').kind
+    requires |Top(c1).regs| == NR && |Top(c1).stack| == STK && FrameOk(Top(c1'))
+    requires |Top(c).regs| == NR && |Top(c').regs| == NR
+    requires forall r | 6 <= r < NR :: Top(c1).regs[r] == Top(c).regs[r] && Top(c1').regs[r] == Top(c').regs[r]
+    requires forall r | 0 <= r < NR && r in {0, 1, 2, 3, 4, 5} :: Rel(Top(c1).regs[r], Top(c1').regs[r])
+    requires Top(c1).pc == j + 1 && j + 1 < |P| && Owner(P, j + 1) == Top(c1).fn && Top(c1').pc == E(D, j + 1)
+    requires live(j + 1) - {0, 1, 2, 3, 4, 5} <= live(j)
+    requires StkRel(c1, c1', Fl(P, ell, Top(c1).fn)) && c1'.L == c1.L && c1'.h == c1.h
+    ensures Inv(P, c1) && CorrK(P, D, ell, live, c1, c1', er)
+  {
     Close(P, D, ell, live, c, c', er, c1, c1', {0, 1, 2, 3, 4, 5});
   }
 
