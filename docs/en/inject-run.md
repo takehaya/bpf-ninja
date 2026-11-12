@@ -147,7 +147,7 @@ bpf-ninja -p "$PROG_ID" --func ninja_sessions --arg-filter 'value->action==2' -w
 ### Follow a hook across reloads
 
 A loader that reloads its datapath loads new programs, and the capture's observers are attached to the old ones.
-A capture at a generated hook therefore follows the hook to programs loaded after the startup boundary that carry a hook with the same function name.
+A capture at a generated hook therefore follows the hook to programs of the same kind (XDP, tc, cgroup-skb or netfilter) loaded after the startup boundary that carry a hook with the same function name.
 At startup, the capture attaches only to the programs named by the user; other existing programs are neither attached nor reported.
 
 It learns of a new program in two ways:
@@ -155,13 +155,15 @@ It learns of a new program in two ways:
 - From `inject-run`. The capture subscribes to every `inject-run` in its network namespace, at start and every two seconds after. `inject-run` announces each successfully rewritten program with hooks and keeps the loader stopped until the subscribed captures have attached, so that program cannot run before it is observed.
   Without `--fail-closed`, a matched load that falls back to the original program has no generated hook and is not announced; use `--fail-closed` when every matched load must either carry the hook or be refused.
   `inject-run` waits at most one second per load for all captures together; after that the load continues and the capture reports the attach as late.
-  The wait runs on `inject-run`'s single tracing thread, so other target threads and their loads also wait behind each held load; a wave of loads can therefore accumulate one hold per load.
+  The wait runs on `inject-run`'s single tracing thread.
+  Another target thread keeps running until it reaches a stop the supervisor handles (a program or BTF load, a signal, or any system call under `--stop-every-syscall`) and then waits until the held load is released; a wave of loads can therefore accumulate one hold per load.
   After a timeout, `inject-run` closes the connection and the capture reconnects on its two-second scan.
   The next load after reconnection waits up to one second for the capture again.
 - By polling program IDs every 20 ms. This finds programs of an `inject-run` the capture cannot reach: one in another network namespace, or one whose 32 sockets were all taken.
   When no `inject-run` is reachable at start, the capture says so: `following N generated hook(s) by polling: no inject-run is reachable in this network namespace, ...`.
 
-- It follows every later program with the hook, from any `inject-run` session and for any interface; the packet filter and `--arg-filter` narrow what is written.
+- It follows every later program of the same kind as the capture's targets with the hook, from any `inject-run` session and for any interface; the packet filter and `--arg-filter` narrow what is written.
+  A program of another kind with a hook of that name is neither followed nor reported.
 - A later program joins the pcapng interface, counters and rings of the first `-p` target with that hook name.
   `--arg-filter`, `--set` and `--record` are resolved again against the new program's own BTF.
 - Following applies to hooks tagged `bpf-ninja:hook`, in a capture with a single `--mode`. A function that only has the hook's name is not followed, and neither is a gated (entry + exit) capture.
@@ -190,7 +192,7 @@ warning: FOLLOW GAP: prog=412 func=ninja_sessions reason=late unobserved_ms=23
 | `reason` | Meaning |
 |---|---|
 | `late` | The observer was attached `unobserved_ms` after the program was loaded, and the loader was not held for it: the program was found by polling, or `inject-run` stopped waiting. Calls of the hook in that time are not in the capture. |
-| `attach_failed` | The program could not be read, its observer could not be loaded or attached, or the follower lock could not be set up; the line before it gives the error. An unreadable program is retried without stopping the scan of later IDs and is reported once if it remains unreadable when the capture exits. The program is not observed. |
+| `attach_failed` | The program could not be read, its observer could not be loaded or attached, or the follower lock could not be set up; the line before it gives the error. An unreadable program is retried without stopping the scan of later IDs. If a retry attaches the observer, the capture reports a `late` gap with the time since the load. If the program vanishes first or remains unreadable when the capture exits, it is reported once with `func=unknown`. |
 | `filter_unresolved` | An `--arg-filter` or `--set` key names a parameter or member the new program's hook does not have. The program is not observed. |
 | `layout_changed` | The `--record` layout of the new program's hook decodes differently from that of the first target, whose interface it would join. The program is not observed. |
 | `observed_by_other` | Another capture or tool has a tracing link on the program, the link list could not be read completely, or the follower lock could not be acquired within one second. This capture attaches nothing to the program. |
@@ -687,7 +689,7 @@ Diagnostics go to stderr:
 | `program "P": lookup discovery skipped: ERR` or `failed: ERR` | `--lookups-json` could not list this program. |
 | `program "P": cannot query program ID: ERR` | The hooks file lists the program with `prog_id` 0. Captures are not told about the load. |
 | `capture pid N follows [HOOKS]`, `capture pid N disconnected` | A capture that follows these hooks subscribed to this run's loads, or went away. |
-| `program "P" (id=N): held the load Tms for H of C following captures` | The load was announced to C captures that follow one of its hooks; H confirmed their observers before the loader resumed. |
+| `program "P" (id=N): held the load T for H of C following captures` | The load was announced to C captures that follow one of its hooks; H confirmed their observers before the loader resumed. `T` uses Go duration syntax, such as `42ms` or `1.001s`. |
 | `capture pid N did not confirm its observers on program id=M within 1s; ...` | The load continued at the deadline and the connection was closed. If the capture reconnects, the next load waits up to one second for it again. |
 | `refused a capture: ERR`, `refused capture pid N: ERR` | The peer does not run as root, or speaks another protocol version. |
 | `captures cannot follow this run's loads: ERR` | All 32 sockets are taken by other `inject-run` processes in this network namespace. Captures then find this run's programs by polling. |

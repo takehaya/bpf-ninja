@@ -326,16 +326,18 @@ inject した hook で取得するとき、その hook がどのような値で�
 ## reload 後のプログラムを追う
 
 loader が datapath を reload すると新しいプログラムがロードされますが、capture の observer は古いプログラムに付いたままです。
-そこで、`inject-run` が生成した hook (`bpf-ninja:hook` の decl tag が付いた関数) への capture は、開始後にロードされたプログラムを追う。
+そこで、`inject-run` が生成した hook (`bpf-ninja:hook` の decl tag が付いた関数) への capture は、開始後にロードされた同じ種類 (XDP、tc、cgroup-skb、netfilter) のプログラムを追います。
 
 - 開始時には、利用者が指定したプログラムだけに observer を attach する。
   その時点ですでに存在し、同じ hook を持つほかのプログラムには attach せず、gap も報告しない。
-  開始後は、同じ hook を持つすべての新しいプログラムを追い、`inject-run` のセッションや interface では区別しない。
+  開始後は、capture の target と同じ種類で同じ hook を持つすべての新しいプログラムを追い、`inject-run` のセッションや interface では区別しません。
+  別の種類のプログラムが同じ名前の hook を持っていても、追跡も gap の報告も行いません。
 - 新しいプログラムは 2 つの方法で見つけます。
   - `inject-run` から通知を受ける。capture は、開始時とその後 2 秒ごとに、同じ network namespace にあるすべての `inject-run` に接続する。`inject-run` は hook の追加に成功したプログラムを capture へ通知し、capture が attach を終えるまで loader を止める。このプログラムは、observer が付く前には動かない。
     `--fail-closed` を付けない場合、変換に失敗して元のプログラムへ戻したロードには生成 hook がなく、通知も行われない。一致したすべてのロードへ hook を加えるかロードを拒否する必要がある場合は、`--fail-closed` を付ける。
     `inject-run` が待つのは、1 回のロードにつき全 capture の合計で 1 秒までである。1 秒を過ぎるとロードを先に進め、capture はその attach を遅れとして報告する。
-    この待機は `inject-run` の単一の tracing thread 上で直列に実行されるため、target のほかの thread とそのロードも、保持中のロードの後ろで待つ。複数のロードが続くと、ロードごとの待機時間が累積する。
+    この待機は `inject-run` の単一の tracing thread 上で直列に実行されます。
+    target のほかの thread は、supervisor が処理する停止点 (program または BTF のロード、signal、`--stop-every-syscall` での任意の system call) に達するまでは動き続け、その後は保持中のロードが解放されるまで待ちます。複数のロードが続くと、ロードごとの待機時間が累積します。
     timeout の後は接続を閉じ、capture は 2 秒ごとの走査で再接続します。
     再接続後の次のロードでは、その capture を再び 1 秒まで待ちます。
   - 20 ms ごとの program ID の監視です。別の network namespace にある `inject-run` や、32 個の socket がすべて使われていた `inject-run` のプログラムは、この方法で見つけます。
@@ -369,7 +371,7 @@ warning: FOLLOW GAP: prog=412 func=ninja_sessions reason=late unobserved_ms=23
 | `reason` | 意味 |
 |---|---|
 | `late` | ロードから `unobserved_ms` ミリ秒後に observer が付き、その間 loader は止まっていませんでした。ID の監視で見つけた場合と、`inject-run` が待つのをやめた場合です。その間の hook の呼び出しは capture に入りません。 |
-| `attach_failed` | プログラムを読み取れない、observer をロードまたは attach できない、または follower lock を準備できなかった。直前の行にエラーが出る。読み取れないプログラムは、後続 ID の走査を止めずに再試行し、capture の終了時にも読み取れなければ 1 回だけ報告する。このプログラムは観測されない。 |
+| `attach_failed` | プログラムを読み取れない、observer をロードまたは attach できない、または follower lock を準備できませんでした。直前の行にエラーが出ます。読み取れないプログラムは、後続 ID の走査を止めずに再試行します。再試行で observer を attach できた場合は、ロードからの時間を含む `late` gap を報告します。先にプログラムが消えた場合と、capture の終了時にも読み取れない場合は、`func=unknown` として 1 回だけ報告します。 |
 | `filter_unresolved` | `--arg-filter` や `--set` のキーが指す引数やメンバーが、新しいプログラムの hook にありません。このプログラムは観測されません。 |
 | `layout_changed` | 新しいプログラムの hook の `--record` の内容が、合流先の interface を持つ最初の target と異なる形に復号されます。このプログラムは観測されません。 |
 | `observed_by_other` | 別の capture またはツールの tracing link がある、link の一覧を完全に読み取れない、または follower lock を 1 秒以内に取得できなかった。この capture はプログラムへ何も attach しない。 |
