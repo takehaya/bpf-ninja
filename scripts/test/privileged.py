@@ -5,8 +5,10 @@ import json
 import os
 from pathlib import Path
 import re
+import shlex
 import subprocess
 import sys
+import tempfile
 
 ROOT = Path(__file__).resolve().parents[2]
 PROGRAM = "github.com/takehaya/bpf-ninja/internal/program"
@@ -119,6 +121,7 @@ def audit(events, expected, kernel):
 # syscall-stop modes, including the fallback from the seccomp filter.
 SYSCALLHOOK_TESTS = (
     "TestIntegrationMapTypes", "TestIntegrationLoader", "TestIntegrationIndirectJump", "TestIntegrationJumpLimit",
+    "TestIntegrationInjectHold",
     "TestBpfAutoStatic", "TestBPFStopsBehaviour", "TestBPFStopsCount", "TestBPFStopsDefault", "TestBPFStopsFallback",
     "TestBPFStopsOutlivingChild", "TestBPFStopsLeaderExit", "TestBPFStopsCancelEndsChild",
     "TestBPFStopsChildNotInstrumented", "TestBPFStopsTargetListener", "TestBPFStopsCommonAttrs",
@@ -167,6 +170,21 @@ def syscallhook_suite(binary, log_path):
                 return 1
     print("Privileged supervisor audit passed in default and every-syscall modes: all required tests passed; no skips.")
     return 0
+
+
+def follow_scenario(kernel):
+    """Replace a program under a running capture (scripts/test/follow).
+
+    The scenario is a shell script around inject-run, a loader and the
+    capture, so it runs after the Go suites: built here, then run as root on
+    the host or in the kernel's VM.
+    """
+    with tempfile.TemporaryDirectory(prefix="bpf-ninja-follow-") as out:
+        subprocess.run([str(ROOT / "scripts/test/follow/build.sh"), out], check=True)
+        prefix = ["vimto", "-sudo", "-kernel", ":"+kernel, "-memory", "4G", "-smp", "cpus=2", "--"] if kernel else []
+        command = prefix + ["sh", "-c", f"cd {shlex.quote(out)} && ./run.sh"]
+        print("+ " + " ".join(command), flush=True)
+        return subprocess.run(command).returncode
 
 
 def main():
@@ -243,6 +261,10 @@ def main():
     if failures:
         return 1
     print(f"Privileged audit passed: {len(expected)} required top-level tests; no unexpected skips.")
+    if follow_scenario(args.kernel) != 0:
+        print("follow scenario failed", file=sys.stderr)
+        return 1
+    print("Follow scenario passed.")
     return 0
 
 

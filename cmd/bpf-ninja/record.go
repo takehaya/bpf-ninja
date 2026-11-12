@@ -77,6 +77,12 @@ func (r recordRequest) layouts(targets []attach.Target, filters []filter.TargetF
 	return out, nil
 }
 
+// layout builds the layout of one target a capture that records follows
+// later (follow.go).
+func (r recordRequest) layout(t attach.Target, tf filter.TargetFilters) (*record.Layout, error) {
+	return recordbuild.Build(t, tf, r.opt)
+}
+
 // omitted describes, per generated target, each condition the default
 // filter layout tests but does not record (a path through a bpf_* struct).
 func (r recordRequest) omitted(targets []attach.Target, filters []filter.TargetFilters) []string {

@@ -13,6 +13,7 @@ pcap の payload に機密情報が含まれる場合は、そのまま公開 is
 | set の更新が反映されない | 同じ pin/key を参照しているか確認する。resize 後は再 attach する。capped/finalized の state と tag の再利用も確認する | [set guide](cli/sets.md) |
 | tag の完成ファイルがない | live shard と ack を区別する。全 entry の削除、stderr、drain、出力エラーを確認する。固定秒数の経過だけで成功とみなさない | [output guide](cli/output.md) |
 | convert が拒否する | 入力が raw V3 か V2 か確認する。pcap-ng shard や raw V1 を渡していないか確認する | [offline 出力](examples/offline-output.md) |
+| `FOLLOW GAP` が出て `capture status=incomplete` になる | 生成 hook への capture は reload 後のプログラムを追う。`reason=late` は observer が付く前に新しいプログラムが動いた可能性を示す。同じ network namespace でも、1 秒の期限切れ、再接続までの間、まだ接続していない別の `inject-run` からのロードでは `late` になり得る。`reason=observed_by_other` は別の capture またはツールがすでに観測しているか、follower lock を 1 秒以内に取得できなかったことを示す。`reason=attach_failed` と follower lock のエラーが出た場合は、`/run/bpf-ninja` が書き込み可能か確認する。それ以外の `reason` でも、そのプログラムは観測されていない | [reload 後のプログラムを追う](cli/capture.md#reload-後のプログラムを追う) |
 | 件数が少ない | filter、NIC、ring、hold、writer の計数を分けて確認する。終了コードだけで無損失と判断しない | [lifecycle](../capture-lifecycle.md)、[tuning](tuning.md) |
 
 kernel へのロードや attach の問題は、実際の kernel と必要な権限がある環境で再現する。

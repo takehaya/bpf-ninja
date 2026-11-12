@@ -177,3 +177,18 @@ func TestDocumentation(t *testing.T) {
 		})
 	}
 }
+
+func TestFollowDocumentationDescribesProgramAdmission(t *testing.T) {
+	for path, want := range map[string]string{
+		"../../docs/en/inject-run.md":  "whether they follow the same hook or different hooks",
+		"../../docs/ja/cli/capture.md": "同じ hook でも異なる hook でも",
+	} {
+		contents, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Contains(contents, []byte(want)) {
+			t.Errorf("%s does not explain program-level follower admission", path)
+		}
+	}
+}

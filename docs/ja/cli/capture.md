@@ -323,6 +323,73 @@ inject した hook で取得するとき、その hook がどのような値で�
 
 実際の出力例は [walkthrough の記録の節](../../en/inject-walkthrough.md#record-the-decision-state-with-each-packet) を参照してください。
 
+## reload 後のプログラムを追う
+
+loader が datapath を reload すると新しいプログラムがロードされますが、capture の observer は古いプログラムに付いたままです。
+そこで、`inject-run` が生成した hook (`bpf-ninja:hook` の decl tag が付いた関数) への capture は、開始後にロードされたプログラムを追う。
+
+- 開始時には、利用者が指定したプログラムだけに observer を attach する。
+  その時点ですでに存在し、同じ hook を持つほかのプログラムには attach せず、gap も報告しない。
+  開始後は、同じ hook を持つすべての新しいプログラムを追い、`inject-run` のセッションや interface では区別しない。
+- 新しいプログラムは 2 つの方法で見つけます。
+  - `inject-run` から通知を受ける。capture は、開始時とその後 2 秒ごとに、同じ network namespace にあるすべての `inject-run` に接続する。`inject-run` は hook の追加に成功したプログラムを capture へ通知し、capture が attach を終えるまで loader を止める。このプログラムは、observer が付く前には動かない。
+    `--fail-closed` を付けない場合、変換に失敗して元のプログラムへ戻したロードには生成 hook がなく、通知も行われない。一致したすべてのロードへ hook を加えるかロードを拒否する必要がある場合は、`--fail-closed` を付ける。
+    `inject-run` が待つのは、1 回のロードにつき全 capture の合計で 1 秒までである。1 秒を過ぎるとロードを先に進め、capture はその attach を遅れとして報告する。
+    この待機は `inject-run` の単一の tracing thread 上で直列に実行されるため、target のほかの thread とそのロードも、保持中のロードの後ろで待つ。複数のロードが続くと、ロードごとの待機時間が累積する。
+    timeout の後は接続を閉じ、capture は 2 秒ごとの走査で再接続します。
+    再接続後の次のロードでは、その capture を再び 1 秒まで待ちます。
+  - 20 ms ごとの program ID の監視です。別の network namespace にある `inject-run` や、32 個の socket がすべて使われていた `inject-run` のプログラムは、この方法で見つけます。
+    開始時に接続できる `inject-run` がなければ、capture は `following N generated hook(s) by polling: no inject-run is reachable in this network namespace, ...` を出力します。
+- 新しいプログラムの record は、その hook 名を持つ最初の `-p` target と同じ pcapng interface、counter、ring に入ります。
+  `--arg-filter`、`--set`、`--record` は新しいプログラムの BTF に対して解決し直します。
+- 対象は `--mode` が 1 つの capture です。入口と出口の両方に一致させる capture と、hook と同じ名前を持つだけの関数は追いません。
+- `--no-follow` を付けると、開始時に指定したプログラムだけに観測範囲を制限します。
+
+follower を attach できるのは、プログラム上の tracing link がすべて同じ capture の所有物である場合だけである。
+link の一覧を完全に読み取れない場合は、別の observer があるものとして扱う。
+capture は link を読む前に `/run/bpf-ninja/follow.lock` の排他 advisory lock を取り、そのプログラムに対する同じ capture の attach がすべて終わるまで保持する。
+following には書き込み可能な `/run/bpf-ninja` directory が必要である。
+lock の待機上限は 1 秒であり、取得できなければ何も attach せず、`observed_by_other` の gap を報告する。
+異なる mount namespace の capture はこの lock を共有しない。
+別のツールは advisory lock に従わない場合があるが、すでに付いている tracing link は follower を拒否する理由になる。
+
+同じプログラムの hook を追う 2 つの capture は、同じ hook でも異なる hook でも、reload 後の新しいプログラムでは互いに排他となる。
+先に到着した capture だけが attach し、もう一方は `observed_by_other` を報告して `incomplete` で終わる。
+先着した capture が終了しても、後着の capture はそのプログラムを引き継がない。
+1 つのプログラムの全 hook は、1 つの capture でまとめて追う。
+
+ID の監視では loader を止められないため、この方法で見つけたプログラムは observer が付く前に動くことがあります。
+2 回の監視の間にロードと解放が終わった短命なプログラムも見つけられず、この場合を観測できるのは supervisor がロードを保持したときだけである。
+capture は、そのようなプログラムと観測できないプログラムを stderr に 1 行ずつ報告し、終了時の `capture status` は `incomplete` になります。
+
+```
+warning: FOLLOW GAP: prog=412 func=ninja_sessions reason=late unobserved_ms=23
+```
+
+| `reason` | 意味 |
+|---|---|
+| `late` | ロードから `unobserved_ms` ミリ秒後に observer が付き、その間 loader は止まっていませんでした。ID の監視で見つけた場合と、`inject-run` が待つのをやめた場合です。その間の hook の呼び出しは capture に入りません。 |
+| `attach_failed` | プログラムを読み取れない、observer をロードまたは attach できない、または follower lock を準備できなかった。直前の行にエラーが出る。読み取れないプログラムは、後続 ID の走査を止めずに再試行し、capture の終了時にも読み取れなければ 1 回だけ報告する。このプログラムは観測されない。 |
+| `filter_unresolved` | `--arg-filter` や `--set` のキーが指す引数やメンバーが、新しいプログラムの hook にありません。このプログラムは観測されません。 |
+| `layout_changed` | 新しいプログラムの hook の `--record` の内容が、合流先の interface を持つ最初の target と異なる形に復号されます。このプログラムは観測されません。 |
+| `observed_by_other` | 別の capture またはツールの tracing link がある、link の一覧を完全に読み取れない、または follower lock を 1 秒以内に取得できなかった。この capture はプログラムへ何も attach しない。 |
+
+観測されないプログラムの `unobserved_ms` は、ロードから報告までの時間になる。ロード時刻も読み取れない場合は、最初の読み取り失敗から報告までの時間になる。
+gap があっても capture と loader は止まらず、終了コードは 0 のままです。
+observer を attach できなくても、`--fail-closed` の有無にかかわらずロードは拒否されません。
+開始時の attach がすべて成功し、後からロードされたプログラムがすべて loader の停止中に attach できた capture は、`complete` かつ `follow_gaps=0` で終わる。
+hook を追う capture の `capture status` の行には、末尾に `follow_attached`、`follow_held`、`follow_gaps`、`follow_gap_ms` が付く ([Capture completion](../../capture-lifecycle.md))。
+`follow_attached` は現在 attach されている follower observer の数であり、reload に伴う増加を確認できる。
+
+observer は target program をロードされたままにする。
+そのため、target が置き換えたプログラムを含め、capture が観測したすべてのプログラムは capture の終了まで残る。
+それらのプログラムだけが参照する map も残る。
+多数の reload をまたぐ長時間の capture は再起動し、古い observer を detach してプログラムと map を解放できるようにする必要がある。
+follow が有効な filter 記録では follower 用の snapshot key を 1,024 個使える。`--no-follow` ではこの領域を予約しない。
+key 1 個の per-CPU map value は `8 × 記録する field 数 × possible CPU 数` byte であり、これに kernel の map 管理領域が加わる。
+field 数が上限の 32 個なら follower 用領域は possible CPU 当たり 256 KiB であり、16 CPU では 4 MiB、192 CPU では 48 MiB になる。field が 1 個なら possible CPU 当たり 8 KiB になる。
+追跡するプログラムが増えて key を使い切ると、次の attach は失敗し、`attach_failed` の gap が報告され、status は `incomplete` になる。
+
 ## 自作の capture point で `--arg-filter` が当たらないとき
 
 `--func` で狙う capture point を自作するときは、引数を関数の本体で使う必要があります。

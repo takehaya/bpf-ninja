@@ -14,6 +14,9 @@ type captureControl struct {
 	barrier     func() func() (bool, error)
 	stats       *capture.SessionStats
 	outputErr   *outputFailure
+	// follow is set when the capture follows a generated hook to later
+	// programs (follow.go).
+	follow *followStats
 }
 
 func (c *captureControl) stopBeforeDrain(stop func(), readerErr func() error, failure *outputFailure) func() {

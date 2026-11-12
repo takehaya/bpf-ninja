@@ -55,8 +55,20 @@ type Probe struct {
 
 	extensionGuard *attach.ExtensionGuard
 	maps           []*ebpf.Map
-	progs          []*ebpf.Program // one per attached (target prog, func) pair
-	links          []link.Link     // parallel to progs
+
+	// mu guards the fields below: AttachFollower changes the observers of a
+	// running probe while another goroutine may stop it.
+	mu       sync.Mutex
+	progs    []*ebpf.Program // one per attached (target prog, func) pair
+	links    []link.Link     // parallel to progs
+	detached bool            // Quiesce closed the links; nothing attaches after it
+	// plan is kept so a later target gets observers built like the initial
+	// ones (see follow.go). owner maps each observer to its target program
+	// ID; snapFree hands followers their own snapshot keys.
+	plan         *attachPlan
+	owner        map[*ebpf.Program]uint32
+	followerSnap map[*ebpf.Program]int
+	snapFree     []int
 }
 
 type targetAttachResults struct {
@@ -104,6 +116,8 @@ func (p *Probe) Program() *ebpf.Program {
 // AttachCount reports how many (target prog, func) pairs this probe is
 // attached to.
 func (p *Probe) AttachCount() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	return len(p.links)
 }
 
@@ -123,10 +137,13 @@ func (p *Probe) Quiesce() error {
 				errs = append(errs, p.Barrier())
 			}
 		}
+		p.mu.Lock()
 		for i := len(p.links) - 1; i >= 0; i-- {
 			errs = append(errs, p.links[i].Close())
 		}
 		p.links = nil
+		p.detached = true
+		p.mu.Unlock()
 		errs = append(errs, p.Barrier())
 		p.detachErr = errors.Join(errs...)
 	})
@@ -153,9 +170,11 @@ func (p *Probe) Barrier() error {
 func (p *Probe) Close() error {
 	p.closeOnce.Do(func() {
 		errs := []error{p.Quiesce()}
+		p.mu.Lock()
 		for _, pr := range p.progs {
 			errs = append(errs, pr.Close())
 		}
+		p.mu.Unlock()
 		for _, m := range p.maps {
 			errs = append(errs, m.Close())
 		}
@@ -200,6 +219,15 @@ func LoadMultiPoint(targets []attach.Target, stages []Stage, filters []filter.Ta
 // target records nothing); target i writes site_id i+1 into its metadata,
 // so the reader can pick the layout. nil records is LoadMultiPoint.
 func LoadMultiPointRecord(targets []attach.Target, stages []Stage, filters []filter.TargetFilters, useDSL bool, sets []*setmap.Set, emit Emit, records []*record.Layout) (*Probe, error) {
+	return loadMultiPointRecord(targets, stages, filters, useDSL, sets, emit, records, false)
+}
+
+// LoadMultiPointRecordFollow reserves the snapshot keys needed by followers.
+func LoadMultiPointRecordFollow(targets []attach.Target, stages []Stage, filters []filter.TargetFilters, useDSL bool, sets []*setmap.Set, emit Emit, records []*record.Layout) (*Probe, error) {
+	return loadMultiPointRecord(targets, stages, filters, useDSL, sets, emit, records, true)
+}
+
+func loadMultiPointRecord(targets []attach.Target, stages []Stage, filters []filter.TargetFilters, useDSL bool, sets []*setmap.Set, emit Emit, records []*record.Layout, following bool) (*Probe, error) {
 	if records != nil && (len(records) != len(targets) || len(stages) != 1 || len(targets) > 255) {
 		return nil, fmt.Errorf("a recording capture takes one stage and one layout per target (1..255 targets)")
 	}
@@ -246,12 +274,7 @@ func LoadMultiPointRecord(targets []attach.Target, stages []Stage, filters []fil
 
 	// One compile per stage: entry and exit see different packet
 	// layouts and capabilities (the verdict only exists at exit).
-	type compiled struct {
-		out     codegen.Output
-		slots   *pktSetSlots
-		pktRefs []string
-	}
-	comp := make([]compiled, len(stages))
+	comp := make([]compiledStage, len(stages))
 	var anyFexit, anyMain bool
 	for i, st := range stages {
 		// DSL `field in @set` extracts packet fields into a host key buffer;
@@ -270,7 +293,7 @@ func LoadMultiPointRecord(targets []attach.Target, stages []Stage, filters []fil
 		if SnaplenOverride > 0 {
 			out.Capture.MaxCapLen = SnaplenOverride
 		}
-		comp[i] = compiled{out: out, slots: slots, pktRefs: referencedSets(out.Extractions)}
+		comp[i] = compiledStage{out: out, slots: slots, pktRefs: referencedSets(out.Extractions)}
 		anyFexit = anyFexit || st.IsFexit
 		anyMain = anyMain || len(out.Main) > 0
 	}
@@ -359,8 +382,10 @@ func LoadMultiPointRecord(targets []attach.Target, stages []Stage, filters []fil
 
 	// Per-CPU snapshot of each filter-mode record field, written as the
 	// filter compares and read back when the block is filled, so the record
-	// is the value the condition tested rather than a re-read.
-	snaps := make([]*fieldSnap, len(targets))
+	// is the value the condition tested rather than a re-read. Each target
+	// snapshots under its own key (attachTarget); a capture at a generated
+	// hook reserves keys for the programs it follows (AttachFollower).
+	snapFD := 0
 	maxFields := 0
 	for i := range records {
 		if records[i] != nil && records[i].Mode == record.ModeFilter {
@@ -368,20 +393,20 @@ func LoadMultiPointRecord(targets []attach.Target, stages []Stage, filters []fil
 		}
 	}
 	if maxFields > 0 {
+		spare := recordSnapshotEntries(targets, following) - len(targets)
+		for k := len(targets) + spare - 1; k >= len(targets); k-- {
+			probe.snapFree = append(probe.snapFree, k)
+		}
 		snapMap, err := ebpf.NewMap(&ebpf.MapSpec{
 			Name: fmt.Sprintf("ninja_%s_rec", label), Type: ebpf.PerCPUArray,
-			KeySize: 4, ValueSize: uint32(8 * maxFields), MaxEntries: uint32(len(targets)),
+			KeySize: 4, ValueSize: uint32(8 * maxFields), MaxEntries: uint32(len(targets) + spare),
 		})
 		if err != nil {
 			_ = probe.Close()
 			return nil, fmt.Errorf("creating record snapshot map: %w", err)
 		}
 		probe.maps = append(probe.maps, snapMap)
-		for i := range records {
-			if records[i] != nil && records[i].Mode == record.ModeFilter {
-				snaps[i] = &fieldSnap{fd: snapMap.FD(), key: i, layout: records[i]}
-			}
-		}
+		snapFD = snapMap.FD()
 	}
 
 	gateFD := 0
@@ -405,110 +430,32 @@ func LoadMultiPointRecord(targets []attach.Target, stages []Stage, filters []fil
 		_ = probe.Close()
 		return nil, err
 	}
+	plan := &attachPlan{
+		hook: h, stages: stages, comp: comp, gated: gated, emit: emit, entryCapLen: entryCapLen,
+		eventsFD: outerMap.FD(), holdFD: holdFD, holdStopFD: holdStopFD, statsFD: statsFD,
+		scratchFD: scratchFD, gateFD: gateFD, snapFD: snapFD, recording: records != nil,
+		slots: len(targets), maxFields: maxFields, records: records,
+	}
+	probe.plan = plan
 	var results targetAttachResults
-targetLoop:
 	for i, t := range targets {
-		startProgs, startLinks := len(probe.progs), len(probe.links)
-		rollback := func() {
-			probe.links = closeTargetResources(probe.links, startLinks)
-			probe.progs = closeTargetResources(probe.progs, startProgs)
-		}
-		static := false
-		if (h.Kind == hook.KindXDP || h.Kind == hook.KindTC || h.Kind == hook.KindCgroupSKB || h.Kind == hook.KindNetfilter) && t.FuncName != "" {
-			spec, specErr := probe.extensionGuard.Spec(t.Program)
-			if specErr != nil {
-				results.refused(t, attach.TargetStaticCtxRefused, specErr)
-				continue
-			}
-			var fn *btf.Func
-			if specErr := spec.TypeByName(t.FuncName, &fn); specErr != nil {
-				results.refused(t, attach.TargetStaticCtxRefused, specErr)
-				continue
-			}
-			static = fn.Linkage == btf.StaticFunc
-		}
 		var tf filter.TargetFilters
 		if filters != nil {
 			tf = filters[i]
 		}
-		// Gated: stages are ordered entry, exit; attach the fexit first
-		// so no fentry can fill the hold before its consumer exists
-		// (otherwise the first fexit after attach could pair a stale
-		// entry image with a later packet).
-		generatedCtxUnchecked := false
-		for si := len(stages) - 1; si >= 0; si-- {
-			st, c := stages[si], comp[si]
-			stLabel, attachType := tracingLabel(st.IsFexit)
-			targetHook := h
-			probeRead := false
-			if static {
-				probeRead, err = staticNeedsProbeRead(h, t.Program, t.FuncName, attachType, t.Availability)
-				if err == nil && probeRead {
-					err = checkStaticCtxArgForTarget(t.Program, t.FuncName, t.Generated)
-					if err == nil && t.Generated && skipGeneratedCtxProof && !generatedCtxUnchecked {
-						results.diagnostics = append(results.diagnostics, attach.TargetDiagnostic{
-							ProgID: t.ProgID, FuncName: t.FuncName, Availability: t.Availability,
-							Reason: attach.TargetStaticCtxUnchecked,
-							Detail: "generated hook; the context argument is the saved program context, which rests on the stack floor",
-						})
-						generatedCtxUnchecked = true
-					}
-				}
-				if err != nil {
-					rollback()
-					results.refused(t, attach.TargetStaticCtxRefused, err)
-					continue targetLoop
-				}
-				if probeRead {
-					switch h.Kind {
-					case hook.KindXDP:
-						targetHook = staticXDPHook(h, st.IsFexit)
-					case hook.KindNetfilter:
-						targetHook = staticNFHook(h, t.FuncName, st.IsFexit)
-					default:
-						targetHook = staticTCHook(h, t.FuncName)
-					}
-				}
-			}
-			var returnOffset int16
-			if st.IsFexit {
-				spec, specErr := probe.extensionGuard.Spec(t.Program)
-				if specErr != nil {
-					_ = probe.Close()
-					return nil, specErr
-				}
-				returnOffset, err = fexitReturnOffsetFromSpec(spec, t.FuncName)
-				if err != nil {
-					_ = probe.Close()
-					return nil, fmt.Errorf("fexit target %s: %w", t.FuncName, err)
-				}
-				if probeRead {
-					// The kernel discarded the static prototype, so ask it for
-					// the return value instead of using a BTF-derived ctx slot.
-					returnOffset = fexitReturnViaHelper
-				}
-			}
-			var insns asm.Instructions
-			var err error
-			switch {
-			case gated && !st.IsFexit:
-				insns, err = buildGatedEntryInsns(targetHook, c.out, tf, holdFD, holdStopFD, statsFD, scratchFD, c.slots, c.pktRefs, emit, entryCapLen, gateFD)
-			case gated:
-				insns, err = buildGatedExitInsns(targetHook, c.out, tf, outerMap.FD(), holdFD, statsFD, scratchFD, c.slots, c.pktRefs, emit, entryCapLen, returnOffset, gateFD, probeRead)
-			case records != nil:
-				insns, err = buildRecordingInsns(targetHook, c.out, tf, outerMap.FD(), scratchFD, statsFD, st.IsFexit, returnOffset, c.slots, c.pktRefs, gateFD, records[i], uint8(i+1), snaps[i])
-			default:
-				insns, err = buildTracingInsnsForHook(targetHook, c.out, tf, outerMap.FD(), scratchFD, statsFD, st.IsFexit, returnOffset, c.slots, c.pktRefs, gateFD)
-			}
-			if err != nil {
-				_ = probe.Close()
-				return nil, err
-			}
-			if err := tryAttachTracingProbe(probe, t.Program, fmt.Sprintf("bpf_ninja_%s", stLabel), t.FuncName, attachType, insns, t.AllowDispatcherSlot, t.Availability); err != nil {
-				rollback()
-				results.refused(t, attach.TargetObserverLoadFailed, err)
-				continue targetLoop
-			}
+		var rec *record.Layout
+		if records != nil {
+			rec = records[i]
+		}
+		notes, reason, err := probe.attachTarget(plan, i, i, t, tf, rec)
+		results.diagnostics = append(results.diagnostics, notes...)
+		if err != nil && reason == "" {
+			_ = probe.Close()
+			return nil, err
+		}
+		if err != nil {
+			results.refused(t, reason, err)
+			continue
 		}
 		results.didAttach(i)
 	}
@@ -519,6 +466,164 @@ targetLoop:
 	probe.TargetDiagnostics = results.diagnostics
 	probe.AttachedTargetIndices = results.attached
 	return probe, nil
+}
+
+func recordSnapshotEntries(targets []attach.Target, following bool) int {
+	if following {
+		for _, target := range targets {
+			if target.Generated {
+				return len(targets) + followerSnapKeys
+			}
+		}
+	}
+	return len(targets)
+}
+
+// compiledStage is one stage's filter, compiled once for every target.
+type compiledStage struct {
+	out     codegen.Output
+	slots   *pktSetSlots
+	pktRefs []string
+}
+
+// attachPlan is what the observers of every target of one capture share:
+// the hook, the compiled stages and the capture's maps. Only the
+// instruction stream differs per target (argument offsets from the target's
+// BTF, the static context read, the fexit return slot).
+type attachPlan struct {
+	hook        *hook.Hook
+	stages      []Stage // entry before exit when gated
+	comp        []compiledStage
+	gated       bool
+	emit        Emit
+	entryCapLen int
+
+	eventsFD, holdFD, holdStopFD, statsFD, scratchFD, gateFD int
+	// snapFD is the filter-record snapshot map, 0 when no site records in
+	// filter mode. recording selects the record program layout, in which a
+	// site writes its id even when it has no layout of its own.
+	snapFD    int
+	recording bool
+	// slots is the number of initial targets, so of site ids; records is
+	// their layouts (nil when the capture records nothing) and maxFields
+	// the widest filter record the snapshot map holds.
+	slots, maxFields int
+	records          []*record.Layout
+}
+
+// attachTarget builds and attaches the observers of t, one per stage. slot
+// is the target's site: it writes site id slot+1. It snapshots filter fields
+// under snapKey (the slot for an initial target); rec is its record layout
+// (nil records nothing).
+//
+// A non-empty reason means this target was refused and the capture can go
+// on without it; an error with an empty reason fails the whole load. Either
+// way the observers this call attached are closed again. notes are
+// diagnostics that do not refuse the target.
+func (p *Probe) attachTarget(plan *attachPlan, slot, snapKey int, t attach.Target, tf filter.TargetFilters, rec *record.Layout) (notes []attach.TargetDiagnostic, reason string, err error) {
+	h := plan.hook
+	startProgs, startLinks := len(p.progs), len(p.links)
+	defer func() {
+		if err != nil {
+			p.links = closeTargetResources(p.links, startLinks)
+			p.progs = closeTargetResources(p.progs, startProgs)
+			return
+		}
+		if p.owner == nil {
+			p.owner = map[*ebpf.Program]uint32{}
+		}
+		for _, pr := range p.progs[startProgs:] {
+			p.owner[pr] = t.ProgID
+		}
+	}()
+	var snap *fieldSnap
+	if rec != nil && rec.Mode == record.ModeFilter {
+		snap = &fieldSnap{fd: plan.snapFD, key: snapKey, layout: rec}
+	}
+	static := false
+	if (h.Kind == hook.KindXDP || h.Kind == hook.KindTC || h.Kind == hook.KindCgroupSKB || h.Kind == hook.KindNetfilter) && t.FuncName != "" {
+		spec, specErr := p.extensionGuard.Spec(t.Program)
+		if specErr != nil {
+			return notes, attach.TargetStaticCtxRefused, specErr
+		}
+		var fn *btf.Func
+		if specErr := spec.TypeByName(t.FuncName, &fn); specErr != nil {
+			return notes, attach.TargetStaticCtxRefused, specErr
+		}
+		static = fn.Linkage == btf.StaticFunc
+	}
+	// Gated: stages are ordered entry, exit; attach the fexit first
+	// so no fentry can fill the hold before its consumer exists
+	// (otherwise the first fexit after attach could pair a stale
+	// entry image with a later packet).
+	generatedCtxUnchecked := false
+	for si := len(plan.stages) - 1; si >= 0; si-- {
+		st, c := plan.stages[si], plan.comp[si]
+		stLabel, attachType := tracingLabel(st.IsFexit)
+		targetHook := h
+		probeRead := false
+		if static {
+			probeRead, err = staticNeedsProbeRead(h, t.Program, t.FuncName, attachType, t.Availability)
+			if err == nil && probeRead {
+				err = checkStaticCtxArgForTarget(t.Program, t.FuncName, t.Generated)
+				if err == nil && t.Generated && skipGeneratedCtxProof && !generatedCtxUnchecked {
+					notes = append(notes, attach.TargetDiagnostic{
+						ProgID: t.ProgID, FuncName: t.FuncName, Availability: t.Availability,
+						Reason: attach.TargetStaticCtxUnchecked,
+						Detail: "generated hook; the context argument is the saved program context, which rests on the stack floor",
+					})
+					generatedCtxUnchecked = true
+				}
+			}
+			if err != nil {
+				return notes, attach.TargetStaticCtxRefused, err
+			}
+			if probeRead {
+				switch h.Kind {
+				case hook.KindXDP:
+					targetHook = staticXDPHook(h, st.IsFexit)
+				case hook.KindNetfilter:
+					targetHook = staticNFHook(h, t.FuncName, st.IsFexit)
+				default:
+					targetHook = staticTCHook(h, t.FuncName)
+				}
+			}
+		}
+		var returnOffset int16
+		if st.IsFexit {
+			spec, specErr := p.extensionGuard.Spec(t.Program)
+			if specErr != nil {
+				return notes, "", specErr
+			}
+			returnOffset, err = fexitReturnOffsetFromSpec(spec, t.FuncName)
+			if err != nil {
+				return notes, "", fmt.Errorf("fexit target %s: %w", t.FuncName, err)
+			}
+			if probeRead {
+				// The kernel discarded the static prototype, so ask it for
+				// the return value instead of using a BTF-derived ctx slot.
+				returnOffset = fexitReturnViaHelper
+			}
+		}
+		var insns asm.Instructions
+		switch {
+		case plan.gated && !st.IsFexit:
+			insns, err = buildGatedEntryInsns(targetHook, c.out, tf, plan.holdFD, plan.holdStopFD, plan.statsFD, plan.scratchFD, c.slots, c.pktRefs, plan.emit, plan.entryCapLen, plan.gateFD)
+		case plan.gated:
+			insns, err = buildGatedExitInsns(targetHook, c.out, tf, plan.eventsFD, plan.holdFD, plan.statsFD, plan.scratchFD, c.slots, c.pktRefs, plan.emit, plan.entryCapLen, returnOffset, plan.gateFD, probeRead)
+		case plan.recording:
+			insns, err = buildRecordingInsns(targetHook, c.out, tf, plan.eventsFD, plan.scratchFD, plan.statsFD, st.IsFexit, returnOffset, c.slots, c.pktRefs, plan.gateFD, rec, uint8(slot+1), snap)
+		default:
+			insns, err = buildTracingInsnsForHook(targetHook, c.out, tf, plan.eventsFD, plan.scratchFD, plan.statsFD, st.IsFexit, returnOffset, c.slots, c.pktRefs, plan.gateFD)
+		}
+		if err != nil {
+			return notes, "", err
+		}
+		if err = tryAttachTracingProbe(p, t.Program, fmt.Sprintf("bpf_ninja_%s", stLabel), t.FuncName, attachType, insns, t.AllowDispatcherSlot, t.Availability); err != nil {
+			return notes, attach.TargetObserverLoadFailed, err
+		}
+	}
+	return notes, "", nil
 }
 
 // validateTracingTarget checks targetProg is a type bpf-ninja can attach a

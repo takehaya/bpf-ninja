@@ -94,6 +94,7 @@ GLOBAL OPTIONS:
    --no-async-preempt-off                           keep Go's SIGURG-based goroutine preemption enabled (diagnostic opt-out)
    --bench-drop                                     (--mode xdp only) return XDP_DROP after capturing instead of XDP_PASS, bypassing kernel skb-create / IP drop path. Bench-only; production should leave this off
    --no-cpu-affinity                                disable pinning each per-shard ringbuf reader to its producer CPU (diagnostic opt-out)
+   --no-follow                                      observe only the programs given at start; by default a capture at a hook inject-run generated also attaches to programs loaded later that carry the hook
    --ringbuf-size int                               total ringbuf capacity in MiB (power of two); in sharded modes split evenly across CPUs (default: 64)
    --legacy-timestamp                               use a per-batch userland time.Now() instead of the per-packet kernel bpf_ktime_get_ns() timestamp
    --raw-dump                                       dump ringbuf records verbatim to per-CPU .raw files; reconstruct standard pcap-ng offline via bpf-ninja convert
@@ -151,6 +152,7 @@ GLOBAL OPTIONS:
 | <code>no-async-preempt-off</code> | <code>bool</code> | <code></code> | false | false | <code></code> |
 | <code>bench-drop</code> | <code>bool</code> | <code></code> | false | false | <code></code> |
 | <code>no-cpu-affinity</code> | <code>bool</code> | <code></code> | false | false | <code></code> |
+| <code>no-follow</code> | <code>bool</code> | <code></code> | false | false | <code></code> |
 | <code>ringbuf-size</code> | <code>int</code> | <code></code> | false | false | <code></code> |
 | <code>legacy-timestamp</code> | <code>bool</code> | <code></code> | false | false | <code></code> |
 | <code>raw-dump</code> | <code>bool</code> | <code></code> | false | false | <code></code> |
@@ -229,6 +231,7 @@ GLOBAL OPTIONS:
    --no-async-preempt-off                           keep Go's SIGURG-based goroutine preemption enabled (diagnostic opt-out)
    --bench-drop                                     (--mode xdp only) return XDP_DROP after capturing instead of XDP_PASS, bypassing kernel skb-create / IP drop path. Bench-only; production should leave this off
    --no-cpu-affinity                                disable pinning each per-shard ringbuf reader to its producer CPU (diagnostic opt-out)
+   --no-follow                                      observe only the programs given at start; by default a capture at a hook inject-run generated also attaches to programs loaded later that carry the hook
    --ringbuf-size int                               total ringbuf capacity in MiB (power of two); in sharded modes split evenly across CPUs (default: 64)
    --legacy-timestamp                               use a per-batch userland time.Now() instead of the per-packet kernel bpf_ktime_get_ns() timestamp
    --raw-dump                                       dump ringbuf records verbatim to per-CPU .raw files; reconstruct standard pcap-ng offline via bpf-ninja convert
@@ -345,6 +348,7 @@ GLOBAL OPTIONS:
    --no-async-preempt-off                           keep Go's SIGURG-based goroutine preemption enabled (diagnostic opt-out)
    --bench-drop                                     (--mode xdp only) return XDP_DROP after capturing instead of XDP_PASS, bypassing kernel skb-create / IP drop path. Bench-only; production should leave this off
    --no-cpu-affinity                                disable pinning each per-shard ringbuf reader to its producer CPU (diagnostic opt-out)
+   --no-follow                                      observe only the programs given at start; by default a capture at a hook inject-run generated also attaches to programs loaded later that carry the hook
    --ringbuf-size int                               total ringbuf capacity in MiB (power of two); in sharded modes split evenly across CPUs (default: 64)
    --legacy-timestamp                               use a per-batch userland time.Now() instead of the per-packet kernel bpf_ktime_get_ns() timestamp
    --raw-dump                                       dump ringbuf records verbatim to per-CPU .raw files; reconstruct standard pcap-ng offline via bpf-ninja convert
@@ -418,6 +422,7 @@ GLOBAL OPTIONS:
    --no-async-preempt-off                           keep Go's SIGURG-based goroutine preemption enabled (diagnostic opt-out)
    --bench-drop                                     (--mode xdp only) return XDP_DROP after capturing instead of XDP_PASS, bypassing kernel skb-create / IP drop path. Bench-only; production should leave this off
    --no-cpu-affinity                                disable pinning each per-shard ringbuf reader to its producer CPU (diagnostic opt-out)
+   --no-follow                                      observe only the programs given at start; by default a capture at a hook inject-run generated also attaches to programs loaded later that carry the hook
    --ringbuf-size int                               total ringbuf capacity in MiB (power of two); in sharded modes split evenly across CPUs (default: 64)
    --legacy-timestamp                               use a per-batch userland time.Now() instead of the per-packet kernel bpf_ktime_get_ns() timestamp
    --raw-dump                                       dump ringbuf records verbatim to per-CPU .raw files; reconstruct standard pcap-ng offline via bpf-ninja convert
@@ -488,6 +493,7 @@ GLOBAL OPTIONS:
    --no-async-preempt-off                           keep Go's SIGURG-based goroutine preemption enabled (diagnostic opt-out)
    --bench-drop                                     (--mode xdp only) return XDP_DROP after capturing instead of XDP_PASS, bypassing kernel skb-create / IP drop path. Bench-only; production should leave this off
    --no-cpu-affinity                                disable pinning each per-shard ringbuf reader to its producer CPU (diagnostic opt-out)
+   --no-follow                                      observe only the programs given at start; by default a capture at a hook inject-run generated also attaches to programs loaded later that carry the hook
    --ringbuf-size int                               total ringbuf capacity in MiB (power of two); in sharded modes split evenly across CPUs (default: 64)
    --legacy-timestamp                               use a per-batch userland time.Now() instead of the per-packet kernel bpf_ktime_get_ns() timestamp
    --raw-dump                                       dump ringbuf records verbatim to per-CPU .raw files; reconstruct standard pcap-ng offline via bpf-ninja convert
@@ -558,6 +564,7 @@ GLOBAL OPTIONS:
    --no-async-preempt-off                           keep Go's SIGURG-based goroutine preemption enabled (diagnostic opt-out)
    --bench-drop                                     (--mode xdp only) return XDP_DROP after capturing instead of XDP_PASS, bypassing kernel skb-create / IP drop path. Bench-only; production should leave this off
    --no-cpu-affinity                                disable pinning each per-shard ringbuf reader to its producer CPU (diagnostic opt-out)
+   --no-follow                                      observe only the programs given at start; by default a capture at a hook inject-run generated also attaches to programs loaded later that carry the hook
    --ringbuf-size int                               total ringbuf capacity in MiB (power of two); in sharded modes split evenly across CPUs (default: 64)
    --legacy-timestamp                               use a per-batch userland time.Now() instead of the per-packet kernel bpf_ktime_get_ns() timestamp
    --raw-dump                                       dump ringbuf records verbatim to per-CPU .raw files; reconstruct standard pcap-ng offline via bpf-ninja convert
@@ -628,6 +635,7 @@ GLOBAL OPTIONS:
    --no-async-preempt-off                           keep Go's SIGURG-based goroutine preemption enabled (diagnostic opt-out)
    --bench-drop                                     (--mode xdp only) return XDP_DROP after capturing instead of XDP_PASS, bypassing kernel skb-create / IP drop path. Bench-only; production should leave this off
    --no-cpu-affinity                                disable pinning each per-shard ringbuf reader to its producer CPU (diagnostic opt-out)
+   --no-follow                                      observe only the programs given at start; by default a capture at a hook inject-run generated also attaches to programs loaded later that carry the hook
    --ringbuf-size int                               total ringbuf capacity in MiB (power of two); in sharded modes split evenly across CPUs (default: 64)
    --legacy-timestamp                               use a per-batch userland time.Now() instead of the per-packet kernel bpf_ktime_get_ns() timestamp
    --raw-dump                                       dump ringbuf records verbatim to per-CPU .raw files; reconstruct standard pcap-ng offline via bpf-ninja convert
@@ -707,6 +715,7 @@ GLOBAL OPTIONS:
    --no-async-preempt-off                           keep Go's SIGURG-based goroutine preemption enabled (diagnostic opt-out)
    --bench-drop                                     (--mode xdp only) return XDP_DROP after capturing instead of XDP_PASS, bypassing kernel skb-create / IP drop path. Bench-only; production should leave this off
    --no-cpu-affinity                                disable pinning each per-shard ringbuf reader to its producer CPU (diagnostic opt-out)
+   --no-follow                                      observe only the programs given at start; by default a capture at a hook inject-run generated also attaches to programs loaded later that carry the hook
    --ringbuf-size int                               total ringbuf capacity in MiB (power of two); in sharded modes split evenly across CPUs (default: 64)
    --legacy-timestamp                               use a per-batch userland time.Now() instead of the per-packet kernel bpf_ktime_get_ns() timestamp
    --raw-dump                                       dump ringbuf records verbatim to per-CPU .raw files; reconstruct standard pcap-ng offline via bpf-ninja convert
@@ -791,6 +800,7 @@ GLOBAL OPTIONS:
    --no-async-preempt-off                           keep Go's SIGURG-based goroutine preemption enabled (diagnostic opt-out)
    --bench-drop                                     (--mode xdp only) return XDP_DROP after capturing instead of XDP_PASS, bypassing kernel skb-create / IP drop path. Bench-only; production should leave this off
    --no-cpu-affinity                                disable pinning each per-shard ringbuf reader to its producer CPU (diagnostic opt-out)
+   --no-follow                                      observe only the programs given at start; by default a capture at a hook inject-run generated also attaches to programs loaded later that carry the hook
    --ringbuf-size int                               total ringbuf capacity in MiB (power of two); in sharded modes split evenly across CPUs (default: 64)
    --legacy-timestamp                               use a per-batch userland time.Now() instead of the per-packet kernel bpf_ktime_get_ns() timestamp
    --raw-dump                                       dump ringbuf records verbatim to per-CPU .raw files; reconstruct standard pcap-ng offline via bpf-ninja convert
@@ -868,6 +878,7 @@ GLOBAL OPTIONS:
    --no-async-preempt-off                           keep Go's SIGURG-based goroutine preemption enabled (diagnostic opt-out)
    --bench-drop                                     (--mode xdp only) return XDP_DROP after capturing instead of XDP_PASS, bypassing kernel skb-create / IP drop path. Bench-only; production should leave this off
    --no-cpu-affinity                                disable pinning each per-shard ringbuf reader to its producer CPU (diagnostic opt-out)
+   --no-follow                                      observe only the programs given at start; by default a capture at a hook inject-run generated also attaches to programs loaded later that carry the hook
    --ringbuf-size int                               total ringbuf capacity in MiB (power of two); in sharded modes split evenly across CPUs (default: 64)
    --legacy-timestamp                               use a per-batch userland time.Now() instead of the per-packet kernel bpf_ktime_get_ns() timestamp
    --raw-dump                                       dump ringbuf records verbatim to per-CPU .raw files; reconstruct standard pcap-ng offline via bpf-ninja convert

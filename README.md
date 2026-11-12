@@ -240,7 +240,7 @@ capture.pcap.cpu1     # CPU 1 packets (kept)
 
 On exit, the capture prints a `capture status=...` line to stderr.
 It counts selected export attempts, submitted records, reserve, lookup and copy failures, consumed and written records, intentional limits, and records drained after the producers stop.
-A producer or output failure makes the status `incomplete`.
+A producer or output failure makes the status `incomplete`, and so does a program that a capture at a generated hook found too late to observe from its first packet.
 The counters do not count filter and parse rejections, so they do not cover every observed packet.
 [Capture completion](docs/capture-lifecycle.md) describes the fields, shutdown, per-tag acknowledgements and output limits.
 
@@ -449,6 +449,7 @@ Specify exactly one of `-i`, `-p` or `--cgroup`.
 | `--dump-hook` | Hook whose capabilities/prologue `--dump-asm` renders: `xdp` (default) \| `tc` \| `cgroup-skb` \| `netfilter` (offline compiles have no target program to auto-detect from) | n/a |
 | `--func` | Attach to a specific `__noinline` subfunction by BTF name | entry, exit |
 | `--list-funcs` | List all BTF functions with loaded availability and exit | entry, exit |
+| `--no-follow` | Observe only the programs given at start. By default a capture at a hook `inject-run` generated also attaches to programs loaded later that carry the hook: `inject-run` holds each load until the capture has attached, and a program the capture could only find by polling is reported as a [`FOLLOW GAP`](docs/en/inject-run.md#follow-a-hook-across-reloads) | entry, exit |
 | `--allow-dispatcher-slot` | Allow probing an unreplaced global dispatcher subfunction; may block later freplace with `EBUSY` | entry, exit |
 | `--list-progs` | List reachable freplace, tail-call, and redirect-map targets and exit | entry, exit |
 | `--list-maps` | With `--list-progs`, also list each function's calls and the maps it uses, with the op (`lookup`, `update`, `delete`, `tail_call`, ...) and source line, read from the loaded program's translated instructions (needs root) | entry, exit |
