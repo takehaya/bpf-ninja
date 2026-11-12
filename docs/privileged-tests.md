@@ -23,6 +23,15 @@ when a probe's processed instruction count exceeds 1.5 times its per-kernel
 baseline or the kernel has no baseline; the host profile only logs the numbers
 (see docs/ja/adr/0003-mask-bpf-loop-cursor.md).
 
+After the Go suites and their audit, both profiles build and run the
+[follow scenario](../scripts/test/follow/README.md): a loader under
+`inject-run` replaces a program while a capture runs at its hook, once with
+the load held for the capture, once with polling, and once with a held load
+whose new hook cannot resolve the requested filter member. A fourth case starts
+two captures at the same hook and requires exactly one tracing link on the new
+program, with `observed_by_other` and status `incomplete` from the losing capture.
+Any failing case fails the run.
+
 The runner enumerates the selected tests independently, captures Go JSON events,
 and rejects missing completions, package failures, and unexpected skips,
 including skipped children of passing parent tests. The only skip exceptions
@@ -61,3 +70,21 @@ For a VM without clang, compile the fixture with
 and set `BPF_NINJA_SUBPROG_OBJECT` to that object's path when running the test
 binaries.
 Without that variable the tests compile the fixture with the usual test helper.
+
+`TestBpfFollowerAttach` and `TestBpfFollowerRecordSite` in internal/program add
+a later program's observers to a running probe and check that its records share
+the first program's rings, site ids and comments. `TestBpfFollowPollCLI` and
+`TestBpfFollowGapCLI` in cmd/bpf-ninja load a second generation of an injected
+program while a capture runs: the capture attaches to it and reports the late
+attach, stays on the first generation with `--no-follow`, and reports
+`filter_unresolved` when the new generation lacks the filtered member.
+`TestBpfFollowHeldCLI` announces the second generation through a follow server
+in the test process, as `inject-run` does, and requires a held attach and
+status `complete`.
+For a VM without clang, compile the two generations of `followFixture` in
+`cmd/bpf-ninja/follow_kernel_test.go` and set `BPF_NINJA_FOLLOW_OBJECT_1` and
+`BPF_NINJA_FOLLOW_OBJECT_2` to the objects' paths.
+
+`TestIntegrationInjectHold` in pkg/syscallhook (build tag `integration`, run by
+`--syscallhook-binary`) checks that a load does not return to the loader while
+`OnInject` runs, and that the injected program can already be opened by ID.

@@ -24,6 +24,7 @@ import (
 	"github.com/takehaya/bpf-ninja/internal/capture"
 	"github.com/takehaya/bpf-ninja/internal/capture/fastrb"
 	"github.com/takehaya/bpf-ninja/internal/filter"
+	"github.com/takehaya/bpf-ninja/internal/follow"
 	"github.com/takehaya/bpf-ninja/internal/hook"
 	"github.com/takehaya/bpf-ninja/internal/output"
 	"github.com/takehaya/bpf-ninja/internal/program"
@@ -173,6 +174,10 @@ func rootFlags() []cli.Flag {
 		&cli.BoolFlag{
 			Name:  "no-cpu-affinity",
 			Usage: "disable pinning each per-shard ringbuf reader to its producer CPU (diagnostic opt-out)",
+		},
+		&cli.BoolFlag{
+			Name:  "no-follow",
+			Usage: "observe only the programs given at start; by default a capture at a hook inject-run generated also attaches to programs loaded later that carry the hook",
 		},
 		&cli.IntFlag{
 			Name:  "ringbuf-size",
@@ -590,6 +595,11 @@ func run(ctx context.Context, cmd *cli.Command) error {
 		return runXDPNative(cmd)
 	}
 
+	startedAt := bootNow()
+	boundaryID := uint32(0)
+	if !cmd.Bool("no-follow") && len(modes) == 1 {
+		boundaryID = latestProgramID()
+	}
 	infos, err := findTargets(cmd)
 	if err != nil {
 		return err
@@ -772,26 +782,15 @@ func run(ctx context.Context, cmd *cli.Command) error {
 	// sit at a different arg index (or width) in different funcs, so each
 	// attach pair gets filters bound to its own BTF param layout.
 	setRefs, plainExprs := filter.SplitFilterExprs(cmd.StringSlice("arg-filter"))
+	resolveFilters := func(t attach.Target) (filter.TargetFilters, error) {
+		return resolveTargetFilters(cmd, plainExprs, setRefs, sets, t)
+	}
 	var filters []filter.TargetFilters
 	if len(plainExprs) > 0 || len(setRefs) > 0 {
 		filters = make([]filter.TargetFilters, len(targets))
 		for i, t := range targets {
-			if len(plainExprs) > 0 {
-				fs, err := filter.ParseAndValidateFilters(plainExprs, t.Params)
-				if err != nil {
-					return fmt.Errorf("func %s (id=%d): %w", t.FuncName, t.ProgID, err)
-				}
-				filters[i].Args = fs
-				for _, f := range fs {
-					logVerbose(cmd, "arg filter on %s: %s", t.FuncName, f.String())
-				}
-			}
-			if len(setRefs) > 0 {
-				sf, err := filter.ResolveSetFilters(sets, setRefs, t.Params)
-				if err != nil {
-					return fmt.Errorf("func %s (id=%d): %w", t.FuncName, t.ProgID, err)
-				}
-				filters[i].Sets = sf
+			if filters[i], err = resolveFilters(t); err != nil {
+				return err
 			}
 		}
 	}
@@ -881,7 +880,9 @@ func run(ctx context.Context, cmd *cli.Command) error {
 	for _, m := range rec.omitted(targets, filters) {
 		logVerbose(cmd, "%s", m)
 	}
-	probe, err := program.LoadMultiPointRecord(targets, stages, filters, useDSL, sets, emit, layouts)
+	followEnabled := !cmd.Bool("no-follow") && !multiPoint
+	loadProbe := captureLoadProbe(followEnabled)
+	probe, err := loadProbe(targets, stages, filters, useDSL, sets, emit, layouts)
 	if err != nil {
 		return err
 	}
@@ -916,7 +917,64 @@ func run(ctx context.Context, cmd *cli.Command) error {
 			}
 		}
 	}
-	return runCaptureLoop(cmd, probe, cfg, fmt.Sprintf("%s, mode=%s", label, mode), sets)
+	var following *followManager
+	if followEnabled {
+		fc := followConfig{filters: resolveFilters, stderr: os.Stderr, boundaryID: boundaryID, startedAt: startedAt,
+			lock: program.LockFollowers, logf: func(format string, args ...any) { logVerbose(cmd, format, args...) }}
+		if layouts != nil {
+			fc.layout = rec.layout
+		}
+		fc.newClient = func(hooks []string, handle follow.Handler) followClient {
+			return follow.NewClient(hooks, handle, follow.Options{Logf: fc.logf})
+		}
+		following = newFollowManager(probe, &kernelFollowSource{hook: h, allowSlot: cmd.Bool("allow-dispatcher-slot")},
+			targets, probe.AttachedTargetIndices, fc)
+	}
+	return runCaptureLoop(cmd, probe, cfg, fmt.Sprintf("%s, mode=%s", label, mode), sets, following)
+}
+
+type captureProbeLoader func([]attach.Target, []program.Stage, []filter.TargetFilters, bool, []*setmap.Set, program.Emit, []*record.Layout) (*program.Probe, error)
+
+func captureLoadProbe(follow bool) captureProbeLoader {
+	if follow {
+		return program.LoadMultiPointRecordFollow
+	}
+	return program.LoadMultiPointRecord
+}
+
+func latestProgramID() uint32 {
+	var last uint32
+	for {
+		id, err := ebpf.ProgramGetNextID(ebpf.ProgramID(last))
+		if err != nil {
+			return last
+		}
+		last = uint32(id)
+	}
+}
+
+// resolveTargetFilters binds the --arg-filter expressions (plain ones and
+// "@NAME" set references) to one target's own BTF parameter layout.
+func resolveTargetFilters(cmd *cli.Command, plainExprs, setRefs []string, sets []*setmap.Set, t attach.Target) (filter.TargetFilters, error) {
+	var tf filter.TargetFilters
+	if len(plainExprs) > 0 {
+		fs, err := filter.ParseAndValidateFilters(plainExprs, t.Params)
+		if err != nil {
+			return tf, fmt.Errorf("func %s (id=%d): %w", t.FuncName, t.ProgID, err)
+		}
+		tf.Args = fs
+		for _, f := range fs {
+			logVerbose(cmd, "arg filter on %s: %s", t.FuncName, f.String())
+		}
+	}
+	if len(setRefs) > 0 {
+		sf, err := filter.ResolveSetFilters(sets, setRefs, t.Params)
+		if err != nil {
+			return tf, fmt.Errorf("func %s (id=%d): %w", t.FuncName, t.ProgID, err)
+		}
+		tf.Sets = sf
+	}
+	return tf, nil
 }
 
 // outputConfigFor renders a hook descriptor into the writer layout for
@@ -1076,9 +1134,19 @@ func resolveFilterSyntax(cmd *cli.Command) (useDSL bool, err error) {
 // capture; afterward output.MergeShardFiles merges them into a single
 // time-ordered pcap-ng at `path` (the shards are left in place). Integration
 // tests (run_pcap_test) read the `.cpuN` shards.
-func runCaptureLoop(cmd *cli.Command, probe *program.Probe, cfg output.Config, label string, sets []*setmap.Set) (retErr error) {
+func runCaptureLoop(cmd *cli.Command, probe *program.Probe, cfg output.Config, label string, sets []*setmap.Set, following *followManager) (retErr error) {
 	ctl := &captureControl{quiesce: probe.Quiesce, blockTag: probe.BlockTag, outputErr: newOutputFailure()}
+	if following != nil {
+		// No observer is attached once the capture starts to detach them.
+		ctl.follow = &following.stats
+		ctl.quiesce = func() error {
+			following.stop()
+			return probe.Quiesce()
+		}
+		following.start()
+	}
 	defer func() {
+		following.stop()
 		retErr = errors.Join(retErr, probe.Quiesce())
 		kernel, statsErr := probe.ExportStats()
 		retErr = errors.Join(retErr, statsErr, probe.Close())
@@ -1937,7 +2005,7 @@ func runXDPNative(cmd *cli.Command) error {
 	}
 	printProbeWarnings(probe)
 	xdpHook, _ := hook.ByName(hook.KindXDP)
-	return runCaptureLoop(cmd, probe, outputConfigFor(xdpHook, false), fmt.Sprintf("xdp-native on %s", ifaceName), sets)
+	return runCaptureLoop(cmd, probe, outputConfigFor(xdpHook, false), fmt.Sprintf("xdp-native on %s", ifaceName), sets, nil)
 }
 
 // validateXDPNativeFlags rejects flags that don't apply to --mode xdp

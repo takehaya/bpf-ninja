@@ -318,6 +318,8 @@ capturing (prog "ninja_recent_push" id=2, mode=entry, sharded, 2 shards via ring
   `--arg-filter` can select `site` and `status`: `--arg-filter site=24` keeps the pushes at pc 24, and `--arg-filter status.ret==0` keeps the calls that succeeded. `status` compares the whole word, `(u32)ret | flags << 32`, so `status=0` misses a success with flags, such as a push with `BPF_EXIST`; see [Select on a helper's result](arg-member-filter.md#select-on-a-helpers-result).
 - With `--mode exit` the capture runs when the hook returns. The recorded return value is the hook's, always 0, not the program's action; a recording capture (below) writes it as `return=0x00000000` at the start of each comment.
 - The loader's packets are zero-filled, so `tcpdump` prints them as truncated frames.
+- If the loader loads the program again while the capture runs, `inject-run` holds that load for at most one second while the capture attaches to the new program.
+  A follower is added only when another capture or tool does not already observe that program; see [Follow a hook across reloads](inject-run.md#follow-a-hook-across-reloads).
 
 The capture was checked with the walkthrough's program on 6.1, 6.15, 7.0 and 7.3-rc4, in entry and exit mode, and `--list-params` and `--arg-filter` on 7.0.
 

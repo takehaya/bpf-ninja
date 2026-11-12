@@ -31,5 +31,8 @@ Both shell suites check legacy compilation before creating network resources.
 The helper tests use `CAPTURE_READY_POLLS`, `CAPTURE_TIMEOUT` (seconds), and `CAPTURE_SETTLE`
 (seconds) to exercise startup and timeout failures quickly.
 
+For a VM scenario that replaces a program under a running capture, see the [follow scenario](follow/README.md).
+`scripts/test/privileged.py` runs it after the Go suites.
+
 For an isolated VM check of `inject-run` map type supplementation without interface attachment, see the [map type fixture](../../pkg/syscallhook/testdata/maptypes/README.md).
 It uses the default libpcap-free build and `BPF_PROG_TEST_RUN`.

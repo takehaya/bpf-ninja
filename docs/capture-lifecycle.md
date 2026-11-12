@@ -49,12 +49,16 @@ After shutdown and merge, `capture status=...` reports one session's totals:
 | `persistence_unconfirmed` | Consumed records not accounted for by a successful write, cap, null sink or malformed record |
 | `drained_at_stop` | Records consumed by the final drain after the producer barrier; excludes batches already being written |
 | `affinity_failures` | Failed reader pin attempts in this session |
+| `follow_attached` | Follower observers currently attached to programs loaded after startup; the four `follow_` fields are printed only by a capture that [follows a generated hook](en/inject-run.md#follow-a-hook-across-reloads) |
+| `follow_held` | Observers attached to later programs while `inject-run` kept the loader stopped, so before the program could run |
+| `follow_gaps` | `FOLLOW GAP` reports for programs loaded after startup whose hook ran, or may have run, without this capture's observer |
+| `follow_gap_ms` | Milliseconds from load to observer attach, or to the report for a program that is not observed, summed over the gaps |
 
 `complete` means all exported records were consumed and handed to successful
 writers, no measured producer loss occurred, and final flush/close/merge
 succeeded. `limited` marks intentional record omission; `discarded` marks null
 output. `incomplete` overrides these for unexpected loss, invalid records,
-unconfirmed records or any capture/persistence error. Counter-read failures
+unconfirmed records, any capture/persistence error, or a follow gap. Counter-read failures
 print `unknown`, never zero. Ring loss is diagnostic and does not itself make
 the process exit nonzero; I/O, metadata and synchronization errors do.
 

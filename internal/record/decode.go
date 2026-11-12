@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"fmt"
+	"slices"
 	"strconv"
 
 	"github.com/cilium/ebpf/btf"
@@ -61,6 +62,7 @@ func (c *commentBuf) int(name string, v int64) {
 	c.sep()
 	c.b = strconv.AppendInt(append(append(c.b, name...), '='), v, 10)
 }
+
 // word emits name=0x%016x, so the halves of a status word
 // ((u32)ret | flags << 32) or an info word stay readable.
 func (c *commentBuf) word(name string, v uint64) {
@@ -174,9 +176,17 @@ func renderBytes(c *commentBuf, v Bytes, data []byte) {
 // memberSink renders the members walk visits into c, or with c nil only
 // adds up their worst-case comment length in n.
 type memberSink struct {
-	c    *commentBuf
-	data []byte
-	n    int
+	c     *commentBuf
+	data  []byte
+	n     int
+	shape *[]memberShape
+}
+
+type memberShape struct {
+	name             string
+	off, bits, width uint32
+	size             int
+	signed, boolean  bool
 }
 
 // show visits what a comment shows of key or value v from its first n
@@ -288,6 +298,20 @@ func (s *memberSink) walk(prefix string, members []btf.Member, base uint32, n in
 }
 
 func (s *memberSink) visit(name string, t btf.Type, off, bits uint32, size int) {
+	if s.shape != nil {
+		shape := memberShape{name: name, off: off, bits: bits, size: size}
+		switch t := t.(type) {
+		case *btf.Int:
+			shape.width, shape.signed, shape.boolean = t.Size*8, t.Encoding == btf.Signed, t.Encoding == btf.Bool
+		case *btf.Enum:
+			shape.width, shape.signed = t.Size*8, t.Signed
+		}
+		if bits > 0 {
+			shape.width = bits
+		}
+		*s.shape = append(*s.shape, shape)
+		return
+	}
 	switch {
 	case s.c == nil && isScalar(t):
 		s.n += 1 + len(name) + 1 + maxUintDigits
@@ -298,6 +322,12 @@ func (s *memberSink) visit(name string, t btf.Type, off, bits uint32, size int) 
 	default:
 		s.c.hex(name, s.data[off/8:int(off/8)+size])
 	}
+}
+
+func commentShape(v Bytes) []memberShape {
+	var shape []memberShape
+	(&memberSink{shape: &shape}).show(v, int(v.Len))
+	return shape
 }
 
 func isScalar(t btf.Type) bool {
@@ -426,4 +456,40 @@ func (l *Layout) MaxCommentLen() int {
 		}
 	}
 	return n
+}
+
+// SameComment reports whether a block written with layout b renders, read
+// with layout a, the comment b would give it. A capture decodes every
+// record of one site with the site's first layout, so a later program that
+// joins the site needs a layout this holds for. Argument positions and read
+// offsets may differ: they only say where the BPF side finds the values.
+// Two nil layouts (nothing recorded) are the same; a nil and a non-nil are
+// not.
+func SameComment(a, b *Layout) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	if a.Mode != b.Mode || a.Size() != b.Size() {
+		return false
+	}
+	if a.Mode == ModeFilter {
+		for i, f := range a.Fields { // equal sizes mean equal field counts
+			if g := b.Fields[i]; f.Name != g.Name || f.Pointer != g.Pointer || f.Signed != g.Signed {
+				return false
+			}
+		}
+		return true
+	}
+	sameScalar := func(x, y Scalar) bool {
+		return x.Present() == y.Present() && (!x.Present() || x.Name == y.Name && x.Size == y.Size)
+	}
+	sameBytes := func(x, y Bytes) bool {
+		return x.Present() == y.Present() && x.Len == y.Len &&
+			(!x.Present() || x.Name == y.Name && x.Pointer == y.Pointer && x.Size == y.Size)
+	}
+	if !sameScalar(a.Site, b.Site) || !sameScalar(a.Status, b.Status) || !sameBytes(a.Key, b.Key) || !sameBytes(a.Value, b.Value) {
+		return false
+	}
+	return slices.Equal(commentShape(a.Key), commentShape(b.Key)) &&
+		slices.Equal(commentShape(a.Value), commentShape(b.Value))
 }

@@ -28,6 +28,12 @@ flowchart TD
 `internal/capture` は、プログラムが ringbuf に書いた記録を読み取ります。`internal/output` は、`-w` を付けた場合はファイルに、付けない場合は標準出力に pcapng を書き出します。
 
 inject-run では、loader 自身がロードするプログラムに観測 hook を加えます。その hook に対して、上の capture を attach します。
+capture は開始時に利用者が指定したプログラムだけへ observer を attach する。
+開始後は、inject-run からの通知と program ID の監視によって、同じ hook を持つ新しいプログラムを追う。
+ただし、別の tracing link があるプログラムには follower を付けない。
+capture は `/run/bpf-ninja/follow.lock` を attach の終了まで保持し、取得を最大 1 秒待つ。
+異なる mount namespace ではこの lock を共有しない。
+inject-run は、通知した capture が処理を終えるまで、1 回のロードにつき最大 1 秒間 loader を止めておく ([reload 後のプログラムを追う](../cli/capture.md#reload-後のプログラムを追う))。
 矢印は呼び出し、生成、attach を、ラベル付きの矢印はデータの流れを、点線は利用者の操作を表します。
 
 ```mermaid

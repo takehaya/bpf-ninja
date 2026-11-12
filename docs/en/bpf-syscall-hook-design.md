@@ -129,7 +129,14 @@ The wire offsets and stop discriminators follow the Linux [BPF UAPI](https://git
 2. Name the command `inject-run` to set transformation apart from packet observation.
 3. Attach observers separately with the existing observation commands.
    The launcher adds the hooks but attaches nothing.
-4. By load time the CO-RE relocations are already applied in the instructions, so the transform works on a resolved program.
+4. Announce each injected load to the captures that follow one of its hooks, and keep the loader stopped until they confirm their observers, for at most one second per load.
+   This runs in the `OnInject` callback before the hooks file callback; the loader resumes after both callbacks return, and the launcher still attaches nothing.
+   Observer instructions depend on the capture's filters, sets and record layouts, so only the capture can build them; the supervisor contributes the one thing a capture lacks, a loader that waits.
+   An observer that fails or is late never refuses a load, with or without `--fail-closed`: that flag covers the rewrite, and an observer belongs to a separate, optional process.
+   Captures serialize follower admission and attach with `/run/bpf-ninja/follow.lock`, waiting at most one second; mount namespaces do not share that advisory lock.
+   A capture refuses a follower when another tracing link is already on the program.
+   The transport is described in [internal/follow](../../internal/follow/follow.go).
+5. By load time the CO-RE relocations are already applied in the instructions, so the transform works on a resolved program.
    The raw transformer preserves the original type IDs.
    Kernel-side CO-RE records and fd arrays are refused, because the transform does not relocate their offsets and references.
 

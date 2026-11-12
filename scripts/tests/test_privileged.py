@@ -162,7 +162,7 @@ class AuditTests(unittest.TestCase):
 class RunnerTests(unittest.TestCase):
     def test_syscallhook_binary_requires_all_tests_and_no_skips(self):
         stops = "".join(f"--- PASS: {name} (0.01s)\n" for name in module.SYSCALLHOOK_TESTS if name.startswith("TestBPFStops"))
-        every_passed = "--- PASS: TestBpfAutoStatic (0.01s)\n--- PASS: TestIntegrationMapTypes (0.01s)\n--- PASS: TestIntegrationLoader (0.01s)\n--- PASS: TestIntegrationIndirectJump (0.01s)\n--- PASS: TestIntegrationJumpLimit (0.01s)\n"
+        every_passed = "--- PASS: TestBpfAutoStatic (0.01s)\n--- PASS: TestIntegrationMapTypes (0.01s)\n--- PASS: TestIntegrationLoader (0.01s)\n--- PASS: TestIntegrationIndirectJump (0.01s)\n--- PASS: TestIntegrationJumpLimit (0.01s)\n--- PASS: TestIntegrationInjectHold (0.01s)\n"
         passed = every_passed + stops
         for output, code, expected in (
             (passed, 0, 0),
@@ -181,7 +181,8 @@ class RunnerTests(unittest.TestCase):
              "--- PASS: TestBpfAutoStatic (0.01s)\n=== RUN   TestIntegrationMapTypes\n--- PASS: TestIntegrationMapTypes (0.01s)\n"
              "=== RUN   TestIntegrationLoader\n--- PASS: TestIntegrationLoader (0.01s)\n"
              "=== RUN   TestIntegrationIndirectJump\n--- PASS: TestIntegrationIndirectJump (0.01s)\n"
-             "=== RUN   TestIntegrationJumpLimit\n--- PASS: TestIntegrationJumpLimit (0.01s)\n" + stops, 0, 0),
+             "=== RUN   TestIntegrationJumpLimit\n--- PASS: TestIntegrationJumpLimit (0.01s)\n"
+             "=== RUN   TestIntegrationInjectHold\n--- PASS: TestIntegrationInjectHold (0.01s)\n" + stops, 0, 0),
             (passed.replace("--- PASS: TestBPFStopsFallback (0.01s)\n", ""), 0, 1),
             (passed, 1, 1),
             ("testing: warning: no tests to run\nPASS\n", 0, 1),
@@ -207,7 +208,7 @@ class RunnerTests(unittest.TestCase):
                                  "TestBPFStopsFallback"} <= set(module.SYSCALLHOOK_TESTS))
 
     def test_syscallhook_every_syscall_pass_is_a_gate(self):
-        every = "--- PASS: TestBpfAutoStatic (0.01s)\n--- PASS: TestIntegrationMapTypes (0.01s)\n--- PASS: TestIntegrationLoader (0.01s)\n--- PASS: TestIntegrationIndirectJump (0.01s)\n--- PASS: TestIntegrationJumpLimit (0.01s)\n"
+        every = "--- PASS: TestBpfAutoStatic (0.01s)\n--- PASS: TestIntegrationMapTypes (0.01s)\n--- PASS: TestIntegrationLoader (0.01s)\n--- PASS: TestIntegrationIndirectJump (0.01s)\n--- PASS: TestIntegrationJumpLimit (0.01s)\n--- PASS: TestIntegrationInjectHold (0.01s)\n"
         default = every + "".join(
             f"--- PASS: {name} (0.01s)\n" for name in module.SYSCALLHOOK_TESTS if name.startswith("TestBPFStops")
         )
@@ -232,6 +233,7 @@ class RunnerTests(unittest.TestCase):
         with mock.patch.object(module.sys, "argv", ["privileged.py", "--kernel", "6.1"]), \
                 mock.patch.object(module.subprocess, "run", return_value=listing) as listing_run, \
                 mock.patch.object(module.subprocess, "Popen") as popen, \
+                mock.patch.object(module, "follow_scenario", return_value=0) as scenario, \
                 mock.patch("builtins.open", mock.mock_open()), \
                 mock.patch("builtins.print"):
             # A fresh stream is needed for each suite.
@@ -240,6 +242,8 @@ class RunnerTests(unittest.TestCase):
                 wait=mock.Mock(return_value=0),
             )
             self.assertEqual(module.main(), 0)
+            # The scenario runs once the suites passed.
+            scenario.assert_called_once_with("6.1")
         packages = [
             "./internal/program", "./internal/attach", "./internal/capture/...",
             "./cmd/bpf-ninja", "./pkg/kunai/dsltest", "./pkg/inject", "./pkg/injectcheck",
@@ -251,3 +255,64 @@ class RunnerTests(unittest.TestCase):
             start = command.index("go")
             self.assertEqual(command[start:start+4], ["go", "test", "-tags", "enable_libpcap"])
             self.assertEqual(call.kwargs["env"]["CGO_ENABLED"], "1")
+
+
+class FollowScenarioTests(unittest.TestCase):
+    def run_scenario(self, kernel, status, output=None):
+        calls = []
+
+        def fake_run(command, **kwargs):
+            calls.append(command)
+            self.stdin = kwargs.get("stdin")
+            stdout = None if len(calls) == 1 else output
+            if stdout is None and len(calls) > 1:
+                stdout = "PASS cases=4\n" if status == 0 else "scenario failed\n"
+            return subprocess.CompletedProcess(command, 0 if len(calls) == 1 else status, stdout=stdout)
+
+        with mock.patch.object(module.subprocess, "run", fake_run), \
+                mock.patch("builtins.print"):
+            return module.follow_scenario(kernel), calls
+
+    def test_builds_then_runs_on_the_host(self):
+        status, (build, run) = self.run_scenario(None, 0)
+        self.assertEqual(status, 0)
+        self.assertTrue(build[0].endswith("scripts/test/follow/build.sh"))
+        self.assertEqual(run[:2], ["sh", "-c"])
+        self.assertEqual(run[2], f"cd {build[1]} && ./run.sh")
+
+    def test_runs_in_the_kernel_vm_and_reports_failure(self):
+        status, (build, run) = self.run_scenario("6.12", 3)
+        self.assertEqual(status, 3)
+        self.assertEqual(run[:4], ["vimto", "-sudo", "-kernel", ":6.12"])
+        # vimto runs a plain command only through exec, and the VM sees the
+        # repository but not the host's /tmp.
+        self.assertEqual(run[-5:-1], ["exec", "--", "sh", "-c"])
+        self.assertEqual(Path(build[1]).parent, module.ROOT)
+        self.assertIs(self.stdin, subprocess.DEVNULL)
+
+    def test_success_requires_all_case_marker(self):
+        status, _ = self.run_scenario(None, 0, "scenario exited without a summary\n")
+        self.assertEqual(status, 1)
+
+    def test_failure_prints_case_diagnostics_before_cleanup(self):
+        build_dir = None
+
+        def fake_run(command, **kwargs):
+            nonlocal build_dir
+            if build_dir is None:
+                build_dir = Path(command[1])
+                case = build_dir / "follow-results.test" / "held"
+                case.mkdir(parents=True)
+                (case / "inject.err").write_text("inject diagnostic\n", encoding="utf-8")
+                (case / "cap.err").write_text("capture diagnostic\n", encoding="utf-8")
+                return subprocess.CompletedProcess(command, 0)
+            return subprocess.CompletedProcess(command, 2, stdout="scenario failed\n")
+
+        stderr = io.StringIO()
+        stdout = io.StringIO()
+        with mock.patch.object(module.subprocess, "run", fake_run), \
+                mock.patch("sys.stderr", stderr), mock.patch("sys.stdout", stdout):
+            self.assertEqual(module.follow_scenario(None), 2)
+        self.assertIn("inject diagnostic", stderr.getvalue())
+        self.assertIn("capture diagnostic", stderr.getvalue())
+        self.assertFalse(build_dir.exists())

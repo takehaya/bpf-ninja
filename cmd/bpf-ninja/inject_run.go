@@ -11,11 +11,35 @@ import (
 	"os/signal"
 	"strings"
 	"syscall"
+	"time"
 
+	"github.com/takehaya/bpf-ninja/internal/follow"
 	"github.com/takehaya/bpf-ninja/pkg/inject"
 	"github.com/takehaya/bpf-ninja/pkg/syscallhook"
 	"github.com/urfave/cli/v3"
 )
+
+// announceInjections returns an OnInject that announces the load to captures
+// before running next (nil for none). It returns when they have confirmed
+// their observers or the hold deadline has passed; a capture that fails or is
+// late reports that itself, and the load continues either way.
+func announceInjections(next func(syscallhook.Injection), server *follow.Server, logf func(string, ...any)) func(syscallhook.Injection) {
+	return func(inj syscallhook.Injection) {
+		if inj.ProgID != 0 {
+			names := make([]string, len(inj.Hooks))
+			for i, h := range inj.Hooks {
+				names[i] = h.Name
+			}
+			start := time.Now()
+			if notified, held := server.Announce(inj.ProgID, names); notified > 0 {
+				logf("program %q (id=%d): held the load %s for %d of %d following captures", inj.Program, inj.ProgID, time.Since(start).Round(time.Millisecond), held, notified)
+			}
+		}
+		if next != nil {
+			next(inj)
+		}
+	}
+}
 
 func newInjectRunCommand() *cli.Command {
 	return &cli.Command{
@@ -72,6 +96,18 @@ func newInjectRunCommand() *cli.Command {
 						_, _ = fmt.Fprintf(os.Stderr, "inject-run: site pc %d (map %s) is dead in this load: %s\n", site.PC, site.Map, site.DeadCause)
 					}
 				}
+			}
+			// Captures that follow a hook subscribe to this run's loads. Each
+			// injected load is announced before the hooks file is written,
+			// and the loader stays stopped until both steps finish.
+			logf := func(format string, args ...any) {
+				_, _ = fmt.Fprintf(os.Stderr, "inject-run: "+format+"\n", args...)
+			}
+			if server, err := follow.Listen(follow.Options{Logf: logf}); err != nil {
+				logf("captures cannot follow this run's loads: %v", err)
+			} else {
+				defer func() { _ = server.Close() }()
+				opts.OnInject = announceInjections(opts.OnInject, server, logf)
 			}
 			if path := cmd.String("lookups-json"); path != "" {
 				lookups, err := newLookupsWriter(path)

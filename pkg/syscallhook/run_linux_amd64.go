@@ -40,8 +40,13 @@ type Options struct {
 	// unexported so callers cannot bypass verifier accounting.
 	preloadError error
 	// OnInject, if set, is called on the tracing thread for each load the
-	// transformed program replaced, before the target sees the new fd. It must
-	// not wait on the target.
+	// transformed program replaced, before the target sees the new fd. The
+	// loading thread stays stopped until it returns, so the program is
+	// loaded but the loader cannot run or install it yet
+	// (TestIntegrationInjectHold). inject-run uses this to let captures
+	// attach their observers first. Callbacks are serialized on this tracing
+	// thread. Other target threads keep running until the supervisor handles
+	// their next stop, then wait behind this callback. It must not wait on the target.
 	OnInject func(Injection)
 	// OnDiscover, if set, is called on the tracing thread for every XDP, tc or
 	// cgroup_skb program load whose attr carries BTF, whether or not a rule selects it,
