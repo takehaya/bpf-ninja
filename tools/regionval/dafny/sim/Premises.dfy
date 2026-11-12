@@ -138,7 +138,7 @@ module SimPremises {
     forall h: seq<Ev>, e: Ev, w1: Where, w2: Where :: e.ECall? && !e.kf && IsLookup(e.id) ==> om(h, e, w1) == om(h, e, w2)
   }
 
-  // ================= structural conditions (checker) =================
+  // ================= premise on the original program =================
 
   // S0, the part the model can name: callbacks only through bpf_loop (181)
   // and bpf_for_each_map_elem (164), which are CbCall; no plain helper call
@@ -150,6 +150,8 @@ module SimPremises {
       (P[j].CbCall? ==> P[j].id == 164 || P[j].id == 181)
       && (P[j].Hcall? && !P[j].kf ==> P[j].id !in {12, 164, 170, 180, 181, 209})
   }
+
+  // ================= structural conditions (checker) =================
 
   // Floors (check.go:237-247): one per function, in [-512, 0].
   ghost predicate FloorsOk(P: seq<OInstr>, ell: nat -> int) {

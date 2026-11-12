@@ -363,10 +363,8 @@ Dafny together with a proof that it is sound.
   if `Validate(insns, spec)` returns `Validated`, then every run of the window
   from any registers, stack, helper results and loaded values meets the
   obligations of `spec`.
-- The sources contain no `assume`, `{:axiom}`, `{:verify false}` or
-  `{:extern}`, nor the `@Axiom`, `@Verify` and `@Extern` attributes.
-  `make check-trust` fails if one appears, or if a file in `dafny/src` is
-  missing from the list that `make dafny-verify` verifies.
+- `make check-trust` scans `dafny/src` and `dafny/sim` and rejects any `{:` attribute except `{:isolate_assertions}` and `{:nowarn}`, any line starting with `@` after optional indentation, the word `assume`, and `replaceable` or `abstract` modules.
+  It also rejects a source file missing from `DFY` or `SIM`, an include target outside those lists, and include syntax it cannot check.
 - `dafny/gen-go` is Go translated from the sources and is checked in.
   `dafny/regionvaldafny` is a small wrapper around it.
 - `dafny/contract` is what the command calls for each window: the checks
@@ -435,12 +433,8 @@ Go core validates is not validated and has rule `dafny`.
 
 ### From windows to whole runs
 
-`dafny/sim` proves the step from windows to whole runs. If `Validate` returns
-`Validated` for every inserted window, with the spec `dafny/contract` chooses
-for its kind, and the structural conditions hold, the rewritten program ends
-with the same observation as the original for the same oracle answers: how
-the run ends, segment-local memory, the final map state, and the trace of
-original events.
+`dafny/sim` proves the step from windows to whole runs.
+If `Validate` returns `Validated` for every inserted window with the spec `dafny/contract` chooses for its kind, the structural conditions hold, and the premises in `Premises.dfy` hold (the original program has the required instruction shape, `E0Shape`, and uses only the modelled callback helpers, `S0`; its admissible runs end normally, `E0` with `A1b`; stack accesses respect their frame floors, `A1a`; helper argument tables cover the arguments read, `A3b`; the observer changes only its own state, `A5`; lookup oracle answers are independent of frame depth and wrappers, `A8`; and the rewritten program fits the kernel's instruction limit, `Loadable`), the rewritten program ends with the same observation as the original for the same admissible input and oracle answers: how the run ends, segment-local memory, the final map state, and the trace of original events.
 
 - `Model.dfy` is the semantics of both programs: frames and bpf-to-bpf calls,
   `bpf_loop` and `bpf_for_each_map_elem` callbacks, tail calls, hooks and the
@@ -451,9 +445,8 @@ original events.
 - `Main.dfy` holds the theorem, `SegmentPreservation`. `Witness*.dfy` build
   small instances that satisfy the hypotheses, so the statement is not
   vacuous.
-- The files are not translated to Go. `make verify-sim` verifies each of them
-  and fails on the trust escapes listed above, on a lemma without a body, and
-  on a file in `dafny/sim` missing from its list.
+- The files are not translated to Go.
+  `make verify-sim` runs `check-trust`, then verifies each listed simulation file with warnings treated as errors by the default flags, including warnings for lemmas without bodies.
 
 ### Tools
 
@@ -469,7 +462,7 @@ file under `dafny/` or the Makefile changes, or when started by hand, and
 keeps a CSV with the duration and resource count of every batch.
 
 ```sh
-make check-trust       # no assume, axiom or extern
+make check-trust       # allowed attributes, trust escapes and complete file lists
 make dafny-verify      # about 130 s
 make verify-sim        # the proof in dafny/sim, about an hour
 make dafny-check-gen   # dafny/gen-go matches a fresh translation

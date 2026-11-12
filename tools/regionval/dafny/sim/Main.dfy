@@ -255,8 +255,9 @@ module SimMain {
       ell: nat -> int, live: nat -> set<nat>, tbl: bv32 -> set<nat>,
       env: Env, sem: Sem, obsv: Observer, Adm: (Local, Oracle) -> bool,
       L: Local, om: Oracle, hv: nat -> bv64, Fin: seq<Ev> -> Sigma)
-    // structural conditions the checker establishes
+    // premise on the original program: only the modelled callback helpers
     requires S0(P)
+    // structural conditions the checker establishes
     requires Structure(P, D, Pp, ell, live, tbl)
     // P' loads: at most 1000000 instructions (kernel limit)
     requires Loadable(P, D)
