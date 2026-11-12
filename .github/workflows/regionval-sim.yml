@@ -1,0 +1,70 @@
+---
+name: regionval-sim
+
+# The simulation proof takes about an hour on a 32-thread machine, so it runs
+# only when the Dafny sources or the verification flags change. The core is
+# verified by regionval.yml, which the same changes also start.
+on:
+  push:
+    branches: [main]
+    paths:
+      - "tools/regionval/dafny/**"
+      - "tools/regionval/Makefile"
+      - ".github/workflows/regionval-sim.yml"
+  pull_request:
+    paths:
+      - "tools/regionval/dafny/**"
+      - "tools/regionval/Makefile"
+      - ".github/workflows/regionval-sim.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: regionval-sim-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # The same Dafny as regionval.yml; change both together.
+  DAFNY_VERSION: 4.11.0
+  DAFNY_ZIP: dafny-4.11.0-x64-ubuntu-22.04.zip
+  DAFNY_SHA256: a46a9ff7cdd720f7955854c78e95df13f4cfe6b80691b05f8654fe19e8267179
+
+jobs:
+  verify-sim:
+    name: verify the simulation proof
+    runs-on: ubuntu-26.04
+    timeout-minutes: 300
+    defaults:
+      run:
+        working-directory: tools/regionval
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Dafny
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP"
+          curl -sSfLO "https://github.com/dafny-lang/dafny/releases/download/v${DAFNY_VERSION}/${DAFNY_ZIP}"
+          echo "${DAFNY_SHA256}  ${DAFNY_ZIP}" | sha256sum -c -
+          mkdir -p "$HOME/.local/opt" "$HOME/.local/bin"
+          unzip -q "${DAFNY_ZIP}" -d "$HOME/.local/opt"
+          ln -s "$HOME/.local/opt/dafny/dafny" "$HOME/.local/bin/dafny"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Versions
+        run: dafny --version && nproc
+
+      - name: make verify-sim
+        run: |
+          mkdir -p "$RUNNER_TEMP/simlog"
+          make verify-sim SIMLOG="$RUNNER_TEMP/simlog"
+
+      # One CSV per file with the duration and resource count of every batch.
+      - name: Keep the per-batch logs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: verify-sim-csv
+          path: ${{ runner.temp }}/simlog

@@ -35,6 +35,12 @@ func EntryPrologueSpec(floor int) Spec {
 func CallbackPrologueSpec(floor int) Spec {
 	return Spec{api.Companion_Default___.CallbackPrologueSpec(_dafny.IntOf(floor))}
 }
+func PassPrologueSpec(floor int) Spec {
+	return Spec{api.Companion_Default___.PassPrologueSpec(_dafny.IntOf(floor))}
+}
+func PassLoadSpec(floor, g int) Spec {
+	return Spec{api.Companion_Default___.PassLoadSpec(_dafny.IntOf(floor), _dafny.IntOf(g))}
+}
 func PassSpec(floor, g int) Spec {
 	return Spec{api.Companion_Default___.PassSpec(_dafny.IntOf(floor), _dafny.IntOf(g))}
 }

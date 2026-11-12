@@ -320,8 +320,8 @@ wrong.
   windows and assigns each window's kind (`layout.go`) is outside the proof,
   and so is `dafny/contract`, which makes the checks outside `Validate` and
   picks the spec for each kind. The contract rejects an unknown kind.
-- **The specs.** The presets in `dafny/src/Api.dfy` and the `CustomSpec`
-  arguments in `dafny/contract` say which obligations each window kind gets.
+- **The specs.** The presets in `dafny/src/Api.dfy` say which obligations
+  each window kind gets.
   The proof holds for any spec; whether a spec asks enough of its kind is
   outside it.
 - **The verdict merge.** `result.go` takes each window's verdict from the
@@ -338,8 +338,11 @@ wrong.
 - **What was checked is what was loaded.** The capture records the exact
   instructions given to the kernel.
 - **From windows to the program.** regionval shows that every window meets its
-  obligations. That these local obligations imply the whole rewritten program
-  behaves like the original is argued separately; regionval does not check it.
+  obligations. `dafny/sim` proves that validated windows imply the same
+  observation for whole runs, in a model of the original and the rewritten
+  program and under the premises it names (see From windows to whole runs).
+  regionval does not check those premises, and the model's match with the
+  kernel is trusted.
 - The Go toolchain.
 
 The Go core's symbolic machine, term comparison, allowlist and obligations
@@ -360,10 +363,8 @@ Dafny together with a proof that it is sound.
   if `Validate(insns, spec)` returns `Validated`, then every run of the window
   from any registers, stack, helper results and loaded values meets the
   obligations of `spec`.
-- The sources contain no `assume`, `{:axiom}`, `{:verify false}` or
-  `{:extern}`, nor the `@Axiom`, `@Verify` and `@Extern` attributes.
-  `make check-trust` fails if one appears, or if a file in `dafny/src` is
-  missing from the list that `make dafny-verify` verifies.
+- `make check-trust` scans `dafny/src` and `dafny/sim` and rejects any `{:` attribute except `{:isolate_assertions}` and `{:nowarn}`, any line starting with `@` after optional indentation, the word `assume`, and `replaceable` or `abstract` modules.
+  It also rejects a source file missing from `DFY` or `SIM`, an include target outside those lists, and include syntax it cannot check.
 - `dafny/gen-go` is Go translated from the sources and is checked in.
   `dafny/regionvaldafny` is a small wrapper around it.
 - `dafny/contract` is what the command calls for each window: the checks
@@ -403,8 +404,8 @@ checks. It calls `Validate` with the spec for the window's kind:
 | `site-P8` | `WrapSiteSpec(f, W, O[i])`: W's instructions and the 8 bytes of the original helper call; `RB` binds as for `site` |
 | `prologue-P1` | `EntryPrologueSpec(f)`: r1 kept, at most one hook call per path |
 | `prologue-P1b` | `CallbackPrologueSpec(f)` |
-| `prologue-P9` | `CustomSpec(f, nil, false, false, false, true, false, false)`: no register changes, stores allowed |
-| `passload-P9` | `CustomSpec(f, []int{r_G}, false, false, false, false, false, false)`: only r_G changes, no store |
+| `prologue-P9` | `PassPrologueSpec(f)`: no register changes, stores allowed |
+| `passload-P9` | `PassLoadSpec(f, r_G)`: only r_G changes, no store |
 | `hook-P7` | `HookBodySpec()` |
 
 Before that it makes these checks, which `Validate` does not:
@@ -430,6 +431,23 @@ takes, and a window may hold at most 10 branches (counting W for a wrapper
 site), where the Go core limits the number of paths. A window that only the
 Go core validates is not validated and has rule `dafny`.
 
+### From windows to whole runs
+
+`dafny/sim` proves the step from windows to whole runs.
+If `Validate` returns `Validated` for every inserted window with the spec `dafny/contract` chooses for its kind, the structural conditions hold, and the premises in `Premises.dfy` hold (the original program has the required instruction shape, `E0Shape`, and uses only the modelled callback helpers, `S0`; its admissible runs end normally, `E0` with `A1b`; stack accesses respect their frame floors, `A1a`; helper argument tables cover the arguments read, `A3b`; the observer changes only its own state, `A5`; lookup oracle answers are independent of frame depth and wrappers, `A8`; and the rewritten program fits the kernel's instruction limit, `Loadable`), the rewritten program ends with the same observation as the original for the same admissible input and oracle answers: how the run ends, segment-local memory, the final map state, and the trace of original events.
+
+- `Model.dfy` is the semantics of both programs: frames and bpf-to-bpf calls,
+  `bpf_loop` and `bpf_for_each_map_elem` callbacks, tail calls, hooks and the
+  lookup wrapper as inserted functions, and helpers and shared memory
+  answering from an oracle that depends on the history. It is trusted.
+- `Premises.dfy` names each premise the model can express, and `Theorem.dfy`
+  collects them as the hypotheses.
+- `Main.dfy` holds the theorem, `SegmentPreservation`. `Witness*.dfy` build
+  small instances that satisfy the hypotheses, so the statement is not
+  vacuous.
+- The files are not translated to Go.
+  `make verify-sim` runs `check-trust`, then verifies each listed simulation file with warnings treated as errors by the default flags, including warnings for lemmas without bodies.
+
 ### Tools
 
 CI uses Dafny 4.11.0 (`dafny-4.11.0-x64-ubuntu-22.04.zip` from the Dafny
@@ -438,16 +456,25 @@ GitHub release, SHA-256
 bundles .NET and Z3 4.12.1. `dafny translate go` also needs `goimports`
 (`go install golang.org/x/tools/cmd/goimports@v0.52.0`).
 
+The `regionval` workflow verifies the core on every change under
+`tools/regionval`. The `regionval-sim` workflow runs `make verify-sim` when a
+file under `dafny/` or the Makefile changes, or when started by hand, and
+keeps a CSV with the duration and resource count of every batch.
+
 ```sh
-make check-trust       # no assume, axiom or extern
+make check-trust       # allowed attributes, trust escapes and complete file lists
 make dafny-verify      # about 130 s
+make verify-sim        # the proof in dafny/sim, about an hour
 make dafny-check-gen   # dafny/gen-go matches a fresh translation
 make dafny-gen         # regenerate dafny/gen-go after changing dafny/src
 ```
 
-`dafny-verify` passes `smt.case_split=0` to Z3. With Z3's default, some goals
-about recursive functions returning `bv64` do not finish. The option changes
-only how Z3 searches, not what counts as a proof.
+Both verify targets pass `smt.case_split=0` to Z3. With Z3's default, some
+goals about recursive functions returning `bv64` do not finish. The option
+changes only how Z3 searches, not what counts as a proof. They also pass
+`/normalizeDeclarationOrder:0` to Boogie. Without it the declarations reach
+Z3 in a different order on every run, and the cost of a goal varies widely
+between runs.
 
 ## Tests
 

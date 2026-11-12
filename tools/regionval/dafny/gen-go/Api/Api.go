@@ -72,6 +72,12 @@ func (_static *CompanionStruct_Default___) EntryPrologueSpec(floor _dafny.Int) m
 func (_static *CompanionStruct_Default___) CallbackPrologueSpec(floor _dafny.Int) m_Obligations.Spec {
 	return m_Obligations.Companion_Spec_.Create_Spec_(floor, _dafny.SetOf(_dafny.Zero), m_Obligations.Companion_HelperMode_.Create_NoHelper_(), true, false, false, m_Obligations.Companion_WrapMode_.Create_NoWrap_(), _dafny.SeqOf())
 }
+func (_static *CompanionStruct_Default___) PassPrologueSpec(floor _dafny.Int) m_Obligations.Spec {
+	return m_Obligations.Companion_Spec_.Create_Spec_(floor, _dafny.SetOf(), m_Obligations.Companion_HelperMode_.Create_NoHelper_(), true, false, false, m_Obligations.Companion_WrapMode_.Create_NoWrap_(), _dafny.SeqOf())
+}
+func (_static *CompanionStruct_Default___) PassLoadSpec(floor _dafny.Int, g _dafny.Int) m_Obligations.Spec {
+	return m_Obligations.Companion_Spec_.Create_Spec_(floor, _dafny.SetOf(g), m_Obligations.Companion_HelperMode_.Create_NoHelper_(), false, false, false, m_Obligations.Companion_WrapMode_.Create_NoWrap_(), _dafny.SeqOf())
+}
 func (_static *CompanionStruct_Default___) PassSpec(floor _dafny.Int, g _dafny.Int) m_Obligations.Spec {
 	return m_Obligations.Companion_Spec_.Create_Spec_(floor, _dafny.SetOf(g), m_Obligations.Companion_HelperMode_.Create_NoHelper_(), true, false, false, m_Obligations.Companion_WrapMode_.Create_NoWrap_(), _dafny.SeqOf())
 }
