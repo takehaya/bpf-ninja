@@ -197,7 +197,8 @@ vector arpOptVlanPresent := {
 vector arpAlt := {
   id := "arp-alt-second", ast := { layers := [P "eth", .alt [{ name := "ipv4" }, { name := "arp" }]] }, packet := arpPkt, expected := .accept [] }
 vector arpEthertypeMiss := {
-  id := "arp-ethertype-miss", ast := { layers := arpL }, expected := .reject, note := "eth.ethertype 0x0800 is ipv4" }
+  id := "arp-ethertype-miss", ast := { layers := arpL }, packet := eth 0x0800 ++ arpHdr,
+  expected := .reject, note := "a valid ARP header behind eth.ethertype 0x0800 isolates the dispatch check" }
 vector arpNotIPv4 := {
   id := "arp-not-ipv4", ast := { layers := chain3 }, packet := arpPkt, expected := .reject }
 vector arpOper := {
@@ -296,7 +297,8 @@ vector nshMpls := {
   packet := nshPkt (nshMd1 5) (mpls 16 1 ++ nshInner), expected := .accept [] }
 vector nshNextProtoMiss := {
   id := "nsh-next-proto-miss", ast := { layers := [P "eth", P "nsh", P "ipv6", P "tcp"] },
-  packet := nshPkt (nshMd1 1), expected := .reject, note := "next_proto 1 is ipv4" }
+  packet := nshPkt (nshMd1 1) (ipv6 6 ++ tcp 12345 80 ++ payload 5), expected := .reject,
+  note := "a valid IPv6 payload behind next_proto 1 isolates the dispatch check" }
 vector nshVlan := {
   id := "nsh-vlan", ast := { layers := [P "eth", P "vlan", P "nsh", P "ipv4", P "tcp"] },
   packet := eth 0x8100 ++ vlan 100 0x894F ++ nshMd1 1 ++ nshInner, expected := .accept [] }
