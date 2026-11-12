@@ -453,7 +453,7 @@ parser IPv4Parser(packet_in pkt, out ipv4_h hdr, ...) {
 
 ## 8. @kunai_* アノテーション
 
-すべて structured 形式 `@name[k=v, ...]` で書きます。未知の annotation 名は将来の予約として無視されますが、既知 annotation の未知キーは reject されます。typo が気付かれないまま no-op になるのを防ぐためです。定義は `vocab/header_annotations.go` にあります。
+すべて structured 形式 `@name[k=v, ...]` で書きます。未知の annotation 名は将来の予約として無視されますが、既知 annotation の未知キーは reject されます。typo が気付かれないまま no-op になるのを防ぐためです。header と parser の annotation の定義は `vocab/header_annotations.go` にあります。
 
 | annotation | 付く場所 | キー | 用途 |
 |---|---|---|---|
@@ -463,8 +463,9 @@ parser IPv4Parser(packet_in pkt, out ipv4_h hdr, ...) {
 | `@kunai_option_region` | parser | `on_fault` 必須 (`skip` / `fail`) | header が長さを宣言する領域 (counter で区切られた walk) の中で parse が失敗したときの扱い。annotation を書かない領域は `skip` として扱う。ただし byte で数えない領域では後述のとおり loader エラーになる。`skip`: layer はその walk の aux を持たず、宣言長の先へ進む。`<proto>.<option セグメント>.valid` で失敗を読める。`fail`: packet を reject する。領域が byte 単位で宣言されていない walk (要素数の counter) は今の実装では `skip` にできず、`fail` の明示が必要 (spec D-029)。領域として認識するのは、select が `counter.is_zero()` で終わり他の枝がすべて loop に戻る multi-state loop (counter は entry state で header field から設定する) で、1 状態の counter loop は対象外。領域の無い parser に書く、2 回書く、未知の key を書くと loader エラー。`fail` の領域は filter が読まなくても walk するので命令数が増える |
 | `@kunai_layout` | parser param の `out X[N]` | `after` 必須。値は `primary` または他 stack 名 | declare-only スタックの base offset を anchor する。push されない top-level スタックには必須。現在 bundled vocab では未使用 (SRv6 は §7.4 の element-driven walk に移行し、base が push state から決まるため) だが loader は引き続きサポートする |
 | `@kunai_stack_count` | parser param の `out X[N]` | `field` 必須、`offset` | `any` / `all` quantifier 用の実行時要素数を primary の `field` 値 + `offset` で与える。`field` は byte-aligned な 8 bit。現在 bundled vocab では未使用 (SRv6 は parser counter から要素数を導出する方式に移行) だが loader は引き続きサポートし、明示宣言があれば counter 由来の導出より優先する |
+| `@kunai_dispatch_require` | base の Field dispatch const | `field` 必須、`mask` 必須かつ非 0 | dispatch の値の一致に加えて、親 primary の `field` で `mask` の全 bit が立っていること (`field & mask == mask`) を要求する。値だけでは区別できない 2 つの形式を、親の flag で見分けるために使う。要求は `_ALT_` の値にも同じく掛かる。`field` は byte-aligned で 32 bit 以下 (codegen が読める幅は 8、16、32 bit)、`mask` は field の幅に収まること。`_ALT_` の const、NO_CHECK、無印の const に書くと loader エラー。定義は `vocab/loader.go` の `dispatchRequiredMask` |
 
-使用例は、`variable_tail` と `writeback` を使う ipv6.p4 にあります。`@kunai_layout` / `@kunai_stack_count` は現在 bundled vocab には使用者がいませんが、loader は両 annotation を引き続き解釈します。
+使用例は、`variable_tail` と `writeback` を使う ipv6.p4 にあります。`@kunai_dispatch_require` の使用例は erspan.p4 にあります。GRE の `flags` に `mask=0x1000` (sequence-number bit) を要求し、同じ protocol type 0x88BE を使う type I を除いています。`@kunai_layout` / `@kunai_stack_count` は現在 bundled vocab には使用者がいませんが、loader は両 annotation を引き続き解釈します。
 
 ## 9. loader と codegen が reject するもの
 
@@ -482,6 +483,8 @@ vocab を書いたら、`go test ./pkg/kunai/vocab/...` が最初の関門です
 | `duplicate const "X"` / `duplicate header "X"` / `duplicate protocol "X"` | 重複宣言。p4c 無しの vendored 環境でも落ちるよう二重にゲートされている |
 | `dispatch consts "X" and "Y" both dispatch under "p"` | 1 つの子が同じ親に 2 つの Field dispatch を宣言した。1 つ残し、同じ field の別の値なら `_ALT_<NAME>` に書く (§5) |
 | `dispatch const "X" claims p.f == v, which "Y" in ... already claims` | 別の子が同じ親 field の同じ値を宣言している。どちらかの値を変えるか、1 つの protocol にまとめて predicate で見分ける (§5) |
+| `@kunai_dispatch_require is valid only on a base field dispatch const, not "X"` | annotation を `_ALT_` の const、NO_CHECK、無印の const に書いた。base の Field dispatch const に移す (§8) |
+| `dispatch requirement on "X" references unknown field` / `needs a byte-aligned parent field of at most 32 bits` / `dispatch requirement mask ... does not fit` | `@kunai_dispatch_require` の `field` が親 primary に無い、byte-aligned でない、32 bit を超える、または `mask` が field の幅を超える (§8) |
 | `declares both a non-trivial parser block and OPT_TRIGGER_*` | §7.6 と parser machine は排他。どちらかに寄せる |
 | `OPT_TRIGGER_X declared without matching OPT_LEN_X` | TRIGGER と LEN はペア必須。逆向きも同様 |
 | `MAX_DEPTH ... exceeds cap 64` | loader の上限は 64。codegen は chain の反復と 1 状態の self-loop を 32 までしか扱わないので、後述の表も参照する。verifier の命令数予算も考えて一桁を推奨 |
