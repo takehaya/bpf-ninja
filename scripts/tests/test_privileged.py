@@ -258,13 +258,16 @@ class RunnerTests(unittest.TestCase):
 
 
 class FollowScenarioTests(unittest.TestCase):
-    def run_scenario(self, kernel, status):
+    def run_scenario(self, kernel, status, output=None):
         calls = []
 
         def fake_run(command, **kwargs):
             calls.append(command)
             self.stdin = kwargs.get("stdin")
-            return subprocess.CompletedProcess(command, 0 if len(calls) == 1 else status)
+            stdout = None if len(calls) == 1 else output
+            if stdout is None and len(calls) > 1:
+                stdout = "PASS cases=4\n" if status == 0 else "scenario failed\n"
+            return subprocess.CompletedProcess(command, 0 if len(calls) == 1 else status, stdout=stdout)
 
         with mock.patch.object(module.subprocess, "run", fake_run), \
                 mock.patch("builtins.print"):
@@ -286,3 +289,30 @@ class FollowScenarioTests(unittest.TestCase):
         self.assertEqual(run[-5:-1], ["exec", "--", "sh", "-c"])
         self.assertEqual(Path(build[1]).parent, module.ROOT)
         self.assertIs(self.stdin, subprocess.DEVNULL)
+
+    def test_success_requires_all_case_marker(self):
+        status, _ = self.run_scenario(None, 0, "scenario exited without a summary\n")
+        self.assertEqual(status, 1)
+
+    def test_failure_prints_case_diagnostics_before_cleanup(self):
+        build_dir = None
+
+        def fake_run(command, **kwargs):
+            nonlocal build_dir
+            if build_dir is None:
+                build_dir = Path(command[1])
+                case = build_dir / "follow-results.test" / "held"
+                case.mkdir(parents=True)
+                (case / "inject.err").write_text("inject diagnostic\n", encoding="utf-8")
+                (case / "cap.err").write_text("capture diagnostic\n", encoding="utf-8")
+                return subprocess.CompletedProcess(command, 0)
+            return subprocess.CompletedProcess(command, 2, stdout="scenario failed\n")
+
+        stderr = io.StringIO()
+        stdout = io.StringIO()
+        with mock.patch.object(module.subprocess, "run", fake_run), \
+                mock.patch("sys.stderr", stderr), mock.patch("sys.stdout", stdout):
+            self.assertEqual(module.follow_scenario(None), 2)
+        self.assertIn("inject diagnostic", stderr.getvalue())
+        self.assertIn("capture diagnostic", stderr.getvalue())
+        self.assertFalse(build_dir.exists())

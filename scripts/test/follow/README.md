@@ -16,8 +16,10 @@ The build host needs clang with BPF support and Linux/libbpf headers.
 Runtime needs `python3`, `unshare` and `pkill`.
 `scripts/test/privileged.py` builds and runs the scenario after its Go suites,
 on the host and in each matrix kernel's VM.
-Diagnostics and pcaps are retained in a unique `follow-results.*` directory
-inside the copied directory, including on failure.
+When `run.sh` is invoked directly, diagnostics and pcaps remain in a unique
+`follow-results.*` directory inside the copied directory.
+`scripts/test/privileged.py` prints the failing case's `inject.err` and capture
+stderr before deleting its temporary build directory and all results.
 
 The loader starts loading generation 2 after packet 99 on another goroutine and
 keeps sending on generation 1 until the load returns; it then switches, closes

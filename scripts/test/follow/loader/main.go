@@ -4,11 +4,11 @@
 //
 // usage: loader DIR GEN1.o GEN2.o TOTAL SWAP_AT
 //
-// It prints generation 1's program ID, waits for DIR/go, sends TOTAL packets
-// 2 ms apart with the sequence number in the IPv4 ID, and at packet SWAP_AT
-// starts loading generation 2 on another goroutine. Packets keep running on
-// generation 1 until generation 2 is loaded; then they switch and
-// generation 1 is closed. DIR/done receives the first sequence number
+// It prints generation 1's program ID, waits for DIR/go, then sends packets
+// 2 ms apart with the sequence number in the IPv4 ID. At packet SWAP_AT it
+// starts loading generation 2 on another goroutine, while packets keep running
+// on generation 1. After the load returns, it sends TOTAL packets on generation
+// 2 and closes generation 1. DIR/done receives the first sequence number
 // that ran on generation 2 and its program ID. The loader then keeps
 // generation 2 loaded until it is killed.
 package main

@@ -186,7 +186,21 @@ def follow_scenario(kernel):
         command = prefix + ["sh", "-c", f"cd {shlex.quote(out)} && ./run.sh"]
         print("+ " + " ".join(command), flush=True)
         # vimto exec never starts the command when stdin is a pipe at end of file, as in CI.
-        return subprocess.run(command, stdin=subprocess.DEVNULL).returncode
+        result = subprocess.run(command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                stderr=subprocess.STDOUT, text=True)
+        print(result.stdout, end="", flush=True)
+        passed = result.returncode == 0 and "PASS cases=4" in result.stdout.splitlines()
+        if not passed:
+            case_dirs = [case for results in Path(out).glob("follow-results.*")
+                         for case in results.iterdir() if case.is_dir()]
+            if case_dirs:
+                failed = max(case_dirs, key=lambda path: path.stat().st_mtime_ns)
+                for path in [failed / "inject.err", *sorted(failed.glob("cap*.err"))]:
+                    if path.is_file():
+                        print(f"--- {path.relative_to(out)} ---", file=sys.stderr)
+                        print(path.read_text(encoding="utf-8", errors="replace"),
+                              end="", file=sys.stderr)
+        return 0 if passed else result.returncode or 1
 
 
 def main():
