@@ -276,7 +276,7 @@ Dispatched from: ipv6
 ## igmp
 
 ```text
-igmp — header 8 bytes minimum (variable layout, see Notes)
+igmp — header 8 bytes
 
 Fields (bit width, running byte offset):
   type                 bit<8>    @0
@@ -284,18 +284,7 @@ Fields (bit width, running byte offset):
   checksum             bit<16>   @2
   group                bit<32>   @4
 
-Aux headers:
-  record (igmp_record_h, 8 bytes @ +8 from layer start) (gated: (byte@0 & 0xff) == 0x22)
-    record_type          bit<8>    @0
-    aux_len              bit<8>    @1
-    num_sources          bit<16>   @2
-    mcast                bit<32>   @4
-    use: igmp.record.<field>  or  igmp[record.<field> == X]
-
 Dispatched from: ipv4
-
-Notes:
-  parser state machine (variable extension headers or self-validation)
 ```
 
 ## ipv4

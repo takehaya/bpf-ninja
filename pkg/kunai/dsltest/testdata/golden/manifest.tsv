@@ -107,23 +107,15 @@ xdp_entry	eth/ipv4/gre/nsh/ipv4/tcp	-	code=80f8c92308290b74 meta=5ee214e8b4c2737
 xdp_entry	eth/ipv4/gre?/ipv4/tcp	-	code=428b008cf8e82cdc meta=5ee214e8b4c27377 main=261 cb=0
 xdp_entry	eth/ipv4/icmp	-	code=e22760835e42e19e meta=5ee214e8b4c27377 main=74 cb=0
 xdp_entry	eth/ipv4/icmp where icmp.type == 8	-	code=f95bb6b80c99c451 meta=5ee214e8b4c27377 main=85 cb=0
-xdp_entry	eth/ipv4/igmp	-	code=c7f6d9ab5326ea8c meta=5ee214e8b4c27377 main=96 cb=0
-xdp_entry	eth/ipv4/igmp where (igmp.record.record_type == 4) and (igmp.record.num_sources == 0)	-	code=8ec90ef41faa236e meta=5ee214e8b4c27377 main=136 cb=0
-xdp_entry	eth/ipv4/igmp where (igmp.type == 17) and (igmp.group == 0)	-	code=4e33354b45432a4e meta=5ee214e8b4c27377 main=119 cb=0
-xdp_entry	eth/ipv4/igmp where igmp.group == 0	-	code=4bafb8a6f8ea9a9c meta=5ee214e8b4c27377 main=109 cb=0
-xdp_entry	eth/ipv4/igmp where igmp.group == 239.0.0.0/8	-	code=3eea941c1bba50d3 meta=5ee214e8b4c27377 main=107 cb=0
-xdp_entry	eth/ipv4/igmp where igmp.group == 239.1.1.1	-	code=796482ade0388fff meta=5ee214e8b4c27377 main=106 cb=0
-xdp_entry	eth/ipv4/igmp where igmp.max_resp_code > 10	-	code=23adda7702050455 meta=5ee214e8b4c27377 main=108 cb=0
-xdp_entry	eth/ipv4/igmp where igmp.record.exists	-	code=8224d92ee152384e meta=5ee214e8b4c27377 main=105 cb=0
-xdp_entry	eth/ipv4/igmp where igmp.record.mcast == 239.1.1.1	-	code=89f66f11e3a2f3b9 meta=5ee214e8b4c27377 main=114 cb=0
-xdp_entry	eth/ipv4/igmp where igmp.record.mcast == 239.1.1.2	-	code=076d3b73efee8a05 meta=5ee214e8b4c27377 main=114 cb=0
-xdp_entry	eth/ipv4/igmp where igmp.record.num_sources == 0	-	code=95c9d861ed9b5cb3 meta=5ee214e8b4c27377 main=117 cb=0
-xdp_entry	eth/ipv4/igmp where igmp.record.num_sources == 2	-	code=5252ef647ff9355f meta=5ee214e8b4c27377 main=117 cb=0
-xdp_entry	eth/ipv4/igmp where ipv4.options.ROUTER_ALERT.value == 0	-	code=0e6426ff4381e5f2 meta=5ee214e8b4c27377 main=142 cb=108
-xdp_entry	eth/ipv4/igmp where not (igmp.record.num_sources == 0)	-	code=72ed1893b3642501 meta=5ee214e8b4c27377 main=119 cb=0
-xdp_entry	eth/ipv4/igmp[record.mcast == 239.1.1.1]	-	code=7d34baba88351821 meta=5ee214e8b4c27377 main=113 cb=0
-xdp_entry	eth/ipv4/igmp[type == 22]	-	code=c1491e046b4b0483 meta=5ee214e8b4c27377 main=103 cb=0
-xdp_entry	eth/ipv4/igmp[type == 23]	-	code=7e7a17a55eaa677d meta=5ee214e8b4c27377 main=103 cb=0
+xdp_entry	eth/ipv4/igmp	-	code=b17a96460156a0da meta=5ee214e8b4c27377 main=74 cb=0
+xdp_entry	eth/ipv4/igmp where (igmp.type == 17) and (igmp.group == 0)	-	code=8021fe62d5678e0c meta=5ee214e8b4c27377 main=97 cb=0
+xdp_entry	eth/ipv4/igmp where igmp.group == 0	-	code=a796af451e72f46e meta=5ee214e8b4c27377 main=87 cb=0
+xdp_entry	eth/ipv4/igmp where igmp.group == 239.0.0.0/8	-	code=a40d741b9b644c91 meta=5ee214e8b4c27377 main=85 cb=0
+xdp_entry	eth/ipv4/igmp where igmp.group == 239.1.1.1	-	code=277ecdffe7ec6134 meta=5ee214e8b4c27377 main=84 cb=0
+xdp_entry	eth/ipv4/igmp where igmp.max_resp_code > 10	-	code=1f3e97e3a6d9d6ba meta=5ee214e8b4c27377 main=86 cb=0
+xdp_entry	eth/ipv4/igmp where ipv4.options.ROUTER_ALERT.value == 0	-	code=1c096742a821b11d meta=5ee214e8b4c27377 main=120 cb=108
+xdp_entry	eth/ipv4/igmp[type == 22]	-	code=ff12c0fcf3a9a5b3 meta=5ee214e8b4c27377 main=81 cb=0
+xdp_entry	eth/ipv4/igmp[type == 23]	-	code=c62383f58e4c00b6 meta=5ee214e8b4c27377 main=81 cb=0
 xdp_entry	eth/ipv4/ipv4*/tcp	-	code=abd85eba4c914eac meta=5ee214e8b4c27377 main=687 cb=0
 xdp_entry	eth/ipv4/ipv4?/ipv4?/tcp	-	code=03197839cab9b962 meta=5ee214e8b4c27377 main=305 cb=0
 xdp_entry	eth/ipv4/ipv4?/tcp	-	code=860d252b81d88b1b meta=5ee214e8b4c27377 main=210 cb=0
@@ -654,7 +646,7 @@ xdp_entry	eth/qinq?/vlan?/ipv4/tcp	-	code=a7cac655380fcccf meta=5ee214e8b4c27377
 xdp_entry	eth/vlan*	-	code=21c3bd0bb10f0d41 meta=5ee214e8b4c27377 main=33 cb=28
 xdp_entry	eth/vlan*/ipv4	-	code=6cc0e1d23ac63a8b meta=5ee214e8b4c27377 main=120 cb=28
 xdp_entry	eth/vlan/arp	-	code=17e6a51972245eb1 meta=5ee214e8b4c27377 main=40 cb=0
-xdp_entry	eth/vlan/ipv4/igmp	-	code=1dbf722644c3608b meta=5ee214e8b4c27377 main=105 cb=0
+xdp_entry	eth/vlan/ipv4/igmp	-	code=562c174187808f40 meta=5ee214e8b4c27377 main=83 cb=0
 xdp_entry	eth/vlan/ipv4/tcp	-	code=4b5e7e3b6a0f5c14 meta=5ee214e8b4c27377 main=138 cb=0
 xdp_entry	eth/vlan/nsh/ipv4/tcp	-	code=f31140de82dcdc75 meta=5ee214e8b4c27377 main=203 cb=0
 xdp_entry	eth/vlan?	-	code=f6d4c5203345dc1a meta=5ee214e8b4c27377 main=19 cb=0

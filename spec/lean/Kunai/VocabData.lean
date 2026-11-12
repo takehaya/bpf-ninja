@@ -96,17 +96,7 @@ def vocab : Vocab :=
         fixedLen := 4 },
       { name := "igmp",
         fields := [⟨"type", 0, 8⟩, ⟨"max_resp_code", 8, 8⟩, ⟨"checksum", 16, 16⟩, ⟨"group", 32, 32⟩],
-        fixedLen := 8,
-        machine := some {
-          states := [
-            { name := "start", extracts := [⟨"hdr", "igmp_h", 8, false⟩], counters := [], advances := [], trans := .select { keys := [.field "hdr" false 0 8], cases := [⟨[.val 34], (.state 1)⟩], default := .accept } },
-            { name := "parse_record", extracts := [⟨"record", "igmp_record_h", 8, false⟩], counters := [], advances := [], trans := .goto .accept }],
-          entry := 0,
-          headers := [⟨"igmp_h", [⟨"type", 0, 8⟩, ⟨"max_resp_code", 8, 8⟩, ⟨"checksum", 16, 16⟩, ⟨"group", 32, 32⟩], 8⟩, ⟨"igmp_record_h", [⟨"record_type", 0, 8⟩, ⟨"aux_len", 8, 8⟩, ⟨"num_sources", 16, 16⟩, ⟨"mcast", 32, 32⟩], 8⟩],
-          options := [{ outParam := "record", header := "igmp_record_h", kindByte := none }],
-          stacks := [],
-          tails := [],
-          writebacks := [] } },
+        fixedLen := 8 },
       { name := "ipv4",
         fields := [⟨"version", 0, 4⟩, ⟨"ihl", 4, 4⟩, ⟨"diffserv", 8, 8⟩, ⟨"total_length", 16, 16⟩, ⟨"identification", 32, 16⟩, ⟨"flags", 48, 3⟩, ⟨"frag_offset", 51, 13⟩, ⟨"ttl", 64, 8⟩, ⟨"protocol", 72, 8⟩, ⟨"checksum", 80, 16⟩, ⟨"src", 96, 32⟩, ⟨"dst", 128, 32⟩],
         fixedLen := 20,

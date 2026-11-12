@@ -512,31 +512,13 @@ vector igmpMaxResp := {
 vector igmpRouterAlert := {
   id := "igmp-ipv4-router-alert", ast := igmpW (cmp (fa ["ipv4", "options", "ROUTER_ALERT", "value"]) .eq (k 0)),
   packet := igmpV2Report, expected := .accept [], note := "the ipv4 option walk runs before igmp" }
-vector igmpRecMcast := {
-  id := "igmp-v3-record-mcast", ast := igmpW (.litCmp (fp ["igmp", "record", "mcast"]) .eq (.ipv4 0xef010101)), packet := igmpV3Join, expected := .accept [] }
-vector igmpRecMcastMiss := {
-  id := "igmp-v3-record-mcast-miss", ast := igmpW (.litCmp (fp ["igmp", "record", "mcast"]) .eq (.ipv4 0xef010102)), packet := igmpV3Join, expected := .reject }
-vector igmpRecFields := {
-  id := "igmp-v3-record-type-sources", ast := igmpW (.and (cmp (fa ["igmp", "record", "record_type"]) .eq (k 4)) (cmp (fa ["igmp", "record", "num_sources"]) .eq (k 0))),
-  packet := igmpV3Join, expected := .accept [] }
-vector igmpRecSources := {
-  id := "igmp-v3-record-with-sources", ast := igmpW (cmp (fa ["igmp", "record", "num_sources"]) .eq (k 2)),
-  packet := igmpPkt (igmpV3Report 1 ++ igmpRecord 1 0xef010101 [0x0a000001, 0x0a000002]), expected := .accept [],
-  note := "the source list after the record header is not read" }
-vector igmpRecAbsent := {
-  id := "igmp-v3-record-absent", ast := igmpW (cmp (fa ["igmp", "record", "num_sources"]) .eq (k 0)), packet := igmpV2Report, expected := .reject,
-  note := "D-003/D-027: only type 0x22 has a record" }
-vector igmpRecAbsentNot := {
-  id := "igmp-v3-record-absent-not", ast := igmpW (.not (cmp (fa ["igmp", "record", "num_sources"]) .eq (k 0))), packet := igmpV2Report, expected := .accept [] }
-vector igmpRecBracket := {
-  id := "igmp-pred-v3-record-mcast", ast := igmpPred (.cmp (fp ["record", "mcast"]) .eq (.ipv4 0xef010101)), packet := igmpV3Join, expected := .accept [] }
-vector igmpRecExists := {
-  id := "igmp-v3-record-exists", ast := igmpW (.fieldExists (fp ["igmp", "record"])), packet := igmpV3Join, expected := .accept [] }
-vector igmpRecExistsAbsent := {
-  id := "igmp-v3-record-exists-absent", ast := igmpW (.fieldExists (fp ["igmp", "record"])), packet := igmpQuery, expected := .reject }
 vector igmpV3NoRecords := {
-  id := "igmp-v3-report-no-records", ast := { layers := igmpL }, packet := igmpPkt (igmpV3Report 0), expected := .reject,
-  note := "D-045: type 0x22 commits to a record header even when the count is 0" }
+  id := "igmp-v3-report-no-records", ast := { layers := igmpL }, packet := igmpPkt (igmpV3Report 0), expected := .accept [],
+  note := "D-045: group records are not parsed" }
+vector igmpV3NoRecordsPadded := {
+  id := "igmp-v3-report-no-records-padding", ast := { layers := igmpL },
+  packet := igmpPkt (igmpV3Report 0) ++ List.replicate 14 0, expected := .accept [],
+  note := "D-045: Ethernet padding is not a group record" }
 vector igmpV3Query := {
   id := "igmp-v3-query", ast := igmpW (cmp (fld "igmp" "group") .eq (k 0)),
   packet := igmpPkt (igmpHdr 0x11 0 ++ [0x02, 125] ++ be 2 0), expected := .accept [],
@@ -545,15 +527,10 @@ vector igmpTrunc := {
   id := "igmp-truncated", ast := { layers := igmpL }, packet := igmpV2Report.take 45, expected := .reject, note := "7 of 8 bytes" }
 vector igmpExact := {
   id := "igmp-exact-fit", ast := { layers := igmpL }, packet := igmpV2Report, expected := .accept [] }
-vector igmpV3RecTrunc := {
-  id := "igmp-v3-record-truncated", ast := { layers := igmpL }, packet := igmpV3Join.take 50, expected := .reject,
-  note := "4 of the 8 record-header bytes" }
-
 def igmpVectors : List Vector := [
   igmpV2, igmpQ, igmpV3, igmpVlan, igmpProtoMiss, igmpNotIcmp, igmpType, igmpTypeMiss, igmpGroup, igmpGroupCidr,
-  igmpGeneralQuery, igmpMaxResp, igmpRouterAlert, igmpRecMcast, igmpRecMcastMiss, igmpRecFields, igmpRecSources,
-  igmpRecAbsent, igmpRecAbsentNot, igmpRecBracket, igmpRecExists, igmpRecExistsAbsent, igmpV3NoRecords, igmpV3Query,
-  igmpTrunc, igmpExact, igmpV3RecTrunc]
+  igmpGeneralQuery, igmpMaxResp, igmpRouterAlert, igmpV3NoRecords, igmpV3NoRecordsPadded, igmpV3Query,
+  igmpTrunc, igmpExact]
 
 def protocolVectors : List Vector := pfcpVectors ++ sctpVectors ++ arpVectors ++ nshVectors ++ erspanVectors ++ igmpVectors
 
