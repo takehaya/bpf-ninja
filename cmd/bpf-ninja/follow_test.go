@@ -196,6 +196,12 @@ func TestKernelFollowSourceSkipsProgramWithoutBTF(t *testing.T) {
 	}
 }
 
+// hostlessSource keeps a kernelFollowSource's Open and hides the host's
+// program IDs, so a stop-time scan run as root finds nothing to report.
+type hostlessSource struct{ *kernelFollowSource }
+
+func (hostlessSource) NextID(uint32) (uint32, bool) { return 0, false }
+
 func TestFollowManagerReportsAnnouncedReadFailureAtStop(t *testing.T) {
 	for _, failAt := range []string{"open", "btf"} {
 		t.Run(failAt, func(t *testing.T) {
@@ -212,7 +218,7 @@ func TestFollowManagerReportsAnnouncedReadFailureAtStop(t *testing.T) {
 			}
 			probe := &fakeFollowProbe{observed: map[uint32]int{5: 1}}
 			var stderr bytes.Buffer
-			m := newFollowManager(probe, src, []attach.Target{followTarget(5, "hook_a")}, []int{0}, followConfig{stderr: &stderr, logf: func(string, ...any) {}})
+			m := newFollowManager(probe, hostlessSource{src}, []attach.Target{followTarget(5, "hook_a")}, []int{0}, followConfig{stderr: &stderr, logf: func(string, ...any) {}})
 			m.announced(follow.Load{ProgID: 6, Hooks: []string{"hook_a"}})(true)
 			if m.stats.gaps.Load() != 0 || stderr.Len() != 0 {
 				t.Fatalf("announced read failure was reported before retry: %s; stderr=%q", m.stats.String(), stderr.String())
