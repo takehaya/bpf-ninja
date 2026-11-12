@@ -185,7 +185,8 @@ def follow_scenario(kernel):
         prefix = ["vimto", "-sudo", "-kernel", ":"+kernel, "-memory", "4G", "-smp", "cpus=2", "exec", "--"] if kernel else []
         command = prefix + ["sh", "-c", f"cd {shlex.quote(out)} && ./run.sh"]
         print("+ " + " ".join(command), flush=True)
-        return subprocess.run(command).returncode
+        # vimto exec never starts the command when stdin is a pipe at end of file, as in CI.
+        return subprocess.run(command, stdin=subprocess.DEVNULL).returncode
 
 
 def main():

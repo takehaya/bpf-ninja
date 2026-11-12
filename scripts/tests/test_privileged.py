@@ -263,6 +263,7 @@ class FollowScenarioTests(unittest.TestCase):
 
         def fake_run(command, **kwargs):
             calls.append(command)
+            self.stdin = kwargs.get("stdin")
             return subprocess.CompletedProcess(command, 0 if len(calls) == 1 else status)
 
         with mock.patch.object(module.subprocess, "run", fake_run), \
@@ -284,3 +285,4 @@ class FollowScenarioTests(unittest.TestCase):
         # repository but not the host's /tmp.
         self.assertEqual(run[-5:-1], ["exec", "--", "sh", "-c"])
         self.assertEqual(Path(build[1]).parent, module.ROOT)
+        self.assertIs(self.stdin, subprocess.DEVNULL)
