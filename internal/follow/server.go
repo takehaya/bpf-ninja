@@ -101,17 +101,17 @@ func (s *Server) serve(conn *net.UnixConn) {
 	if err == nil && (hello.Type != typeHello || hello.Version != Version) {
 		err = fmt.Errorf("it speaks protocol version %d, this inject-run version %d", hello.Version, Version)
 	}
-	if err == nil {
-		err = w.send(message{Type: typeHello, Version: Version}, handshakeTimeout)
-	}
 	if err != nil {
 		s.opts.logf("refused capture pid %d: %v", pid, err)
 		return
 	}
 	sub := &subscriber{wire: w, pid: pid, hooks: hello.Hooks, acks: make(chan message, 64), gone: make(chan struct{})}
-	s.mu.Lock()
-	s.subs = append(s.subs, sub)
-	s.mu.Unlock()
+	if err = s.register(sub, func() error {
+		return w.send(message{Type: typeHello, Version: Version}, handshakeTimeout)
+	}); err != nil {
+		s.opts.logf("refused capture pid %d: %v", pid, err)
+		return
+	}
 	s.opts.logf("capture pid %d follows %v", pid, hello.Hooks)
 	for {
 		m, err := w.receive(0)
@@ -131,6 +131,19 @@ func (s *Server) serve(conn *net.UnixConn) {
 	s.subs = slices.DeleteFunc(s.subs, func(x *subscriber) bool { return x == sub })
 	s.mu.Unlock()
 	s.opts.logf("capture pid %d disconnected", pid)
+}
+
+// register publishes sub before the hello that makes the capture consider
+// itself connected. Holding mu keeps Announce from writing before the hello.
+func (s *Server) register(sub *subscriber, hello func() error) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.subs = append(s.subs, sub)
+	if err := hello(); err != nil {
+		s.subs = slices.DeleteFunc(s.subs, func(x *subscriber) bool { return x == sub })
+		return err
+	}
+	return nil
 }
 
 // Announce tells each capture that follows one of hooks about the program

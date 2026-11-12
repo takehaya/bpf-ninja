@@ -148,9 +148,9 @@ type pendingAttach struct {
 // followReadFailure is a program the poller could not classify. It remains
 // separate from lastID so one unreadable program cannot hide later IDs.
 type followReadFailure struct {
-	at       time.Duration
-	err      error
-	reported bool
+	at        time.Duration
+	err       error
+	announced bool
 }
 
 type followManager struct {
@@ -268,23 +268,23 @@ func (m *followManager) stop() {
 	if m == nil {
 		return
 	}
-	m.stopOnce.Do(func() { close(m.stopCh) })
-	<-m.done
-	if m.client != nil {
-		m.client.Close()
-	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.scanUnobservedAtStop()
-	for id := range m.pending {
-		m.settle(id, false)
-	}
-	for id, failure := range m.retry {
-		if !failure.reported {
-			m.gap(id, "unknown", gapAttachFailed, failure.at, failure.err)
+	m.stopOnce.Do(func() {
+		close(m.stopCh)
+		<-m.done
+		if m.client != nil {
+			m.client.Close()
 		}
-		delete(m.retry, id)
-	}
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		m.scanUnobservedAtStop()
+		for id := range m.pending {
+			m.settle(id, false)
+		}
+		for id, failure := range m.retry {
+			m.gap(id, "unknown", gapAttachFailed, failure.at, failure.err)
+			delete(m.retry, id)
+		}
+	})
 }
 
 // scanUnobservedAtStop classifies programs loaded beyond the poll cursor
@@ -340,9 +340,7 @@ func (m *followManager) poll() {
 			continue
 		}
 		delete(m.retry, id)
-		if failure.reported {
-			delete(m.pending, id)
-		} else if m.connected == 0 {
+		if failure.announced || m.connected == 0 {
 			m.settle(id, false)
 		}
 	}
@@ -385,14 +383,7 @@ func (m *followManager) announced(l follow.Load) func(held bool) {
 	defer m.mu.Unlock()
 	if err := m.examine(l.ProgID); err != nil {
 		failure := m.rememberReadFailure(l.ProgID, err)
-		if !failure.reported {
-			for _, name := range l.Hooks {
-				if _, followed := m.slots[name]; followed {
-					m.reportGap(l.ProgID, name, gapAttachFailed, 0, err)
-				}
-			}
-			failure.reported = true
-		}
+		failure.announced = true
 	} else {
 		delete(m.retry, l.ProgID)
 	}
@@ -415,6 +406,9 @@ func (m *followManager) examine(id uint32) error {
 	}
 	p, err := m.source.Open(id, m.names)
 	if errors.Is(err, os.ErrNotExist) {
+		if failure := m.retry[id]; failure != nil {
+			m.gap(id, "unknown", gapAttachFailed, failure.at, failure.err)
+		}
 		m.examined[id] = m.source.Now()
 		return nil
 	}
@@ -426,14 +420,12 @@ func (m *followManager) examine(id uint32) error {
 		return nil
 	}
 	loadedAt := p.loadedAt
-	pending := &pendingAttach{}
-	attached := m.observe(p, func(funcName string) {
-		m.stats.attached.Add(1)
-		pending.funcs = append(pending.funcs, funcName)
-	})
-	if !attached {
+	names := m.observe(p)
+	if len(names) == 0 {
 		return nil
 	}
+	m.stats.attached.Add(uint64(len(names)))
+	pending := &pendingAttach{funcs: names}
 	pending.at = m.source.Now()
 	if d := pending.at - loadedAt; d > 0 {
 		pending.ms = uint64((d + time.Millisecond - 1) / time.Millisecond)
@@ -482,11 +474,10 @@ func (m *followManager) expirePending() {
 }
 
 // observe attaches the capture's observers to each hook of p and closes p.
-// It calls onAttach per attached hook, reports each failure as a gap
-// counted from p's load, and returns whether any hook was attached.
-func (m *followManager) observe(p *followProgram, onAttach func(funcName string)) (attached bool) {
+// It reports each failure as a gap counted from p's load and returns every
+// hook it attached, including when the capture stops partway through.
+func (m *followManager) observe(p *followProgram) (attachedNames []string) {
 	defer p.close()
-	var attachedNames []string
 	for name, err := range p.failed {
 		m.observationGap(p, name, gapAttachFailed, err)
 	}
@@ -497,36 +488,37 @@ func (m *followManager) observe(p *followProgram, onAttach func(funcName string)
 			if errors.Is(err, program.ErrFollowerLockTimeout) {
 				reason = gapObservedByOther
 			}
-			m.observationGap(p, p.targets[0].FuncName, reason, err)
-			return false
+			for _, target := range p.targets {
+				m.observationGap(p, target.FuncName, reason, err)
+			}
+			return nil
 		}
 		defer unlock()
 	}
 	for i, t := range p.targets {
 		if m.stopped() {
 			m.reportStoppedTargets(p, p.targets[i:])
-			return attached
+			return attachedNames
 		}
 		reason, err := m.attach(t)
 		if errors.Is(err, program.ErrProbeStopped) {
 			m.reportStoppedTargets(p, p.targets[i:])
-			return attached
+			return attachedNames
 		}
 		if err != nil {
-			m.observationGap(p, t.FuncName, reason, err)
 			if reason == gapObservedByOther {
 				m.probe.DetachFollowers(p.id)
-				return false
+				for _, target := range p.targets {
+					m.observationGap(p, target.FuncName, reason, err)
+				}
+				return nil
 			}
+			m.observationGap(p, t.FuncName, reason, err)
 			continue
 		}
-		attached = true
 		attachedNames = append(attachedNames, t.FuncName)
 	}
-	for _, name := range attachedNames {
-		onAttach(name)
-	}
-	return attached
+	return attachedNames
 }
 
 func (m *followManager) reportStoppedTargets(p *followProgram, targets []attach.Target) {
@@ -572,9 +564,8 @@ func (m *followManager) attach(t attach.Target) (string, error) {
 }
 
 // gap reports a hook of program id that ran, or may have run, without the
-// capture's observers since the given time. For a late attach the
-// unobserved time ends now; for a failed one it is the time so far, and the
-// hook stays unobserved.
+// capture's observers since the given time. For a failed attach the hook
+// stays unobserved.
 func (m *followManager) gap(id uint32, funcName, reason string, since time.Duration, err error) {
 	ms := uint64(0)
 	if d := m.source.Now() - since; d > 0 {

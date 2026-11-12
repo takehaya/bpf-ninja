@@ -114,8 +114,8 @@ func (c *Client) serve(slot int, w *wire) {
 		finish := c.handle(Load{ProgID: m.ProgID, Hooks: m.Hooks})
 		err = w.send(message{Type: typeAck, Seq: m.Seq}, c.opts.deadline())
 		held := false
-		// The resume follows the ack at once, unless another capture uses
-		// the rest of the shared deadline.
+		// The resume follows this capture's ack at once; the loader may stay
+		// stopped for other captures.
 		for err == nil {
 			var r message
 			if r, err = w.receive(c.opts.deadline() + handshakeTimeout); err == nil && r.Type == typeResume && r.Seq == m.Seq {

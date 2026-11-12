@@ -192,3 +192,31 @@ func TestFollowDocumentationDescribesProgramAdmission(t *testing.T) {
 		}
 	}
 }
+
+func TestFollowDocumentationDescribesScopeAndDeadline(t *testing.T) {
+	for path, wants := range map[string][]string{
+		"../../docs/en/inject-run.md": {
+			"programs of the same kind (XDP, tc, cgroup-skb or netfilter)",
+			"Another target thread keeps running until it reaches a stop",
+			"If a retry attaches the observer, the capture reports a `late` gap",
+		},
+		"../../docs/ja/cli/capture.md": {
+			"同じ種類 (XDP、tc、cgroup-skb、netfilter) のプログラム",
+			"停止点 (program または BTF のロード、signal、`--stop-every-syscall`",
+			"再試行で observer を attach できた場合は、ロードからの時間を含む `late` gap",
+		},
+		"../../README.md":                      {"holds each load for at most one second"},
+		"../../docs/en/inject-walkthrough.md":  {"holds that load for at most one second"},
+		"../../docs/ja/architecture/README.md": {"1 回のロードにつき最大 1 秒間 loader を止めておく"},
+	} {
+		contents, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, want := range wants {
+			if !bytes.Contains(contents, []byte(want)) {
+				t.Errorf("%s does not contain %q", path, want)
+			}
+		}
+	}
+}

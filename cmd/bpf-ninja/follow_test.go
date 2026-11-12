@@ -196,7 +196,7 @@ func TestKernelFollowSourceSkipsProgramWithoutBTF(t *testing.T) {
 	}
 }
 
-func TestFollowManagerReportsAnnouncedReadFailure(t *testing.T) {
+func TestFollowManagerReportsAnnouncedReadFailureAtStop(t *testing.T) {
 	for _, failAt := range []string{"open", "btf"} {
 		t.Run(failAt, func(t *testing.T) {
 			h, _ := hook.ByProgramType(ebpf.XDP)
@@ -214,8 +214,14 @@ func TestFollowManagerReportsAnnouncedReadFailure(t *testing.T) {
 			var stderr bytes.Buffer
 			m := newFollowManager(probe, src, []attach.Target{followTarget(5, "hook_a")}, []int{0}, followConfig{stderr: &stderr, logf: func(string, ...any) {}})
 			m.announced(follow.Load{ProgID: 6, Hooks: []string{"hook_a"}})(true)
-			if m.stats.gaps.Load() != 1 || !strings.Contains(stderr.String(), "reason=attach_failed") {
-				t.Fatalf("announced read failure was not reported: %s; stderr=%q", m.stats.String(), stderr.String())
+			if m.stats.gaps.Load() != 0 || stderr.Len() != 0 {
+				t.Fatalf("announced read failure was reported before retry: %s; stderr=%q", m.stats.String(), stderr.String())
+			}
+			close(m.done)
+			m.stop()
+			if got := m.stats.String(); m.stats.gaps.Load() != 1 ||
+				strings.Count(stderr.String(), "func=unknown reason=attach_failed") != 1 {
+				t.Fatalf("announced read failure at stop: %s; stderr=%q", got, stderr.String())
 			}
 		})
 	}
@@ -238,7 +244,7 @@ func TestFollowManagerRetriesReadFailure(t *testing.T) {
 	}
 }
 
-func TestFollowManagerRetryAfterAnnouncedFailureIsNotCountedAgain(t *testing.T) {
+func TestFollowManagerRetryAfterAnnouncedFailureIsLate(t *testing.T) {
 	for _, held := range []bool{false, true} {
 		t.Run(fmt.Sprintf("resume-held=%v", held), func(t *testing.T) {
 			src := &fakeFollowSource{now: time.Second, maxID: 6, openErr: map[uint32]error{6: syscall.EMFILE}, progs: map[uint32]*followProgram{
@@ -255,13 +261,35 @@ func TestFollowManagerRetryAfterAnnouncedFailureIsNotCountedAgain(t *testing.T) 
 			delete(src.openErr, 6)
 			m.poll()
 			finish(held)
-			if got := m.stats.String(); got != "follow_attached=1 follow_held=0 follow_gaps=1 follow_gap_ms=0" {
-				t.Fatalf("retry counted twice or as held: stats=%q stderr=%q", got, stderr.String())
+			if got := m.stats.String(); got != "follow_attached=1 follow_held=0 follow_gaps=1 follow_gap_ms=600" {
+				t.Fatalf("retry was not counted once as late: stats=%q stderr=%q", got, stderr.String())
 			}
-			if n := strings.Count(stderr.String(), "FOLLOW GAP: prog=6"); n != 1 {
-				t.Fatalf("retry produced %d gap lines, want 1: %q", n, stderr.String())
+			if n := strings.Count(stderr.String(), "FOLLOW GAP: prog=6 func=hook_a reason=late unobserved_ms=600"); n != 1 {
+				t.Fatalf("retry produced %d late gap lines, want 1: %q", n, stderr.String())
 			}
 		})
+	}
+}
+
+func TestFollowManagerAnnouncedReadThenAttachFailureReportsOnce(t *testing.T) {
+	src := &fakeFollowSource{now: time.Second, maxID: 6, openErr: map[uint32]error{6: syscall.EMFILE}, progs: map[uint32]*followProgram{
+		6: {loadedAt: 400 * time.Millisecond, targets: []attach.Target{followTarget(6, "hook_a")}},
+	}}
+	probe := &fakeFollowProbe{observed: map[uint32]int{5: 1}}
+	var stderr bytes.Buffer
+	m := newFollowManager(probe, src, []attach.Target{followTarget(5, "hook_a")}, []int{0}, followConfig{
+		stderr: &stderr, logf: func(string, ...any) {},
+		filters: func(attach.Target) (filter.TargetFilters, error) {
+			return filter.TargetFilters{}, errors.New("no member port")
+		},
+	})
+	m.connected = 1
+	finish := m.announced(follow.Load{ProgID: 6, Hooks: []string{"hook_a"}})
+	delete(src.openErr, 6)
+	m.poll()
+	finish(true)
+	if m.stats.gaps.Load() != 1 || strings.Count(stderr.String(), "FOLLOW GAP: prog=6 func=hook_a") != 1 {
+		t.Fatalf("one hook was reported more than once: stats=%s stderr=%q", m.stats.String(), stderr.String())
 	}
 }
 
@@ -277,6 +305,23 @@ func TestFollowManagerIgnoresVanishedProgram(t *testing.T) {
 	m.stop()
 	if m.stats.gaps.Load() != 0 || stderr.Len() != 0 {
 		t.Fatalf("vanished program became a gap: stats=%s stderr=%q", m.stats.String(), stderr.String())
+	}
+}
+
+func TestFollowManagerReportsUnreadableProgramThatVanishes(t *testing.T) {
+	src := &fakeFollowSource{now: time.Second, maxID: 6, openErr: map[uint32]error{6: syscall.ENOMEM}, progs: map[uint32]*followProgram{}}
+	probe := &fakeFollowProbe{observed: map[uint32]int{5: 1}}
+	var stderr bytes.Buffer
+	m := newFollowManager(probe, src, []attach.Target{followTarget(5, "hook_a")}, []int{0}, followConfig{
+		stderr: &stderr, logf: func(string, ...any) {},
+	})
+	m.poll()
+	src.now = 5 * time.Second
+	src.openErr[6] = os.ErrNotExist
+	m.poll()
+	if got := m.stats.String(); got != "follow_attached=0 follow_held=0 follow_gaps=1 follow_gap_ms=4000" ||
+		strings.Count(stderr.String(), "prog=6 func=unknown reason=attach_failed unobserved_ms=4000") != 1 {
+		t.Fatalf("vanished unreadable program: stats=%s stderr=%q", got, stderr.String())
 	}
 }
 
@@ -435,7 +480,7 @@ func TestFollowManagerLocksOneProgramAttach(t *testing.T) {
 	}
 }
 
-func TestFollowManagerReportsFollowerLockTimeoutOnce(t *testing.T) {
+func TestFollowManagerReportsFollowerLockTimeoutPerHook(t *testing.T) {
 	probe := &fakeFollowProbe{observed: map[uint32]int{5: 1}}
 	src := &fakeFollowSource{now: time.Second, maxID: 6, progs: map[uint32]*followProgram{
 		6: {loadedAt: time.Second, targets: []attach.Target{followTarget(6, "hook_a"), followTarget(6, "hook_b")}},
@@ -448,7 +493,8 @@ func TestFollowManagerReportsFollowerLockTimeoutOnce(t *testing.T) {
 			lock:    func() (func(), error) { return nil, program.ErrFollowerLockTimeout },
 		})
 	m.poll()
-	if len(probe.attached) != 0 || m.stats.gaps.Load() != 1 || strings.Count(stderr.String(), "reason=observed_by_other") != 1 {
+	if len(probe.attached) != 0 || m.stats.gaps.Load() != 2 || strings.Count(stderr.String(), "reason=observed_by_other") != 2 ||
+		!strings.Contains(stderr.String(), "func=hook_a") || !strings.Contains(stderr.String(), "func=hook_b") {
 		t.Fatalf("attached=%v stats=%s stderr=%q", probe.attached, m.stats.String(), stderr.String())
 	}
 }
@@ -502,8 +548,8 @@ func TestFollowManagerRollsBackProgramOnLaterRefusal(t *testing.T) {
 	m.connected = 1
 	m.poll()
 	if len(probe.attached) != 0 || probe.observed[7] != 0 ||
-		m.stats.attached.Load() != 0 || m.stats.gaps.Load() != 1 ||
-		strings.Count(stderr.String(), "FOLLOW GAP: prog=7") != 1 {
+		m.stats.attached.Load() != 0 || m.stats.gaps.Load() != 3 ||
+		strings.Count(stderr.String(), "FOLLOW GAP: prog=7") != 3 {
 		t.Fatalf("attached=%v links=%d stats=%s stderr=%q", probe.attached, probe.observed[7], m.stats.String(), stderr.String())
 	}
 }
@@ -550,6 +596,49 @@ func TestFollowManagerStops(t *testing.T) {
 	}
 	var none *followManager
 	none.stop() // a capture that follows nothing
+}
+
+func TestFollowManagerSecondStopDoesNotScanNewPrograms(t *testing.T) {
+	src := &fakeFollowSource{now: time.Second, maxID: 5, progs: map[uint32]*followProgram{}}
+	probe := &fakeFollowProbe{observed: map[uint32]int{5: 1}}
+	var stderr bytes.Buffer
+	m := newFollowManager(probe, src, []attach.Target{followTarget(5, "hook_a")}, []int{0}, followConfig{
+		boundaryID: 5, startedAt: time.Second, stderr: &stderr, logf: func(string, ...any) {},
+	})
+	m.start()
+	m.stop()
+	src.now = 4 * time.Second
+	src.maxID = 6
+	src.progs[6] = &followProgram{loadedAt: 4 * time.Second, targets: []attach.Target{followTarget(6, "hook_a")}}
+	m.stop()
+	if m.stats.gaps.Load() != 0 || strings.Contains(stderr.String(), "prog=6") {
+		t.Fatalf("second stop scanned a post-capture program: stats=%s stderr=%q", m.stats.String(), stderr.String())
+	}
+}
+
+func TestFollowManagerCountsAttachBeforeStopBetweenHooks(t *testing.T) {
+	src := &fakeFollowSource{now: 1100 * time.Millisecond, maxID: 6, progs: map[uint32]*followProgram{
+		6: {loadedAt: time.Second, targets: []attach.Target{followTarget(6, "hook_a"), followTarget(6, "hook_b")}},
+	}}
+	probe := &fakeFollowProbe{observed: map[uint32]int{5: 2}}
+	var stderr bytes.Buffer
+	var m *followManager
+	m = newFollowManager(probe, src,
+		[]attach.Target{followTarget(5, "hook_a"), followTarget(5, "hook_b")}, []int{0, 1}, followConfig{
+			stderr: &stderr, logf: func(string, ...any) {},
+			filters: func(tg attach.Target) (filter.TargetFilters, error) {
+				if tg.FuncName == "hook_a" {
+					m.stopOnce.Do(func() { close(m.stopCh) })
+				}
+				return filter.TargetFilters{}, nil
+			},
+		})
+	m.mu.Lock()
+	err := m.examine(6)
+	m.mu.Unlock()
+	if err != nil || m.stats.attached.Load() != 1 || len(m.pending[6].funcs) != 1 || m.pending[6].funcs[0] != "hook_a" {
+		t.Fatalf("partial attach was not returned: err=%v attached=%v stats=%s pending=%+v", err, probe.attached, m.stats.String(), m.pending[6])
+	}
 }
 
 func TestFollowManagerStopSettlesPendingAttach(t *testing.T) {

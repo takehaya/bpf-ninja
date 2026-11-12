@@ -45,8 +45,8 @@ type Options struct {
 	// loaded but the loader cannot run or install it yet
 	// (TestIntegrationInjectHold). inject-run uses this to let captures
 	// attach their observers first. Callbacks are serialized on this tracing
-	// thread, so other target threads and their loads wait behind it too. It
-	// must not wait on the target.
+	// thread. Other target threads keep running until the supervisor handles
+	// their next stop, then wait behind this callback. It must not wait on the target.
 	OnInject func(Injection)
 	// OnDiscover, if set, is called on the tracing thread for every XDP, tc or
 	// cgroup_skb program load whose attr carries BTF, whether or not a rule selects it,

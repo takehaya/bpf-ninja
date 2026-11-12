@@ -174,6 +174,22 @@ func TestWaitRejectsAckPastDeadline(t *testing.T) {
 	}
 }
 
+func TestRegisterPublishesBeforeHelloAndRemovesOnFailure(t *testing.T) {
+	s := &Server{}
+	sub := &subscriber{}
+	if err := s.register(sub, func() error {
+		if len(s.subs) != 1 || s.subs[0] != sub {
+			t.Fatal("subscriber was not registered before hello")
+		}
+		return fmt.Errorf("send failed")
+	}); err == nil {
+		t.Fatal("failed hello was accepted")
+	}
+	if len(s.subs) != 0 {
+		t.Fatalf("failed hello left %d subscribers", len(s.subs))
+	}
+}
+
 // rawPeer is a connection that speaks the protocol by hand.
 func rawPeer(t *testing.T, opts Options, hello message) *wire {
 	t.Helper()

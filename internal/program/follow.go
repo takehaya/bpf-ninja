@@ -14,9 +14,9 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// followerSnapKeys is the number of followed programs that can record in
-// filter mode at once. Each needs its own snapshot key, because an observer
-// of one program can interrupt an observer of another on the same CPU.
+// followerSnapKeys is the number of follower observers that can record in
+// filter mode at once. Each needs its own snapshot key, because one observer
+// can interrupt another on the same CPU.
 const followerSnapKeys = 1024
 
 // ErrProbeStopped is returned when a target is added after Quiesce.
@@ -114,6 +114,9 @@ func (p *Probe) AttachFollower(slot int, t attach.Target, tf filter.TargetFilter
 func (p *Probe) DetachFollowers(progID uint32) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	if p.detached {
+		return
+	}
 	for i := len(p.progs) - 1; i >= 0; i-- {
 		pr := p.progs[i]
 		if p.owner[pr] != progID {

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/cilium/ebpf"
 	"github.com/takehaya/bpf-ninja/internal/attach"
 	"golang.org/x/sys/unix"
 )
@@ -27,6 +28,12 @@ func TestFollowerLinkDecision(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestDetachFollowersAfterQuiesce(t *testing.T) {
+	pr := new(ebpf.Program)
+	p := &Probe{progs: []*ebpf.Program{pr}, owner: map[*ebpf.Program]uint32{pr: 7}, detached: true}
+	p.DetachFollowers(7)
 }
 
 func TestFollowerSnapshotEntries(t *testing.T) {
