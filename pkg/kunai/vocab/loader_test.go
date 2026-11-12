@@ -2821,6 +2821,23 @@ const bit<8> KUNAI_FOO_BAR_X_ALT_VENDOR_B = 3;
 	}
 }
 
+func TestLoadRejectsMisplacedDispatchRequirement(t *testing.T) {
+	for _, tc := range []struct {
+		name, constName, decl string
+	}{
+		{"alternate", "KUNAI_FOO_BAR_X_ALT_OTHER", "const bit<8> KUNAI_FOO_BAR_X = 1;\n@kunai_dispatch_require[field=x, mask=1] const bit<8> KUNAI_FOO_BAR_X_ALT_OTHER = 2;"},
+		{"value-only", "FOO_OPT_SPECIAL", "const bit<8> KUNAI_FOO_BAR_X = 1;\n@kunai_dispatch_require[field=x, mask=1] const bit<8> FOO_OPT_SPECIAL = 2;"},
+		{"structural", "FOO_MAX_DEPTH", "const bit<8> KUNAI_FOO_BAR_X = 1;\n@kunai_dispatch_require[field=x, mask=1] const bit<8> FOO_MAX_DEPTH = 2;"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := Load(altVocabFS(tc.decl), "vocab")
+			if err == nil || !strings.Contains(err.Error(), tc.constName) {
+				t.Fatalf("Load error = %v, want error naming %q", err, tc.constName)
+			}
+		})
+	}
+}
+
 func TestLoadAltDispatchWithoutBase(t *testing.T) {
 	_, err := Load(altVocabFS(`
 const bit<8> KUNAI_FOO_BAR_X_ALT = 2;

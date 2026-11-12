@@ -580,11 +580,15 @@ func emitRequiredMaskCheck(spec *vocab.ProtocolSpec, req *vocab.DispatchFieldMas
 		return nil, err
 	}
 	mask := byteSwap(req.Mask, fieldBytes)
+	compare := asm.JNE.Imm(dst, int32(mask), failLabel)
+	if fieldBytes == 4 {
+		compare = asm.JNE.Imm32(dst, int32(mask), failLabel)
+	}
 	insns := append(asm.Instructions{}, setupAddr...)
 	insns = append(insns,
 		asm.LoadMem(dst, dst, int16(fieldOff-parentHS), size),
 		asm.And.Imm(dst, int32(mask)),
-		asm.JNE.Imm(dst, int32(mask), failLabel),
+		compare,
 	)
 	return insns, nil
 }
@@ -697,11 +701,15 @@ func emitRequiredMaskCheckBounded(spec *vocab.ProtocolSpec, req *vocab.DispatchF
 		return nil, err
 	}
 	mask := byteSwap(req.Mask, fieldBytes)
+	compare := asm.JNE.Imm(dst, int32(mask), failLabel)
+	if fieldBytes == 4 {
+		compare = asm.JNE.Imm32(dst, int32(mask), failLabel)
+	}
 	insns := foldOffsetIntoScalar(scalar, offsetReg, int32(fieldOff+byteOff), failLabel)
 	insns = append(insns, boundedScalarLoad(dst, asm.R0, scalar, asm.R1, size, failLabel)...)
 	insns = append(insns,
 		asm.And.Imm(dst, int32(mask)),
-		asm.JNE.Imm(dst, int32(mask), failLabel),
+		compare,
 	)
 	return insns, nil
 }

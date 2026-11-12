@@ -717,4 +717,5 @@ xdp_entry	eth[src in [5, 112663578913467]]/ipv4/tcp	-	code=f0e6435b96e299c5 meta
 xdp_entry	eth[src in [66:77:88:99:aa:bb, 11:22:33:44:55:66]]/ipv4/tcp	-	code=eb24d179d46bcab4 meta=5ee214e8b4c27377 main=167 cb=0
 xdp_entry	eth[src in [66:77:88:99:aa:bc, 76:77:88:99:aa:bb]]/ipv4/tcp	-	code=a5cefdf68da1334b meta=5ee214e8b4c27377 main=167 cb=0
 xdp_entry	eth[src[4:36] == 103.120.137.154]/ipv4/tcp	-	code=708c2c3302bf6cc7 meta=5ee214e8b4c27377 main=141 cb=0
+xdp_entry	gre/erspan	-	code=7362077d8bbd8390 meta=4d8eb5dd3f830a5b main=142 cb=0
 xdp_exit	eth/ipv4/tcp where action == XDP_DROP	-	code=3c87aecb3a6fd4be meta=5ee214e8b4c27377 main=132 cb=0

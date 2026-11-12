@@ -466,6 +466,13 @@ func classifyConsts(cs []*p4lite.Const, protoName, source string, knownProtos ma
 			return classifyResult{}, fmt.Errorf("%s: duplicate const %q", source, c.Name)
 		}
 		seenNames[c.Name] = true
+		if !strings.HasPrefix(c.Name, "KUNAI_") {
+			if req, err := dispatchRequiredMask(c, source); err != nil {
+				return classifyResult{}, err
+			} else if req != nil {
+				return classifyResult{}, fmt.Errorf("%s: @kunai_dispatch_require is valid only on a base field dispatch const, not %q", source, c.Name)
+			}
+		}
 		// KUNAI_ is the authoritative marker for an inter-layer dispatch
 		// edge. A KUNAI_-prefixed const must be a real dispatch:
 		// `KUNAI_<SELF>_<PARENT>_<FIELD>` with a real <PARENT>, or
@@ -634,6 +641,9 @@ func mergeAltDispatchConsts(res *classifyResult, source string) error {
 	}
 	res.Consts = kept
 	for _, a := range alts {
+		if a.RequiredMask != nil {
+			return fmt.Errorf("%s: @kunai_dispatch_require is valid only on a base field dispatch const, not %q", source, a.Name)
+		}
 		var base *DispatchConst
 		for i := range res.Consts {
 			c := &res.Consts[i]
@@ -689,7 +699,7 @@ func classifyKunaiConst(c *p4lite.Const, name, protoUpper, source string, knownP
 		if req, err := dispatchRequiredMask(c, source); err != nil {
 			return nil, err
 		} else if req != nil {
-			return nil, fmt.Errorf("%s: @kunai_dispatch_require is valid only on a field dispatch const, not %q", source, c.Name)
+			return nil, fmt.Errorf("%s: @kunai_dispatch_require is valid only on a base field dispatch const, not %q", source, c.Name)
 		}
 		if !c.IsBool {
 			return nil, fmt.Errorf("%s: NO_CHECK const %q must be declared as bool", source, c.Name)

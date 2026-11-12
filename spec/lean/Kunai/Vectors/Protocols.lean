@@ -467,13 +467,20 @@ vector erspanType1 := {
   id := "erspan1-no-sequence-reject", ast := { layers := erspanTermL, cond := some (.fieldExists (fp ["erspan", "v2"])) },
   packet := eth 0x0800 ++ ipv4 47 ++ be 2 0 ++ be 2 0x88be ++ eth 0x0800 (dst := 0x100000000001) ++ ipv4 6 ++ tcp 12345 80,
   expected := .reject, note := "D-044: GRE S=0 is type I even when the inner destination starts with version nibble 1" }
+vector erspanFixedOffset := {
+  id := "erspan-fixed-offset", ast := { layers := [P "gre", P "erspan"] },
+  packet := greSeq 0x88be ++ erspanHdr 1 ++ erspanV2, expected := .accept [] }
+vector erspanFixedOffsetNoSequence := {
+  id := "erspan-fixed-offset-no-sequence-reject", ast := { layers := [P "gre", P "erspan"] },
+  packet := be 2 0 ++ be 2 0x88be ++ erspanHdr 1 ++ erspanV2 ++ be 4 0, expected := .reject,
+  note := "trailing padding keeps the root-GRE packet large enough for XDP test-run" }
 
 def erspanVectors : List Vector := [
   erspan2Chain, erspan3Chain, erspan3Platform, erspan3PlatformMissing, erspanIPv6, erspanInnerVlan, erspanGreMiss,
   erspanVersion0, erspanVersion3, erspanVersionCross, erspanSession, erspanSessionMiss, erspanVlanT, erspanCos,
   erspanTsHit, erspanTsAbsent, erspanTsAbsentNot, erspanSgt, erspanOBracket, erspanOBracketMiss, erspanV2Exists,
   erspanV3ExistsAbsent, erspanIndex, erspanTruncBase, erspan2Exact, erspan2Trunc, erspan3Trunc, erspan3PlatformTrunc,
-  erspan3RawIP, erspanType1]
+  erspan3RawIP, erspanType1, erspanFixedOffset, erspanFixedOffsetNoSequence]
 
 -- IGMP (D-045) ---------------------------------------------------------------
 
