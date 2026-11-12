@@ -79,6 +79,16 @@ func TestLoadGreDispatch(t *testing.T) {
 	}
 }
 
+func TestLoadErspanAuxGating(t *testing.T) {
+	ers := loadBundled(t)["erspan"]
+	for name, want := range map[string]uint64{"v2": 0x10, "v3": 0x20} {
+		g := ers.ParseStateMachine.AuxLayouts[name].Gating
+		if g == nil || g.Mask != 0xf0 || g.Value != want {
+			t.Errorf("%s gating = %+v; want mask 0xf0, value %#x", name, g, want)
+		}
+	}
+}
+
 func TestLoadVxlanGenevePorts(t *testing.T) {
 	vxlan := loadBundled(t)["vxlan"]
 	if dc, ok := indexByName(vxlan.Consts)["KUNAI_VXLAN_UDP_DPORT"]; !ok || dc.Value != 4789 {

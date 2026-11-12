@@ -514,6 +514,9 @@ func mergeBitFieldsToMask(keys []SelectKey, primary *p4lite.Header, op GatingOp,
 		// order: the MSB of the byte is the value-bit (1 << 7) when
 		// the byte is read as a u8.
 		keyMask := ((uint64(1) << k.BitWidth) - 1) << (8 - bitInByte - k.BitWidth)
+		if len(keys) == 1 {
+			value <<= 8 - bitInByte - k.BitWidth
+		}
 		if keyMask&mask != 0 {
 			return nil, fmt.Errorf("%s:%s: aux gating keys overlap (mask collision %#x)", source, pos, keyMask&mask)
 		}

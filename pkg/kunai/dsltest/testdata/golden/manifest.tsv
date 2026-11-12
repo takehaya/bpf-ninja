@@ -89,18 +89,18 @@ xdp_entry	eth/ipv4/gre	-	code=8340310dac05c797 meta=5ee214e8b4c27377 main=110 cb
 xdp_entry	eth/ipv4/gre/erspan	-	code=840aee799d1e6879 meta=5ee214e8b4c27377 main=192 cb=0
 xdp_entry	eth/ipv4/gre/erspan/eth/ipv4/tcp	-	code=501da88b9b5b3bbe meta=5ee214e8b4c27377 main=335 cb=0
 xdp_entry	eth/ipv4/gre/erspan/eth/ipv4/tcp where (erspan.cos == 5) and (erspan.en == 3)	-	code=051aa49a8dfac78b meta=5ee214e8b4c27377 main=362 cb=0
-xdp_entry	eth/ipv4/gre/erspan/eth/ipv4/tcp where (erspan.v3.sgt == 50) and (erspan.v3.hw_id == 3)	-	code=c7391b53faf2ebe4 meta=5ee214e8b4c27377 main=378 cb=0
+xdp_entry	eth/ipv4/gre/erspan/eth/ipv4/tcp where (erspan.v3.sgt == 50) and (erspan.v3.hw_id == 3)	-	code=9da7a47e2298bce7 meta=5ee214e8b4c27377 main=378 cb=0
 xdp_entry	eth/ipv4/gre/erspan/eth/ipv4/tcp where (erspan.vlan == 10) and (erspan.t == 1)	-	code=3b8a32a898c85989 meta=5ee214e8b4c27377 main=361 cb=0
-xdp_entry	eth/ipv4/gre/erspan/eth/ipv4/tcp where erspan.v2.exists	-	code=c90a5c7c12988c0f meta=5ee214e8b4c27377 main=344 cb=0
-xdp_entry	eth/ipv4/gre/erspan/eth/ipv4/tcp where erspan.v3.exists	-	code=cba48c5bf2c0f8c5 meta=5ee214e8b4c27377 main=344 cb=0
-xdp_entry	eth/ipv4/gre/erspan/eth/ipv4/tcp where erspan.v3.timestamp != 0	-	code=7f524e9ff0f83356 meta=5ee214e8b4c27377 main=356 cb=0
-xdp_entry	eth/ipv4/gre/erspan/eth/ipv4/tcp where erspan.v3.timestamp == 16909060	-	code=13bf4c0f5f079ffd meta=5ee214e8b4c27377 main=356 cb=0
-xdp_entry	eth/ipv4/gre/erspan/eth/ipv4/tcp where not (erspan.v3.timestamp == 0)	-	code=8884ccab93d7efab meta=5ee214e8b4c27377 main=358 cb=0
+xdp_entry	eth/ipv4/gre/erspan/eth/ipv4/tcp where erspan.v2.exists	-	code=0303baa9f4ca4624 meta=5ee214e8b4c27377 main=344 cb=0
+xdp_entry	eth/ipv4/gre/erspan/eth/ipv4/tcp where erspan.v3.exists	-	code=7fd1d75b973c718e meta=5ee214e8b4c27377 main=344 cb=0
+xdp_entry	eth/ipv4/gre/erspan/eth/ipv4/tcp where erspan.v3.timestamp != 0	-	code=c56485dd4776560e meta=5ee214e8b4c27377 main=356 cb=0
+xdp_entry	eth/ipv4/gre/erspan/eth/ipv4/tcp where erspan.v3.timestamp == 16909060	-	code=dae3d1e6f2b134f7 meta=5ee214e8b4c27377 main=356 cb=0
+xdp_entry	eth/ipv4/gre/erspan/eth/ipv4/tcp where not (erspan.v3.timestamp == 0)	-	code=18f25d06e4fafc99 meta=5ee214e8b4c27377 main=358 cb=0
 xdp_entry	eth/ipv4/gre/erspan/eth/ipv4/tcp where tcp.dport == 80	-	code=528d3e20c7b368dd meta=5ee214e8b4c27377 main=348 cb=0
 xdp_entry	eth/ipv4/gre/erspan/eth/vlan/ipv4/tcp	-	code=9a3df7a9bf6adf12 meta=5ee214e8b4c27377 main=350 cb=0
 xdp_entry	eth/ipv4/gre/erspan[session_id == 100]/eth/ipv4/tcp	-	code=fc31b70c07d07b44 meta=5ee214e8b4c27377 main=345 cb=0
 xdp_entry	eth/ipv4/gre/erspan[session_id == 101]/eth/ipv4/tcp	-	code=3587174077d2860f meta=5ee214e8b4c27377 main=345 cb=0
-xdp_entry	eth/ipv4/gre/erspan[v3.o == 1]/eth/ipv4/tcp	-	code=7a4a8f1386706d86 meta=5ee214e8b4c27377 main=352 cb=0
+xdp_entry	eth/ipv4/gre/erspan[v3.o == 1]/eth/ipv4/tcp	-	code=e81c1e68200ceff2 meta=5ee214e8b4c27377 main=352 cb=0
 xdp_entry	eth/ipv4/gre/ipv4/tcp	-	code=dc53e7b960ccb6dd meta=5ee214e8b4c27377 main=248 cb=0
 xdp_entry	eth/ipv4/gre/ipv4/tcp where tcp.dport == 80	-	code=12d519990e408392 meta=5ee214e8b4c27377 main=261 cb=0
 xdp_entry	eth/ipv4/gre/nsh/ipv4/tcp	-	code=80f8c92308290b74 meta=5ee214e8b4c27377 main=319 cb=0

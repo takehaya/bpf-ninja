@@ -88,11 +88,11 @@ Fields (bit width, running byte offset):
   session_id           bit<10>   @2+6b
 
 Aux headers:
-  v2 (erspan_v2_h, 4 bytes @ +4 from layer start) (gated: (byte@0 & 0xf0) == 0x1)
+  v2 (erspan_v2_h, 4 bytes @ +4 from layer start) (gated: (byte@0 & 0xf0) == 0x10)
     reserved             bit<12>   @0
     index                bit<20>   @1+4b
     use: erspan.v2.<field>  or  erspan[v2.<field> == X]
-  v3 (erspan_v3_h, 8 bytes @ +4 from layer start) (gated: (byte@0 & 0xf0) == 0x2)
+  v3 (erspan_v3_h, 8 bytes @ +4 from layer start) (gated: (byte@0 & 0xf0) == 0x20)
     timestamp            bit<32>   @0
     sgt                  bit<16>   @4
     p                    bit<1>    @6
