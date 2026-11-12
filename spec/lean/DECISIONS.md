@@ -328,6 +328,58 @@ Entries are never deleted; a rejected candidate stays in the log.
 - 決定 (ユーザー決定、2026-10-11): (b)。長さは ringbuf reserve の定数として host に渡るものであり (D-020 追記と同じ経路の制約)、dsl-usage / dsl-grammar は元から固定ヘッダ合計の意味で書かれている。option や拡張ヘッダまで欲しければ `headers+N` か `capture all` を使う。`capture <layer>` は D-020 のまま (仕様は instance の範囲、Go は静的な上限)。
 - 反映先: `Eval/Where.lean` `maxInstances` / `headersBound` / `evalCapture`、vectors `cap-headers-ipv4-options`, `cap-headers-tcp-options`, `cap-headers-quant-opt`, `cap-headers-quant-range`, `cap-headers-quant-plus`, `cap-headers-quant-open`, `cap-headers-quant-plus-clamped`, `cap-headers-alt-ipv6`, `cap-headers-alt-ipv4`, `cap-headers-plus-ipv4-options`, `cap-headers-ipv6-ext`, `cap-headers-plus-ipv6-ext`, `cap-headers-srv6`, `cap-headers-vxlan`; Go runner (`pkg/kunai/dsltest/spec_capture_test.go`) は `headers` / `absolute` 句だけの vector で `min(MaxCapLen, |P|)` と Lean の終端の最大を比べる; `dsl-types.md` §13.6、`dsl-usage.md` の capture 節、`spec/lean/README.md`
 
+## D-040: PFCP の vocab
+- 論点: PFCP (3GPP TS 29.244 §7.2.2、UDP 8805) を header だけ追加する。S flag で header の後半 (node 形式 / session 形式) の形が変わる。IE は解析するか。
+- 決定: 固定 4 byte (`version`, `spare`, `fo`, `mp`, `s`, `msg_type`, `length`) を primary とし、後半を s で gate された 2 つの aux にする: s = 0 は `node` (`seq` 24 bit + spare)、s = 1 は `sess` (`seid` 64 bit、`seq` 24 bit、`priority` 4 bit + spare)。2 つの aux は互いに排他で、不在の aux への比較は D-003 / D-027 どおり false。s が後半の形を決めるので、後半が packet に収まらなければ reject (node 形式なら足りる長さでも s = 1 なら reject)。dispatch は `udp.dport == 8805` だけ (応答の宛先 port は要求元の source port で、TS 29.244 は 8805 に固定しないため。GTP-U と同じ扱い)。
+- 落としたもの: IE (TLV 列) の walk。pfcp は終端 layer で、子 layer への edge は無い。IE の type は 16 bit で、p4lite の TLV walk が select key に使える lookahead は 8/16/24 bit だが、IE の長さは 16 bit で `pkt.advance` の lookahead は 1 byte の slice しか取れないため、IE を長さで読み飛ばす walk が書けない。
+- 現行 Go 実装の挙動: 3 byte の aux field (`pfcp.node.seq`, `pfcp.sess.seq`) を読む式は `ErrNotImplemented` ("field size 3 bytes not supported"、D-036 追記の 3〜7 byte の aux field と同じ制限)。64 bit の `pfcp.sess.seid` と 4 bit の `pfcp.sess.priority` は compile できる。
+- 状態: 提案中
+- 反映先: `pkg/kunai/protocols/pfcp.p4`, `Vectors/Protocols.lean` の vectors `pfcp-*` (`pfcp-node-seq`, `pfcp-sess-seq` は goStatus notImplemented)
+
+## D-041: SCTP の vocab
+- 論点: SCTP (RFC 9260) の共通ヘッダと chunk header をどこまで表すか。
+- 決定: 共通ヘッダ 12 byte (`sport`, `dport`, `vtag`, `checksum`) を primary、最初の chunk の header (`type`, `flags`, `length`) を無条件に抽出する aux `chunk` とする。RFC 9260 §3 は chunk を 1 つ以上要求するので、共通ヘッダだけで終わる packet は reject (vector `sctp-no-chunk`)。dispatch は `ipv4.protocol` / `ipv6.next_header` / `srv6.next_header` == 132 (tcp / udp と同じ親)。
+- 落としたもの: 2 つ目以降の chunk と chunk の中身 (DATA の TSN、INIT の initiate tag など)。chunk は 16 bit の length を 4 の倍数に切り上げた分だけ読み飛ばすが、p4lite の `pkt.advance` が長さとして読めるのは 1 byte の field か lookahead の 1 byte の slice だけで、切り上げも書けない。sctp は終端 layer。
+- 現行 Go 実装の挙動: すべての vector が compile できる (Runner.Match は root が要るので CI)。
+- 状態: 提案中
+- 反映先: `pkg/kunai/protocols/sctp.p4`, vectors `sctp-*`
+
+## D-042: ARP の vocab
+- 論点: ARP (RFC 826) は hardware / protocol address の長さを header 自身が持つ。Ethernet / IPv4 の形 (28 byte) だけを表すとき、何を検査するか。
+- 決定: `htype`, `ptype`, `hlen`, `plen`, `oper`, `sha` (48 bit), `spa`, `tha` (48 bit), `tpa` の固定 28 byte。start state が `(hlen, plen) == (6, 4)` 以外を reject する。field の位置を決めるのはこの 2 つだけなので、`htype` (Ethernet = 1 と IEEE 802 = 6 は同じ形) と `ptype` は検査しない。IPv4 の ARP に限りたいときは `arp[ptype == 0x0800]` と書く。dispatch は eth / vlan / qinq の ethertype 0x0806。
+- 帰結: start state の select の default が reject なので、arp は ipv4 と同じく self-validating になり、edge の無い親の後にも書ける (`eth/mpls/arp` は well-typed で、label の後ろが hlen 6 / plen 4 なら accept、vector `arp-under-mpls-selfvalidating`)。親に定数がある `eth/arp?` で長さが違えば skip ではなく reject (D-017 (c)、vector `arp-opt-broken`)。
+- 落としたもの: 6 / 4 以外の address 長の ARP (IPv6 の前の ATM ARP など) と RARP (ethertype 0x8035)。`ptype == 0x0800` も検査に入れる案は、Go の codegen が parser の select key に 1 byte を越える field (`select key arp_h.ptype straddles byte boundary`) を使えないため採らなかった。layout の正しさには不要なので失うものは無い。
+- 現行 Go 実装の挙動: 48 bit の `sha` / `tha` を整数と比べる式は `ErrNotImplemented` ("field size 6 bytes not supported"、`eth.dst` と同じ)。MAC リテラルとの比較は compile できる。
+- 状態: 提案中
+- 反映先: `pkg/kunai/protocols/arp.p4`, vectors `arp-*` (`arp-where-tha-int` は goStatus notImplemented)
+
+## D-043: NSH の vocab
+- 論点: NSH (RFC 8300) は MD type により context header の形が違う (type 1 は固定 16 byte、type 2 は可変長 TLV)。どこまで表すか。
+- 決定: base header と service path header の 8 byte (`version`, `o`, `u1`, `ttl`, `length`, `u2`, `md_type`, `next_proto`, `spi`, `si`) を primary とする。`md_type == 1` は 16 byte の context を aux `md1` (`ctx1`〜`ctx4`) として抽出し、`md_type == 2` は `length` (NSH 全体の 4 byte 単位の長さ) から 8 byte を引いた分を読み飛ばす。それ以外の MD type は reject。`length < 2` は reject (vector `nsh-md2-length-below-2`)。dispatch は eth / vlan / qinq の ethertype と gre の protocol_type の 0x894F。子は `next_proto` で ipv4 (1)、ipv6 (2)、eth (3)、mpls (5) (定数は子の .p4 に置く)。
+- 帰結: start state の select の default が reject なので nsh は self-validating (`requires md_type ∈ {1, 2}`)。親定数のある `eth/nsh?` で MD type が不正なら skip ではなく reject (D-017 (c))。
+- 落としたもの: MD type 2 の TLV の中身。TLV の長さは 4 byte 目の下位 7 bit (byte 単位で、値は 4 の倍数まで padding される) で、p4lite の lookahead による advance / counter decrement は 1 byte をそのまま (または shift して) 使うだけなので、U bit の mask と 4 の倍数への切り上げが書けず、TLV を 1 つずつ walk できない。MD type 1 で `length != 6` の packet も検査しない (16 byte の context を読んで先へ進む)。next_proto 4 (NSH in NSH) と 6〜8 (実験用) は子 protocol への edge を持たない。
+- 現行 Go 実装の挙動: 24 bit の `spi` を読む式 (bracket / where) は `ErrNotImplemented` ("field size 3 bytes not supported"、`vxlan.vni` と同じ)。`si`、6 bit で byte をまたぐ `ttl`、`md1.ctx*` は compile できる。
+- 状態: 提案中
+- 反映先: `pkg/kunai/protocols/nsh.p4` と `eth.p4` / `ipv4.p4` / `ipv6.p4` / `mpls.p4` の `KUNAI_*_NSH_NEXT_PROTO`, vectors `nsh-*` (`nsh-where-spi` は goStatus notImplemented)
+
+## D-044: ERSPAN の vocab
+- 論点: ERSPAN type II と type III (GRE 上) を 1 つの protocol にするか 2 つにするか。type III の platform-specific subheader (O bit) をどう扱うか。
+- 決定: 1 つの protocol `erspan` にする。先頭 4 byte (`version`, `vlan`, `cos`, `en`, `t`, `session_id`) は両者で同じ位置なので primary とし、`version` で後半を選ぶ: 1 (type II) は aux `v2` (`reserved`, `index`)、2 (type III) は aux `v3` (`timestamp`, `sgt`, `p`, `ft`, `hw_id`, `d`, `gra`, `o`)。それ以外の version は reject。dispatch は gre の protocol_type 0x88BE (type II) と `_ALT_TYPE3` の 0x22EB (type III) に加えて、GRE の sequence-number bit を要求する。type III は FT = 0 の Ethernet payload だけを許す。子は `eth` (`KUNAI_ETH_ERSPAN_NO_CHECK`)。type II の `en` は type III では BSO で、同じ bit を同じ名前で読む。
+- 帰結: GRE の sequence-number bit により、同じ protocol type 0x88BE の type I と type II を packet から識別する。layout を決めるのは GRE の protocol type ではなく version で、0x88BE に version 2 が載っていれば type III として読む (vector `erspan-version-over-gre-type`)。start state の default が reject なので erspan は self-validating (`requires version ∈ {1, 2}`)。
+- 落としたもの: type III の platform-specific subheader の中身。O = 1 のとき 8 byte を `pkt.advance(64)` で読み飛ばすだけで抽出しない。aux の gate は entry state から 1 hop の select だけが書け (`computeAuxGating`)、subheader は v3 の O bit の先 (2 hop) にあるため。type I (ERSPAN header 無し、GRE 0x88BE で sequence-number bit 無し) と type III の FT が 0 以外の payload も表さない。
+- 現行 Go 実装の挙動: `v2.index` (bit 12 から 20 bit) を読む式は `ErrNotImplemented` ("read through bytes [1,5), past its 4-byte entry"、D-036 追記の「窓が entry を越える aux field」)。他の field と O = 1 の skip は compile できる。
+- 状態: 提案中
+- 反映先: `pkg/kunai/protocols/erspan.p4`, `eth.p4` の `KUNAI_ETH_ERSPAN_NO_CHECK`, vectors `erspan*` (`erspan2-index` は goStatus notImplemented)
+
+## D-045: IGMP の vocab
+- 論点: IGMP v2 (RFC 2236) と v3 (RFC 9776) は先頭 8 byte の形を共有するが、v3 report では後半 4 byte の意味が違い、v3 query は v2 query と同じ type で後ろに拡張部を持つ。何を表すか。
+- 決定: 共通の 8 byte (`type`, `max_resp_code`, `checksum`, `group`) だけを primary とする。v3 report (type 0x22) では `max_resp_code` は RFC 9776 section 4.2.3 の Flags を読み、`group` は Reserved (16) + Number of Group Records (16) を読む。dispatch は `ipv4.protocol == 2`。group record は抽出しない。
+- 帰結: record 数が 0 の v3 report は padding の有無にかかわらず共通 header として accept する (vectors `igmp-v3-report-no-records`, `igmp-v3-report-no-records-padding`)。padding を存在しない record として公開しない。
+- 落としたもの: v3 query の拡張部 (S, QRV, QQIC, source 数, source list) と v3 report の group record。v3 query は v2 query と同じ type 0x11 で、区別は IP payload の長さ (12 byte 以上) だけで、parser の select からは見えない。group record は record 数が 16 bit で、aux の gate が primary の 1 byte の mask (`computeAuxGating` / `mergeBitFieldsToMask`) しか見られないため、存在を正しく判定できない。v1 (RFC 1112) の type 0x12 は v2 と同じ 8 byte として読める。
+- 現行 Go 実装の挙動: すべての vector が compile できる。
+- 状態: 提案中
+- 反映先: `pkg/kunai/protocols/igmp.p4`, vectors `igmp-*`
+
 ## Go 側への issue 候補 (この作業では変更しない)
 
 `fix/kunai-spec-conformance` で対応済みのものは ✅、残りは `issues/` に本文がある。

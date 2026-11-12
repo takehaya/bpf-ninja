@@ -49,9 +49,14 @@ structure ProtoSpec where
   flagTriggers : List FlagTrigger := []
   deriving Repr, BEq, DecidableEq
 
+structure EdgeRequirement where
+  field : String
+  mask : Nat
+  deriving Repr, BEq, DecidableEq
+
 inductive EdgeKind
   | noCheck
-  | field (name : String) (values : List Nat)
+  | field (name : String) (values : List Nat) (requirements : List EdgeRequirement := [])
   deriving Repr, BEq, DecidableEq
 
 /-- `KUNAI_<CHILD>_<PARENT>_<FIELD> = v` (with `_ALT_*` folded into `values`)

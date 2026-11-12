@@ -18,6 +18,13 @@ inductive Disp
 `p`. The chain root has no parent. A self-chain ends after a header whose
 `CHAIN_END` field matches (mpls `s == 1`). A protocol with no edge from
 this parent is admitted only if it self-validates (`requires ≠ []`). -/
+def dispatchRequirements (c : Ctx) (parent : Inst) : List EdgeRequirement → Disp
+  | [] => .ok
+  | r :: rs =>
+    match (c.V.proto? parent.proto).bind (·.field? r.field) |>.bind (readField c.P parent) with
+    | some v => if v &&& r.mask == r.mask then dispatchRequirements c parent rs else .miss
+    | none => .illTyped s!"dispatch requirement field {parent.proto}.{r.field} is not declared"
+
 def dispatch (c : Ctx) (st : State) (child : String) : Disp :=
   match st.insts.getLast? with
   | none => .ok
@@ -32,9 +39,9 @@ def dispatch (c : Ctx) (st : State) (child : String) : Disp :=
     if ended then .miss else
     match c.V.edge? child parent.proto with
     | some ⟨_, _, .noCheck⟩ => .ok
-    | some ⟨_, _, .field f vs⟩ =>
+    | some ⟨_, _, .field f vs reqs⟩ =>
       match (c.V.proto? parent.proto).bind (·.field? f) |>.bind (readField c.P parent) with
-      | some v => if vs.contains v then .ok else .miss
+      | some v => if vs.contains v then dispatchRequirements c parent reqs else .miss
       | none => .illTyped s!"dispatch field {parent.proto}.{f} is not declared"
     | none =>
       match c.V.proto? child with

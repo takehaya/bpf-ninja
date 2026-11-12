@@ -10,24 +10,52 @@ offset と可変長構造の注記を併せて読んでください。
 式の書き方と型の詳細は、[DSL 文法](../../dsl-grammar.md)と[型の仕様](../../dsl-types.md)を参照してください。
 
 ```text
-Bundled protocols (17):
+Bundled protocols (23):
+  arp      28 B  from eth, qinq, vlan
   cw        4 B  from mpls
+  erspan    4 B  from gre
   esp       8 B  from ipv4, ipv6
-  eth      14 B  from cw, geneve, mpls, vxlan
+  eth      14 B  from cw, erspan, geneve, mpls, nsh, vxlan
   geneve    8 B  from udp
   gre       4 B  from ipv4, ipv6
   gtp       8 B  from udp
   icmp      4 B  from ipv4
   icmp6     4 B  from ipv6
-  ipv4     20 B  from eth, gre, qinq, srv6, vlan
-  ipv6     40 B  from eth, gre, qinq, vlan
-  mpls      4 B  from eth, qinq, vlan
+  igmp      8 B  from ipv4
+  ipv4     20 B  from eth, gre, nsh, qinq, srv6, vlan
+  ipv6     40 B  from eth, gre, nsh, qinq, vlan
+  mpls      4 B  from eth, nsh, qinq, vlan
+  nsh       8 B  from eth, gre, qinq, vlan
+  pfcp      4 B  from udp
   qinq      4 B  from eth
+  sctp     12 B  from ipv4, ipv6, srv6
   srv6      8 B  from ipv6
   tcp      20 B  from ipv4, ipv6, srv6
   udp       8 B  from ipv4, ipv6, srv6
   vlan      4 B  from eth, qinq
   vxlan     8 B  from udp
+```
+
+## arp
+
+```text
+arp — header 28 bytes minimum (variable layout, see Notes)
+
+Fields (bit width, running byte offset):
+  htype                bit<16>   @0
+  ptype                bit<16>   @2
+  hlen                 bit<8>    @4
+  plen                 bit<8>    @5
+  oper                 bit<16>   @6
+  sha                  bit<48>   @8
+  spa                  bit<32>   @14
+  tha                  bit<48>   @18
+  tpa                  bit<32>   @24
+
+Dispatched from: eth, qinq, vlan
+
+Notes:
+  parser state machine (variable extension headers or self-validation)
 ```
 
 ## cw
@@ -44,6 +72,43 @@ Fields (bit width, running byte offset):
 Dispatched from: mpls
 Dispatches to:
   via              -> eth
+```
+
+## erspan
+
+```text
+erspan — header 4 bytes minimum (variable layout, see Notes)
+
+Fields (bit width, running byte offset):
+  version              bit<4>    @0
+  vlan                 bit<12>   @0+4b
+  cos                  bit<3>    @2
+  en                   bit<2>    @2+3b
+  t                    bit<1>    @2+5b
+  session_id           bit<10>   @2+6b
+
+Aux headers:
+  v2 (erspan_v2_h, 4 bytes @ +4 from layer start) (gated: (byte@0 & 0xf0) == 0x10)
+    reserved             bit<12>   @0
+    index                bit<20>   @1+4b
+    use: erspan.v2.<field>  or  erspan[v2.<field> == X]
+  v3 (erspan_v3_h, 8 bytes @ +4 from layer start) (gated: (byte@0 & 0xf0) == 0x20)
+    timestamp            bit<32>   @0
+    sgt                  bit<16>   @4
+    p                    bit<1>    @6
+    ft                   bit<5>    @6+1b
+    hw_id                bit<6>    @6+6b
+    d                    bit<1>    @7+4b
+    gra                  bit<2>    @7+5b
+    o                    bit<1>    @7+7b
+    use: erspan.v3.<field>  or  erspan[v3.<field> == X]
+
+Dispatched from: gre
+Dispatches to:
+  via              -> eth
+
+Notes:
+  parser state machine (variable extension headers or self-validation)
 ```
 
 ## esp
@@ -68,9 +133,9 @@ Fields (bit width, running byte offset):
   src                  bit<48>   @6
   ethertype            bit<16>   @12
 
-Dispatched from: cw, geneve, mpls, vxlan
+Dispatched from: cw, erspan, geneve, mpls, nsh, vxlan
 Dispatches to:
-  via ethertype    -> ipv4, ipv6, mpls, qinq, vlan
+  via ethertype    -> arp, ipv4, ipv6, mpls, nsh, qinq, vlan
 ```
 
 ## geneve
@@ -137,7 +202,7 @@ Fields (bit width, running byte offset):
 
 Dispatched from: ipv4, ipv6
 Dispatches to:
-  via protocol_type -> ipv4, ipv6
+  via protocol_type -> erspan, ipv4, ipv6, nsh
 
 Notes:
   flag-triggered optional fields gated on byte@0
@@ -208,6 +273,20 @@ Fields (bit width, running byte offset):
 Dispatched from: ipv6
 ```
 
+## igmp
+
+```text
+igmp — header 8 bytes
+
+Fields (bit width, running byte offset):
+  type                 bit<8>    @0
+  max_resp_code        bit<8>    @1
+  checksum             bit<16>   @2
+  group                bit<32>   @4
+
+Dispatched from: ipv4
+```
+
 ## ipv4
 
 ```text
@@ -259,9 +338,9 @@ Options walk (parsed by parser block, 2 named options):
     pointer              bit<8>    @2
     use: ipv4.options.RR.<field>
 
-Dispatched from: eth, gre, qinq, srv6, vlan
+Dispatched from: eth, gre, nsh, qinq, srv6, vlan
 Dispatches to:
-  via protocol     -> esp, gre, icmp, tcp, udp
+  via protocol     -> esp, gre, icmp, igmp, sctp, tcp, udp
 
 Notes:
   parser state machine (variable extension headers or self-validation)
@@ -291,9 +370,9 @@ Aux header stacks:
          where any(ipv6.exts.<field> == X)  quantifier (∃)
          where all(ipv6.exts.<field> == X)  quantifier (∀)
 
-Dispatched from: eth, gre, qinq, vlan
+Dispatched from: eth, gre, nsh, qinq, vlan
 Dispatches to:
-  via next_header  -> esp, gre, icmp6, srv6, tcp, udp
+  via next_header  -> esp, gre, icmp6, sctp, srv6, tcp, udp
 
 Notes:
   parser state machine (variable extension headers or self-validation)
@@ -310,9 +389,75 @@ Fields (bit width, running byte offset):
   s                    bit<1>    @2+7b
   ttl                  bit<8>    @3
 
-Dispatched from: eth, qinq, vlan
+Dispatched from: eth, nsh, qinq, vlan
 Dispatches to:
   via              -> cw, eth
+```
+
+## nsh
+
+```text
+nsh — header 8 bytes minimum (variable layout, see Notes)
+
+Fields (bit width, running byte offset):
+  version              bit<2>    @0
+  o                    bit<1>    @0+2b
+  u1                   bit<1>    @0+3b
+  ttl                  bit<6>    @0+4b
+  length               bit<6>    @1+2b
+  u2                   bit<4>    @2
+  md_type              bit<4>    @2+4b
+  next_proto           bit<8>    @3
+  spi                  bit<24>   @4
+  si                   bit<8>    @7
+
+Aux headers:
+  md1 (nsh_md1_h, 16 bytes @ +8 from layer start) (gated: (byte@2 & 0xf) == 0x1)
+    ctx1                 bit<32>   @0
+    ctx2                 bit<32>   @4
+    ctx3                 bit<32>   @8
+    ctx4                 bit<32>   @12
+    use: nsh.md1.<field>  or  nsh[md1.<field> == X]
+
+Dispatched from: eth, gre, qinq, vlan
+Dispatches to:
+  via next_proto   -> eth, ipv4, ipv6, mpls
+
+Notes:
+  variable trailer: ((byte@1 & 0x3f) >> 0) * 4 - 8 bytes past fixed header
+  parser state machine (variable extension headers or self-validation)
+```
+
+## pfcp
+
+```text
+pfcp — header 4 bytes minimum (variable layout, see Notes)
+
+Fields (bit width, running byte offset):
+  version              bit<3>    @0
+  spare                bit<2>    @0+3b
+  fo                   bit<1>    @0+5b
+  mp                   bit<1>    @0+6b
+  s                    bit<1>    @0+7b
+  msg_type             bit<8>    @1
+  length               bit<16>   @2
+
+Aux headers:
+  node (pfcp_node_h, 4 bytes @ +4 from layer start) (gated: (byte@0 & 0x1) == 0x0)
+    seq                  bit<24>   @0
+    spare                bit<8>    @3
+    use: pfcp.node.<field>  or  pfcp[node.<field> == X]
+  sess (pfcp_sess_h, 12 bytes @ +4 from layer start) (gated: (byte@0 & 0x1) != 0x0)
+    seid                 bit<64>   @0
+    seq                  bit<24>   @8
+    priority             bit<4>    @11
+    spare                bit<4>    @11+4b
+    use: pfcp.sess.<field>  or  pfcp[sess.<field> == X]
+
+Dispatched from: udp
+
+Notes:
+  parser state machine (variable extension headers or self-validation)
 ```
 
 ## qinq
@@ -326,7 +471,31 @@ Fields (bit width, running byte offset):
 
 Dispatched from: eth
 Dispatches to:
-  via ethertype    -> ipv4, ipv6, mpls, vlan
+  via ethertype    -> arp, ipv4, ipv6, mpls, nsh, vlan
+```
+
+## sctp
+
+```text
+sctp — header 12 bytes minimum (variable layout, see Notes)
+
+Fields (bit width, running byte offset):
+  sport                bit<16>   @0
+  dport                bit<16>   @2
+  vtag                 bit<32>   @4
+  checksum             bit<32>   @8
+
+Aux headers:
+  chunk (sctp_chunk_h, 4 bytes @ +12 from layer start)
+    type                 bit<8>    @0
+    flags                bit<8>    @1
+    length               bit<16>   @2
+    use: sctp.chunk.<field>  or  sctp[chunk.<field> == X]
+
+Dispatched from: ipv4, ipv6, srv6
+
+Notes:
+  parser state machine (variable extension headers or self-validation)
 ```
 
 ## srv6
@@ -353,7 +522,7 @@ Aux header stacks:
 
 Dispatched from: ipv6
 Dispatches to:
-  via next_header  -> ipv4, tcp, udp
+  via next_header  -> ipv4, sctp, tcp, udp
 
 Notes:
   parser state machine (variable extension headers or self-validation)
@@ -456,7 +625,7 @@ Fields (bit width, running byte offset):
 
 Dispatched from: ipv4, ipv6, srv6
 Dispatches to:
-  via dport        -> geneve, gtp, vxlan
+  via dport        -> geneve, gtp, pfcp, vxlan
 ```
 
 ## vlan
@@ -470,7 +639,7 @@ Fields (bit width, running byte offset):
 
 Dispatched from: eth, qinq
 Dispatches to:
-  via ethertype    -> ipv4, ipv6, mpls
+  via ethertype    -> arp, ipv4, ipv6, mpls, nsh
 ```
 
 ## vxlan

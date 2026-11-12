@@ -560,6 +560,36 @@ func emitFieldDispatchCheck(
 	insns := append(asm.Instructions{}, setupAddr...)
 	insns = append(insns, asm.LoadMem(dst, dst, int16(fieldOff-parentHS), size))
 	insns = append(insns, match...)
+	if c.RequiredMask != nil {
+		required, err := emitRequiredMaskCheck(spec, c.RequiredMask, parentHS, dst, setupAddr, failLabel)
+		if err != nil {
+			return nil, err
+		}
+		insns = append(insns, required...)
+	}
+	return insns, nil
+}
+
+func emitRequiredMaskCheck(spec *vocab.ProtocolSpec, req *vocab.DispatchFieldMask, parentHS int, dst asm.Register, setupAddr asm.Instructions, failLabel string) (asm.Instructions, error) {
+	fieldOff, fieldBytes, err := findFieldByteOffset(spec, req.FieldName)
+	if err != nil {
+		return nil, err
+	}
+	size, err := asmSizeFor(fieldBytes)
+	if err != nil {
+		return nil, err
+	}
+	mask := byteSwap(req.Mask, fieldBytes)
+	compare := asm.JNE.Imm(dst, int32(mask), failLabel)
+	if fieldBytes == 4 {
+		compare = asm.JNE.Imm32(dst, int32(mask), failLabel)
+	}
+	insns := append(asm.Instructions{}, setupAddr...)
+	insns = append(insns,
+		asm.LoadMem(dst, dst, int16(fieldOff-parentHS), size),
+		asm.And.Imm(dst, int32(mask)),
+		compare,
+	)
 	return insns, nil
 }
 
@@ -648,6 +678,39 @@ func emitFieldDispatchCheckBounded(
 	insns := foldOffsetIntoScalar(scalar, offsetReg, int32(fieldOff+byteOff), failLabel)
 	insns = append(insns, boundedScalarLoad(dst, asm.R0, scalar, asm.R1, size, failLabel)...)
 	insns = append(insns, match...)
+	if c.RequiredMask != nil {
+		if offsetReg == dst {
+			return nil, fmt.Errorf("codegen: bounded dispatch requirement overwrote its parent offset (resolver bug)")
+		}
+		required, err := emitRequiredMaskCheckBounded(spec, c.RequiredMask, offsetReg, scalar, dst, byteOff, failLabel)
+		if err != nil {
+			return nil, err
+		}
+		insns = append(insns, required...)
+	}
+	return insns, nil
+}
+
+func emitRequiredMaskCheckBounded(spec *vocab.ProtocolSpec, req *vocab.DispatchFieldMask, offsetReg, scalar, dst asm.Register, byteOff int, failLabel string) (asm.Instructions, error) {
+	fieldOff, fieldBytes, err := findFieldByteOffset(spec, req.FieldName)
+	if err != nil {
+		return nil, err
+	}
+	size, err := asmSizeFor(fieldBytes)
+	if err != nil {
+		return nil, err
+	}
+	mask := byteSwap(req.Mask, fieldBytes)
+	compare := asm.JNE.Imm(dst, int32(mask), failLabel)
+	if fieldBytes == 4 {
+		compare = asm.JNE.Imm32(dst, int32(mask), failLabel)
+	}
+	insns := foldOffsetIntoScalar(scalar, offsetReg, int32(fieldOff+byteOff), failLabel)
+	insns = append(insns, boundedScalarLoad(dst, asm.R0, scalar, asm.R1, size, failLabel)...)
+	insns = append(insns,
+		asm.And.Imm(dst, int32(mask)),
+		compare,
+	)
 	return insns, nil
 }
 
@@ -659,13 +722,24 @@ func emitFieldDispatchCheckBounded(
 // load overwrites it). Shared by genFieldDispatch and the alt-diverged
 // path so the slot-load + register aliasing live in one place.
 func emitVarParentDispatchBounded(spec *vocab.ProtocolSpec, c *vocab.DispatchConst, failLabel string, labels *labeler) (asm.Instructions, error) {
-	check, err := emitFieldDispatchCheckBounded(spec, c, asm.R3, asm.R5, asm.R3, 0, failLabel, labels)
+	primary := *c
+	primary.RequiredMask = nil
+	check, err := emitFieldDispatchCheckBounded(spec, &primary, asm.R3, asm.R5, asm.R3, 0, failLabel, labels)
 	if err != nil {
 		return nil, err
 	}
-	return append(asm.Instructions{
+	insns := append(asm.Instructions{
 		asm.LoadMem(asm.R3, asm.R10, bpfLoopCtxLayerEntrySlot, asm.DWord),
-	}, check...), nil
+	}, check...)
+	if c.RequiredMask != nil {
+		required, err := emitRequiredMaskCheckBounded(spec, c.RequiredMask, asm.R3, asm.R5, asm.R3, 0, failLabel)
+		if err != nil {
+			return nil, err
+		}
+		insns = append(insns, asm.LoadMem(asm.R3, asm.R10, bpfLoopCtxLayerEntrySlot, asm.DWord))
+		insns = append(insns, required...)
+	}
+	return insns, nil
 }
 
 // writeBackDispatchSlot returns the parent's write-back slot when the
@@ -690,6 +764,9 @@ func writeBackDispatchSlot(parent *ir.LayerInstance, c *vocab.DispatchConst, qo 
 // in a stack slot (writeBackDispatchSlot proved the field is one byte):
 // load it (zero-extended) and compare like a packet byte.
 func emitSlotDispatchCheck(c *vocab.DispatchConst, slot int16, failLabel string, labels *labeler) (asm.Instructions, error) {
+	if c.RequiredMask != nil {
+		return nil, fmt.Errorf("%w: dispatch requirements are not supported with a write-back dispatch field", ErrNotImplemented)
+	}
 	match, err := emitDispatchValueMatch(asm.R3, c, 1, failLabel, labels)
 	if err != nil {
 		return nil, err

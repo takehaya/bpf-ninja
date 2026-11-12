@@ -156,7 +156,11 @@ func edgesLean(s *vocab.ProtocolSpec) []string {
 			for _, a := range c.AltValues {
 				vals = append(vals, fmt.Sprintf("%d", a))
 			}
-			out = append(out, fmt.Sprintf("⟨%s, %s, .field %s [%s]⟩", str(s.Name), str(c.Parent), str(c.FieldName), strings.Join(vals, ", ")))
+			edge := fmt.Sprintf("⟨%s, %s, .field %s [%s]", str(s.Name), str(c.Parent), str(c.FieldName), strings.Join(vals, ", "))
+			if c.RequiredMask != nil {
+				edge += fmt.Sprintf(" [⟨%s, %d⟩]", str(c.RequiredMask.FieldName), c.RequiredMask.Mask)
+			}
+			out = append(out, edge+"⟩")
 		case vocab.DispatchNoCheck:
 			out = append(out, fmt.Sprintf("⟨%s, %s, .noCheck⟩", str(s.Name), str(c.Parent)))
 		}

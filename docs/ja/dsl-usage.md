@@ -83,6 +83,12 @@ eth/ipv4/udp/gtp/ipv4/tcp           # GTP-U の内側 IP
 | `gre`、`vxlan`、`geneve` | encapsulation |
 | `gtp` | GTP-U (固定 8 B + E/S/PN flag で optional 4 B + ext header 列) |
 | `srv6` | SRH (固定 8 B + segment list)。segment list は `srv6.segments[N]` で aux header stack として access できる |
+| `pfcp` | PFCP (UDP 8805)。固定 4 B の後に S flag で node 形式 (`pfcp.node`、4 B) か session 形式 (`pfcp.sess`、SEID 付き 12 B) の aux header。IE は解析しない |
+| `sctp` | SCTP。共通ヘッダ 12 B と最初の chunk の header (`sctp.chunk`、4 B)。2 つ目以降の chunk は読まない |
+| `arp` | IPv4 の ARP (28 B、eth / vlan / qinq の ethertype 0x0806)。hlen = 6 かつ plen = 4 でなければ reject。htype と ptype は検査しない |
+| `nsh` | NSH (base + service path header の 8 B)。MD type 1 は context 16 B を `nsh.md1` で読める。MD type 2 は length 分の TLV を読み飛ばす。next_proto で ipv4 / ipv6 / eth / mpls へ |
+| `erspan` | GRE 上の ERSPAN type II (protocol type 0x88BE) と type III (0x22EB)。GRE の sequence-number bit を要求するため type I は対象外。共通の 4 B の後、version で `erspan.v2` (4 B) か `erspan.v3` (8 B、O bit で platform subheader 8 B を読み飛ばす)。type III は FT = 0 の Ethernet payload だけを扱う |
+| `igmp` | IGMP v2 / v3 の共通 8 B (`type`, `max_resp_code`, `checksum`, `group`)。v3 report では `max_resp_code` を Flags として読む。v3 report の group record と v3 query の拡張部は読まない |
 
 ### Quantifier
 

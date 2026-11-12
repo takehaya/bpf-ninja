@@ -64,6 +64,9 @@ const bit<8>  KUNAI_IPV4_IPV4_PROTOCOL = 4;
 // payload — IPv4 uses the well-known 0x0800.
 const bit<16> KUNAI_IPV4_GRE_PROTOCOL_TYPE = 0x0800;
 
+// Under NSH, next_proto 1 names IPv4 (RFC 8300 §2.2).
+const bit<8>  KUNAI_IPV4_NSH_NEXT_PROTO = 1;
+
 // Option-walk loop bound: worst-case trailer is 40 bytes (IHL=15)
 // of NOPs (kind=1, single byte), so up to 40 iterations would drain
 // the trailer fully. We leave the bound at codegen's default 8

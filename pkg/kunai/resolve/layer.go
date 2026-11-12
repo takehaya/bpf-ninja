@@ -207,7 +207,14 @@ func selectAltParentDispatch(spec *vocab.ProtocolSpec, alts []*ir.LayerInstance,
 
 func altDispatchAgrees(a, b *vocab.DispatchConst) bool {
 	return a.Type == b.Type && a.FieldName == b.FieldName && a.Value == b.Value && a.Bits == b.Bits &&
-		slices.Equal(a.AltValues, b.AltValues)
+		slices.Equal(a.AltValues, b.AltValues) && dispatchRequiredMasksAgree(a.RequiredMask, b.RequiredMask)
+}
+
+func dispatchRequiredMasksAgree(a, b *vocab.DispatchFieldMask) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return *a == *b
 }
 
 func autoKey(proto string, index int) string {

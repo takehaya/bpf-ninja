@@ -3,6 +3,7 @@ import Kunai.Vectors.Syntax
 import Kunai.Vectors.Chain
 import Kunai.Vectors.Where
 import Kunai.Vectors.AuxHeaders
+import Kunai.Vectors.Protocols
 
 /-!
 # Golden vectors
@@ -13,7 +14,7 @@ the `vector` macro, which also proves `eval … = expected` by `decide`.
 -/
 namespace Kunai
 
-def vectors : List Vector := syntaxVectors ++ chainVectors ++ whereVectors ++ auxVectors
+def vectors : List Vector := syntaxVectors ++ chainVectors ++ whereVectors ++ auxVectors ++ protocolVectors
 
 /-- Ids are unique; the Go test names subtests after them. `native_decide`
 because `decide` exceeds the recursion limit on `eraseDups` over 100+ strings. -/

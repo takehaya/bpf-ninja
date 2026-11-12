@@ -79,6 +79,20 @@ func TestLoadGreDispatch(t *testing.T) {
 	}
 }
 
+func TestLoadErspanAuxGating(t *testing.T) {
+	ers := loadBundled(t)["erspan"]
+	for name, want := range map[string]uint64{"v2": 0x10, "v3": 0x20} {
+		g := ers.ParseStateMachine.AuxLayouts[name].Gating
+		if g == nil || g.Mask != 0xf0 || g.Value != want {
+			t.Errorf("%s gating = %+v; want mask 0xf0, value %#x", name, g, want)
+		}
+	}
+	dispatch := indexByName(ers.Consts)["KUNAI_ERSPAN_GRE_PROTOCOL_TYPE"]
+	if dispatch.RequiredMask == nil || dispatch.RequiredMask.FieldName != "flags" || dispatch.RequiredMask.Mask != 0x1000 {
+		t.Errorf("ERSPAN GRE dispatch requirement = %+v; want flags & 0x1000", dispatch.RequiredMask)
+	}
+}
+
 func TestLoadVxlanGenevePorts(t *testing.T) {
 	vxlan := loadBundled(t)["vxlan"]
 	if dc, ok := indexByName(vxlan.Consts)["KUNAI_VXLAN_UDP_DPORT"]; !ok || dc.Value != 4789 {
@@ -2804,6 +2818,23 @@ const bit<8> KUNAI_FOO_BAR_X_ALT_VENDOR_B = 3;
 	}
 	if len(dc.AltValues) != 2 || dc.AltValues[0] != 2 || dc.AltValues[1] != 3 {
 		t.Errorf("AltValues = %v, want [2 3]", dc.AltValues)
+	}
+}
+
+func TestLoadRejectsMisplacedDispatchRequirement(t *testing.T) {
+	for _, tc := range []struct {
+		name, constName, decl string
+	}{
+		{"alternate", "KUNAI_FOO_BAR_X_ALT_OTHER", "const bit<8> KUNAI_FOO_BAR_X = 1;\n@kunai_dispatch_require[field=x, mask=1] const bit<8> KUNAI_FOO_BAR_X_ALT_OTHER = 2;"},
+		{"value-only", "FOO_OPT_SPECIAL", "const bit<8> KUNAI_FOO_BAR_X = 1;\n@kunai_dispatch_require[field=x, mask=1] const bit<8> FOO_OPT_SPECIAL = 2;"},
+		{"structural", "FOO_MAX_DEPTH", "const bit<8> KUNAI_FOO_BAR_X = 1;\n@kunai_dispatch_require[field=x, mask=1] const bit<8> FOO_MAX_DEPTH = 2;"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := Load(altVocabFS(tc.decl), "vocab")
+			if err == nil || !strings.Contains(err.Error(), tc.constName) {
+				t.Fatalf("Load error = %v, want error naming %q", err, tc.constName)
+			}
+		})
 	}
 }
 
