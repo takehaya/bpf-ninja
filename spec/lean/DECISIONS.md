@@ -373,7 +373,7 @@ Entries are never deleted; a rejected candidate stays in the log.
 
 ## D-045: IGMP の vocab
 - 論点: IGMP v2 (RFC 2236) と v3 (RFC 9776) は先頭 8 byte の形を共有するが、v3 report では後半 4 byte の意味が違い、v3 query は v2 query と同じ type で後ろに拡張部を持つ。何を表すか。
-- 決定: 共通の 8 byte (`type`, `max_resp_code`, `checksum`, `group`) だけを primary とする。v3 report (type 0x22) では `group` は reserved (16) + group record 数 (16) を読む。dispatch は `ipv4.protocol == 2`。group record は抽出しない。
+- 決定: 共通の 8 byte (`type`, `max_resp_code`, `checksum`, `group`) だけを primary とする。v3 report (type 0x22) では `max_resp_code` は RFC 9776 section 4.2.3 の Flags を読み、`group` は Reserved (16) + Number of Group Records (16) を読む。dispatch は `ipv4.protocol == 2`。group record は抽出しない。
 - 帰結: record 数が 0 の v3 report は padding の有無にかかわらず共通 header として accept する (vectors `igmp-v3-report-no-records`, `igmp-v3-report-no-records-padding`)。padding を存在しない record として公開しない。
 - 落としたもの: v3 query の拡張部 (S, QRV, QQIC, source 数, source list) と v3 report の group record。v3 query は v2 query と同じ type 0x11 で、区別は IP payload の長さ (12 byte 以上) だけで、parser の select からは見えない。group record は record 数が 16 bit で、aux の gate が primary の 1 byte の mask (`computeAuxGating` / `mergeBitFieldsToMask`) しか見られないため、存在を正しく判定できない。v1 (RFC 1112) の type 0x12 は v2 と同じ 8 byte として読める。
 - 現行 Go 実装の挙動: すべての vector が compile できる。

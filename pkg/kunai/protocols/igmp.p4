@@ -5,9 +5,10 @@
 //   0x11 membership query (v1/v2/v3), 0x12 v1 report, 0x16 v2 report,
 //   0x17 v2 leave group, 0x22 v3 membership report.
 //
-// In a v3 report the second 8 bits are reserved and the 32-bit word is
-// reserved (16) + number of group records (16), so `igmp.group` reads
-// those bits there. Group records are not parsed.
+// In a v3 report the second 8 bits are Flags (RFC 9776 section 4.2.3),
+// read through `igmp.max_resp_code`, and the 32-bit word is Reserved
+// (16) + Number of Group Records (16), read through `igmp.group`.
+// Group records are not parsed.
 //
 // The v3 query extension (S, QRV, QQIC, source list) is not modelled:
 // a v3 query has the same type (0x11) as a v2 query and is told apart

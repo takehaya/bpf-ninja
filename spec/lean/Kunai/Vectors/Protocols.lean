@@ -478,7 +478,7 @@ def erspanVectors : List Vector := [
 -- IGMP (D-045) ---------------------------------------------------------------
 
 def igmpHdr (type : Nat) (group : Nat) (maxResp : Nat := 100) : Packet := [UInt8.ofNat type, UInt8.ofNat maxResp] ++ be 2 0 ++ be 4 group
-/-- v3 report header: the group word holds reserved (16) + number of records (16). -/
+/-- v3 report header: byte 1 is Flags; the group word holds Reserved (16) + Number of Group Records (16). -/
 def igmpV3Report (records : Nat) : Packet := [0x22, 0] ++ be 2 0 ++ be 2 0 ++ be 2 records
 def igmpRecord (recType mcast : Nat) (sources : List Nat := []) : Packet :=
   [UInt8.ofNat recType, 0] ++ be 2 sources.length ++ be 4 mcast ++ (sources.map (be 4)).flatten

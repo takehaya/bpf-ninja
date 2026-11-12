@@ -1,4 +1,5 @@
-// ERSPAN type II and type III over GRE (draft-foschiano-erspan).
+// ERSPAN type II and type III over GRE (RFC 2784, RFC 2890,
+// draft-foschiano-erspan-03).
 // GRE's sequence-number bit distinguishes type II from type I, which
 // has no ERSPAN header and is not modelled. Only Ethernet payloads are
 // accepted, so `eth/ipv4/gre/erspan/eth/...` reaches the original traffic.
