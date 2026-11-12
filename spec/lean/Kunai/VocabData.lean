@@ -34,7 +34,8 @@ def vocab : Vocab :=
           states := [
             { name := "start", extracts := [⟨"hdr", "erspan_h", 4, false⟩], counters := [], advances := [], trans := .select { keys := [.field "hdr" false 0 4], cases := [⟨[.val 1], (.state 1)⟩, ⟨[.val 2], (.state 2)⟩], default := .reject } },
             { name := "parse_v2", extracts := [⟨"v2", "erspan_v2_h", 4, false⟩], counters := [], advances := [], trans := .goto .accept },
-            { name := "parse_v3", extracts := [⟨"v3", "erspan_v3_h", 8, false⟩], counters := [], advances := [], trans := .select { keys := [.field "v3" false 63 1], cases := [⟨[.val 0], .accept⟩], default := (.state 3) } },
+            { name := "parse_v3", extracts := [⟨"v3", "erspan_v3_h", 8, false⟩], counters := [], advances := [], trans := .select { keys := [.field "v3" false 49 5], cases := [⟨[.val 0], (.state 3)⟩], default := .reject } },
+            { name := "check_o", extracts := [], counters := [], advances := [], trans := .select { keys := [.field "v3" false 63 1], cases := [⟨[.val 0], .accept⟩], default := (.state 4) } },
             { name := "skip_platform", extracts := [], counters := [], advances := [.literal 8], trans := .goto .accept }],
           entry := 0,
           headers := [⟨"erspan_h", [⟨"version", 0, 4⟩, ⟨"vlan", 4, 12⟩, ⟨"cos", 16, 3⟩, ⟨"en", 19, 2⟩, ⟨"t", 21, 1⟩, ⟨"session_id", 22, 10⟩], 4⟩, ⟨"erspan_v2_h", [⟨"reserved", 0, 12⟩, ⟨"index", 12, 20⟩], 4⟩, ⟨"erspan_v3_h", [⟨"timestamp", 0, 32⟩, ⟨"sgt", 32, 16⟩, ⟨"p", 48, 1⟩, ⟨"ft", 49, 5⟩, ⟨"hw_id", 54, 6⟩, ⟨"d", 60, 1⟩, ⟨"gra", 61, 2⟩, ⟨"o", 63, 1⟩], 8⟩],
@@ -238,7 +239,7 @@ def vocab : Vocab :=
       ⟨"arp", "vlan", .field "ethertype" [2054]⟩,
       ⟨"arp", "qinq", .field "ethertype" [2054]⟩,
       ⟨"cw", "mpls", .noCheck⟩,
-      ⟨"erspan", "gre", .field "protocol_type" [35006, 8939]⟩,
+      ⟨"erspan", "gre", .field "protocol_type" [35006, 8939] [⟨"flags", 4096⟩]⟩,
       ⟨"esp", "ipv4", .field "protocol" [50]⟩,
       ⟨"esp", "ipv6", .field "next_header" [50]⟩,
       ⟨"eth", "mpls", .noCheck⟩,

@@ -87,6 +87,10 @@ func TestLoadErspanAuxGating(t *testing.T) {
 			t.Errorf("%s gating = %+v; want mask 0xf0, value %#x", name, g, want)
 		}
 	}
+	dispatch := indexByName(ers.Consts)["KUNAI_ERSPAN_GRE_PROTOCOL_TYPE"]
+	if dispatch.RequiredMask == nil || dispatch.RequiredMask.FieldName != "flags" || dispatch.RequiredMask.Mask != 0x1000 {
+		t.Errorf("ERSPAN GRE dispatch requirement = %+v; want flags & 0x1000", dispatch.RequiredMask)
+	}
 }
 
 func TestLoadVxlanGenevePorts(t *testing.T) {

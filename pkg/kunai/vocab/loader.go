@@ -59,10 +59,36 @@ func Load(fsys fs.FS, root string) (map[string]*ProtocolSpec, error) {
 	if err := resolveHeaderWritebackTargets(out); err != nil {
 		return nil, err
 	}
+	if err := validateDispatchRequiredMasks(out); err != nil {
+		return nil, err
+	}
 	if err := checkDispatchCollisions(out); err != nil {
 		return nil, err
 	}
 	return out, nil
+}
+
+func validateDispatchRequiredMasks(specs map[string]*ProtocolSpec) error {
+	for _, spec := range specs {
+		for i := range spec.Consts {
+			c := &spec.Consts[i]
+			if c.RequiredMask == nil {
+				continue
+			}
+			parent := specs[c.Parent]
+			bitOff, bits, ok := BitOffsetIn(parent.Fields, c.RequiredMask.FieldName)
+			if !ok {
+				return fmt.Errorf("%s: dispatch requirement on %q references unknown field %s.%s", spec.Source, c.Name, c.Parent, c.RequiredMask.FieldName)
+			}
+			if bitOff%8 != 0 || bits%8 != 0 || bits > 32 {
+				return fmt.Errorf("%s: dispatch requirement on %q needs a byte-aligned parent field of at most 32 bits, got %s.%s at bit %d with width %d", spec.Source, c.Name, c.Parent, c.RequiredMask.FieldName, bitOff, bits)
+			}
+			if c.RequiredMask.Mask >= uint64(1)<<bits {
+				return fmt.Errorf("%s: dispatch requirement mask %#x on %q does not fit %s.%s bit<%d>", spec.Source, c.RequiredMask.Mask, c.Name, c.Parent, c.RequiredMask.FieldName, bits)
+			}
+		}
+	}
+	return nil
 }
 
 // checkDispatchCollisions rejects two children that claim one value of
@@ -660,6 +686,11 @@ func classifyKunaiConst(c *p4lite.Const, name, protoUpper, source string, knownP
 	}
 	rest := name[len(protoUpper)+1:]
 	if m := reNoCheck.FindStringSubmatch(rest); m != nil {
+		if req, err := dispatchRequiredMask(c, source); err != nil {
+			return nil, err
+		} else if req != nil {
+			return nil, fmt.Errorf("%s: @kunai_dispatch_require is valid only on a field dispatch const, not %q", source, c.Name)
+		}
 		if !c.IsBool {
 			return nil, fmt.Errorf("%s: NO_CHECK const %q must be declared as bool", source, c.Name)
 		}
@@ -687,12 +718,46 @@ func classifyKunaiConst(c *p4lite.Const, name, protoUpper, source string, knownP
 		// point the author at the bare name.
 		return nil, fmt.Errorf("%s: KUNAI_ marks an inter-layer dispatch edge; %q has parent %q which is not a protocol — drop the KUNAI_ prefix for a value-only select-match const", source, c.Name, parent)
 	}
+	requiredMask, err := dispatchRequiredMask(c, source)
+	if err != nil {
+		return nil, err
+	}
 	return &DispatchConst{
-		Name:      c.Name,
-		Type:      DispatchField,
-		Parent:    parent,
-		FieldName: strings.ToLower(m[2]),
-		Bits:      c.Bits,
-		Value:     c.Int,
+		Name:         c.Name,
+		Type:         DispatchField,
+		Parent:       parent,
+		FieldName:    strings.ToLower(m[2]),
+		Bits:         c.Bits,
+		Value:        c.Int,
+		RequiredMask: requiredMask,
 	}, nil
+}
+
+func dispatchRequiredMask(c *p4lite.Const, source string) (*DispatchFieldMask, error) {
+	var found *p4lite.Annotation
+	for i := range c.Annotations {
+		a := &c.Annotations[i]
+		if a.Name != "kunai_dispatch_require" {
+			continue
+		}
+		if found != nil {
+			return nil, fmt.Errorf("%s: const %q has duplicate @kunai_dispatch_require annotations", source, c.Name)
+		}
+		found = a
+	}
+	if found == nil {
+		return nil, nil
+	}
+	if len(found.KVs) != 2 {
+		return nil, fmt.Errorf("%s: @kunai_dispatch_require on %q accepts exactly field and mask", source, c.Name)
+	}
+	field, ok := found.KVs["field"]
+	if !ok || field.Kind != p4lite.AnnotationIdent {
+		return nil, fmt.Errorf("%s: @kunai_dispatch_require on %q needs field=<identifier>", source, c.Name)
+	}
+	mask, ok := found.KVs["mask"]
+	if !ok || mask.Kind != p4lite.AnnotationInt || mask.Int == 0 {
+		return nil, fmt.Errorf("%s: @kunai_dispatch_require on %q needs a nonzero integer mask", source, c.Name)
+	}
+	return &DispatchFieldMask{FieldName: strings.ToLower(field.Ident), Mask: mask.Int}, nil
 }

@@ -1,7 +1,7 @@
-// ERSPAN type II and type III over GRE (draft-foschiano-erspan,
-// RFC 9563 for the GRE carriage). The mirrored Ethernet frame follows
-// the ERSPAN header, so `eth/ipv4/gre/erspan/eth/...` reaches the
-// original traffic. Type I has no ERSPAN header and is not modelled.
+// ERSPAN type II and type III over GRE (draft-foschiano-erspan).
+// GRE's sequence-number bit distinguishes type II from type I, which
+// has no ERSPAN header and is not modelled. Only Ethernet payloads are
+// accepted, so `eth/ipv4/gre/erspan/eth/...` reaches the original traffic.
 //
 // Both types start with the same 4 bytes (version, VLAN, CoS,
 // encapsulation / BSO bits, truncation bit, session id), the primary
@@ -46,6 +46,7 @@ header erspan_v3_h {
 // GRE protocol type 0x88BE carries type II and 0x22EB type III. The
 // _ALT_ suffix folds the second value into the same dispatch edge
 // (vocab/loader.go mergeAltDispatchConsts).
+@kunai_dispatch_require[field=flags, mask=0x1000]
 const bit<16> KUNAI_ERSPAN_GRE_PROTOCOL_TYPE = 0x88BE;
 const bit<16> KUNAI_ERSPAN_GRE_PROTOCOL_TYPE_ALT_TYPE3 = 0x22EB;
 
@@ -72,6 +73,12 @@ parser ErspanParser(packet_in pkt,
     }
     state parse_v3 {
         pkt.extract(v3);
+        transition select(v3.ft) {
+            0:       check_o;
+            default: reject;
+        }
+    }
+    state check_o {
         transition select(v3.o) {
             0:       accept;
             default: skip_platform;

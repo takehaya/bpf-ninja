@@ -457,12 +457,21 @@ vector erspan3PlatformTrunc := {
   id := "erspan3-platform-truncated", ast := { layers := erspanTermL },
   packet := (erspanPkt 0x22EB (erspanHdr 2 ++ erspanV3 (o := 1) ++ be 8 0)).take 58, expected := .reject,
   note := "4 of the 8 platform bytes" }
+vector erspan3RawIP := {
+  id := "erspan3-raw-ip-reject", ast := { layers := erspanTermL ++ [P "eth"] },
+  packet := erspanPkt 0x22EB (erspanHdr 2 ++ be 4 0x01020304 ++ be 2 50 ++ be 2 (2 * 1024)) (ipv4 6 ++ tcp 12345 80),
+  expected := .reject, note := "D-044: FT 2 is an IP packet; only Ethernet payloads are parsed" }
+vector erspanType1 := {
+  id := "erspan1-no-sequence-reject", ast := { layers := erspanTermL, cond := some (.fieldExists (fp ["erspan", "v2"])) },
+  packet := eth 0x0800 ++ ipv4 47 ++ be 2 0 ++ be 2 0x88be ++ eth 0x0800 (dst := 0x100000000001) ++ ipv4 6 ++ tcp 12345 80,
+  expected := .reject, note := "D-044: GRE S=0 is type I even when the inner destination starts with version nibble 1" }
 
 def erspanVectors : List Vector := [
   erspan2Chain, erspan3Chain, erspan3Platform, erspan3PlatformMissing, erspanIPv6, erspanInnerVlan, erspanGreMiss,
   erspanVersion0, erspanVersion3, erspanVersionCross, erspanSession, erspanSessionMiss, erspanVlanT, erspanCos,
   erspanTsHit, erspanTsAbsent, erspanTsAbsentNot, erspanSgt, erspanOBracket, erspanOBracketMiss, erspanV2Exists,
-  erspanV3ExistsAbsent, erspanIndex, erspanTruncBase, erspan2Exact, erspan2Trunc, erspan3Trunc, erspan3PlatformTrunc]
+  erspanV3ExistsAbsent, erspanIndex, erspanTruncBase, erspan2Exact, erspan2Trunc, erspan3Trunc, erspan3PlatformTrunc,
+  erspan3RawIP, erspanType1]
 
 -- IGMP (D-045) ---------------------------------------------------------------
 

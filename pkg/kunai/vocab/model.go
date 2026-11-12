@@ -855,6 +855,15 @@ type DispatchConst struct {
 	// dispatch check passes when the field equals Value or any entry
 	// here. Field only; empty for the common single-value edge.
 	AltValues []uint64
+	// RequiredMask adds a conjunctive parent-field check to this edge:
+	// parent.<field> & mask == mask. It comes from
+	// @kunai_dispatch_require on the base dispatch const.
+	RequiredMask *DispatchFieldMask
+}
+
+type DispatchFieldMask struct {
+	FieldName string
+	Mask      uint64
 }
 
 // --- Parse state machine (within-protocol structure) ---
@@ -1286,7 +1295,13 @@ func (s *ProtocolSpec) DispatchEquivalentFor(child, other *ProtocolSpec) (bool, 
 	if ca.Type != DispatchField {
 		return true, nil
 	}
-	if ca.Value != cb.Value || ca.Bits != cb.Bits || !slices.Equal(ca.AltValues, cb.AltValues) {
+	if ca.Value != cb.Value || ca.Bits != cb.Bits || !slices.Equal(ca.AltValues, cb.AltValues) || !dispatchFieldMasksEqual(ca.RequiredMask, cb.RequiredMask) {
+		return false, nil
+	}
+	// A masked requirement depends on another parent field. Treat parents
+	// as non-equivalent unless they are the same spec; the runtime-parent
+	// cascade will then emit each complete edge check.
+	if ca.RequiredMask != nil && s != other {
 		return false, nil
 	}
 	if s.HasVariableLayout() || other.HasVariableLayout() {
@@ -1311,4 +1326,11 @@ func (s *ProtocolSpec) DispatchEquivalentFor(child, other *ProtocolSpec) (bool, 
 		return false, err
 	}
 	return ta == tb && wa == wb, nil
+}
+
+func dispatchFieldMasksEqual(a, b *DispatchFieldMask) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return *a == *b
 }
