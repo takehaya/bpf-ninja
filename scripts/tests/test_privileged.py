@@ -277,7 +277,10 @@ class FollowScenarioTests(unittest.TestCase):
         self.assertEqual(run[2], f"cd {build[1]} && ./run.sh")
 
     def test_runs_in_the_kernel_vm_and_reports_failure(self):
-        status, (_, run) = self.run_scenario("6.12", 3)
+        status, (build, run) = self.run_scenario("6.12", 3)
         self.assertEqual(status, 3)
         self.assertEqual(run[:4], ["vimto", "-sudo", "-kernel", ":6.12"])
-        self.assertEqual(run[-3:-1], ["sh", "-c"])
+        # vimto runs a plain command only through exec, and the VM sees the
+        # repository but not the host's /tmp.
+        self.assertEqual(run[-5:-1], ["exec", "--", "sh", "-c"])
+        self.assertEqual(Path(build[1]).parent, module.ROOT)

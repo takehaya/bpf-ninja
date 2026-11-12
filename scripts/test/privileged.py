@@ -179,9 +179,10 @@ def follow_scenario(kernel):
     capture, so it runs after the Go suites: built here, then run as root on
     the host or in the kernel's VM.
     """
-    with tempfile.TemporaryDirectory(prefix="bpf-ninja-follow-") as out:
+    # vimto shares the repository with the VM and hides the host's /tmp.
+    with tempfile.TemporaryDirectory(prefix="bpf-ninja-follow-", dir=ROOT if kernel else None) as out:
         subprocess.run([str(ROOT / "scripts/test/follow/build.sh"), out], check=True)
-        prefix = ["vimto", "-sudo", "-kernel", ":"+kernel, "-memory", "4G", "-smp", "cpus=2", "--"] if kernel else []
+        prefix = ["vimto", "-sudo", "-kernel", ":"+kernel, "-memory", "4G", "-smp", "cpus=2", "exec", "--"] if kernel else []
         command = prefix + ["sh", "-c", f"cd {shlex.quote(out)} && ./run.sh"]
         print("+ " + " ".join(command), flush=True)
         return subprocess.run(command).returncode
