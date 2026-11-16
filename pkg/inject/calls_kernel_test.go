@@ -56,6 +56,77 @@ func kernelBTF(t *testing.T) *btf.Spec {
 	return spec
 }
 
+// callLookupFixture calls bpf_jiffies64 and looks up sessions[7] in the same
+// entry frame, stores both results in out, and returns the map value.
+func callLookupFixture() *ebpf.CollectionSpec {
+	insns := asm.Instructions{
+		asm.Mov.Reg(asm.R6, asm.R1),
+		asm.StoreImm(asm.RFP, -4, 7, asm.Word),
+		asm.FnJiffies64.Call(),
+	}
+	insns = append(insns, outStore(0, asm.R0)...)
+	insns = append(insns,
+		asm.Mov.Reg(asm.R2, asm.RFP), asm.Add.Imm(asm.R2, -4),
+		asm.LoadMapPtr(asm.R1, 0).WithReference("sessions"), asm.FnMapLookupElem.Call(),
+		asm.JEq.Imm(asm.R0, 0, "drop"), asm.LoadMem(asm.R7, asm.R0, 0, asm.DWord))
+	insns = append(insns, outStore(1, asm.R7)...)
+	insns = append(insns,
+		asm.Mov.Reg(asm.R0, asm.R7), asm.Return(),
+		asm.Mov.Imm(asm.R0, 1).WithSymbol("drop"), asm.Return())
+	spec := callFixtureSpec(ebpf.XDP, insns)
+	spec.Maps["sessions"] = lookupFixture().Maps["sessions"]
+	return spec
+}
+
+// Calls and Auto share the same frame without changing either site's saved
+// state: both hooks see their values and the program matches the plain one.
+func TestBpfCallHookWithAutoLookup(t *testing.T) {
+	testutil.SkipIfNotRoot(t)
+	plain := loadCallFixture(t, callLookupFixture())
+	work := callLookupFixture()
+	req := callReq("bpf_jiffies64")
+	req.Auto = true
+	plan, err := transformLookup(work, req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.hooks) != 2 {
+		t.Fatalf("hooks %+v skipped %+v", plan.hooks, plan.skipped)
+	}
+	var lookup, call LookupHook
+	for _, h := range plan.hooks {
+		switch h.Kind {
+		case HookLookup:
+			lookup = h
+		case HookCall:
+			call = h
+		}
+	}
+	if lookup.Name == "" || call.Name == "" {
+		t.Fatalf("hooks %+v", plan.hooks)
+	}
+	hooked := loadHooked(t, work, plan.hooks)
+	t.Cleanup(hooked.Close)
+	for _, coll := range []*ebpf.Collection{plain, hooked} {
+		if err := coll.Maps["sessions"].Put(uint32(7), [2]uint64{2, 0x1234}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	callObs := attachArgObserver(t, call.Name, hooked.Programs["p"], false, false)
+	lookupObs := attachArgObserver(t, lookup.Name, hooked.Programs["p"], false, true, true)
+	plainRet, plainOut := runCallFixture(t, plain, make([]byte, 64), nil)
+	ret, out := runCallFixture(t, hooked, make([]byte, 64), nil)
+	if ret != plainRet || out != plainOut || ret != 2 {
+		t.Fatalf("hooked %d %#x, plain %d %#x", ret, out, plainRet, plainOut)
+	}
+	if got := lastCall(t, callObs, 1); got[0] != uint64(call.Sites[0].SitePC) || got[1] != out[0] {
+		t.Fatalf("call hook saw %#x, want site %d ret %#x", got, call.Sites[0].SitePC, out[0])
+	}
+	if got := lastCall(t, lookupObs, 1); got[0] != uint64(lookup.Sites[0].SitePC) || uint32(got[1]) != 7 || got[2] != 2 {
+		t.Fatalf("lookup hook saw %#x, want site %d key 7 value 2", got, lookup.Sites[0].SitePC)
+	}
+}
+
 // Shape S: the hooks after bpf_get_prandom_u32 and bpf_jiffies64 see the R0
 // the program then stores, at their site, and the action is unchanged.
 func TestBpfCallHookScalars(t *testing.T) {
