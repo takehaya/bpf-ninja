@@ -42,8 +42,10 @@ func (s *state) store(at, width int, v value) {
 func width(ins asm.Instruction) int { return int(ins.OpCode.Size().Sizeof()) }
 
 func checkAfter(site int, helper asm.Instruction, before, is, out asm.Instructions, pcs []int, idx map[int]int, js []int, hooks map[int]bool, targets targetBindings, f int, entryCtx bool, ctx *CtxSource) error {
-	isLookup := asm.BuiltinFunc(helper.Constant) == asm.FnMapLookupElem || asm.BuiltinFunc(helper.Constant) == asm.FnMapLookupPercpuElem
-	tail := asm.BuiltinFunc(helper.Constant) == asm.FnTailCall
+	isLookup := helperID(helper) == asm.FnMapLookupElem || helperID(helper) == asm.FnMapLookupPercpuElem
+	tail := helperID(helper) == asm.FnTailCall
+	// A call site's postlude has no branch and saves R0 first.
+	call := targets.callAt(site) != nil
 	if len(is) == 0 {
 		return reject(PostludeMissing, "missing helper observation postlude")
 	}
@@ -55,7 +57,7 @@ func checkAfter(site int, helper asm.Instruction, before, is, out asm.Instructio
 	if !tail {
 		// P2/P3 save the result once, optionally after loading saved flags.
 		save := 0
-		if is[0].OpCode.Class() == asm.LdXClass {
+		if !call && is[0].OpCode.Class() == asm.LdXClass {
 			save = 1
 		}
 		if len(is) <= save+1 || !same(is[save], asm.StoreMem(asm.RFP, int16(f+slotResult), asm.R0, asm.DWord)) || !same(is[len(is)-1], asm.LoadMem(asm.R0, asm.RFP, int16(f+slotResult), asm.DWord)) {
@@ -78,7 +80,7 @@ func checkAfter(site int, helper asm.Instruction, before, is, out asm.Instructio
 		if calls < 1 || calls > 2 || conditions != 1 || branches > 2 || len(is) < 2 || (is[1].OpCode.JumpOp() != asm.JEq && is[1].OpCode.JumpOp() != asm.JNE) {
 			return reject(LookupStructure, "not a lookup branch/call structure")
 		}
-	} else if calls != 1 || branches > 1 || conditions != branches || tail && branches != 0 {
+	} else if calls != 1 || branches > 1 || conditions != branches || (tail || call) && branches != 0 {
 		return reject(HelperStructure, "not a non-lookup helper branch/call structure")
 	}
 	s := initial()
@@ -248,7 +250,7 @@ func checkAfter(site int, helper asm.Instruction, before, is, out asm.Instructio
 			} else if generic := hasMap && mp.v == (value{id: int(asm.R1) + 1}); generic {
 				key := s.stack[f+slotKey].v
 				bad := s.regs[asm.R5] != mp.v
-				switch asm.BuiltinFunc(helper.Constant) {
+				switch helperID(helper) {
 				case asm.FnMapLookupElem, asm.FnMapLookupPercpuElem:
 					bad = bad || s.regs[asm.R3] != key || s.regs[asm.R4].id != idResult
 				case asm.FnMapUpdateElem:
@@ -337,6 +339,13 @@ func plannedArgs(s state, f int, b *targetBinding) error {
 		case ArgValue:
 			// The result, or a pointer to its copy below the fixed slots.
 			ok = got.id == idResult || got.frame && got.ptr < f+slotMap
+		case ArgRet:
+			ok = got == value{id: idResult}
+		case ArgArg:
+			// The key slot holds the argument register as it was at the call.
+			var v value
+			v, ok = slot(f + slotKey)
+			ok = ok && v == value{id: b.argReg + 1} && got == v
 		case ArgMap:
 			var v value
 			v, ok = slot(f + slotMap)
