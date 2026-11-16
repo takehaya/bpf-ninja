@@ -46,6 +46,7 @@ type RawProgram struct {
 	FuncInfo     []byte
 	LineInfo     []byte
 	Maps         map[int32]RawMap
+	Kernel       *btf.Spec // see LookupRequest.Kernel; transformLookupRawGuarded copies it into the request
 }
 
 // LookupRequestRaw selects sites in a single raw program. The caller certifies
@@ -69,6 +70,7 @@ type LookupRequestRaw struct {
 	Peeks           CallWhen   // see LookupRequest.Peeks
 	HookName        string
 	Stack           StackAudit
+	Calls           []string // see LookupRequest.Calls
 }
 
 // LookupResultRaw contains a transformed instruction slice and matching load
@@ -110,7 +112,7 @@ type LookupResultRaw struct {
 func (r LookupRequestRaw) Request() LookupRequest {
 	return LookupRequest{Site: r.Site, Auto: r.Auto, Maps: r.Maps, Entry: r.Entry, TailCalls: r.TailCalls,
 		CopyReadOnly: r.CopyReadOnly, StaticUntrusted: r.StaticUntrusted, Dispatch: r.Dispatch, MissFirst: r.MissFirst, Lookups: r.Lookups, Updates: r.Updates, Deletes: r.Deletes,
-		Pushes: r.Pushes, Pops: r.Pops, Peeks: r.Peeks, HookName: r.HookName, Stack: r.Stack}
+		Pushes: r.Pushes, Pops: r.Pops, Peeks: r.Peeks, HookName: r.HookName, Stack: r.Stack, Calls: r.Calls}
 }
 
 // hookSuffix is the longest fixed suffix the transform appends to HookName
@@ -222,7 +224,9 @@ func transformLookupRawGuarded(p RawProgram, req LookupRequestRaw, probe func() 
 			}
 		}
 	}
-	out, plan, err := transformLookupProgramGuarded(insns, p.Type, types, resolve, req.Request(), probe)
+	r := req.Request()
+	r.Kernel = p.Kernel
+	out, plan, err := transformLookupProgramGuarded(insns, p.Type, types, resolve, r, probe)
 	if err != nil {
 		return nil, err
 	}

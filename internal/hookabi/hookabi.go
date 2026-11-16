@@ -24,7 +24,7 @@ func SizeTag(name string, size uint32) string {
 	return fmt.Sprintf("%s%s_size=%d", sizePrefix, name, size)
 }
 
-// SizeTags parses the key and value sizes from a function's decl tags.
+// SizeTags parses the key, value and arg sizes from a function's decl tags.
 func SizeTags(tags []string) map[string]uint32 {
 	out := map[string]uint32{}
 	for _, tag := range tags {
@@ -32,7 +32,7 @@ func SizeTags(tags []string) map[string]uint32 {
 		if !ok {
 			continue
 		}
-		for _, name := range []string{"key", "value"} {
+		for _, name := range []string{"key", "value", "arg"} {
 			if v, ok := strings.CutPrefix(rest, name+"_size="); ok {
 				if n, err := strconv.ParseUint(v, 10, 32); err == nil {
 					out[name] = uint32(n)

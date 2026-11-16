@@ -46,6 +46,7 @@ type SiteTarget struct {
 	Ctx    *CtxSource `json:"ctx,omitempty"`
 	Args   []ArgRole  `json:"args,omitempty"`
 	SitePC int32      `json:"site_pc,omitempty"`
+	ArgReg int        `json:"arg_reg,omitempty"` // 1..5 iff Args contains ArgArg
 }
 
 // ArgRole is what one hook argument holds.
@@ -57,6 +58,8 @@ const (
 	ArgKey   ArgRole = "key"   // the helper's R2
 	ArgValue ArgRole = "value" // the helper's R0; unwrapped, any stack pointer below the map slot
 	ArgMap   ArgRole = "map"   // the helper's R1
+	ArgArg   ArgRole = "arg"   // the callee's R<SiteTarget.ArgReg> at the call, kept in the key slot
+	ArgRet   ArgRole = "ret"   // the callee's R0, exactly
 )
 
 // lookupABIs are the argument lists a lookup hook can have: typed without
@@ -67,6 +70,13 @@ var lookupABIs = [][]ArgRole{
 	{ArgCtx, ArgSite, ArgKey, ArgValue},
 	{ArgCtx, ArgSite, ArgKey},
 	{ArgCtx, ArgSite, ArgKey, ArgValue, ArgMap},
+}
+
+// callABIs are the argument lists a call hook can have: the result alone, and
+// the memory argument and the result.
+var callABIs = [][]ArgRole{ //nolint:unused // until the call-site checks use it
+	{ArgCtx, ArgSite, ArgRet},
+	{ArgCtx, ArgSite, ArgArg, ArgRet},
 }
 
 // CtxSource is the plan-proved context value used to initialize a callee

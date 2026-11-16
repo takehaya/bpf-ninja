@@ -39,6 +39,7 @@ type LookupSite struct {
 	// Wrapper names the function that holds this lookup's helper and hook call,
 	// when its frame has no room for the slots (see lookupWrapper).
 	Wrapper string
+	Call    string `json:",omitempty"` // callee name of a HookCall site
 }
 
 // LookupSelector identifies lookups of one map. FuncName and Line optionally
@@ -183,6 +184,8 @@ type LookupRequest struct {
 	Peeks           CallWhen
 	HookName        string
 	Stack           StackAudit
+	Calls           []string  // callee names from the call table; each gets PREFIX_<name>; see CallRow
+	Kernel          *btf.Spec // kernel BTF for naming kfunc calls by id and for typing arguments; nil is allowed
 }
 
 // LookupWhen is a set of lookup results; see LookupRequest.Lookups.
@@ -252,6 +255,17 @@ func checkOps(req LookupRequest) error {
 	if req.Lookups == LookupNone && !req.Site.empty() {
 		return refuse("Lookups none selects no lookup; Site must be empty")
 	}
+	if len(req.Calls) > 0 && req.Dispatch {
+		return refuse("Calls does not combine with Dispatch")
+	}
+	for i, name := range req.Calls {
+		if name == "" || slices.Contains(req.Calls[:i], name) {
+			return refuse("Calls names must be non-empty and unique; got %q", name)
+		}
+		if !slices.Contains(SupportedCalls(), name) {
+			return refuse("Calls name %q is not supported; supported calls: %s", name, strings.Join(SupportedCalls(), ", "))
+		}
+	}
 	return nil
 }
 
@@ -283,6 +297,7 @@ const (
 	HookPush HookKind = "push"
 	HookPop  HookKind = "pop"
 	HookPeek HookKind = "peek"
+	HookCall HookKind = "call" // a helper or kernel-function call from the call table (LookupRequest.Calls)
 )
 
 // MapCall reports whether k is a map helper other than a lookup: an update,
@@ -350,6 +365,11 @@ type LookupHook struct {
 	SiteArg   bool
 	TypeID    btf.TypeID
 	FuncInfo  []byte
+	Call      string `json:",omitempty"` // callee name; set iff Kind == HookCall
+	ArgReg    int    `json:",omitempty"` // 1..5: the callee register the hook's arg parameter carries; 0: no arg
+	ArgType   string `json:",omitempty"` // BTF struct name of arg's pointee; "" with ArgReg != 0: struct { u8 bytes[ArgSize]; }
+	ArgSize   uint32 `json:",omitempty"` // size of arg's pointee in bytes
+	RetPtr    bool   `json:",omitempty"` // ret is const void *; false: u64 ret
 }
 
 // LookupResult reports the selected original sites and the transformed clone.
@@ -1492,6 +1512,9 @@ func transformLookupProgramGuarded(insns asm.Instructions, typ ebpf.ProgramType,
 	}
 	if err := checkOps(req); err != nil {
 		return nil, plan, err
+	}
+	if len(req.Calls) > 0 {
+		return nil, plan, refuse("Calls is not implemented")
 	}
 	var reserved []string
 	entryName, tailName := req.HookName+"_entry", req.HookName+"_tail_call"
