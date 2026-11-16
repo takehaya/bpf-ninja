@@ -48,12 +48,20 @@ type injectedProgJSON struct {
 // site it reports; the entry call is the site inject.DispatchEntrySite. When
 // is the results that call the hook: hit, miss or any for lookups, error or
 // any for updates, deletes, pushes, pops and peeks. A dispatch hook's When is
-// its lookups'; its other map call sites carry their own.
+// its lookups'; its other map call sites carry their own. A call hook runs
+// after every call of Call: ArgReg, ArgType and ArgSize describe its arg
+// parameter (absent without one; ArgType absent for plain bytes) and Ret is
+// "scalar" or "pointer".
 type hookJSON struct {
 	Name           string         `json:"name"`
 	Kind           string         `json:"kind"`
 	When           string         `json:"when,omitempty"`
 	Map            string         `json:"map,omitempty"`
+	Call           string         `json:"call,omitempty"`
+	ArgReg         int            `json:"arg_reg,omitempty"`
+	ArgType        string         `json:"arg_type,omitempty"`
+	ArgSize        uint32         `json:"arg_size,omitempty"`
+	Ret            string         `json:"ret,omitempty"`
 	Sites          []hookSiteJSON `json:"sites"`
 	Untrusted      bool           `json:"untrusted"`
 	Copied         bool           `json:"copied"`
@@ -68,6 +76,7 @@ type hookSiteJSON struct {
 	Kind      string `json:"kind"`
 	PC        uint32 `json:"pc"`
 	Map       string `json:"map,omitempty"`
+	Call      string `json:"call,omitempty"`
 	Func      string `json:"func,omitempty"`
 	File      string `json:"file,omitempty"`
 	Line      uint32 `json:"line,omitempty"`
@@ -165,18 +174,18 @@ func loadedHookAvailabilities(progID uint32, names []string) (map[string]attach.
 }
 
 func siteJSON(kind inject.HookKind, site inject.LookupSite) hookSiteJSON {
-	return hookSiteJSON{Kind: string(kind), PC: site.SitePC, Map: site.MapName, Func: site.FuncName, File: site.File, Line: site.Line, CtxSource: site.CtxSource, Reason: site.Reason, Wrapper: site.Wrapper}
+	return hookSiteJSON{Kind: string(kind), PC: site.SitePC, Map: site.MapName, Call: site.Call, Func: site.FuncName, File: site.File, Line: site.Line, CtxSource: site.CtxSource, Reason: site.Reason, Wrapper: site.Wrapper}
 }
 
-// hookKind is typed, generic, entry, tail_call or dispatch. The sites of a
-// typed or generic hook say which map helper it observes.
+// hookKind is typed, generic, entry, tail_call, call or dispatch. The sites
+// of a typed or generic hook say which map helper it observes.
 func hookKind(hook inject.LookupHook) string {
 	switch {
 	case hook.Dispatch:
 		return "dispatch"
 	case hook.Generic:
 		return "generic"
-	case hook.Kind != inject.HookEntry && hook.Kind != inject.HookTailCall:
+	case hook.Kind != inject.HookEntry && hook.Kind != inject.HookTailCall && hook.Kind != inject.HookCall:
 		return "typed"
 	}
 	return string(hook.Kind)
@@ -233,6 +242,12 @@ func injectionJSON(inj syscallhook.Injection) injectedProgJSON {
 		h := hookJSON{Name: hook.Name, Kind: hookKind(hook), When: when, Sites: sites, Untrusted: hook.Untrusted, Copied: hook.Copied, Static: hook.Static, ReadOnly: hook.ReadOnly}
 		if !hook.Dispatch {
 			h.Map = hook.MapName
+		}
+		if hook.Kind == inject.HookCall {
+			h.Call, h.ArgReg, h.ArgType, h.ArgSize, h.Ret = hook.Call, hook.ArgReg, hook.ArgType, hook.ArgSize, "scalar"
+			if hook.RetPtr {
+				h.Ret = "pointer"
+			}
 		}
 		if h.Sites == nil {
 			h.Sites = []hookSiteJSON{}

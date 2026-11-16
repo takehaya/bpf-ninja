@@ -19,6 +19,7 @@ import (
 	"unsafe"
 
 	"github.com/cilium/ebpf"
+	"github.com/cilium/ebpf/btf"
 	"github.com/takehaya/bpf-ninja/pkg/inject"
 	"golang.org/x/sys/unix"
 )
@@ -67,6 +68,40 @@ func TestHookSummary(t *testing.T) {
 	// matches as "injected hook".
 	if !strings.HasPrefix(hookSummary(&inject.LookupResultRaw{Hooks: []inject.LookupHook{{Name: "h", Kind: inject.HookEntry}}}), "hook ") {
 		t.Fatal("summary does not start with hook")
+	}
+}
+
+// Kernel BTF is loaded only for a rule with calls; a failed load is logged
+// and leaves it nil, so helper call sites are still hooked.
+func TestLoadKernel(t *testing.T) {
+	spec := &btf.Spec{}
+	noCalls := []Rule{{Program: "p", Auto: true, Hook: "h"}}
+	withCalls := append(noCalls, Rule{Program: "q", Calls: []string{"bpf_fib_lookup"}, Hook: "h"})
+	for _, tc := range []struct {
+		name    string
+		rules   []Rule
+		err     error
+		want    *btf.Spec
+		loads   int
+		wantLog string
+	}{
+		{"no calls", noCalls, nil, nil, 0, ""},
+		{"calls", withCalls, nil, spec, 1, ""},
+		{"unavailable", withCalls, errors.New("no vmlinux"), nil, 1, "inject-run: kernel BTF unavailable: kernel-function calls are not hooked: no vmlinux\n"},
+	} {
+		var log bytes.Buffer
+		s := supervisor{options: Options{Rules: tc.rules, Log: &log}}
+		loads := 0
+		s.loadKernel(func() (*btf.Spec, error) {
+			loads++
+			if tc.err != nil {
+				return nil, tc.err
+			}
+			return spec, nil
+		})
+		if s.kernel != tc.want || loads != tc.loads || log.String() != tc.wantLog {
+			t.Errorf("%s: kernel=%p loads=%d log=%q", tc.name, s.kernel, loads, log.String())
+		}
 	}
 }
 
