@@ -163,6 +163,59 @@ func TestBpfCallHookRowLoadBytesTC(t *testing.T) {
 	testCallHookRowLoadBytes(t, ebpf.SchedCLS, "bpf_skb_load_bytes", unix.EFAULT)
 }
 
+// loadBytesMapFixture copies packet bytes into an array-map value instead of
+// the function's stack, making the call hook untyped.
+func loadBytesMapFixture() *ebpf.CollectionSpec {
+	insns := asm.Instructions{
+		asm.Mov.Reg(asm.R6, asm.R1),
+		asm.StoreImm(asm.RFP, -4, 0, asm.Word),
+		asm.Mov.Reg(asm.R2, asm.RFP), asm.Add.Imm(asm.R2, -4),
+		asm.LoadMapPtr(asm.R1, 0).WithReference("buf"), asm.FnMapLookupElem.Call(),
+		asm.JEq.Imm(asm.R0, 0, "lbm_drop"), asm.Mov.Reg(asm.R7, asm.R0),
+		asm.Mov.Reg(asm.R1, asm.R6), asm.Mov.Imm(asm.R2, loadBytesAt), asm.Mov.Reg(asm.R3, asm.R7), asm.Mov.Imm(asm.R4, loadBytesLen),
+		asm.FnXdpLoadBytes.Call(), asm.Mov.Reg(asm.R8, asm.R0),
+	}
+	insns = append(insns, outStore(0, asm.R8)...)
+	insns = append(insns,
+		asm.LoadMem(asm.R2, asm.R7, 0, asm.DWord), asm.StoreMem(asm.R1, 8, asm.R2, asm.DWord),
+		asm.JEq.Imm(asm.R8, 0, "lbm_pass"),
+		asm.Mov.Imm(asm.R0, 1).WithSymbol("lbm_drop"), asm.Return(),
+		asm.Mov.Imm(asm.R0, 2).WithSymbol("lbm_pass"), asm.Return())
+	spec := callFixtureSpec(ebpf.XDP, insns)
+	spec.Maps["buf"] = &ebpf.MapSpec{Name: "buf", Type: ebpf.Array, KeySize: 4, ValueSize: loadBytesLen, MaxEntries: 1}
+	return spec
+}
+
+func testCallHookRowLoadBytesMap(t *testing.T, static bool) {
+	testutil.SkipIfNotRoot(t)
+	plain := loadCallFixture(t, loadBytesMapFixture())
+	req := callReq("bpf_xdp_load_bytes")
+	req.StaticUntrusted = static
+	coll, plan, obs := callHooked(t, loadBytesMapFixture(), req)
+	h := plan.hooks[0]
+	if h.ArgReg != 3 || h.ArgType != "" || h.ArgSize != loadBytesLen || h.RetPtr || h.Static != static || h.Untrusted == static {
+		t.Fatalf("hook %+v", h)
+	}
+	packet := make([]byte, 64)
+	copy(packet[loadBytesAt:], []byte{1, 2, 3, 4, 5, 6, 7, 8})
+	want := binary.LittleEndian.Uint64(packet[loadBytesAt:])
+	pret, pout := runCallFixture(t, plain, packet, nil)
+	ret, out := runCallFixture(t, coll, packet, nil)
+	if ret != 2 || ret != pret || out != pout || out[0] != 0 || out[1] != want {
+		t.Fatalf("hooked %d %#x, plain %d %#x", ret, out, pret, pout)
+	}
+	if got := lastCall(t, obs["bpf_xdp_load_bytes"], 1); got[0] != uint64(h.Sites[0].SitePC) || got[1] != want || got[2] != 0 {
+		t.Fatalf("hook saw site %d arg %#x ret %#x, want %d %#x 0", got[0], got[1], got[2], h.Sites[0].SitePC, want)
+	}
+}
+
+func TestBpfCallHookRowLoadBytesMap(t *testing.T) { testCallHookRowLoadBytesMap(t, true) }
+
+// The global memory hook takes arg:untrusted, which 6.15 and older lack.
+func TestBpfCallHookRowLoadBytesMapUntrusted(t *testing.T) {
+	testCallHookRowLoadBytesMap(t, false)
+}
+
 // skFixture is skLookupFixture(typ, dport) calling fn in place of
 // bpf_sk_lookup_tcp, and with release false the bpf_sk_release replaced by
 // r1 = 0.
