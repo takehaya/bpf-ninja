@@ -19,7 +19,9 @@ import (
 // the selector fields must be empty, and Hook is the prefix of the per-map
 // hook names (see inject.LookupRequest); Maps limits Auto to the named maps.
 // Entry and TailCalls add the Hook_entry and Hook_tail_call hooks and allow a
-// rule without lookups.
+// rule without lookups. Calls names helpers and kernel functions from the
+// call table (inject.SupportedCalls); each named callee gets one hook,
+// Hook_<name>, after every call of it, and also allows a rule without lookups.
 // CopyReadOnly passes stack copies of BPF_F_RDONLY_PROG map values to typed
 // hooks, and StaticUntrusted gives the hooks that would take arg:untrusted
 // pointers static linkage (see inject.LookupRequest); without it, Run probes
@@ -44,6 +46,7 @@ type Rule struct {
 	Maps                []string        `json:"maps,omitempty"`
 	Entry               bool            `json:"entry,omitempty"`
 	TailCalls           bool            `json:"tail_calls,omitempty"`
+	Calls               []string        `json:"calls,omitempty"`
 	CopyReadOnly        bool            `json:"copy_read_only,omitempty"`
 	StaticUntrusted     bool            `json:"static_untrusted,omitempty"`
 	Dispatch            bool            `json:"dispatch,omitempty"`
@@ -88,6 +91,7 @@ func (r Rule) request() inject.LookupRequestRaw {
 		Pops:            ops.pops,
 		Peeks:           ops.peeks,
 		HookName:        r.Hook,
+		Calls:           r.Calls,
 	}
 }
 
@@ -145,8 +149,8 @@ func Validate(rules []Rule) error {
 	}
 	seen := make(map[string]bool)
 	for i, r := range rules {
-		if r.Program == "" || (r.Map == "" && !r.Auto && !r.Entry && !r.TailCalls) {
-			return fmt.Errorf("rule %d: program and one of map, auto, entry or tail_calls are required", i)
+		if r.Program == "" || (r.Map == "" && !r.Auto && !r.Entry && !r.TailCalls && len(r.Calls) == 0) {
+			return fmt.Errorf("rule %d: program and one of map, auto, entry, tail_calls or calls are required", i)
 		}
 		if (r.Auto || r.Map == "") && (r.Func != "" || r.Line != 0 || r.AllMatches || len(r.SitePCs) > 0) {
 			return fmt.Errorf("rule %d: func, line, all_matches and site_pcs filter map and cannot be used with auto or without map", i)

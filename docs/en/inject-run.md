@@ -1,7 +1,7 @@
 # Add hooks at load time with inject-run
 
 `bpf-ninja inject-run` starts a BPF loader under ptrace and rewrites selected XDP, tc, cgroup_skb and netfilter programs as the loader loads them.
-It adds hook functions at map calls, at program entry and after failed tail calls.
+It adds hook functions at map calls, at program entry, after failed tail calls and after selected helper and kernel-function calls.
 You then capture packets at a hook with `--func`, or attach your own fentry observer.
 Use it to see what a program does with its maps, such as which key a lookup used or which update failed, without changing the loader, its source or its object files.
 The loader can be a Go program that calls `bpf(2)` directly or a C loader.
@@ -109,6 +109,36 @@ Both keys work with a lookup rule or on their own.
 ```
 
 A program that calls `bpf_tail_call` loads with hooks only when the BPF JIT is enabled.
+
+### Observe helper and kernel-function calls
+
+```json
+[{"program": "xdp_ingress", "calls": ["bpf_fib_lookup", "bpf_ktime_get_ns", "bpf_xdp_ct_lookup"],
+  "hook": "obs"}]
+```
+
+`calls` names helpers and kernel functions (kfuncs) whose results the program uses.
+Each named callee that the program calls gets one hook, `HOOK_<name>`, which runs after every call of it.
+The hook receives the call's result as `ret` and, for a callee with a memory argument, that argument as the callee left it:
+
+| Callee | Hook | `arg` | `ret` |
+|---|---|---|---|
+| `bpf_ktime_get_ns`, `bpf_jiffies64`, `bpf_get_prandom_u32` | `(ctx, u32 site, u64 ret)` | none | the value |
+| `bpf_fib_lookup` | `(ctx, u32 site, const struct bpf_fib_lookup *arg, u64 ret)` | the lookup parameters (R2), after the lookup has filled them in | the lookup result code |
+| `bpf_xdp_ct_lookup`, `bpf_skb_ct_lookup` | `(ctx, u32 site, const struct bpf_ct_opts *arg, const void *ret)` | the options (R4), with the error the lookup set | the connection pointer; test it for NULL, it cannot be read through |
+
+- Only the names above are accepted; any other name, an empty name or a name given twice is a configuration error.
+- A name the program never calls adds no hook.
+- `calls` works on its own and with `map`, `auto`, `entry` and `tail_calls`, but not with `dispatch`.
+- `ops`, `maps`, `func`, `line`, `all_matches`, `site_pcs` and `copy_read_only` select map calls and do not apply to `calls`.
+- A call site that cannot be hooked runs unchanged and is listed in `skipped` with a reason starting with `call:`: a call right before or after another call, a call that is the first instruction of its function, a function without a context or without stack room for the slots, an argument size that is not a constant, or a program that calls `bpf_spin_lock`, `bpf_preempt_disable` or `bpf_res_spin_lock*`.
+  If no call site and no other hook is left, the transformation fails with `no call site is instrumented (N skipped)`.
+- When `arg` cannot be typed, it is `const void *` with its size in the `bpf-ninja:arg_size=N` decl tag, as on other untrusted hooks. On kernels without `arg:untrusted`, or with `static_untrusted`, such a hook is static and keeps the typed prototype.
+- `inject-run` reads the running kernel's BTF once, when a rule has `calls`, to name kfunc calls and type their arguments.
+  If it cannot, it logs `kernel BTF unavailable: kernel-function calls are not hooked` with the cause, and a program that calls a kfunc gets no call hooks.
+- Kernel functions in modules, such as conntrack on most distribution kernels, are not hooked.
+
+The word "calls" also appears elsewhere with another meaning: `calls` in the [lookups file](#lookups-file) lists map helper calls, and `calls` in [`--list-maps`](#map-listing-of-a-running-program) lists the BPF functions a function calls.
 
 ### See every site through one hook
 
@@ -354,8 +384,8 @@ A rule whose `program` never loads produces no diagnostic at all.
 | Key | Type | Default | Meaning | Constraints |
 |---|---|---|---|---|
 | `program` | string | required | The program to rewrite: its kernel name or its entry function name. | Kernel names have at most 15 characters; a function name can be longer. One rule per program. |
-| `hook` | string | required | The hook name. With `auto`, `entry`, `tail_calls` or `ops`, the prefix of the hook names. With `dispatch`, the name of the one hook. | A C identifier. It must leave room for the longest suffix within 127 bytes; see [Hook names](#hook-names). |
-| `map` | string | none | Observe lookups on this map, by exact kernel map name. | Not with `auto`. A rule needs one of `map`, `auto`, `entry` or `tail_calls`. |
+| `hook` | string | required | The hook name. With `auto`, `entry`, `tail_calls`, `calls` or `ops`, the prefix of the hook names. With `dispatch`, the name of the one hook. | A C identifier. It must leave room for the longest suffix within 127 bytes; see [Hook names](#hook-names). |
+| `map` | string | none | Observe lookups on this map, by exact kernel map name. | Not with `auto`. A rule needs one of `map`, `auto`, `entry`, `tail_calls` or `calls`. |
 | `func` | string | none | With `map`: only lookups in this BTF function. | Needs `map`. |
 | `line` | integer | none | With `map`: only lookups on this source line. | Needs `map`. |
 | `all_matches` | bool | false | With `map`: take every matching lookup instead of requiring exactly one. | Needs `map`. Not with `site_pcs`. |
@@ -365,7 +395,8 @@ A rule whose `program` never loads produces no diagnostic at all.
 | `ops` | string array | `["lookup"]` | The calls and results that call a hook; see the [ops table](#choose-the-maps-and-operations-to-observe). | Needs `map` or `auto`. Ops other than `lookup` need `auto`. Each op appears once, so `lookup:hit` and `lookup:miss` together are refused; use `lookup:any`. |
 | `entry` | bool | false | Add `HOOK_entry(ctx)` at program start. | |
 | `tail_calls` | bool | false | Add `HOOK_tail_call(ctx, site, index)` after each failed tail call. | The program must call `bpf_tail_call`. |
-| `dispatch` | bool | false | Send every site to one hook named `hook`. | Not with `copy_read_only` or `map_btf`. |
+| `calls` | string array | none | Add `HOOK_<name>` after every call of each named helper or kernel function; see [Observe helper and kernel-function calls](#observe-helper-and-kernel-function-calls). | Names from that section's table, each once. Not with `dispatch`. |
+| `dispatch` | bool | false | Send every site to one hook named `hook`. | Not with `copy_read_only`, `map_btf` or `calls`. |
 | `copy_read_only` | bool | false | Pass a stack copy of a `BPF_F_RDONLY_PROG` map's value to a typed hook. | Not with `dispatch`. The copy needs stack below the slots. |
 | `static_untrusted` | bool | false (probe) | Make hooks that would take `arg:untrusted` pointers static, without probing. | |
 | `map_btf` | object | none | Key and value types for a map created without BTF. | See [Map types from a loader ELF](#map-types-from-a-loader-elf). |
@@ -418,7 +449,7 @@ The deepest floor that still leaves room depends on the rule:
 
 | Rule has | Slots | 32-byte / unknown | Linux 6.9+ JIT |
 |---|---:|---:|---:|
-| `map` or `auto` | 3 | -456 | -488 |
+| `map`, `auto` or `calls` | 3 | -456 | -488 |
 | `tail_calls`, with or without `entry`, and no lookups | 2 | -464 | -496 |
 | only `entry` (also with `dispatch`) | 1 | -472 | -504 |
 | `dispatch` with `map`, `auto` or `tail_calls` | 4 | -448 | -480 |
@@ -461,6 +492,7 @@ If that name is empty, invalid, taken or too long, `inject-run` names the hook `
 | a call on a map known only at run time (map-in-map or an indirect map pointer), or a lookup on an XSK map, sockmap or sockhash | `HOOK_any`, `HOOK_any_update`, `HOOK_any_delete`, `HOOK_any_push`, `HOOK_any_pop`, `HOOK_any_peek` | `(ctx, u64 info, const void *key, const void *value, const void *map)` |
 | `entry` | `HOOK_entry` | `(ctx)` |
 | `tail_calls` | `HOOK_tail_call` | `(ctx, u32 site, u32 index)` |
+| `calls` | `HOOK_<name>`, such as `HOOK_bpf_fib_lookup` | `(ctx, u32 site, u64 ret)`, or with `arg` before `ret`; see [Observe helper and kernel-function calls](#observe-helper-and-kernel-function-calls) |
 | `dispatch` | `HOOK` | as `HOOK_any`, for every site |
 
 - A typed hook with `untrusted: true` in the [hooks file](#hooks-file) takes `const void *key` and `const void *value` instead of typed pointers, with their sizes in BTF decl tags when the bytes are plain data. Member filters such as `value->action` need `untrusted: false`; a sized pointer reads as `struct { u8 bytes[N]; }`, so `value->bytes[0]` selects its first byte, as on a static hook of a map without BTF.
@@ -479,6 +511,7 @@ The longest suffix a rule appends limits the length of `hook`:
 | `push`, `peek`, `lookup:miss` or `lookup:any` with `auto` | `_0_push`, `_0_peek`, `_0_miss` | up to 120 |
 | `update` or `delete` | `_0_update`, `_0_delete` | up to 118 |
 | `tail_calls` | `_tail_call` | up to 117 |
+| `calls` | `_` and the longest name in `calls`, such as `_bpf_get_prandom_u32` | 126 minus that name's length, up to 107 |
 
 [lookup-site-injection.md](lookup-site-injection.md#automatic-selection) describes the full hook ABI, including the `info` bits.
 
@@ -538,11 +571,14 @@ If a rewrite fails, `inject-run` reports it on stderr and keeps running the targ
 | `hook_form.form` | `global` or `static`: the choice for hooks that would take untrusted pointers, even if the program has none. |
 | `hook_form.reason` | `probe_arg_untrusted_supported`, `probe_arg_untrusted_unsupported`, `probe_inconclusive` or `config_static_untrusted_true`. |
 | `hooks[].name` | The function to attach to. |
-| `hooks[].kind` | `typed` (one map's hook; its key and value carry the map's types unless `untrusted` is set), `generic` (a `HOOK_any` hook), `entry`, `tail_call` or `dispatch`. |
-| `hooks[].when` | The results that call it: `hit`, `miss` or `any` for lookups; `error` or `any` for other map calls. A dispatch hook's `when` is its lookups'; its other map-call sites carry their own. |
+| `hooks[].kind` | `typed` (one map's hook; its key and value carry the map's types unless `untrusted` is set), `generic` (a `HOOK_any` hook), `entry`, `tail_call`, `call` or `dispatch`. |
+| `hooks[].when` | The results that call it: `hit`, `miss` or `any` for lookups; `error` or `any` for other map calls; `any` for a call hook. A dispatch hook's `when` is its lookups'; its other map-call sites carry their own. |
 | `hooks[].map` | The map of a `typed` hook. Generic and dispatch hooks give the map on each site. |
+| `hooks[].call` | The callee of a `call` hook, such as `bpf_fib_lookup`. |
+| `hooks[].arg_reg`, `arg_type`, `arg_size` | The `arg` parameter of a `call` hook: the callee's argument register (1 to 5), the struct name of what `arg` points to, and its size in bytes. `arg_type` is absent when `arg` is plain bytes; all three are absent when the hook has no `arg`. |
+| `hooks[].ret` | `scalar` (`u64 ret`) or `pointer` (`const void *ret`, compared with NULL only) on a `call` hook. |
 | `stack` | The trial load's verifier accounting and the exact per-function floors used by this injection. |
-| `hooks[].sites` | The calls that call the hook, in instruction order: `kind` (`lookup`, `update`, `delete`, `push`, `pop`, `peek`, `tail_call` or `entry`), `pc` (the `site` argument, or the low 32 bits of `info`), and `map`, `func`, `file`, `line`, `ctx_source`, `frame` and `floor` where known. `ctx_source` is `entry`, `r6` through `r9`, or an aligned frame slot such as `fp-80`. `frame` owns the stack slots and `floor` is the value used for them. A dispatch hook lists the entry call first, as `pc` 4294967295. |
+| `hooks[].sites` | The calls that call the hook, in instruction order: `kind` (`lookup`, `update`, `delete`, `push`, `pop`, `peek`, `tail_call`, `call` or `entry`), `pc` (the `site` argument, or the low 32 bits of `info`), and `map`, `call` (the callee of a `call` site), `func`, `file`, `line`, `ctx_source`, `frame` and `floor` where known. `ctx_source` is `entry`, `r6` through `r9`, or an aligned frame slot such as `fp-80`. `frame` owns the stack slots and `floor` is the value used for them. A dispatch hook lists the entry call first, as `pc` 4294967295. |
 | `hooks[].untrusted` | The hook takes `arg:untrusted` pointers: its key and value are `const void *`. |
 | `hooks[].copied` | The value is a stack copy. |
 | `hooks[].static` | The hook is static; read every argument as a `u64`. |
@@ -550,7 +586,7 @@ If a rewrite fails, `inject-run` reports it on stderr and keeps running the targ
 | `hooks[].dead_in_this_load` | `true` when this generated hook is absent from the loaded program's `func_info`. Do not try to attach to it in this load. |
 | `hooks[].dead_cause` | Why a dead hook was marked. Currently this says that the verifier removed the generated hook as unreachable in this load. |
 | `hooks[].sites[].dead_in_this_load`, `dead_cause` | A site is dead only when every generated hook that reports that site is absent. For example, an absent miss hook does not make a site dead while its hit hook remains. |
-| `skipped` | Map calls that `auto` did not instrument, with the site fields and a `reason`. |
+| `skipped` | Map calls that `auto` did not instrument and call sites of `calls` that could not be hooked, with the site fields and a `reason`. |
 | `dead_check_error` | Present when one or more hook comparisons failed. Affected hooks, and any site they may report, remain unmarked; independently confirmed absent hooks and sites can still be marked. Consumers must not guess from an unmarked result. |
 
 Treat a marked site as having no live observation point in this load, not as an attach failure.

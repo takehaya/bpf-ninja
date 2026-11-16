@@ -119,6 +119,8 @@ type supervisor struct {
 	// filterPending waits for the first syscall-exit stop to install the filter.
 	filterPending bool
 	filtered      bool
+	// kernel is the running kernel's BTF for rules with calls; nil without.
+	kernel *btf.Spec
 }
 
 var errTrialVerifier = errors.New("trial load was rejected by the verifier")
@@ -131,6 +133,21 @@ var errJumpLimit = errors.New("verifier jump sequence limit")
 
 func (s *supervisor) log(format string, args ...any) {
 	_, _ = fmt.Fprintf(s.options.Log, "inject-run: "+format+"\n", args...)
+}
+
+// loadKernel sets s.kernel once, only when a rule has calls. Without kernel
+// BTF the transform cannot name a kfunc call and skips every call site of a
+// program that makes one; programs without kfunc calls are unaffected.
+func (s *supervisor) loadKernel(load func() (*btf.Spec, error)) {
+	if !slices.ContainsFunc(s.options.Rules, func(r Rule) bool { return len(r.Calls) != 0 }) {
+		return
+	}
+	spec, err := load()
+	if err != nil {
+		s.log("kernel BTF unavailable: kernel-function calls are not hooked: %v", err)
+		return
+	}
+	s.kernel = spec
 }
 
 func retryOriginalOrRefuse(failClosed bool, retry func() (int64, error)) (int64, error) {
@@ -306,6 +323,7 @@ func run(ctx context.Context, argv []string, opts Options, probeUntrusted, probe
 	}
 	s := supervisor{probeUntrusted: sync.OnceValue(probeUntrusted), probeTailCallReachability: sync.OnceValue(probeTailCallReachability),
 		options: opts, btf: make(map[uint32]rememberedBTF), filterPending: !opts.EverySyscall && !testEverySyscall}
+	s.loadKernel(btf.LoadKernelSpec)
 	exitCode := 0
 	pending := map[int]struct{}{}
 	recordLeftThreads := func() {
@@ -1212,6 +1230,7 @@ func (s *supervisor) transformLoad(r *remote, attr []byte, rule Rule, form HookF
 	if err != nil {
 		return 0, nil, "", err
 	}
+	raw.Kernel = s.kernel
 	if err := supplyMapTypes(&raw, rule); err != nil {
 		return 0, nil, "", err
 	}

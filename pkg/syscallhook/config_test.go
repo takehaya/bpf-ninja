@@ -170,6 +170,45 @@ func TestConfig(t *testing.T) {
 	}
 }
 
+// calls is accepted alone and with every key that adds hooks; the
+// program-independent refusals come from inject.ValidateRaw.
+func TestConfigCalls(t *testing.T) {
+	calls := `"calls":["bpf_fib_lookup","bpf_ktime_get_ns","bpf_xdp_ct_lookup"]`
+	for _, keys := range []string{
+		calls,
+		calls + `,"map":"sessions"`,
+		calls + `,"auto":true`,
+		calls + `,"entry":true`,
+		calls + `,"tail_calls":true`,
+		calls + `,"auto":true,"entry":true,"tail_calls":true,"static_untrusted":true`,
+	} {
+		rules, err := ParseConfig(strings.NewReader(`[{"program":"p",` + keys + `,"hook":"h"}]`))
+		if err != nil {
+			t.Errorf("%s: %v", keys, err)
+			continue
+		}
+		if got := rules[0].request().Calls; !slices.Equal(got, []string{"bpf_fib_lookup", "bpf_ktime_get_ns", "bpf_xdp_ct_lookup"}) {
+			t.Errorf("%s: request Calls = %q", keys, got)
+		}
+	}
+	supported := strings.Join(inject.SupportedCalls(), ", ")
+	for keys, want := range map[string]string{
+		`"calls":[]`:                                  "rule 0: program and one of map, auto, entry, tail_calls or calls are required",
+		`"calls":["bpf_map_lookup_elem"]`:             `rule 0: inject: refused: Calls name "bpf_map_lookup_elem" is not supported; supported calls: ` + supported,
+		`"calls":["bpf_fib_lookup","bpf_fib_lookup"]`: `rule 0: inject: refused: Calls names must be non-empty and unique; got "bpf_fib_lookup"`,
+		`"calls":[""]`:                                `rule 0: inject: refused: Calls names must be non-empty and unique; got ""`,
+		`"calls":["bpf_fib_lookup"],"auto":true,"dispatch":true`: "rule 0: inject: refused: Calls does not combine with Dispatch",
+		`"calls":["bpf_fib_lookup"],"ops":["lookup"]`:            "rule 0: ops applies to the hooks of map or auto",
+		`"calls":["bpf_fib_lookup"],"maps":["m"]`:                "rule 0: maps filters auto and needs it",
+		`"calls":["bpf_fib_lookup"],"func":"f"`:                  "rule 0: func, line, all_matches and site_pcs filter map and cannot be used with auto or without map",
+	} {
+		_, err := ParseConfig(strings.NewReader(`[{"program":"p",` + keys + `,"hook":"h"}]`))
+		if err == nil || err.Error() != want {
+			t.Errorf("%s: error = %v, want %q", keys, err, want)
+		}
+	}
+}
+
 func validAttr() []byte {
 	b := make([]byte, 168)
 	put32(b, 0, 6)
