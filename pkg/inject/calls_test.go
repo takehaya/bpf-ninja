@@ -467,3 +467,20 @@ func TestCallEmptyPreludeAtFunctionStart(t *testing.T) {
 		t.Fatalf("cb starts with %v", out[at])
 	}
 }
+
+// ValidateRaw leaves room for "_" plus the longest Calls name, and Calls
+// reserves the three base slots with Entry or TailCalls alone.
+func TestCallNameRoomAndReserve(t *testing.T) {
+	long := strings.Repeat("h", MaxHookName-len("_bpf_jiffies64"))
+	if err := ValidateRaw(LookupRequestRaw{HookName: long, Calls: []string{"bpf_jiffies64"}}); err != nil {
+		t.Fatalf("fitting name: %v", err)
+	}
+	if err := ValidateRaw(LookupRequestRaw{HookName: long + "h", Calls: []string{"bpf_jiffies64"}}); err == nil {
+		t.Fatal("ValidateRaw accepts a hook name with no room for the call suffix")
+	}
+	for _, req := range []LookupRequest{{Calls: []string{"bpf_jiffies64"}, Entry: true}, {Calls: []string{"bpf_jiffies64"}, TailCalls: true}} {
+		if got := LookupStackReserve(req); got != 24 {
+			t.Errorf("LookupStackReserve(%+v) = %d, want 24", req, got)
+		}
+	}
+}

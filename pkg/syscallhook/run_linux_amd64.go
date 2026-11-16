@@ -1230,7 +1230,9 @@ func (s *supervisor) transformLoad(r *remote, attr []byte, rule Rule, form HookF
 	if err != nil {
 		return 0, nil, "", err
 	}
-	raw.Kernel = s.kernel
+	if len(rule.Calls) > 0 {
+		raw.Kernel = s.kernel // only a rule with calls names kfunc calls and types their arguments
+	}
 	if err := supplyMapTypes(&raw, rule); err != nil {
 		return 0, nil, "", err
 	}
