@@ -1,6 +1,8 @@
 package inject
 
 import (
+	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/cilium/ebpf"
@@ -194,3 +196,39 @@ func TestBpfCallHookCtTC(t *testing.T)  { testCallHookCt(t, ebpf.SchedCLS, 8112,
 
 // The global pointer-result hook takes arg:untrusted, which 6.15 and older lack.
 func TestBpfCallHookCtUntrusted(t *testing.T) { testCallHookCt(t, ebpf.XDP, 8113, false) }
+
+// Without the release the hooked conntrack program is rejected as the plain
+// one is: the hook does not hide the acquired reference.
+func TestBpfCallHookCtNoRelease(t *testing.T) {
+	testutil.SkipIfNotRoot(t)
+	kernel := kernelBTF(t)
+	release := kernelKfunc(t, "bpf_ct_release")
+	spec := func() *ebpf.CollectionSpec {
+		spec := ctFixture(ebpf.XDP, func(name string) asm.Instruction { return kernelKfunc(t, name) }, nfConnStatusOffset(t), 8114, false)
+		insns := spec.Programs["p"].Instructions
+		for i := range insns {
+			if insns[i].IsKfuncCall() && insns[i].Constant == release.Constant {
+				insns[i] = asm.Mov.Imm(asm.R1, 0)
+			}
+		}
+		return spec
+	}
+	if coll, err := ebpf.NewCollection(spec()); err == nil {
+		coll.Close()
+		t.Fatal("plain program without the release loaded")
+	}
+	req := callReq("bpf_xdp_ct_lookup")
+	req.Kernel, req.StaticUntrusted = kernel, true
+	work := spec()
+	if _, err := transformLookup(work, req); err != nil {
+		t.Fatal(err)
+	}
+	coll, err := ebpf.NewCollection(work)
+	if err == nil {
+		coll.Close()
+		t.Fatal("hooked program without the release loaded")
+	}
+	if log := fmt.Sprintf("%+v", err); !strings.Contains(log, "Unreleased reference") && !strings.Contains(log, "reference leak") {
+		t.Fatalf("hooked program rejected for another reason: %+v", err)
+	}
+}
