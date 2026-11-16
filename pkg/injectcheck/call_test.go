@@ -18,7 +18,7 @@ func kfuncCall(id int64) asm.Instruction {
 }
 
 type callCase struct {
-	src    string // entry, reg, slot or pass
+	src    string // entry, reg, slot, pass or callback
 	centre asm.Instruction
 	argReg int // 0: sequence A; otherwise sequence B with the argument in this register
 }
@@ -67,6 +67,19 @@ func (c callCase) build(edit func(pre, post *asm.Instructions)) callFixture {
 		gaps[0] = asm.Instructions{entrySpill}
 		gaps[len(own)] = asm.Instructions{asm.LoadMem(asm.R5, asm.RFP, -16, asm.DWord)}
 		gaps[sub] = asm.Instructions{asm.StoreMem(asm.RFP, -16, asm.R5, asm.DWord).WithSymbol("sub")}
+	case "callback":
+		// The entry passes fp-8 to bpf_loop, whose callback gets it in R2 and
+		// loads the entry's context slot through it on entry.
+		cb := asm.LoadImm(asm.R2, -1, asm.DWord).WithReference("cb")
+		cb.Src = asm.PseudoFunc
+		cbOwn := slices.Clone(own)
+		cbOwn[0] = cbOwn[0].WithSymbol("cb")
+		in = slices.Concat(own, asm.Instructions{asm.Mov.Imm(asm.R1, 1), cb, asm.Mov.Reg(asm.R3, asm.RFP), asm.Add.Imm(asm.R3, -8),
+			asm.Mov.Imm(asm.R4, 0), asm.FnLoop.Call(), asm.Mov.Imm(asm.R0, 0), asm.Return()}, cbOwn, body)
+		sub = len(own) + 8
+		ctx = &CtxSource{Param: int(asm.R2), Arg: -8}
+		gaps[0] = asm.Instructions{entrySpill}
+		gaps[sub] = asm.Instructions{asm.LoadMem(asm.R0, asm.R2, -8, asm.DWord).WithSymbol("cb"), asm.StoreMem(asm.RFP, -16, asm.R0, asm.DWord)}
 	default:
 		panic(c.src)
 	}
@@ -121,7 +134,7 @@ var callCentres = []struct {
 }
 
 func TestCallSiteAccepts(t *testing.T) {
-	for _, src := range []string{"entry", "reg", "slot", "pass"} {
+	for _, src := range []string{"entry", "reg", "slot", "pass", "callback"} {
 		for _, centre := range callCentres {
 			t.Run(src+"/"+centre.name, func(t *testing.T) {
 				counts, err := callCase{src, centre.centre, centre.argReg}.build(nil).check()
@@ -163,6 +176,9 @@ func TestCallSiteRejects(t *testing.T) {
 		{"key-store-wrong-register-entry", callCase{"entry", asm.FnFibLookup.Call(), int(asm.R2)}, func(pre, _ *asm.Instructions) { (*pre)[0] = asm.StoreMem(asm.RFP, -24, asm.R3, asm.DWord) }, nil, PreludeShape},
 		{"key-store-missing", callCase{"entry", asm.FnFibLookup.Call(), int(asm.R2)}, func(pre, _ *asm.Instructions) { *pre = nil }, nil, SpillUninitialized},
 		{"key-store-above-floor", helperB, func(pre, _ *asm.Instructions) { (*pre)[0] = asm.StoreMem(asm.RFP, -8, asm.R2, asm.DWord) }, nil, CtxProvenance},
+		{"ctx-init-in-pass-function", callCase{"pass", asm.FnKtimeGetNs.Call(), 0}, func(pre, _ *asm.Instructions) {
+			*pre = asm.Instructions{asm.StoreMem(asm.RFP, -16, asm.R6, asm.DWord)}
+		}, nil, PreludeShape},
 		{"hook-called-twice", helperB, func(_, post *asm.Instructions) { at(post, 6, asm.Call.Label("hook")) }, nil, HelperStructure},
 		{"branch-in-postlude", helperB, func(_, post *asm.Instructions) {
 			j := asm.JSGE.Imm32(asm.R0, 0, "")
