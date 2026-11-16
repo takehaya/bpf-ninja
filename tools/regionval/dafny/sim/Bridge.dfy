@@ -267,7 +267,7 @@ module SimBridge {
           && (w.sp.hookCalls && S.Decode(S.InsnAt(w.raw, r)).Some? && S.Decode(S.InsnAt(w.raw, r)).value.CallLocal? ==>
                 w.base + r + 1 + Signed32(S.Decode(S.InsnAt(w.raw, r)).value.imm) in w.Pp.hooks))
     && (HasHelper(w) ==>
-          ((w.hins.Hcall? && !w.hins.kf) || w.hins.Tail?) && w.Pp.code[w.base + w.hp] == O(w.hins, w.hidx)
+          (w.hins.Hcall? || w.hins.Tail?) && w.Pp.code[w.base + w.hp] == O(w.hins, w.hidx)
           && S.Decode(S.InsnAt(w.raw, w.hp)) == Some(S.CallHelper(HId(w.hins))))
   }
 
@@ -318,10 +318,10 @@ module SimBridge {
   ghost predicate HelperOk(w: Win) {
     if w.hins.Tail? then TailHOk(w) else
     var args := SimFacts.Words(Top(w.c0), Upto(1, w.hc.n));
-    w.hins.Hcall? && w.hc.n == w.x.env.arity(false, w.hins.id) && w.hc.n <= 5
-    && w.hc.addrs == w.x.env.foot(false, w.hins.id, args)
+    w.hins.Hcall? && w.hc.n == w.x.env.arity(w.hins.kf, w.hins.id) && w.hc.n <= 5
+    && w.hc.addrs == w.x.env.foot(w.hins.kf, w.hins.id, args)
     && FootBytes(w.c0, w.hc.addrs).FOk?
-    && w.hc.eh == ECall(w.hidx, false, w.hins.id, args, FootBytes(w.c0, w.hc.addrs).bs)
+    && w.hc.eh == ECall(w.hidx, w.hins.kf, w.hins.id, args, FootBytes(w.c0, w.hc.addrs).bs)
     && w.x.om(w.c0.h, w.hc.eh, Wh(w.c0)) == RRet(w.hc.v, w.hc.wr)
     && FootTop(w.c0, w.hc.addrs, w.sp.floor) && WrTop(w.c0, w.hc.wr, w.sp.floor)
   }
@@ -1118,12 +1118,12 @@ module SimBridge {
     WinPreFacts(w); WinPreAt(w); WinPreHelper(w);
     SideFacts(w, c, s); Side0(w, c, s);
     var x := w.x;
-    var id := w.hins.id;
+    var kf, id := w.hins.kf, w.hins.id;
     var n := w.hc.n;
     var f := Top(c);
     var f0 := Top(w.c0);
-    assert w.Pp.code[f.pc] == O(Hcall(false, id), w.hidx);
-    assert StepR(w.Pp, x, w.obsv, c) == HelperStep(x, c, w.hidx, false, id, false);
+    assert w.Pp.code[f.pc] == O(Hcall(kf, id), w.hidx);
+    assert StepR(w.Pp, x, w.obsv, c) == HelperStep(x, c, w.hidx, kf, id, false);
     // the arguments are the entry's
     forall i | 0 <= i < |Upto(1, n)| ensures Reg(f, Upto(1, n)[i]).W? && Reg(f, Upto(1, n)[i]) == Reg(f0, Upto(1, n)[i]) {
       UptoAt(1, n, i);
@@ -1136,7 +1136,7 @@ module SimBridge {
     FootSame(c, w.c0, w.hc.addrs, w.sp.floor);
     assert Wh(c) == Wh(w.c0);
     var c1 := c.(h := c.h + [w.hc.eh]);
-    assert HelperStep(x, c, w.hidx, false, id, false) == Finish(x, c1, w.hc.v, w.hc.wr) by { reveal HelperStep(); }
+    assert HelperStep(x, c, w.hidx, kf, id, false) == Finish(x, c1, w.hc.v, w.hc.wr) by { reveal HelperStep(); }
     FinishFacts(x, c1, w.hc.v, w.hc.wr);
     c' := Finish(x, c1, w.hc.v, w.hc.wr).c;
     ApplyWAt(c1, w.hc.wr);

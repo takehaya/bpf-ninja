@@ -170,7 +170,7 @@ module SimPremises {
     Bytes8(D.pro0) && NoHelperIn(D.pro0)
     && (forall g | g in D.fp :: g in FnSet(P) && 0 < g < |P| && Bytes8(D.fp[g].code) && NoHelperIn(D.fp[g].code))
     && (forall i | i in D.pl :: i < |P| && P[i].Call? && Bytes8(D.pl[i].code) && NoHelperIn(D.pl[i].code))
-    && (forall i | i in D.site :: i < |P| && i !in D.wrap && (P[i].Tail? || (P[i].Hcall? && !P[i].kf))
+    && (forall i | i in D.site :: i < |P| && i !in D.wrap && (P[i].Tail? || P[i].Hcall?)
           && Bytes8(D.site[i].pre) && Bytes8(D.site[i].post)
           && NoHelperIn(D.site[i].pre) && NoHelperIn(D.site[i].post))
     && (forall i | i in D.wrap :: i < |P| && P[i].Hcall? && !P[i].kf && IsLookup(P[i].id)

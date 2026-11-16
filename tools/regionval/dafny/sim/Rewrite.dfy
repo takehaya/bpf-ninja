@@ -99,10 +99,11 @@ module SimRewrite {
   function EncHelper(id: bv32): seq<bv8> { [0x85, 0, 0, 0] + BytesOf(id as bv64, 4) }
   // BPF_PSEUDO_CALL with relative offset imm: opcode 0x85, src 1.
   function EncCallLocal(imm: int): seq<bv8> { [0x85, 0x10, 0, 0] + B4(imm) }
-  // The central helper as the validator sees it (empty for a non-site).
+  // The central helper as the validator sees it (empty for a non-site).  A
+  // kfunc centre is presented as a helper call with the same immediate.
   function Enc(ins: OInstr): seq<bv8> {
     match ins
-    case Hcall(false, id) => EncHelper(id)
+    case Hcall(_, id) => EncHelper(id)
     case Tail => EncHelper(12)
     case _ => []
   }
