@@ -184,8 +184,9 @@ type LookupRequest struct {
 	Peeks           CallWhen
 	HookName        string
 	Stack           StackAudit
-	Calls           []string  // callee names from the call table; each gets PREFIX_<name>; see CallRow
-	Kernel          *btf.Spec // kernel BTF for naming kfunc calls by id and for typing arguments; nil is allowed
+	Calls           []string            // callee names from the call table; each gets PREFIX_<name>; see CallRow
+	Kernel          *btf.Spec           // kernel BTF for naming kfunc calls by id and for typing arguments; nil is allowed
+	Modules         map[int16]*btf.Spec // module BTF (split on Kernel) by a kfunc call's fd_array offset; a missing offset leaves the call unnamed
 }
 
 // LookupWhen is a set of lookup results; see LookupRequest.Lookups.
@@ -510,6 +511,14 @@ type discoveredLookup struct {
 	row     *CallRow
 	argOwn  bool
 	argSize uint32
+	module  int16 // a module kfunc call's fd_array offset, else 0
+}
+
+func kfuncModule(ins *asm.Instruction) int16 {
+	if ins.IsKfuncCall() {
+		return ins.Offset
+	}
+	return 0
 }
 
 func publicLookupSites(sites []discoveredLookup) []LookupSite {
@@ -631,7 +640,7 @@ func discoverSites(insns asm.Instructions, typ ebpf.ProgramType, resolve lookupM
 	var consts [asm.R10 + 1]int64
 	blocked := ""
 	if len(req.Calls) != 0 {
-		blocked = callsBlocked(insns, req.Kernel)
+		blocked = callsBlocked(insns, req.Kernel, req.Modules)
 	}
 	it = insns.Iterate()
 	for it.Next() {
@@ -652,7 +661,7 @@ func discoverSites(insns asm.Instructions, typ ebpf.ProgramType, resolve lookupM
 		}
 		var row *CallRow
 		if op == "" && len(req.Calls) != 0 && (ins.IsBuiltinCall() || ins.IsKfuncCall()) {
-			if r, _, _ := callee(ins, req.Kernel); r != nil && slices.Contains(req.Calls, r.Name) {
+			if r, _, _ := callee(ins, req.Kernel, req.Modules); r != nil && slices.Contains(req.Calls, r.Name) {
 				op, row = HookCall, r
 			}
 		}
@@ -757,7 +766,7 @@ func discoverSites(insns asm.Instructions, typ ebpf.ProgramType, resolve lookupM
 			}
 			sites = append(sites, discoveredLookup{LookupSite: site, mapID: mapID, mapInfo: m, generic: generic,
 				typedOnly: typedOnly, readOnlyArg: readOnlyArg, ctxReg: ctxReg, ctxSlot: ctxSlot, callback: callback, callbackStart: callbackStart, pass: pass,
-				row: row, argOwn: argOwn, argSize: argSize})
+				row: row, argOwn: argOwn, argSize: argSize, module: kfuncModule(ins)})
 		}
 		// Track direct R1 definitions only; calls also clobber R1. Atomic
 		// operations and legacy packet loads are conservatively barriers.

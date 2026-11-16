@@ -84,7 +84,11 @@ func selectCalls(sites []discoveredLookup, req LookupRequest, types *btf.Spec) (
 				continue
 			}
 			group.argSize, group.typed = sizes[0], typed
-			group.argType, group.argName = callArgType(row, sizes[0], types, req.Kernel)
+			kernel := req.Kernel
+			if m := req.Modules[group.sites[0].module]; m != nil {
+				kernel = m // split on vmlinux: finds the module's structs and the kernel's
+			}
+			group.argType, group.argName = callArgType(row, sizes[0], types, kernel)
 		}
 		kept = append(kept, group)
 	}

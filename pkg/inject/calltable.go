@@ -53,9 +53,10 @@ func SupportedCalls() []string {
 
 // callee names the callee of a helper or kfunc call and returns its row, nil when the table has none.
 // A helper is found by id. A kfunc is named by ins.Reference() when set (ELF path), else, when
-// ins.Offset == 0 and kernel != nil, by the FUNC whose BTF id is ins.Constant (raw path).
+// by the FUNC whose BTF id is ins.Constant (raw path) in kernel when ins.Offset == 0, else in
+// modules[ins.Offset], the module BTF of that fd_array offset.
 // named is false only for a kfunc call that cannot be named.
-func callee(ins *asm.Instruction, kernel *btf.Spec) (row *CallRow, name string, named bool) {
+func callee(ins *asm.Instruction, kernel *btf.Spec, modules map[int16]*btf.Spec) (row *CallRow, name string, named bool) {
 	switch {
 	case ins.IsBuiltinCall():
 		for i := range callTable {
@@ -67,10 +68,14 @@ func callee(ins *asm.Instruction, kernel *btf.Spec) (row *CallRow, name string, 
 	case ins.IsKfuncCall():
 		name = ins.Reference()
 		if name == "" {
-			if ins.Offset != 0 || kernel == nil {
+			spec := kernel
+			if ins.Offset != 0 {
+				spec = modules[ins.Offset] // a module kfunc: off indexes the load's fd_array of module BTF fds
+			}
+			if spec == nil {
 				return nil, "", false
 			}
-			typ, err := kernel.TypeByID(btf.TypeID(ins.Constant))
+			typ, err := spec.TypeByID(btf.TypeID(ins.Constant))
 			fn, ok := typ.(*btf.Func)
 			if err != nil || !ok {
 				return nil, "", false
@@ -125,7 +130,7 @@ func callArgType(row *CallRow, n uint32, prog, kernel *btf.Spec) (typ btf.Type, 
 // callsBlocked returns why no call site of the program may be hooked, or "": the program calls
 // bpf_spin_lock, bpf_preempt_disable or a kfunc whose name starts with bpf_res_spin_lock, under which
 // a hook call may be refused, or holds a kfunc call that cannot be named (see callee).
-func callsBlocked(insns asm.Instructions, kernel *btf.Spec) string {
+func callsBlocked(insns asm.Instructions, kernel *btf.Spec, modules map[int16]*btf.Spec) string {
 	for i := range insns {
 		ins := &insns[i]
 		lock := ""
@@ -133,7 +138,7 @@ func callsBlocked(insns asm.Instructions, kernel *btf.Spec) string {
 		case ins.IsBuiltinCall() && asm.BuiltinFunc(ins.Constant) == asm.FnSpinLock:
 			lock = "bpf_spin_lock"
 		case ins.IsKfuncCall():
-			_, name, named := callee(ins, kernel)
+			_, name, named := callee(ins, kernel, modules)
 			if !named {
 				return "call: a kernel-function call in the program cannot be named"
 			}

@@ -362,6 +362,30 @@ func TestCallKfuncRaw(t *testing.T) {
 	}
 }
 
+// A module kfunc (nonzero offset) is named through Modules, and its argument
+// struct, absent from vmlinux, is typed from the module BTF.
+func TestCallKfuncModule(t *testing.T) {
+	proto := &btf.FuncProto{Return: &btf.Int{Name: "int", Size: 4, Encoding: btf.Signed}}
+	module := specOf(t, &btf.Struct{Name: "bpf_ct_opts", Size: 12},
+		&btf.Func{Name: "bpf_xdp_ct_lookup", Type: proto, Linkage: btf.GlobalFunc},
+		&btf.Func{Name: "bpf_ct_release", Type: proto, Linkage: btf.GlobalFunc})
+	spec := ctFixture(ebpf.XDP, func(name string) asm.Instruction {
+		ins := testKfunc(t, module, name)
+		ins.Offset = 1
+		return ins
+	}, 0, 8101, false)
+	req := callReq("bpf_xdp_ct_lookup")
+	req.Kernel = specOf(t, &btf.Struct{Name: "bpf_fib_lookup", Size: 64})
+	req.Modules = map[int16]*btf.Spec{1: module}
+	plan, err := transformLookup(spec, req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.hooks) != 1 || plan.hooks[0].Call != "bpf_xdp_ct_lookup" || plan.hooks[0].ArgType != "bpf_ct_opts" {
+		t.Fatalf("hooks %+v skipped %+v", plan.hooks, plan.skipped)
+	}
+}
+
 // Requests without Calls never see a call site.
 func TestCallSitesNotListedWithoutCalls(t *testing.T) {
 	spec := fibFixture(ebpf.XDP)

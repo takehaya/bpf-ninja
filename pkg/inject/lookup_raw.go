@@ -46,7 +46,8 @@ type RawProgram struct {
 	FuncInfo     []byte
 	LineInfo     []byte
 	Maps         map[int32]RawMap
-	Kernel       *btf.Spec // see LookupRequest.Kernel; transformLookupRawGuarded copies it into the request
+	Kernel       *btf.Spec           // see LookupRequest.Kernel; transformLookupRawGuarded copies it into the request
+	Modules      map[int16]*btf.Spec // see LookupRequest.Modules; copied like Kernel
 }
 
 // LookupRequestRaw selects sites in a single raw program. The caller certifies
@@ -230,6 +231,7 @@ func transformLookupRawGuarded(p RawProgram, req LookupRequestRaw, probe func() 
 	}
 	r := req.Request()
 	r.Kernel = p.Kernel
+	r.Modules = p.Modules
 	out, plan, err := transformLookupProgramGuarded(insns, p.Type, types, resolve, r, probe)
 	if err != nil {
 		return nil, err

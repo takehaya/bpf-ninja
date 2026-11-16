@@ -117,13 +117,51 @@ func TestCallee(t *testing.T) {
 		{"nil kernel", byID, nil, "", "", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			row, name, named := callee(&tc.ins, tc.kernel)
+			row, name, named := callee(&tc.ins, tc.kernel, nil)
 			got := ""
 			if row != nil {
 				got = row.Name
 			}
 			if got != tc.row || name != tc.callee || named != tc.named {
 				t.Fatalf("callee = (%q, %q, %v), want (%q, %q, %v)", got, name, named, tc.row, tc.callee, tc.named)
+			}
+		})
+	}
+}
+
+// A kfunc call with a nonzero offset is named through the module BTF of that
+// fd_array offset, and stays unnamed without one or with an id it lacks.
+func TestCalleeModule(t *testing.T) {
+	kernel := testKernelSpec(t)
+	proto := &btf.FuncProto{Return: &btf.Int{Name: "int", Size: 4, Encoding: btf.Signed}}
+	mod := specOf(t, &btf.Func{Name: "bpf_xdp_ct_lookup", Type: proto, Linkage: btf.GlobalFunc})
+	call := testKfunc(t, mod, "bpf_xdp_ct_lookup")
+	call.Offset = 2
+	wrongID := kfuncCall(1 << 20)
+	wrongID.Offset = 2
+	for _, tc := range []struct {
+		name    string
+		ins     asm.Instruction
+		modules map[int16]*btf.Spec
+		row     string
+		named   bool
+	}{
+		{"module entry", call, map[int16]*btf.Spec{2: mod}, "bpf_xdp_ct_lookup", true},
+		{"no entry for offset", call, map[int16]*btf.Spec{1: mod}, "", false},
+		{"no modules", call, nil, "", false},
+		{"id not in module", wrongID, map[int16]*btf.Spec{2: mod}, "", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			row, _, named := callee(&tc.ins, kernel, tc.modules)
+			got := ""
+			if row != nil {
+				got = row.Name
+			}
+			if got != tc.row || named != tc.named {
+				t.Fatalf("callee = (%q, %v), want (%q, %v)", got, named, tc.row, tc.named)
+			}
+			if blocked := callsBlocked(asm.Instructions{tc.ins}, kernel, tc.modules) != ""; blocked == tc.named {
+				t.Fatalf("callsBlocked blocked=%v, want %v", blocked, !tc.named)
 			}
 		})
 	}
@@ -207,7 +245,7 @@ func TestCallsBlocked(t *testing.T) {
 		{"kfunc in a module", prog(asm.Instruction{OpCode: asm.OpCode(asm.JumpClass).SetJumpOp(asm.Call), Src: asm.PseudoKfuncCall, Constant: 5, Offset: 1}), kernel, "call: a kernel-function call in the program cannot be named"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := callsBlocked(tc.insns, tc.kernel); got != tc.want {
+			if got := callsBlocked(tc.insns, tc.kernel, nil); got != tc.want {
 				t.Fatalf("callsBlocked = %q, want %q", got, tc.want)
 			}
 		})
