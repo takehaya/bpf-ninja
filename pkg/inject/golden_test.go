@@ -254,6 +254,22 @@ func goldenCases() []goldenCase {
 	add("stack/fib-lookup-buffer", fibStackFixture, autoReq(), frames(16, map[string]int16{"p": -8, "sub": -168, "fib": -400}))
 	add("elf/kfunc-call", kfuncLookupFixture, lookupReq())
 	add("auto/read-only-fib-key", fibKeyFixture, autoReq(), lookups(LookupAny))
+
+	// Call-site hooks (Calls) on the call fixtures, without kernel BTF.
+	callsOf := func(names ...string) func(*LookupRequest) { return func(r *LookupRequest) { r.Calls = names } }
+	xdp := func(f func(ebpf.ProgramType) *ebpf.CollectionSpec) func() *ebpf.CollectionSpec {
+		return func() *ebpf.CollectionSpec { return f(ebpf.XDP) }
+	}
+	add("calls/scalars", scalarFixture, callReq(), callsOf("bpf_ktime_get_ns", "bpf_get_prandom_u32", "bpf_jiffies64"))
+	add("calls/scalars/auto-entry", scalarFixture, callReq(), callsOf("bpf_jiffies64"), entry, func(r *LookupRequest) { r.Auto = true })
+	add("calls/adjacent", adjacentFixture, callReq(), callsOf("bpf_ktime_get_ns", "bpf_jiffies64"))
+	add("calls/loop-callback", loopFixture, callReq(), callsOf("bpf_ktime_get_ns"))
+	add("calls/fib-entry", xdp(fibFixture), callReq(), callsOf("bpf_fib_lookup"))
+	add("calls/fib-subprogram", xdp(fibSubprogFixture), callReq(), callsOf("bpf_fib_lookup"))
+	add("calls/fib-untyped", fibUntypedFixture, callReq(), callsOf("bpf_fib_lookup"))
+	add("calls/fib-untyped-static", fibUntypedFixture, callReq(), callsOf("bpf_fib_lookup"), static)
+	add("calls/fib-frames", xdp(fibSubprogFixture), callReq(), callsOf("bpf_fib_lookup"), frames(16, map[string]int16{"p": -8, "fib_sub": -64}))
+	add("refused/calls-dispatch", scalarFixture, callReq(), callsOf("bpf_jiffies64"), dispatch)
 	return cases
 }
 
@@ -359,7 +375,7 @@ func TestTransformGolden(t *testing.T) {
 		raw := LookupRequestRaw{Site: r.Site, Auto: r.Auto, Maps: r.Maps, Entry: r.Entry, TailCalls: r.TailCalls,
 			CopyReadOnly: r.CopyReadOnly, StaticUntrusted: r.StaticUntrusted, Dispatch: r.Dispatch, MissFirst: r.MissFirst,
 			Lookups: r.Lookups, Updates: r.Updates, Deletes: r.Deletes, Pushes: r.Pushes, Pops: r.Pops, Peeks: r.Peeks,
-			HookName: r.HookName, Stack: r.Stack}
+			HookName: r.HookName, Stack: r.Stack, Calls: r.Calls}
 		back := raw.Request()
 		back.ProgramName = r.ProgramName
 		if !reflect.DeepEqual(back, r) {

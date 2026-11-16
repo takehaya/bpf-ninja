@@ -948,3 +948,23 @@ elf/kfunc-call	elf	b01177a6431bec02c4ce6332299d2a01fb9331453084d56a45d5c2fbe4d4a
 elf/kfunc-call	raw	149ee1d1f7a29012508519ddd0f9328a79dabf48b471705a2d2ccb17ad49b666
 auto/read-only-fib-key	elf	dc9bed5255d531ac59c4378e8a08e887430f32302599bf028ecfd02c86904475
 auto/read-only-fib-key	raw	137c24ee451ec17e0144a36d4cc9197096090115d7508b218805bc746d07071e
+calls/scalars	elf	e40feffa8b7f5cd3fb75799ba9e906d49133a567e77f424c8510d79c4c417d2c
+calls/scalars	raw	b4a1e110e830ea88fe960dcfdf204e32e74a0fa2e15d7d9aa1206d72a3049f23
+calls/scalars/auto-entry	elf	5adc02b8e28e86fa71b2dad9239b06b981ad233266988bbb4315b80c7e320c90
+calls/scalars/auto-entry	raw	c90649b8312bb814176d976ccace58f353ea81f1d3dc9a4c055ae48b3275748d
+calls/adjacent	elf	error "inject: refused: no call site is instrumented (2 skipped)"
+calls/adjacent	raw	error "inject: refused: no call site is instrumented (2 skipped)"
+calls/loop-callback	elf	error "inject: refused: no call site is instrumented (1 skipped)"
+calls/loop-callback	raw	error "inject: refused: no call site is instrumented (1 skipped)"
+calls/fib-entry	elf	3b5caf7dd1043a9e271be5f4380cbc470148f8ce31b3e3aa188ef99bf80b6349
+calls/fib-entry	raw	009bef6fd2ded64b0af9790edac7b501a24aafb6fa281405d5c19d014e6322c9
+calls/fib-subprogram	elf	3be74c629506849051cc225d067de0fd8fd4963a598c245a332f410fa39ac37e
+calls/fib-subprogram	raw	fc5817fd4617632fd210f4a40111d0e7c12f8009b07549db3e32fd8aab2f0449
+calls/fib-untyped	elf	f1c0bbbac1285203743927b2e1b29a3f8b853e827f6f67bcd83062be371209eb
+calls/fib-untyped	raw	b9c018ac3b755f442b21ab5a40874d20569cbe936997c2647ef5af4696606b49
+calls/fib-untyped-static	elf	d8f6c423cb30cf08bf1fce7b3c8601df39a91c6f109735aa668c7a7ef8b0f285
+calls/fib-untyped-static	raw	0bf1b2f0a67aa60714e9c226b0939f06a402a27d4b3c5fa9f57624063b09898a
+calls/fib-frames	elf	064b391914420a530bbaec1ac2442066ebfa61f395aabc21e927f5d5ea85ea0a
+calls/fib-frames	raw	84330b6549b147220c5da8c58e47d43f9308d13a3a81545f37c84c8bab371326
+refused/calls-dispatch	elf	error "inject: refused: Calls does not combine with Dispatch"
+refused/calls-dispatch	raw	error "inject: refused: Calls does not combine with Dispatch"
