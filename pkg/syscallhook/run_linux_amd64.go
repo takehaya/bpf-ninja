@@ -1560,6 +1560,11 @@ func extractRaw(r *remote, attr []byte, spec *btf.Spec) (inject.RawProgram, erro
 	if err != nil {
 		return p, err
 	}
+	if fdArray(attr) != 0 {
+		if err := fdArrayMapIndex(insns); err != nil {
+			return p, err
+		}
+	}
 	p.Instructions, err = asm.AppendInstructions(nil, bytes.NewReader(insns), wire, "linux")
 	if err != nil {
 		return p, err
