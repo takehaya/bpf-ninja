@@ -653,7 +653,8 @@ func relocTarget(ins *asm.Instruction, pc int, indices map[int]int, input asm.In
 	default:
 		// Non-branch instruction. A dangling reference that is neither a call,
 		// branch, nor map load is something we do not understand; refuse it.
-		if ins.Reference() != "" && !ins.IsLoadFromMap() {
+		// A kfunc call names its kernel function; the loader resolves it.
+		if ins.Reference() != "" && !ins.IsLoadFromMap() && !ins.IsKfuncCall() {
 			return 0, false, false, refuse("unknown reference %q at %d", ins.Reference(), pc)
 		}
 		return 0, false, false, nil

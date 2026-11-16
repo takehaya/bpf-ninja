@@ -146,6 +146,8 @@ func forwardStackArg(fn asm.BuiltinFunc, reg asm.Register) bool {
 		return reg == asm.R2 || reg == asm.R3
 	case asm.FnXdpLoadBytes:
 		return reg == asm.R3
+	case asm.FnFibLookup:
+		return reg == asm.R2
 	default:
 		return false
 	}

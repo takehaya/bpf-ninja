@@ -52,10 +52,15 @@ func Plain(t btf.Type) bool { return plain(t, 0) }
 // Opaque reports whether t is a bpf_* struct (timers, locks, list and rb
 // nodes, kptr holders and the like), kernel-managed storage whose bytes are
 // never sized, shown or recorded. The uapi LPM trie key structs, a __u32
-// prefixlen and its data bytes, are plain.
+// prefixlen and its data bytes, are plain, and so are the parameter structs
+// bpf_fib_lookup and bpf_ct_opts, also under a ___ suffix (bpf_ct_opts___local).
 func Opaque(t *btf.Struct) bool {
 	switch t.Name {
 	case "bpf_lpm_trie_key", "bpf_lpm_trie_key_hdr", "bpf_lpm_trie_key_u8":
+		return false
+	}
+	switch name, _, _ := strings.Cut(t.Name, "___"); name {
+	case "bpf_fib_lookup", "bpf_ct_opts":
 		return false
 	}
 	return strings.HasPrefix(t.Name, "bpf_")
