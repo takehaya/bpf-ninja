@@ -509,16 +509,13 @@ func testCallFixtureFib(t *testing.T, typ ebpf.ProgramType, name string) {
 	dev := fibDevice(t, name)
 	index := dev.Attrs().Index
 	packet := make([]byte, 64)
-	var ctx any = [6]uint32{0, uint32(len(packet)), 0, uint32(index)} // struct xdp_md
-	if typ != ebpf.XDP {
-		var skb [48]uint32 // struct __sk_buff
-		skb[10] = uint32(index)
-		ctx = skb
-	}
-	fwd, pass, drop := callVerdicts(typ)
+	ctx := fibCtx(typ, index, len(packet))
 	mac := net.HardwareAddr{2, 0, 0, 0, 0, 0x42}
-	check := func(step string, code uint64, action int32) {
+	fwd, pass, drop := callVerdicts(typ)
+	actions := map[uint64]int32{4: pass, 2: drop, 7: pass, 0: fwd}
+	fibSteps(t, index, func(step string, code uint64) {
 		t.Helper()
+		action := actions[code]
 		for i, coll := range colls {
 			ret, out := runCallFixture(t, coll, packet, ctx)
 			if ret != uint32(action) || out[0] != code {
@@ -532,23 +529,43 @@ func testCallFixtureFib(t *testing.T, typ ebpf.ProgramType, name string) {
 				t.Fatalf("%s, fixture %d: ifindex %d dmac %x, want %d and %s", step, i, out[1], got, index, mac)
 			}
 		}
+	})
+}
+
+// fibCtx is the context of a fib fixture run on the device index.
+func fibCtx(typ ebpf.ProgramType, index, size int) any {
+	if typ != ebpf.XDP {
+		var skb [48]uint32 // struct __sk_buff
+		skb[10] = uint32(index)
+		return skb
 	}
+	return [6]uint32{0, uint32(size), 0, uint32(index)} // struct xdp_md
+}
+
+// fibSteps sets up the routes of testCallFixtureFib on the device index one
+// by one and calls check after each with the lookup's expected code: no
+// route, an unreachable route, a gateway without and with its neighbour
+// (MAC 02:00:00:00:00:42).
+func fibSteps(t *testing.T, index int, check func(step string, code uint64)) {
+	t.Helper()
+	mac := net.HardwareAddr{2, 0, 0, 0, 0, 0x42}
 	dst := &net.IPNet{IP: net.IP{fibDst[0], fibDst[1], fibDst[2], 0}, Mask: net.CIDRMask(24, 32)}
 	unreachable := &netlink.Route{Dst: dst, Type: unix.RTN_UNREACHABLE}
-	check("no route", 4, pass) // BPF_FIB_LKUP_RET_NOT_FWDED
+	check("no route", 4) // BPF_FIB_LKUP_RET_NOT_FWDED
 	if err := netlink.RouteAdd(unreachable); err != nil {
 		t.Fatal(err)
 	}
-	check("unreachable route", 2, drop) // BPF_FIB_LKUP_RET_UNREACHABLE
+	t.Cleanup(func() { _ = netlink.RouteDel(unreachable) }) // when a check fails before the next step
+	check("unreachable route", 2) // BPF_FIB_LKUP_RET_UNREACHABLE
 	if err := errors.Join(netlink.RouteDel(unreachable),
 		netlink.RouteAdd(&netlink.Route{LinkIndex: index, Dst: dst, Gw: net.IP(fibGw[:])})); err != nil {
 		t.Fatal(err)
 	}
-	check("route without neighbour", 7, pass) // BPF_FIB_LKUP_RET_NO_NEIGH
+	check("route without neighbour", 7) // BPF_FIB_LKUP_RET_NO_NEIGH
 	if err := netlink.NeighSet(&netlink.Neigh{LinkIndex: index, State: netlink.NUD_PERMANENT, IP: net.IP(fibGw[:]), HardwareAddr: mac}); err != nil {
 		t.Fatal(err)
 	}
-	check("route and neighbour", 0, fwd)
+	check("route and neighbour", 0)
 }
 
 func TestBpfCallFixtureFibXDP(t *testing.T) { testCallFixtureFib(t, ebpf.XDP, "cfxfibx") }

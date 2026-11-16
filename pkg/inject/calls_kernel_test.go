@@ -1,0 +1,196 @@
+package inject
+
+import (
+	"testing"
+
+	"github.com/cilium/ebpf"
+	"github.com/cilium/ebpf/asm"
+	"github.com/cilium/ebpf/btf"
+	"github.com/takehaya/bpf-ninja/internal/testutil"
+	"golang.org/x/sys/unix"
+)
+
+// callHooked transforms spec for req, loads it and attaches an fentry
+// observer to each hook. The observer records the arguments after ctx: the
+// site, then for a hook with arg the first 8 bytes through it, then ret raw.
+func callHooked(t *testing.T, spec *ebpf.CollectionSpec, req LookupRequest) (*ebpf.Collection, lookupPlan, map[string]*ebpf.Collection) {
+	t.Helper()
+	plan, err := transformLookup(spec, req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.hooks) != len(req.Calls) {
+		t.Fatalf("hooks %+v skipped %+v", plan.hooks, plan.skipped)
+	}
+	coll := loadHooked(t, spec, plan.hooks)
+	t.Cleanup(coll.Close)
+	obs := map[string]*ebpf.Collection{}
+	for _, h := range plan.hooks {
+		ptr := []bool{false, false}
+		if h.ArgReg != 0 {
+			ptr = []bool{false, true, false}
+		}
+		obs[h.Call] = attachArgObserver(t, h.Name, coll.Programs["p"], ptr...)
+	}
+	return coll, plan, obs
+}
+
+// lastCall is the last call obs recorded, after n calls in all.
+func lastCall(t *testing.T, obs *ebpf.Collection, n int) [4]uint64 {
+	t.Helper()
+	calls := observed(t, obs)
+	if len(calls) != n {
+		t.Fatalf("%d hook calls, want %d", len(calls), n)
+	}
+	return calls[n-1]
+}
+
+func kernelBTF(t *testing.T) *btf.Spec {
+	t.Helper()
+	spec, err := btf.LoadKernelSpec()
+	if err != nil {
+		t.Skipf("kernel BTF: %v", err)
+	}
+	return spec
+}
+
+// Shape S: the hooks after bpf_get_prandom_u32 and bpf_jiffies64 see the R0
+// the program then stores, at their site, and the action is unchanged.
+func TestBpfCallHookScalars(t *testing.T) {
+	testutil.SkipIfNotRoot(t)
+	plain := loadCallFixture(t, scalarFixture())
+	coll, plan, obs := callHooked(t, scalarFixture(), callReq("bpf_get_prandom_u32", "bpf_jiffies64"))
+	slot := map[string]int{"bpf_get_prandom_u32": 2, "bpf_jiffies64": 3}
+	for run := 1; run <= 3; run++ {
+		if ret, _ := runCallFixture(t, plain, make([]byte, 64), nil); ret != 2 {
+			t.Fatalf("plain action %d", ret)
+		}
+		ret, out := runCallFixture(t, coll, make([]byte, 64), nil)
+		if ret != 2 {
+			t.Fatalf("hooked action %d, want XDP_PASS", ret)
+		}
+		for _, h := range plan.hooks {
+			got := lastCall(t, obs[h.Call], run)
+			if got[0] != uint64(h.Sites[0].SitePC) || got[1] != out[slot[h.Call]] {
+				t.Fatalf("run %d %s: site %d ret %#x, want %d and %#x", run, h.Call, got[0], got[1], h.Sites[0].SitePC, out[slot[h.Call]])
+			}
+		}
+	}
+}
+
+// fibVariant is one hooked form of the fib fixtures.
+type fibVariant struct {
+	name   string
+	spec   func(ebpf.ProgramType) *ebpf.CollectionSpec
+	static bool
+}
+
+// testCallHookFib runs the fib steps of testCallFixtureFib on the plain and
+// hooked fixtures: each hooked program returns the plain program's action
+// and stores the same code, ifindex and MAC, and its hook sees the stored
+// code as ret and the AF_INET family through arg.
+func testCallHookFib(t *testing.T, typ ebpf.ProgramType, name string, variants []fibVariant) {
+	testutil.SkipIfNotRoot(t)
+	kernel := kernelBTF(t)
+	type pair struct {
+		v                fibVariant
+		plain, coll, obs *ebpf.Collection
+		site             uint64
+	}
+	var pairs []pair
+	for _, v := range variants {
+		req := callReq("bpf_fib_lookup")
+		req.Kernel, req.StaticUntrusted = kernel, v.static
+		coll, plan, obs := callHooked(t, v.spec(typ), req)
+		h := plan.hooks[0]
+		if h.ArgType != "bpf_fib_lookup" || h.ArgSize != 64 || h.Static != v.static {
+			t.Fatalf("%s: hook %+v", v.name, h)
+		}
+		pairs = append(pairs, pair{v: v, plain: loadCallFixture(t, v.spec(typ)), coll: coll, obs: obs["bpf_fib_lookup"], site: uint64(h.Sites[0].SitePC)})
+	}
+	dev := fibDevice(t, name)
+	index := dev.Attrs().Index
+	packet := make([]byte, 64)
+	ctx := fibCtx(typ, index, len(packet))
+	run := 0
+	fwd, pass, drop := callVerdicts(typ)
+	actions := map[uint64]int32{4: pass, 2: drop, 7: pass, 0: fwd}
+	fibSteps(t, index, func(step string, code uint64) {
+		t.Helper()
+		run++
+		for _, p := range pairs {
+			wantRet, want := runCallFixture(t, p.plain, packet, ctx)
+			ret, out := runCallFixture(t, p.coll, packet, ctx)
+			if ret != wantRet || ret != uint32(actions[code]) || out != want || out[0] != code {
+				t.Fatalf("%s, %s: hooked %d %#x, plain %d %#x, want code %d", step, p.v.name, ret, out, wantRet, want, code)
+			}
+			got := lastCall(t, p.obs, run)
+			if got[0] != p.site || got[2] != out[0] || byte(got[1]) != unix.AF_INET {
+				t.Fatalf("%s, %s: hook saw site %d arg %#x ret %d; want %d, AF_INET, %d", step, p.v.name, got[0], got[1], got[2], p.site, out[0])
+			}
+		}
+	})
+}
+
+func TestBpfCallHookFibXDP(t *testing.T) {
+	testCallHookFib(t, ebpf.XDP, "chkfibx", []fibVariant{{"entry", fibFixture, false}, {"subprogram", fibSubprogFixture, false},
+		{"static", func(ebpf.ProgramType) *ebpf.CollectionSpec { return fibUntypedFixture() }, true}})
+}
+
+func TestBpfCallHookFibTC(t *testing.T) {
+	testCallHookFib(t, ebpf.SchedCLS, "chkfibt", []fibVariant{{"entry", fibFixture, false}, {"subprogram", fibSubprogFixture, false}})
+}
+
+// The untyped global hook takes arg:untrusted, which 6.15 and older lack.
+func TestBpfCallHookFibUntrusted(t *testing.T) {
+	testCallHookFib(t, ebpf.XDP, "chkfibu", []fibVariant{{"untrusted", func(ebpf.ProgramType) *ebpf.CollectionSpec { return fibUntypedFixture() }, false}})
+}
+
+// testCallHookCt runs the conntrack lookup hooked, with the result tested
+// before and after other code: a miss gives the hook a NULL ret and drops as
+// the plain program does, a hit after the insert a non-NULL ret and passes.
+func testCallHookCt(t *testing.T, typ ebpf.ProgramType, dport uint16, static bool) {
+	testutil.SkipIfNotRoot(t)
+	kernel := kernelBTF(t)
+	kfunc := func(name string) asm.Instruction { return kernelKfunc(t, name) }
+	status := nfConnStatusOffset(t)
+	name := ctPrefix(typ) + "lookup"
+	type pair struct{ plain, coll, obs *ebpf.Collection }
+	var pairs []pair
+	for _, unchecked := range []bool{false, true} {
+		req := callReq(name)
+		req.Kernel, req.StaticUntrusted = kernel, static
+		coll, plan, obs := callHooked(t, ctFixture(typ, kfunc, status, dport, unchecked), req)
+		if h := plan.hooks[0]; !h.RetPtr || h.ArgReg != 4 || h.Static != static || h.Untrusted == static || h.Sites[0].SitePC != 17 {
+			t.Fatalf("hook %+v", h)
+		}
+		pairs = append(pairs, pair{loadCallFixture(t, ctFixture(typ, kfunc, status, dport, unchecked)), coll, obs[name]})
+	}
+	_, pass, drop := callVerdicts(typ)
+	step := func(run int, action int32) {
+		t.Helper()
+		for i, p := range pairs {
+			wantRet, want := runCallFixture(t, p.plain, make([]byte, 64), nil)
+			ret, out := runCallFixture(t, p.coll, make([]byte, 64), nil)
+			if ret != uint32(action) || wantRet != ret || out[0] != want[0] || out[1] != want[1] {
+				t.Fatalf("run %d, fixture %d: hooked %d %#x, plain %d %#x, want action %d", run, i, ret, out, wantRet, want, action)
+			}
+			got := lastCall(t, p.obs, run)
+			if got[0] != 17 || (got[2] != 0) != (action == pass) {
+				t.Fatalf("run %d, fixture %d: hook saw site %d ret %#x", run, i, got[0], got[2])
+			}
+		}
+	}
+	step(1, drop)
+	insert := loadCallFixture(t, ctInsertProgram(typ, kfunc, dport))
+	if ret, err := insert.Programs["p"].Run(&ebpf.RunOptions{Data: make([]byte, 64), Repeat: 1}); err != nil || ret != 1 {
+		t.Fatalf("insert: %d, %v; want 1", ret, err)
+	}
+	step(2, pass)
+}
+
+func TestBpfCallHookCtXDP(t *testing.T) { testCallHookCt(t, ebpf.XDP, 8111, true) }
+func TestBpfCallHookCtTC(t *testing.T)  { testCallHookCt(t, ebpf.SchedCLS, 8112, true) }
+
+// The global pointer-result hook takes arg:untrusted, which 6.15 and older lack.
+func TestBpfCallHookCtUntrusted(t *testing.T) { testCallHookCt(t, ebpf.XDP, 8113, false) }
