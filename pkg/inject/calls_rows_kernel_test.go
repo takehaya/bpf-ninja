@@ -149,7 +149,7 @@ func testCallHookRowLoadBytes(t *testing.T, typ ebpf.ProgramType, name string, s
 		if int32(ret) != c.action || out[0] != c.code || out[1] != c.data8 {
 			t.Fatalf("%d-byte packet: action %d, out %#x", len(c.data), ret, out)
 		}
-		if got[0] != uint64(h.Sites[0].SitePC) || got[1] != c.data8 || got[2] != c.code {
+		if got[0] != uint64(h.Sites[0].SitePC) || got[1] != c.data8 || got[2] != out[0] {
 			t.Fatalf("%d-byte packet: hook site %d arg %#x ret %#x, want %d %#x %#x", len(c.data), got[0], got[1], got[2], h.Sites[0].SitePC, c.data8, c.code)
 		}
 	}
@@ -272,6 +272,32 @@ func TestBpfCallHookRowSkNoRelease(t *testing.T) {
 		}
 		if log := fmt.Sprintf("%+v", err); !strings.Contains(log, "Unreleased reference") && !strings.Contains(log, "reference leak") {
 			t.Fatalf("%s: hooked program rejected for another reason: %+v", r.name, err)
+		}
+	}
+}
+
+// The hook after bpf_probe_read_kernel sees code 0 and the copied bytes
+// through arg, and after a failed read (address 0) the error and the zeroed
+// buffer, as the plain program stores them.
+func TestBpfCallHookRowProbeReadKernel(t *testing.T) {
+	testutil.SkipIfNotRoot(t)
+	for _, c := range []struct {
+		fail  bool
+		data8 uint64
+	}{{false, 0x0807060504030201}, {true, 0}} {
+		plain := loadCallFixture(t, probeReadFixture(c.fail))
+		coll, plan, obs := callHooked(t, probeReadFixture(c.fail), callReq("bpf_probe_read_kernel"))
+		h := plan.hooks[0]
+		if h.ArgReg != 1 || h.ArgType != "" || h.ArgSize != 8 || h.RetPtr || h.Untrusted || h.Static {
+			t.Fatalf("hook %+v", h)
+		}
+		pret, pout := runCallFixture(t, plain, make([]byte, 64), nil)
+		ret, out := runCallFixture(t, coll, make([]byte, 64), nil)
+		if ret != 2 || pret != 2 || out != pout || (out[0] != 0) != c.fail || out[1] != c.data8 {
+			t.Fatalf("fail=%v: hooked %d %#x, plain %d %#x", c.fail, ret, out, pret, pout)
+		}
+		if got := lastCall(t, obs["bpf_probe_read_kernel"], 1); got[0] != uint64(h.Sites[0].SitePC) || got[1] != c.data8 || got[2] != out[0] {
+			t.Fatalf("fail=%v: hook site %d arg %#x ret %#x", c.fail, got[0], got[1], got[2])
 		}
 	}
 }

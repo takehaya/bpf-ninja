@@ -676,3 +676,23 @@ func ctxScalarFixture(typ ebpf.ProgramType, fns ...asm.BuiltinFunc) *ebpf.Collec
 	_, pass, _ := callVerdicts(typ)
 	return callFixtureSpec(typ, append(insns, asm.Mov.Imm(asm.R0, pass), asm.Return()))
 }
+
+// probeReadFixture (XDP) copies 8 bytes from fp-16 (1 to 8), or with fail
+// from address 0, into a zeroed fp-8 with bpf_probe_read_kernel at 10, stores
+// the code and the buffer in out slots 0 and 1 and returns XDP_PASS.
+func probeReadFixture(fail bool) *ebpf.CollectionSpec {
+	src := asm.Instructions{asm.Mov.Reg(asm.R3, asm.RFP), asm.Add.Imm(asm.R3, -16)}
+	if fail {
+		src = asm.Instructions{asm.Mov.Imm(asm.R3, 0), asm.Mov.Imm(asm.R3, 0)} // two, so the call stays at 10
+	}
+	insns := asm.Instructions{
+		asm.LoadImm(asm.R1, 0x0807060504030201, asm.DWord), asm.StoreMem(asm.RFP, -16, asm.R1, asm.DWord),
+		asm.Mov.Imm(asm.R1, 0), asm.StoreMem(asm.RFP, -8, asm.R1, asm.DWord),
+		asm.Mov.Reg(asm.R1, asm.RFP), asm.Add.Imm(asm.R1, -8), asm.Mov.Imm(asm.R2, 8),
+	}
+	insns = append(append(insns, src...), asm.FnProbeReadKernel.Call(), asm.Mov.Reg(asm.R7, asm.R0))
+	insns = append(insns, outStore(0, asm.R7)...)
+	return callFixtureSpec(ebpf.XDP, append(insns,
+		asm.LoadMem(asm.R2, asm.RFP, -8, asm.DWord), asm.StoreMem(asm.R1, 8, asm.R2, asm.DWord),
+		asm.Mov.Imm(asm.R0, 2), asm.Return()))
+}

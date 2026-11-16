@@ -36,6 +36,7 @@ var callTable = []CallRow{
 	{Name: "bpf_sk_lookup_tcp", Helper: asm.FnSkLookupTcp, RetPtr: true, ArgReg: asm.R2, SizeReg: asm.R3, ArgType: "bpf_sock_tuple"},
 	{Name: "bpf_sk_lookup_udp", Helper: asm.FnSkLookupUdp, RetPtr: true, ArgReg: asm.R2, SizeReg: asm.R3, ArgType: "bpf_sock_tuple"},
 	{Name: "bpf_skc_lookup_tcp", Helper: asm.FnSkcLookupTcp, RetPtr: true, ArgReg: asm.R2, SizeReg: asm.R3, ArgType: "bpf_sock_tuple"},
+	{Name: "bpf_probe_read_kernel", Helper: asm.FnProbeReadKernel, ArgReg: asm.R1, SizeReg: asm.R2, Writes: true},
 	{Name: "bpf_fib_lookup", Helper: asm.FnFibLookup, ArgReg: asm.R2, SizeReg: asm.R3, ArgType: "bpf_fib_lookup", Writes: true},
 	{Name: "bpf_xdp_ct_lookup", RetPtr: true, ArgReg: asm.R4, SizeReg: asm.R5, ArgType: "bpf_ct_opts", Writes: true},
 	{Name: "bpf_skb_ct_lookup", RetPtr: true, ArgReg: asm.R4, SizeReg: asm.R5, ArgType: "bpf_ct_opts", Writes: true},

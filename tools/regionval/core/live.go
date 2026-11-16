@@ -38,6 +38,7 @@ var helperArgs = map[int32]int{
 	84:  5, // sk_lookup_tcp(ctx, tuple, tuple_size, netns, flags)
 	85:  5, // sk_lookup_udp(ctx, tuple, tuple_size, netns, flags)
 	99:  5, // skc_lookup_tcp(ctx, tuple, tuple_size, netns, flags)
+	113: 3, // probe_read_kernel(dst, size, unsafe_ptr)
 	118: 0, // jiffies64()
 	164: 4, // for_each_map_elem(map, callback_fn, callback_ctx, flags)
 	181: 4, // loop(nr_loops, callback_fn, callback_ctx, flags)
