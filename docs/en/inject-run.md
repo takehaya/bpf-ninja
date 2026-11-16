@@ -124,6 +124,7 @@ The hook receives the call's result as `ret` and, for a callee with a memory arg
 | Callee | Hook | `arg` | `ret` |
 |---|---|---|---|
 | `bpf_ktime_get_ns`, `bpf_jiffies64`, `bpf_get_prandom_u32`, `bpf_get_smp_processor_id`, `bpf_get_hash_recalc`, `bpf_get_socket_cookie` (tc), `bpf_xdp_get_buff_len` (XDP) | `(ctx, u32 site, u64 ret)` | none | the value |
+| `bpf_skb_load_bytes` (tc), `bpf_xdp_load_bytes` (XDP) | `(ctx, u32 site, const struct { u8 bytes[N]; } *arg, u64 ret)` | the destination buffer (R3) of the constant size N in R4, as the call left it | the result code |
 | `bpf_fib_lookup` | `(ctx, u32 site, const struct bpf_fib_lookup *arg, u64 ret)` | the lookup parameters (R2), after the lookup has filled them in | the lookup result code |
 | `bpf_xdp_ct_lookup`, `bpf_skb_ct_lookup` | `(ctx, u32 site, const struct bpf_ct_opts *arg, const void *ret)` | the options (R4), with the error the lookup set | the connection pointer; test it for NULL, it cannot be read through |
 

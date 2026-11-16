@@ -31,6 +31,8 @@ var callTable = []CallRow{
 	{Name: "bpf_get_hash_recalc", Helper: asm.FnGetHashRecalc},
 	{Name: "bpf_get_socket_cookie", Helper: asm.FnGetSocketCookie},
 	{Name: "bpf_xdp_get_buff_len", Helper: asm.FnXdpGetBuffLen},
+	{Name: "bpf_skb_load_bytes", Helper: asm.FnSkbLoadBytes, ArgReg: asm.R3, SizeReg: asm.R4, Writes: true},
+	{Name: "bpf_xdp_load_bytes", Helper: asm.FnXdpLoadBytes, ArgReg: asm.R3, SizeReg: asm.R4, Writes: true},
 	{Name: "bpf_fib_lookup", Helper: asm.FnFibLookup, ArgReg: asm.R2, SizeReg: asm.R3, ArgType: "bpf_fib_lookup", Writes: true},
 	{Name: "bpf_xdp_ct_lookup", RetPtr: true, ArgReg: asm.R4, SizeReg: asm.R5, ArgType: "bpf_ct_opts", Writes: true},
 	{Name: "bpf_skb_ct_lookup", RetPtr: true, ArgReg: asm.R4, SizeReg: asm.R5, ArgType: "bpf_ct_opts", Writes: true},

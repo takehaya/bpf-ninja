@@ -30,6 +30,7 @@ var helperArgs = map[int32]int{
 	5:   0, // ktime_get_ns()
 	7:   0, // get_prandom_u32()
 	8:   0, // get_smp_processor_id()
+	26:  4, // skb_load_bytes(skb, offset, to, len)
 	34:  1, // get_hash_recalc(skb)
 	44:  2, // xdp_adjust_head(xdp_md, delta)
 	46:  1, // get_socket_cookie(ctx)
@@ -38,6 +39,7 @@ var helperArgs = map[int32]int{
 	164: 4, // for_each_map_elem(map, callback_fn, callback_ctx, flags)
 	181: 4, // loop(nr_loops, callback_fn, callback_ctx, flags)
 	188: 1, // xdp_get_buff_len(xdp_md)
+	189: 4, // xdp_load_bytes(xdp_md, offset, buf, len)
 }
 
 func bit(r uint8) uint16 { return 1 << r }

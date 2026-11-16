@@ -1,12 +1,14 @@
 package inject
 
 import (
+	"encoding/binary"
 	"slices"
 	"testing"
 
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/asm"
 	"github.com/takehaya/bpf-ninja/internal/testutil"
+	"golang.org/x/sys/unix"
 )
 
 // loadWithDepth loads spec, closes it at cleanup and returns the verifier's
@@ -118,4 +120,42 @@ func TestBpfCallHookRowXdpBuffLen(t *testing.T) {
 	if out := testCallHookRowScalars(t, ebpf.XDP, []string{"bpf_xdp_get_buff_len"}, asm.FnXdpGetBuffLen); out[0] != 64 {
 		t.Fatalf("bpf_xdp_get_buff_len %d, want 64", out[0])
 	}
+}
+
+// testCallHookRowLoadBytes hooks loadBytesFixture(typ): on a 64-byte packet
+// the hook sees code 0 and the copied bytes through arg, on a 32-byte one
+// -short and the buffer the callee left (zero), and the action is unchanged.
+func testCallHookRowLoadBytes(t *testing.T, typ ebpf.ProgramType, name string, short unix.Errno) {
+	testutil.SkipIfNotRoot(t)
+	coll, plan, obs := callHooked(t, loadBytesFixture(typ), callReq(name))
+	h := plan.hooks[0]
+	if h.ArgReg != 3 || h.ArgType != "" || h.ArgSize != loadBytesLen || h.RetPtr {
+		t.Fatalf("hook %+v", h)
+	}
+	_, pass, drop := callVerdicts(typ)
+	packet := make([]byte, 64)
+	copy(packet[loadBytesAt:], []byte{1, 2, 3, 4, 5, 6, 7, 8})
+	want := binary.LittleEndian.Uint64(packet[loadBytesAt:])
+	for run, c := range []struct {
+		data        []byte
+		action      int32
+		code, data8 uint64
+	}{{packet, pass, 0, want}, {packet[:32], drop, uint64(-int64(short)), 0}} {
+		ret, out := runCallFixture(t, coll, c.data, nil)
+		got := lastCall(t, obs[name], run+1)
+		if int32(ret) != c.action || out[0] != c.code || out[1] != c.data8 {
+			t.Fatalf("%d-byte packet: action %d, out %#x", len(c.data), ret, out)
+		}
+		if got[0] != uint64(h.Sites[0].SitePC) || got[1] != c.data8 || got[2] != c.code {
+			t.Fatalf("%d-byte packet: hook site %d arg %#x ret %#x, want %d %#x %#x", len(c.data), got[0], got[1], got[2], h.Sites[0].SitePC, c.data8, c.code)
+		}
+	}
+}
+
+func TestBpfCallHookRowLoadBytesXDP(t *testing.T) {
+	testCallHookRowLoadBytes(t, ebpf.XDP, "bpf_xdp_load_bytes", unix.EINVAL)
+}
+
+func TestBpfCallHookRowLoadBytesTC(t *testing.T) {
+	testCallHookRowLoadBytes(t, ebpf.SchedCLS, "bpf_skb_load_bytes", unix.EFAULT)
 }
