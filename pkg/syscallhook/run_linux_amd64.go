@@ -853,7 +853,14 @@ func (s *supervisor) entry(pid int, t *thread, regs unix.PtraceRegs) error {
 	if rule == nil && !discover {
 		return nil
 	}
-	if err := parseProgAttr(attr); err != nil {
+	err = parseProgAttr(attr)
+	if err == nil && u64(attr, 120) != 0 {
+		var insns []byte
+		if insns, err = readMemory(pid, u64(attr, 8), uint64(u32(attr, 4))*8); err == nil {
+			err = fdArrayMapIndex(insns)
+		}
+	}
+	if err != nil {
 		if rule == nil {
 			s.log("program %q: lookup discovery skipped: %v", name, err)
 			return nil

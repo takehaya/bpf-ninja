@@ -242,7 +242,7 @@ func TestProgAttr(t *testing.T) {
 		value uint32
 	}{
 		{4, 0}, {4, ^uint32(0)}, {72, 0}, {76, 12}, {88, ^uint32(0)}, {92, 20}, {104, ^uint32(0)},
-		{116, 1}, {120, 1}, {128, 1}, {136, 1}, {144, 1}, {148, 1}, {152, 1}, {160, 1}, {164, 1},
+		{116, 1}, {128, 1}, {136, 1}, {144, 1}, {152, 1}, {160, 1}, {164, 1},
 	} {
 		b := validAttr()
 		put32(b, field.off, field.value)
@@ -261,6 +261,31 @@ func TestProgAttr(t *testing.T) {
 	}
 	if err := parseProgAttr(b[:108]); err != nil {
 		t.Fatal(err)
+	}
+	// fd_array and fd_array_cnt pass through unchanged.
+	b = validAttr()
+	put64(b, 120, 0x45678901)
+	put32(b, 148, 2)
+	if err := parseProgAttr(b); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestFdArrayMapIndex(t *testing.T) {
+	ldImm64 := func(src byte) []byte { return []byte{0x18, 1 | src<<4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0} }
+	exit := []byte{0x95, 0, 0, 0, 0, 0, 0, 0}
+	// Map fd, map value, BTF id and func: the raw path resolves or keeps these.
+	// A kfunc call with a nonzero offset (module BTF by index) is accepted too.
+	kfunc := []byte{0x85, 2 << 4, 1, 0, 7, 0, 0, 0}
+	ok := append(append(append(append(append(ldImm64(1), ldImm64(2)...), ldImm64(3)...), ldImm64(4)...), kfunc...), exit...)
+	if err := fdArrayMapIndex(ok); err != nil {
+		t.Fatal(err)
+	}
+	for _, src := range []byte{5, 6} {
+		prog := append(append(append([]byte{}, exit...), ldImm64(src)...), exit...)
+		if err := fdArrayMapIndex(prog); err == nil || !strings.Contains(err.Error(), "instruction 1") {
+			t.Errorf("src %d: err=%v", src, err)
+		}
 	}
 }
 
