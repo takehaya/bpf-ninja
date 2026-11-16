@@ -38,7 +38,9 @@ const (
 // Site -1 is the entry hook. Args is the planned hook's argument list from R1
 // on for a lookup site, one of the lookupABIs; SitePC is the immediate its
 // ArgSite argument carries. A wrapped site needs Args. Elsewhere nil Args
-// leaves the arguments to the provenance rules alone.
+// leaves the arguments to the provenance rules alone. A target whose Args is
+// one of the callABIs is a call target: a hook right after a helper outside
+// the map helpers, or after a kernel-function call, on condition any.
 type SiteTarget struct {
 	Site   int        `json:"site"`
 	When   TargetWhen `json:"when"`
@@ -74,7 +76,7 @@ var lookupABIs = [][]ArgRole{
 
 // callABIs are the argument lists a call hook can have: the result alone, and
 // the memory argument and the result.
-var callABIs = [][]ArgRole{ //nolint:unused // until the call-site checks use it
+var callABIs = [][]ArgRole{
 	{ArgCtx, ArgSite, ArgRet},
 	{ArgCtx, ArgSite, ArgArg, ArgRet},
 }
@@ -103,6 +105,20 @@ type PassFrame struct {
 	Start int  `json:"start"`
 	Reg   int  `json:"reg"`
 	Saved bool `json:"saved,omitempty"`
+}
+
+func isCallABI(args []ArgRole) bool {
+	return slices.ContainsFunc(callABIs, func(abi []ArgRole) bool { return slices.Equal(abi, args) })
+}
+
+// helperID is the helper a call names, or FnUnspec for any other
+// instruction: a kfunc's immediate is a BTF id, so every helper-id test goes
+// through here.
+func helperID(ins asm.Instruction) asm.BuiltinFunc {
+	if !ins.IsBuiltinCall() {
+		return asm.FnUnspec
+	}
+	return asm.BuiltinFunc(ins.Constant)
 }
 
 func (c CtxSource) equal(o CtxSource) bool {
@@ -322,6 +338,15 @@ func Check(in, out asm.Instructions, c Certificate, premises Premises) (Counts, 
 	if err != nil {
 		return counts, err
 	}
+	for key, b := range targets {
+		if !b.call {
+			continue // the entry target's site is -1
+		}
+		ins := in[key.site]
+		if callee := ins.IsBuiltinCall() && !supportedHelper(ins) || ins.IsKfuncCall(); !callee {
+			return counts, inputError(InputTarget, "call target at %d is not a call of a helper outside the map helpers or of a kernel function", key.site)
+		}
+	}
 	for j, owner := range owners {
 		if owner < 0 {
 			if err := noLoadMetadata(out[j]); err != nil {
@@ -467,7 +492,7 @@ func Check(in, out asm.Instructions, c Certificate, premises Premises) (Counts, 
 		return fail(WrapperCall, "a wrapper is not called by any site")
 	}
 	for i := range in {
-		if !supportedHelper(in[i]) {
+		if !supportedHelper(in[i]) && targets.callAt(i) == nil {
 			continue
 		}
 		if _, ok := wrapped[i]; ok {
@@ -492,7 +517,7 @@ func Check(in, out asm.Instructions, c Certificate, premises Premises) (Counts, 
 				before[i] = append(before[i], out[j])
 			}
 			gaps[i] = g[:n]
-			if err := checkBefore(in[i], before[i], floorAt(i), lowestAt(i), ctx); err != nil {
+			if err := checkBefore(in[i], before[i], floorAt(i), lowestAt(i), ctx, targets.callAt(i)); err != nil {
 				return counts, fmt.Errorf("site %d prelude: %w", i, err)
 			}
 		}
@@ -581,7 +606,9 @@ func Check(in, out asm.Instructions, c Certificate, premises Premises) (Counts, 
 			counts.Sites++
 			continue
 		}
-		if len(before[i]) > 0 {
+		// A call site's prelude may be empty: its hook takes no key and its
+		// context is already in the slot.
+		if len(before[i]) > 0 || targets.callAt(i) != nil {
 			if err := checkAfter(i, in[i], before[i], after, out, npcs, ni, gaps[i+1], hooks, targets,
 				floorAt(i), len(gaps[0]) > 0 && i < entryEnd || callbackSite(targets, i), siteCtx(targets, i)); err != nil {
 				return counts, fmt.Errorf("site %d: %w", i, err)
@@ -772,7 +799,7 @@ func supportedHelper(ins asm.Instruction) bool {
 func stackSpill(ins asm.Instruction) bool {
 	return ins.OpCode == asm.StoreMem(asm.RFP, 0, asm.R0, asm.DWord).OpCode && ins.Dst == asm.RFP
 }
-func checkBefore(helper asm.Instruction, is asm.Instructions, f, lowest int, ctx *CtxSource) error {
+func checkBefore(helper asm.Instruction, is asm.Instructions, f, lowest int, ctx *CtxSource, call *targetBinding) error {
 	store := func(off int, r asm.Register) asm.Instruction { return asm.StoreMem(asm.RFP, int16(off), r, asm.DWord) }
 	withCtx := func(v asm.Instructions) asm.Instructions {
 		if ctx == nil {
@@ -788,9 +815,22 @@ func checkBefore(helper asm.Instruction, is asm.Instructions, f, lowest int, ctx
 		}
 	}
 	var variants []asm.Instructions
-	for _, withMap := range []bool{false, true} {
+	withMaps := []bool{false, true}
+	if call != nil {
+		// The callee's argument register goes to the key slot before the
+		// context initialization; without an argument, only the latter.
+		withMaps = nil
+		v := asm.Instructions{}
+		if call.argReg != 0 {
+			v = asm.Instructions{store(f+slotKey, asm.Register(call.argReg))}
+		}
+		if v = withCtx(v); v != nil {
+			variants = append(variants, v)
+		}
+	}
+	for _, withMap := range withMaps {
 		v := asm.Instructions{store(f+slotKey, asm.R2)}
-		switch asm.BuiltinFunc(helper.Constant) {
+		switch helperID(helper) {
 		case asm.FnTailCall:
 			v = asm.Instructions{store(f+slotKey, asm.R3)}
 			if withMap {
@@ -1028,6 +1068,8 @@ type targetBinding struct {
 	ctx    *CtxSource
 	args   []ArgRole
 	sitePC int32
+	argReg int
+	call   bool // args is one of the callABIs
 }
 
 type targetBindings map[targetKey]*targetBinding
@@ -1068,8 +1110,15 @@ func newTargetBindings(targets []SiteTarget, sites int, hooks map[int]bool) (tar
 		default:
 			return nil, inputError(InputTarget, "invalid site target condition %q", target.When)
 		}
-		if target.Args != nil && (target.Site < 0 || !slices.ContainsFunc(lookupABIs, func(abi []ArgRole) bool { return slices.Equal(abi, target.Args) })) {
+		call := isCallABI(target.Args)
+		if target.Args != nil && (target.Site < 0 || !call && !slices.ContainsFunc(lookupABIs, func(abi []ArgRole) bool { return slices.Equal(abi, target.Args) })) {
 			return nil, inputError(InputTarget, "invalid hook arguments in site target %+v", target)
+		}
+		if hasArg := slices.Contains(target.Args, ArgArg); hasArg != (target.ArgReg != 0) || target.ArgReg < 0 || target.ArgReg > int(asm.R5) {
+			return nil, inputError(InputTarget, "argument register %d does not match the hook arguments in site target %+v", target.ArgReg, target)
+		}
+		if call && target.When != TargetAny {
+			return nil, inputError(InputTarget, "call site target on condition %q, not any: %+v", target.When, target)
 		}
 		if target.SitePC != 0 && !slices.Contains(target.Args, ArgSite) || target.SitePC < 0 {
 			return nil, inputError(InputTarget, "site PC without a site argument in site target %+v", target)
@@ -1078,9 +1127,24 @@ func newTargetBindings(targets []SiteTarget, sites int, hooks map[int]bool) (tar
 		if _, ok := b[key]; ok {
 			return nil, inputError(InputTarget, "duplicate site target site=%d when=%s", target.Site, target.When)
 		}
-		b[key] = &targetBinding{hook: target.Hook, ctx: target.Ctx, args: target.Args, sitePC: target.SitePC}
+		b[key] = &targetBinding{hook: target.Hook, ctx: target.Ctx, args: target.Args, sitePC: target.SitePC, argReg: target.ArgReg, call: call}
+	}
+	for key, target := range b {
+		for other := range b {
+			if target.call && other.site == key.site && other != key {
+				return nil, inputError(InputTarget, "call site %d has a second target on condition %s", key.site, other.when)
+			}
+		}
 	}
 	return b, nil
+}
+
+// callAt is the call target planned at site, or nil.
+func (b targetBindings) callAt(site int) *targetBinding {
+	if target := b[targetKey{site, TargetAny}]; target != nil && target.call {
+		return target
+	}
+	return nil
 }
 
 func (b targetBindings) ctxForSite(site int) *CtxSource {
