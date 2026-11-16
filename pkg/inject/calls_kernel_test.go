@@ -127,6 +127,38 @@ func TestBpfCallHookWithAutoLookup(t *testing.T) {
 	}
 }
 
+func TestBpfCallHookInCallbackWithContext(t *testing.T) {
+	testutil.SkipIfNotRoot(t)
+	plain := loadCallFixture(t, callbackCallFixture())
+	work := callbackCallFixture()
+	req := callReq("bpf_jiffies64")
+	req.Stack.LowestOffset = -16
+	plan, err := transformLookup(work, req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.hooks) != 1 || len(plan.sites) != 1 || plan.sites[0].FuncName != "cb" {
+		t.Fatalf("plan %+v", plan)
+	}
+	hooked := loadHooked(t, work, plan.hooks)
+	t.Cleanup(hooked.Close)
+	obs := attachArgObserver(t, plan.hooks[0].Name, hooked.Programs["p"], false, false)
+	plainRet, plainOut := runCallFixture(t, plain, make([]byte, 64), nil)
+	ret, out := runCallFixture(t, hooked, make([]byte, 64), nil)
+	if ret != plainRet || out != plainOut || ret != 3 || out[0] == 0 {
+		t.Fatalf("hooked %d %#x, plain %d %#x", ret, out, plainRet, plainOut)
+	}
+	calls := observed(t, obs)
+	if len(calls) != 3 {
+		t.Fatalf("hook calls %d, want 3", len(calls))
+	}
+	for i, got := range calls {
+		if got[0] != uint64(plan.sites[0].SitePC) || got[1] == 0 || i == 2 && got[1] != out[0] {
+			t.Fatalf("call %d: hook saw %#x, want site %d and final ret %#x", i, got, plan.sites[0].SitePC, out[0])
+		}
+	}
+}
+
 // Shape S: the hooks after bpf_get_prandom_u32 and bpf_jiffies64 see the R0
 // the program then stores, at their site, and the action is unchanged.
 func TestBpfCallHookScalars(t *testing.T) {

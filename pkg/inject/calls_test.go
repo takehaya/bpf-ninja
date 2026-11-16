@@ -131,6 +131,34 @@ func TestCallInCallback(t *testing.T) {
 	}
 }
 
+// callbackCallFixture passes a non-NULL bpf_loop context, calls jiffies in the
+// callback, and stores its result for the kernel test.
+func callbackCallFixture() *ebpf.CollectionSpec {
+	spec := callbackSiteFixture("loop", false)
+	insns := spec.Programs["p"].Instructions
+	cb := slices.IndexFunc(insns, func(ins asm.Instruction) bool { return ins.Symbol() == "cb" })
+	at := cb + slices.IndexFunc(insns[cb:], func(ins asm.Instruction) bool {
+		return ins.OpCode == asm.Mov.Imm(asm.R0, 0).OpCode && ins.Dst == asm.R0 && ins.Constant == 0
+	})
+	call := append(asm.Instructions{asm.FnJiffies64.Call()}, outStore(0, asm.R0)...)
+	spec.Programs["p"].Instructions = slices.Insert(insns, at, call...)
+	spec.Maps["out"] = scalarFixture().Maps["out"]
+	return spec
+}
+
+func TestCallInCallbackWithContext(t *testing.T) {
+	req := callReq("bpf_jiffies64")
+	req.Stack.LowestOffset = -16
+	plan, err := transformLookup(callbackCallFixture(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.hooks) != 1 || len(plan.sites) != 1 || len(plan.skipped) != 0 ||
+		plan.sites[0].FuncName != "cb" || plan.sites[0].CtxSource != "callback:r2:fp-16" {
+		t.Fatalf("plan %+v", plan)
+	}
+}
+
 // Request-level refusals of the call rules.
 func TestCallRefusals(t *testing.T) {
 	for _, tc := range []struct {
