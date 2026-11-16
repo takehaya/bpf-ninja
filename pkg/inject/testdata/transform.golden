@@ -942,3 +942,5 @@ tail-call/auto-without-lookups	elf	f5b3ff8983417b2a93ec3c1ed51006c5dfcefd248f053
 tail-call/auto-without-lookups	raw	6efac881bb2a03b20aa103050b8404378a6d5c5e103864109ac72324ec47e5a7
 refused/no-lookups	elf	error "inject: refused: no supported lookup sites (0 skipped)"
 refused/no-lookups	raw	error "inject: refused: no supported lookup sites (0 skipped)"
+stack/fib-lookup-buffer	elf	66a3dd6c4026a0674a72326837bd5cefcc26ba20485e5ade215cb08491a144d8
+stack/fib-lookup-buffer	raw	0770efbb0aefec5fb94516253b0e568d6aece6eb4428a24e45e93e83433559f9

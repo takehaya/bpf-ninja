@@ -16,6 +16,7 @@ import (
 
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/asm"
+	"github.com/cilium/ebpf/btf"
 )
 
 // The transform golden pins what the lookup transform returns for a fixed
@@ -248,7 +249,29 @@ func goldenCases() []goldenCase {
 	add("tail-call/subprogram-lookup", subprogramTailLookupFixture, autoReq(), floor(-16), func(r *LookupRequest) { r.TailCalls = true })
 	add("tail-call/auto-without-lookups", tailCallerFixture, tails, entry, func(r *LookupRequest) { r.Auto = true })
 	add("refused/no-lookups", tailCallerFixture, tails, func(r *LookupRequest) { r.Auto, r.TailCalls = true, false })
+
+	// Shared code the call-site hooks also use.
+	add("stack/fib-lookup-buffer", fibStackFixture, autoReq(), frames(16, map[string]int16{"p": -8, "sub": -168, "fib": -400}))
 	return cases
+}
+
+// fibStackFixture is subprogramLookupFixture("register") whose sub first
+// calls the static function fib, which passes the stack buffer fp-64 to
+// bpf_fib_lookup.
+func fibStackFixture() *ebpf.CollectionSpec {
+	spec := subprogramLookupFixture("register")
+	insns := spec.Programs["p"].Instructions
+	at := slices.IndexFunc(insns, func(ins asm.Instruction) bool { return ins.Symbol() == "sub" }) + 1
+	insns = slices.Insert(insns, at, asm.Mov.Reg(asm.R1, asm.R6), asm.Call.Label("fib"))
+	proto := btf.FuncMetadata(&insns[at-1]).Type
+	fib := asm.Instructions{
+		btf.WithFuncMetadata(asm.Mov.Reg(asm.R2, asm.RFP).WithSymbol("fib").WithSource(asm.Comment("fib")),
+			&btf.Func{Name: "fib", Linkage: btf.StaticFunc, Type: proto}),
+		asm.Add.Imm(asm.R2, -64), asm.Mov.Imm(asm.R3, 64), asm.Mov.Imm(asm.R4, 0),
+		asm.FnFibLookup.Call(), asm.Mov.Imm(asm.R0, 0), asm.Return(),
+	}
+	spec.Programs["p"].Instructions = append(insns, fib...)
+	return spec
 }
 
 // goldenHash is the hash of one transform result: the wire instructions,
