@@ -1709,6 +1709,9 @@ func transformLookupProgramGuarded(insns asm.Instructions, typ ebpf.ProgramType,
 	}
 	names := map[string]bool{}
 	for _, group := range groups {
+		if names[group.name] && !req.Dispatch {
+			return nil, plan, refuse("hook name %q is invalid or used twice", group.name)
+		}
 		names[group.name] = true
 	}
 	for _, group := range groups {
