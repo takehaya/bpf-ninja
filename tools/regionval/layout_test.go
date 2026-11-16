@@ -448,3 +448,157 @@ func TestBinds(t *testing.T) {
 		t.Errorf("other names: binds %v", b)
 	}
 }
+
+func kfunc(id int32, off int16) a { return a{op: 0x85, src: 2, off: off, imm: id} }
+func movw(d uint8, v int32) a     { return a{op: 0xb4, dst: d, imm: v} }
+
+// callA: the result-only sequence around c (ctx at r10-8, result at r10-16).
+func callA(c a) pair {
+	o := []a{mov(6, 1).begins("main"), c, exit()}
+	t := []a{
+		stx(-8, 1).begins("main"), mov(6, 1), c,
+		stx(-16, 0), ldx(1, -8), movw(2, 1), mov(3, 0), call("hook"), ldx(0, -16), // postlude
+		exit(),
+		movi(0, 0).begins("hook"), exit(),
+	}
+	return pair{o: o, t: t, kappa: []int{1, 2, 9}, floor: 0}
+}
+
+// callB: the argument-and-result sequence around c, saving r2 (ctx at
+// r10-72, argument at r10-80, result at r10-88, below the floor -64).
+func callB(c a) pair {
+	o := []a{mov(6, 1).begins("main"), mov(2, 10), addi(2, -64), movi(3, 64), movi(4, 0), mov(1, 6), c, exit()}
+	t := []a{
+		stx(-72, 1).begins("main"), mov(6, 1), mov(2, 10), addi(2, -64), movi(3, 64), movi(4, 0), mov(1, 6),
+		stx(-80, 2), // prelude
+		c,
+		stx(-88, 0), ldx(1, -72), movw(2, 6), ldx(3, -80), mov(4, 0), call("hook"), ldx(0, -88), // postlude
+		exit(),
+		movi(0, 0).begins("hook"), exit(),
+	}
+	return pair{o: o, t: t, kappa: []int{1, 2, 3, 4, 5, 6, 8, 16}, floor: -64}
+}
+
+func rejectedBy(r Result) []string {
+	var got []string
+	for _, w := range r.Windows {
+		if !w.Validated {
+			got = append(got, w.Rule)
+		}
+	}
+	return got
+}
+
+// Both sequences validate at a helper and at a kfunc centre (one with a
+// module BTF), as kind site, in both cores (runFile fails on a
+// disagreement). A kfunc centre is shown to the cores as a helper call.
+func TestCallSequences(t *testing.T) {
+	for name, p := range map[string]pair{
+		"A at helper 5": callA(helper(5)), "B at helper 69": callB(helper(69)),
+		"A at a kfunc": callA(kfunc(60001, 0)), "B at a module kfunc": callB(kfunc(1, 1)),
+	} {
+		r := runFile(t, p.capture(t))
+		if !r.Validated || r.Counts.Windows != 3 || r.Windows[1].CoreKind != core.KindSite {
+			t.Errorf("%s: %+v", name, r)
+		}
+	}
+	l, err := Analyze(callB(kfunc(1, 1)).capture(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cw := l.CoreWindow(l.Windows[1])
+	if x := cw.Insns[cw.Center]; !x.IsHelperCall() || x.Imm != 1 || x.Off != 0 || !l.T[l.Windows[1].Center].IsKfuncCall() || cw.Bind != nil {
+		t.Errorf("centre %v, T %v, binds %v", x, l.T[l.Windows[1].Center], cw.Bind)
+	}
+}
+
+// Planted faults at kfunc centres. A kfunc whose BTF id is 12, the helper
+// id of bpf_tail_call, stays a site: as site-P4 its r0 would be free and
+// the missing reload would be accepted.
+func TestCallSequencesPlanted(t *testing.T) {
+	noR0 := callB(kfunc(1, 1))
+	noR0.t = slices.Clone(noR0.t)
+	noR0.t[15] = movi(0, 0)
+	clobbered := callB(kfunc(1, 1))
+	clobbered.t = slices.Clone(clobbered.t)
+	clobbered.t[7] = addi(2, 8) // the argument register changed before the call
+	tail := callA(kfunc(12, 0))
+	tail.t = slices.Clone(tail.t)
+	tail.t[8] = mov(0, 0) // no r0 reload: r0 is what the hook returned
+	for _, c := range []struct {
+		name, rule string
+		p          pair
+	}{{"no R0 restore", "R0", noR0}, {"argument register clobbered", "R15", clobbered}, {"kfunc centre with immediate 12", "site", tail}} {
+		r := runFile(t, c.p.capture(t))
+		if got := rejectedBy(r); r.Validated || !slices.Equal(got, []string{c.rule}) {
+			t.Errorf("%s: rejected by %v, want [%s]: %+v", c.name, got, c.rule, r.Windows)
+		}
+	}
+}
+
+// Window cutting next to a kfunc call: a kfunc centres a site only when
+// neither original neighbour is a call; otherwise each run keeps the cut it
+// had before kfunc centres.
+func TestKfuncCutting(t *testing.T) {
+	post := []a{stx(-16, 0), ldx(1, -8), movw(2, 1), mov(3, 0), call("hook"), ldx(0, -16)}
+	hook := []a{movi(0, 0).begins("hook"), exit()}
+	for _, c := range []struct {
+		name string
+		p    pair
+		want []win
+		kind string // CoreKind of the window that is not a prologue or hook
+	}{
+		{"helper-run-kfunc", pair{
+			o:     []a{mov(6, 1).begins("main"), helper(5), kfunc(60001, 0), exit()},
+			t:     slices.Concat([]a{stx(-8, 1).begins("main"), mov(6, 1), helper(5)}, post, []a{kfunc(60001, 0), exit()}, hook),
+			kappa: []int{1, 2, 9, 10}, floor: 0,
+		}, []win{{"prologue", 0, 1, -1}, {"site", 2, 9, 2}, {"hook", 11, 13, -1}}, core.KindSite},
+		{"kfunc-run-helper", pair{
+			o:     []a{mov(6, 1).begins("main"), kfunc(60001, 0), helper(5), exit()},
+			t:     slices.Concat([]a{stx(-8, 1).begins("main"), mov(6, 1), kfunc(60001, 0), stx(-24, 6), helper(5)}, post, []a{exit()}, hook),
+			kappa: []int{1, 2, 4, 11}, floor: 0,
+		}, []win{{"prologue", 0, 1, -1}, {"site", 3, 11, 4}, {"hook", 12, 14, -1}}, core.KindSite},
+		{"kfunc-run-pseudo-call", pair{
+			o: []a{mov(6, 1).begins("main"), kfunc(60001, 0), call("sub"), exit(), movi(0, 0).begins("sub"), exit()},
+			t: []a{stx(-24, 1).begins("main"), mov(6, 1), kfunc(60001, 0), ldx(5, -24), call("sub"), exit(),
+				stx(-24, 5).begins("sub"), movi(0, 0), exit()},
+			kappa: []int{1, 2, 4, 5, 7, 8}, floor: -16,
+		}, []win{{"prologue", 0, 1, -1}, {"gap", 3, 4, -1}, {"prologue", 6, 7, -1}}, core.KindPassLoad},
+		{"kfunc-run-other", callA(kfunc(60001, 0)), []win{{"prologue", 0, 1, -1}, {"site", 2, 9, 2}, {"hook", 10, 12, -1}}, core.KindSite},
+	} {
+		l, err := Analyze(c.p.capture(t))
+		if err != nil {
+			t.Fatalf("%s: %v", c.name, err)
+		}
+		if got := windows(l); !slices.Equal(got, c.want) {
+			t.Errorf("%s: windows %v, want %v", c.name, got, c.want)
+		}
+		if k := l.windowKind(l.Windows[1]); k != c.kind {
+			t.Errorf("%s: kind %s, want %s", c.name, k, c.kind)
+		}
+		if r := runFile(t, c.p.capture(t)); !r.Validated {
+			t.Errorf("%s: %+v", c.name, r)
+		}
+	}
+}
+
+// A function that receives the context from its caller and calls
+// bpf_get_prandom_u32 (helper 7, no arguments): r5 = r_G is not live at
+// its entry, so the pass load is validated (S10).
+func TestPassCalleeCallsHelper7(t *testing.T) {
+	p := pair{
+		o: []a{
+			mov(6, 1).begins("main"), jeq(6, "c"), movi(1, 7), call("sub").at("c"), exit(),
+			movi(0, 0).begins("sub"), helper(7), exit(),
+		},
+		t: []a{
+			stx(-24, 1).begins("main"), mov(6, 1), jeq(6, "pl"), movi(1, 7),
+			ldx(5, -24).at("pl"), call("sub"), exit(),
+			stx(-24, 5).begins("sub"), movi(0, 0), helper(7), exit(),
+		},
+		kappa: []int{1, 2, 3, 5, 6, 8, 9, 10}, floor: -16,
+	}
+	if r := runFile(t, p.capture(t)); !r.Validated || r.Counts.ByKind["gap"] != 1 {
+		t.Errorf("%+v", r)
+	}
+}

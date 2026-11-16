@@ -238,6 +238,16 @@ func (l *Layout) checkKappa() (map[int]int, error) {
 
 type span struct{ start, end int }
 
+// kfuncCentre reports whether O[j] is a kfunc call that centres a site like
+// a helper call: no neighbouring original instruction of G is a call of any
+// kind. Next to a call, the runs keep the cut they had before kfunc centres.
+func (l *Layout) kfuncCentre(G Func, j int) bool {
+	call := func(k int) bool {
+		return G.Start <= k && k < G.End && l.O[k].Class() == core.ClassJMP && l.O[k].Op&0xf0 == 0x80
+	}
+	return G.Start <= j && j < G.End && l.O[j].IsKfuncCall() && !call(j-1) && !call(j+1)
+}
+
 // extract partitions the inserted instructions into windows and
 // returns e(i), the T index a branch to original i must land on.
 func (l *Layout) extract(wrapped map[int]int) (map[int]int, error) {
@@ -272,6 +282,10 @@ func (l *Layout) extract(wrapped map[int]int) (map[int]int, error) {
 			case helperBefore:
 				post[i-1] = g
 			case l.O[i].IsHelperCall():
+				pre[i], entry[i] = g, g.start
+			case l.kfuncCentre(G, i-1):
+				post[i-1] = g
+			case l.kfuncCentre(G, i):
 				pre[i], entry[i] = g, g.start
 			default:
 				l.Windows = append(l.Windows, Window{Kind: "gap", Func: F.Name, Start: g.start, End: g.end, Center: -1, Orig: i, Callee: -1})
@@ -411,6 +425,10 @@ func (l *Layout) CoreWindow(w Window) core.Window {
 	if w.Center >= 0 {
 		cw.Center = w.Center - w.Start
 	}
+	if l.kfuncSite(w) { // both cores see the centre as a helper call (Src 0, Off 0)
+		cw.Insns = slices.Clone(cw.Insns)
+		cw.Insns[cw.Center].Src, cw.Insns[cw.Center].Off = 0, 0
+	}
 	if w.Callee >= 0 {
 		f := l.TFuncs[w.Callee]
 		cw.Callee, cw.CalleeHook = l.T[f.Start:f.End], l.hookCalls(f.Start, f.End)
@@ -420,7 +438,7 @@ func (l *Layout) CoreWindow(w Window) core.Window {
 		cw.HelperPC = slices.IndexFunc(cw.Callee, cw.Helper.Same)
 	}
 	cw.Floor, cw.HasFloor = l.Floors[w.Func]
-	if (cw.Kind == core.KindSite || cw.Kind == core.KindWrap) && isLookup(l.O[w.Orig].Imm) {
+	if (cw.Kind == core.KindSite || cw.Kind == core.KindWrap) && l.O[w.Orig].IsHelperCall() && isLookup(l.O[w.Orig].Imm) {
 		start, end := w.Start, w.End
 		if w.Callee >= 0 {
 			start, end = l.TFuncs[w.Callee].Start, l.TFuncs[w.Callee].End
@@ -446,6 +464,12 @@ func (l *Layout) CoreWindow(w Window) core.Window {
 // helper call O[i] (nil otherwise).
 func (l *Layout) WindowBytes(w Window) (insns, body, helper []byte) {
 	insns = l.tBytes(w.Start, w.End)
+	if l.kfuncSite(w) { // as in CoreWindow: the centre as a helper call
+		insns = slices.Clone(insns)
+		o := 8 * (l.T[w.Center].Raw - l.T[w.Start].Raw)
+		insns[o+1] &= 0x0f
+		insns[o+2], insns[o+3] = 0, 0
+	}
 	if w.Callee >= 0 {
 		f := l.TFuncs[w.Callee]
 		body = l.tBytes(f.Start, f.End)
@@ -456,6 +480,13 @@ func (l *Layout) WindowBytes(w Window) (insns, body, helper []byte) {
 		}
 	}
 	return insns, body, helper
+}
+
+// kfuncSite reports a site window centred on a kfunc call. CoreWindow and
+// WindowBytes present that centre, and only it, to both cores as a helper
+// call with the same imm; S1 has compared it with O[i] in every field.
+func (l *Layout) kfuncSite(w Window) bool {
+	return w.Kind == "site" && w.Callee < 0 && w.Center >= 0 && l.T[w.Center].IsKfuncCall()
 }
 
 // tBytes is the wire bytes of T[start:end].
@@ -597,7 +628,7 @@ func (l *Layout) windowKind(w Window) string {
 			return core.KindWrap
 		case w.Callee >= 0:
 			return "site-wrapped-tail-call"
-		case l.O[w.Orig].Imm == 12: // rule:kind-select
+		case l.O[w.Orig].IsHelperCall() && l.O[w.Orig].Imm == 12: // rule:kind-select
 			return core.KindTail
 		}
 		return core.KindSite

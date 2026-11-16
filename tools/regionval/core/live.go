@@ -28,8 +28,11 @@ var helperArgs = map[int32]int{
 	2:   4, // map_update_elem(map, key, value, flags)
 	3:   2, // map_delete_elem(map, key)
 	5:   0, // ktime_get_ns()
+	7:   0, // get_prandom_u32()
 	8:   0, // get_smp_processor_id()
 	44:  2, // xdp_adjust_head(xdp_md, delta)
+	69:  4, // fib_lookup(ctx, params, plen, flags)
+	118: 0, // jiffies64()
 	164: 4, // for_each_map_elem(map, callback_fn, callback_ctx, flags)
 	181: 4, // loop(nr_loops, callback_fn, callback_ctx, flags)
 }
