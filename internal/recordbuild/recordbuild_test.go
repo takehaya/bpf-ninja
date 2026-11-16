@@ -153,7 +153,7 @@ func TestEntryUntrustedArgSizeTag(t *testing.T) {
 
 	tagged := callHook(t, []string{hookabi.SizeTag("arg", 8)}, btf.FuncParam{Name: "arg", Type: void()}, btf.FuncParam{Name: "ret", Type: u64})
 	if tagged[1].VoidSize == 0 {
-		t.Skip("hookabi.SizeTags does not read the arg size tag yet")
+		t.Fatal("hookabi.SizeTags does not read the arg size tag")
 	}
 	if got := entry(t, tagged, 256); got.Key.Len != 8 {
 		t.Fatalf("tagged arg %+v", got.Key)
@@ -161,11 +161,11 @@ func TestEntryUntrustedArgSizeTag(t *testing.T) {
 }
 
 // TestEntryKernelStructArg: a typed arg whose struct is a bpf_* name shows
-// its fields once hookabi.Opaque exempts bpf_fib_lookup (package P1).
+// its fields, because hookabi.Opaque exempts bpf_fib_lookup.
 func TestEntryKernelStructArg(t *testing.T) {
 	params := callHook(t, nil, btf.FuncParam{Name: "arg", Type: fib("bpf_fib_lookup")}, btf.FuncParam{Name: "ret", Type: u64})
 	if hookabi.Opaque(&btf.Struct{Name: "bpf_fib_lookup"}) {
-		t.Skip("hookabi.Opaque still hides bpf_fib_lookup")
+		t.Fatal("hookabi.Opaque hides bpf_fib_lookup")
 	}
 	if got, want := comment(t, entry(t, params, 256)), "site=3 ret=-22 arg->family=2 arg->ifindex=7"; got != want {
 		t.Fatalf("comment %q, want %q", got, want)

@@ -2285,13 +2285,13 @@ module SimWrap {
     assert j < |P| && P[j].Hcall? && !P[j].kf && IsLookup(P[j].id);
     var id := P[j].id;
     assert StepP(P, xP, c) == HelperStep(xP, c, j, false, id, false);
-    nA, args, beta, v, wr := HelperGo(xP, c, j, id, c1);
+    nA, args, beta, v, wr := HelperGo(xP, c, j, false, id, c1);
     var addrs := env.foot(false, id, args);
     var fn := Top(c).fn;
     FlTop(P, ell, c);
     assert FloorsOk(P, ell);
     FlFrame(P, ell, c, |c.fr| - 1);
-    HelperFloor(P, xP, c, ell, j, id, nA, args, beta, v, wr);
+    HelperFloor(P, xP, c, ell, j, false, id, nA, args, beta, v, wr);
     assert LiveOk(P, live, tbl);
     assert ReadsL(P[j], live, tbl) <= live(j);
     forall i | 0 <= i < |Upto(1, nA)| ensures Rel(Reg(Top(c), Upto(1, nA)[i]), Reg(Top(c'), Upto(1, nA)[i])) {

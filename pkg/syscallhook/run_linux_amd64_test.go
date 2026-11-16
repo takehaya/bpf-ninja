@@ -72,7 +72,8 @@ func TestHookSummary(t *testing.T) {
 }
 
 // Kernel BTF is loaded only for a rule with calls; a failed load is logged
-// and leaves it nil, so helper call sites are still hooked.
+// and leaves it nil: a program without kernel-function calls keeps its
+// helper call hooks, and one with such a call gets no call hooks.
 func TestLoadKernel(t *testing.T) {
 	spec := &btf.Spec{}
 	noCalls := []Rule{{Program: "p", Auto: true, Hook: "h"}}

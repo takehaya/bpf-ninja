@@ -156,9 +156,9 @@ module SimStep1 {
     InvIs(P, c);
     assert StepP(P, xP, c) == OStep(xP, P[j], j, c);
     assert PiecesOk(P, D);
-    assert P[j].Hcall? && !P[j].kf;
-    assert OStep(xP, P[j], j, c) == HelperStep(xP, c, j, false, P[j].id, false);
-    SimClasses.HelperNotDone(xP, c, j, false, P[j].id);
+    assert P[j].Hcall?;
+    assert OStep(xP, P[j], j, c) == HelperStep(xP, c, j, P[j].kf, P[j].id, false);
+    SimClasses.HelperNotDone(xP, c, j, P[j].kf, P[j].id);
     match StepP(P, xP, c)
     case Go(c1) =>
       SiteStep(P, D, Pp, ell, live, tbl, env, sem, obsv, om, hv, c, c', er, c1);

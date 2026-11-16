@@ -193,19 +193,19 @@ module SimSites {
     ensures LowRel(P, D, ell, c, c')
   { reveal LowRel(); }
 
-  lemma HelperGo(x: Ctx, c: Cfg, idx: nat, id: bv32, c1: Cfg)
+  lemma HelperGo(x: Ctx, c: Cfg, idx: nat, kf: bool, id: bv32, c1: Cfg)
     returns (n: nat, args: seq<bv64>, beta: seq<bv8>, v: Val, wr: map<int, bv8>)
-    requires HelperStep(x, c, idx, false, id, false) == Go(c1)
-    ensures n == x.env.arity(false, id) && n <= 5 && Rds(Top(c), Upto(1, n)) == Some(args)
-    ensures FootBytes(c, x.env.foot(false, id, args)) == FOk(beta)
-    ensures x.om(c.h, ECall(idx, false, id, args, beta), Wh(c)) == RRet(v, wr)
-    ensures Finish(x, c.(h := c.h + [ECall(idx, false, id, args, beta)]), v, wr) == Go(c1)
+    requires HelperStep(x, c, idx, kf, id, false) == Go(c1)
+    ensures n == x.env.arity(kf, id) && n <= 5 && Rds(Top(c), Upto(1, n)) == Some(args)
+    ensures FootBytes(c, x.env.foot(kf, id, args)) == FOk(beta)
+    ensures x.om(c.h, ECall(idx, kf, id, args, beta), Wh(c)) == RRet(v, wr)
+    ensures Finish(x, c.(h := c.h + [ECall(idx, kf, id, args, beta)]), v, wr) == Go(c1)
   {
     reveal HelperStep();
-    n := x.env.arity(false, id);
+    n := x.env.arity(kf, id);
     args := Rds(Top(c), Upto(1, n)).value;
-    beta := FootBytes(c, x.env.foot(false, id, args)).bs;
-    var r := x.om(c.h, ECall(idx, false, id, args, beta), Wh(c));
+    beta := FootBytes(c, x.env.foot(kf, id, args)).bs;
+    var r := x.om(c.h, ECall(idx, kf, id, args, beta), Wh(c));
     v := r.v;
     wr := r.wr;
   }
@@ -230,29 +230,29 @@ module SimSites {
     if i > 0 { FootAccHas(c, addrs[1..], i - 1); assert addrs[1..][i - 1] == addrs[i]; }
   }
 
-  lemma HelperAccIs(x: Ctx, c: Cfg, idx: nat, id: bv32, n: nat, args: seq<bv64>, beta: seq<bv8>, v: Val, wr: map<int, bv8>)
-    requires n == x.env.arity(false, id) && Rds(Top(c), Upto(1, n)) == Some(args)
-    requires FootBytes(c, x.env.foot(false, id, args)) == FOk(beta)
-    requires x.om(c.h, ECall(idx, false, id, args, beta), Wh(c)) == RRet(v, wr)
-    ensures HelperAcc(x, c, idx, false, id) == FootAcc(c, x.env.foot(false, id, args)) + WrAcc(c, wr)
+  lemma HelperAccIs(x: Ctx, c: Cfg, idx: nat, kf: bool, id: bv32, n: nat, args: seq<bv64>, beta: seq<bv8>, v: Val, wr: map<int, bv8>)
+    requires n == x.env.arity(kf, id) && Rds(Top(c), Upto(1, n)) == Some(args)
+    requires FootBytes(c, x.env.foot(kf, id, args)) == FOk(beta)
+    requires x.om(c.h, ECall(idx, kf, id, args, beta), Wh(c)) == RRet(v, wr)
+    ensures HelperAcc(x, c, idx, kf, id) == FootAcc(c, x.env.foot(kf, id, args)) + WrAcc(c, wr)
   {}
 
   // What A1a says about the helper step of P at c.
-  lemma {:isolate_assertions} HelperFloor(P: seq<OInstr>, x: Ctx, c: Cfg, ell: nat -> int, idx: nat, id: bv32,
+  lemma {:isolate_assertions} HelperFloor(P: seq<OInstr>, x: Ctx, c: Cfg, ell: nat -> int, idx: nat, kf: bool, id: bv32,
                                           n: nat, args: seq<bv64>, beta: seq<bv8>, v: Val, wr: map<int, bv8>)
-    requires 0 < |c.fr| <= MAXF && 0 <= Top(c).pc < |P| && P[Top(c).pc] == Hcall(false, id) && idx == Top(c).pc
+    requires 0 < |c.fr| <= MAXF && 0 <= Top(c).pc < |P| && P[Top(c).pc] == Hcall(kf, id) && idx == Top(c).pc
     requires Top(c) == c.fr[|c.fr| - 1]
     requires forall a | a in Acc(P, x, c) :: a.0 < |c.fr| && a.1 as int - STK as int >= ell(c.fr[a.0].fn)
-    requires n == x.env.arity(false, id) && Rds(Top(c), Upto(1, n)) == Some(args)
-    requires FootBytes(c, x.env.foot(false, id, args)) == FOk(beta)
-    requires x.om(c.h, ECall(idx, false, id, args, beta), Wh(c)) == RRet(v, wr)
-    ensures forall i | 0 <= i < |x.env.foot(false, id, args)| :: FootInF(ell, c, x.env.foot(false, id, args)[i])
+    requires n == x.env.arity(kf, id) && Rds(Top(c), Upto(1, n)) == Some(args)
+    requires FootBytes(c, x.env.foot(kf, id, args)) == FOk(beta)
+    requires x.om(c.h, ECall(idx, kf, id, args, beta), Wh(c)) == RRet(v, wr)
+    ensures forall i | 0 <= i < |x.env.foot(kf, id, args)| :: FootInF(ell, c, x.env.foot(kf, id, args)[i])
     ensures forall o: nat {:nowarn} | o < STK && o as int - STK as int < ell(Top(c).fn) :: SAddr(|c.fr| - 1, o) as int !in wr
   {
-    var addrs := x.env.foot(false, id, args);
+    var addrs := x.env.foot(kf, id, args);
     var d := |c.fr| - 1;
-    assert Acc(P, x, c) == HelperAcc(x, c, idx, false, id);
-    HelperAccIs(x, c, idx, id, n, args, beta, v, wr);
+    assert Acc(P, x, c) == HelperAcc(x, c, idx, kf, id);
+    HelperAccIs(x, c, idx, kf, id, n, args, beta, v, wr);
     assert FootAcc(c, addrs) <= Acc(P, x, c);
     assert WrAcc(c, wr) <= Acc(P, x, c);
     forall i | 0 <= i < |addrs| ensures FootInF(ell, c, addrs[i]) {
@@ -286,7 +286,7 @@ module SimSites {
   lemma {:isolate_assertions} SiteWinAt(P: seq<OInstr>, D: Decomp, ell: nat -> int, live: nat -> set<nat>,
                                         tbl: bv32 -> set<nat>, w: Win, j: nat)
     requires Structure(P, D, w.Pp, ell, live, tbl)
-    requires j in D.site && j < |P| && ((P[j].Hcall? && !P[j].kf) || P[j].Tail?)
+    requires j in D.site && j < |P| && (P[j].Hcall? || P[j].Tail?)
     requires w.raw == D.site[j].pre + Enc(P[j]) + D.site[j].post && w.base == E(D, j) && w.hp == NI(D.site[j].pre)
     requires w.hins == P[j] && w.hidx == j
     ensures WinAt(w) && HasHelper(w)
@@ -317,7 +317,7 @@ module SimSites {
   // One slot of a site window other than its centre.
   lemma {:isolate_assertions} SiteSlot(P: seq<OInstr>, D: Decomp, w: Win, j: nat, r: nat)
     requires PiecesOk(P, D) && CallsOk(D, w.Pp) && w.Pp == Layout(P, D) && AllFnsWF(P, D)
-    requires j in D.site && j < |P| && j !in D.pl && ((P[j].Hcall? && !P[j].kf) || P[j].Tail?)
+    requires j in D.site && j < |P| && j !in D.pl && (P[j].Hcall? || P[j].Tail?)
     requires w.raw == D.site[j].pre + Enc(P[j]) + D.site[j].post && w.base == E(D, j) && w.hp == NI(D.site[j].pre)
     requires |Enc(P[j])| == 8 && Bytes8(D.site[j].pre) && Bytes8(D.site[j].post)
     requires NoHelperIn(D.site[j].pre) && NoHelperIn(D.site[j].post)
@@ -351,12 +351,12 @@ module SimSites {
                                            n: nat, args: seq<bv64>, beta: seq<bv8>, v: Val, wr: map<int, bv8>)
     requires 0 < |c.fr| <= MAXF && Top(c) == c.fr[|c.fr| - 1]
     requires |w.c0.fr| == |c.fr| && w.c0.L == c.L && w.c0.h == c.h && Top(w.c0).kind == Top(c).kind
-    requires w.hins.Hcall? && !w.hins.kf && w.x.env == xP.env && w.x.om == xP.om
-    requires n == xP.env.arity(false, w.hins.id) && n <= 5
+    requires w.hins.Hcall? && w.x.env == xP.env && w.x.om == xP.om
+    requires n == xP.env.arity(w.hins.kf, w.hins.id) && n <= 5
     requires SimFacts.Words(Top(w.c0), Upto(1, n)) == args
-    requires FootBytes(w.c0, xP.env.foot(false, w.hins.id, args)) == FOk(beta)
-    requires xP.om(c.h, ECall(w.hidx, false, w.hins.id, args, beta), Wh(c)) == RRet(v, wr)
-    requires w.hc == HCtx(n, xP.env.foot(false, w.hins.id, args), ECall(w.hidx, false, w.hins.id, args, beta), v, wr)
+    requires FootBytes(w.c0, xP.env.foot(w.hins.kf, w.hins.id, args)) == FOk(beta)
+    requires xP.om(c.h, ECall(w.hidx, w.hins.kf, w.hins.id, args, beta), Wh(c)) == RRet(v, wr)
+    requires w.hc == HCtx(n, xP.env.foot(w.hins.kf, w.hins.id, args), ECall(w.hidx, w.hins.kf, w.hins.id, args, beta), v, wr)
     requires forall i | 0 <= i < |w.hc.addrs| :: FootInF(ell, c, w.hc.addrs[i])
     requires forall o: nat {:nowarn} | o < STK && o as int - STK as int < ell(Top(c).fn) :: SAddr(|c.fr| - 1, o) as int !in wr
     requires w.sp.floor <= ell(Top(c).fn)
@@ -517,26 +517,26 @@ module SimSites {
     InvIs(P, c);
     LowRelLen(P, D, ell, c, c');
     assert PiecesOk(P, D);
-    assert j < |P| && P[j].Hcall? && !P[j].kf;
-    var id := P[j].id;
-    assert StepP(P, xP, c) == HelperStep(xP, c, j, false, id, false);
-    var nA, args, beta, v, wr := HelperGo(xP, c, j, id, c1);
-    var addrs := env.foot(false, id, args);
-    var e := ECall(j, false, id, args, beta);
+    assert j < |P| && P[j].Hcall?;
+    var kf, id := P[j].kf, P[j].id;
+    assert StepP(P, xP, c) == HelperStep(xP, c, j, kf, id, false);
+    var nA, args, beta, v, wr := HelperGo(xP, c, j, kf, id, c1);
+    var addrs := env.foot(kf, id, args);
+    var e := ECall(j, kf, id, args, beta);
     var fn := Top(c).fn;
     FlTop(P, ell, c);
     var fl := Fl(P, ell, j);
     assert FloorsOk(P, ell);
     FlFrame(P, ell, c, |c.fr| - 1);
     assert fl == Fl(P, ell, fn) <= ell(fn);
-    HelperFloor(P, xP, c, ell, j, id, nA, args, beta, v, wr);
+    HelperFloor(P, xP, c, ell, j, kf, id, nA, args, beta, v, wr);
     // P' reads the same arguments and the same footprint
     assert LiveOk(P, live, tbl);
     assert ReadsL(P[j], live, tbl) <= live(j);
     forall i | 0 <= i < |Upto(1, nA)| ensures Rel(Reg(Top(c), Upto(1, nA)[i]), Reg(Top(c'), Upto(1, nA)[i])) {
       UptoAt(1, nA, i);
       var r := 1 + i;
-      assert r in tbl(id);
+      if kf { assert r in {1, 2, 3, 4, 5}; } else { assert r in tbl(id); }
       assert r in live(j);
     }
     RdsRel(Top(c), Top(c'), Upto(1, nA));
