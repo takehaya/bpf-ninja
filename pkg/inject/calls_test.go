@@ -1,6 +1,7 @@
 package inject
 
 import (
+	"fmt"
 	"slices"
 	"strings"
 	"testing"
@@ -406,5 +407,63 @@ func TestCallCheckerAccepts(t *testing.T) {
 				t.Fatalf("counts %+v sites %d err %v", counts, len(plan.sites), err)
 			}
 		})
+	}
+}
+
+// Two sizes for one callee skip all its sites.
+func TestCallTwoSizes(t *testing.T) {
+	second := fibCall(ebpf.XDP)
+	i := slices.IndexFunc(second, func(ins asm.Instruction) bool { return ins.Dst == asm.R3 && ins.Constant == 64 })
+	second[i] = asm.Mov.Imm(asm.R3, 48)
+	insns := append(asm.Instructions{asm.Mov.Reg(asm.R6, asm.R1)}, fibCall(ebpf.XDP)...)
+	insns = append(append(insns, second...), fibVerdict(ebpf.XDP)...)
+	plan, err := transformLookup(callFixtureSpec(ebpf.XDP, insns), fibReq(t))
+	if err == nil || len(plan.skipped) != 2 {
+		t.Fatalf("err %v skipped %+v", err, plan.skipped)
+	}
+	for _, s := range plan.skipped {
+		if s.Reason != "call: bpf_fib_lookup is called with more than one argument size in this program (64 and 48)" {
+			t.Errorf("skipped %+v", s)
+		}
+	}
+}
+
+// A hook that would take the program past the kernel's 256 functions drops
+// every call site.
+func TestCallFunctionLimit(t *testing.T) {
+	insns := asm.Instructions{asm.Mov.Reg(asm.R6, asm.R1), asm.FnJiffies64.Call(), asm.Mov.Imm(asm.R0, 2)}
+	for i := range 255 {
+		insns = append(insns, asm.Call.Label(fmt.Sprintf("f%d", i)), asm.Mov.Imm(asm.R0, 2))
+	}
+	insns = append(insns, asm.Return())
+	for i := range 255 {
+		name := fmt.Sprintf("f%d", i)
+		insns = append(insns, btf.WithFuncMetadata(asm.Mov.Imm(asm.R0, 0).WithSymbol(name).WithSource(asm.Comment(name)), staticFunc(name)), asm.Return())
+	}
+	plan, err := transformLookup(callFixtureSpec(ebpf.XDP, insns), callReq("bpf_jiffies64"))
+	if err == nil || !strings.Contains(err.Error(), "no call site is instrumented (1 skipped)") ||
+		len(plan.skipped) != 1 || plan.skipped[0].Reason != "call: the program would have 257 functions, more than the kernel's 256" {
+		t.Fatalf("err %v skipped %+v", err, plan.skipped)
+	}
+}
+
+// spliceLookupCalls gives a call site with nothing to keep no prelude, also
+// at the start of a function: the function's symbol stays on the call.
+func TestCallEmptyPreludeAtFunctionStart(t *testing.T) {
+	spec := loopFixture()
+	insns := spec.Programs["p"].Instructions
+	cb := slices.IndexFunc(insns, func(ins asm.Instruction) bool { return ins.Symbol() == "cb" })
+	pc := uint32(0)
+	for i := range cb {
+		pc += uint32(insns[i].Size() / asm.InstructionSize)
+	}
+	out, err := spliceLookupCalls(insns, map[uint32]siteCall{pc: {hook: "h", op: HookCall, withSite: true, frameFloor: -64}},
+		StackAudit{LowestOffset: -64}, scalarHook("h", &btf.Int{Name: "u64", Size: 8}), entryCall{frameFloor: -64})
+	if err != nil {
+		t.Fatal(err)
+	}
+	at := slices.IndexFunc(out, func(ins asm.Instruction) bool { return ins.Symbol() == "cb" })
+	if at < 0 || !out[at].IsBuiltinCall() || btf.FuncMetadata(&out[at]) == nil {
+		t.Fatalf("cb starts with %v", out[at])
 	}
 }
