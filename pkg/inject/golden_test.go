@@ -253,6 +253,7 @@ func goldenCases() []goldenCase {
 	// Shared code the call-site hooks also use.
 	add("stack/fib-lookup-buffer", fibStackFixture, autoReq(), frames(16, map[string]int16{"p": -8, "sub": -168, "fib": -400}))
 	add("elf/kfunc-call", kfuncLookupFixture, lookupReq())
+	add("auto/read-only-fib-key", fibKeyFixture, autoReq(), lookups(LookupAny))
 	return cases
 }
 
@@ -288,6 +289,16 @@ func kfuncLookupFixture() *ebpf.CollectionSpec {
 	}
 	insns[0] = asm.LoadMem(asm.R2, asm.R1, 0, asm.Word)
 	spec.Programs["p"].Instructions = append(head, insns...)
+	return spec
+}
+
+// fibKeyFixture is the read-only flows map of multiMapFixtureFlags keyed by
+// a struct bpf_fib_lookup.
+func fibKeyFixture() *ebpf.CollectionSpec {
+	spec := multiMapFixtureFlags(bpfFRdonlyProg)
+	spec.Maps["flows"].Key = &btf.Struct{Name: "bpf_fib_lookup", Size: 4, Members: []btf.Member{
+		{Name: "ifindex", Type: &btf.Int{Name: "u32", Size: 4}},
+	}}
 	return spec
 }
 
