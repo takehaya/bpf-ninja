@@ -252,6 +252,7 @@ func goldenCases() []goldenCase {
 
 	// Shared code the call-site hooks also use.
 	add("stack/fib-lookup-buffer", fibStackFixture, autoReq(), frames(16, map[string]int16{"p": -8, "sub": -168, "fib": -400}))
+	add("elf/kfunc-call", kfuncLookupFixture, lookupReq())
 	return cases
 }
 
@@ -271,6 +272,22 @@ func fibStackFixture() *ebpf.CollectionSpec {
 		asm.FnFibLookup.Call(), asm.Mov.Imm(asm.R0, 0), asm.Return(),
 	}
 	spec.Programs["p"].Instructions = append(insns, fib...)
+	return spec
+}
+
+// kfuncLookupFixture is lookupFixture that first calls the kfunc
+// bpf_rcu_read_lock as an ELF names it: a kfunc call with a reference and
+// no BTF id.
+func kfuncLookupFixture() *ebpf.CollectionSpec {
+	spec := lookupFixture()
+	insns := spec.Programs["p"].Instructions
+	kfunc := asm.Instruction{OpCode: asm.OpCode(asm.JumpClass).SetJumpOp(asm.Call), Src: asm.PseudoKfuncCall, Constant: -1}
+	head := asm.Instructions{
+		btf.WithFuncMetadata(asm.Mov.Reg(asm.R6, asm.R1).WithSymbol("p").WithSource(insns[0].Source()), btf.FuncMetadata(&insns[0])),
+		kfunc.WithReference("bpf_rcu_read_lock"), asm.Mov.Reg(asm.R1, asm.R6),
+	}
+	insns[0] = asm.LoadMem(asm.R2, asm.R1, 0, asm.Word)
+	spec.Programs["p"].Instructions = append(head, insns...)
 	return spec
 }
 
