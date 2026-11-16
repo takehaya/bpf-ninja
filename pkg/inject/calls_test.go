@@ -370,3 +370,41 @@ func TestCallSitesNotListedWithoutCalls(t *testing.T) {
 		t.Fatalf("sites %+v err %v", sites, err)
 	}
 }
+
+// The load-time checker accepts the emitted sequences A and B at a helper
+// and at a kfunc call.
+func TestCallCheckerAccepts(t *testing.T) {
+	kernel := testKernelSpec(t)
+	ct := func() *ebpf.CollectionSpec {
+		return ctFixture(ebpf.XDP, func(name string) asm.Instruction { return testKfunc(t, kernel, name) }, 0, 8101, false)
+	}
+	for _, tc := range []struct {
+		name  string
+		spec  func() *ebpf.CollectionSpec
+		calls []string
+	}{
+		{"scalar", scalarFixture, []string{"bpf_get_prandom_u32", "bpf_jiffies64"}},
+		{"fib", func() *ebpf.CollectionSpec { return fibFixture(ebpf.XDP) }, []string{"bpf_fib_lookup"}},
+		{"fib untyped", fibUntypedFixture, []string{"bpf_fib_lookup"}},
+		{"fib subprogram", func() *ebpf.CollectionSpec { return fibSubprogFixture(ebpf.SchedCLS) }, []string{"bpf_fib_lookup"}},
+		{"ct", ct, []string{"bpf_xdp_ct_lookup"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			work := tc.spec()
+			in := append(asm.Instructions(nil), work.Programs["p"].Instructions...)
+			injectcheck.Label(work.Programs["p"].Instructions)
+			req := callReq(tc.calls...)
+			req.Kernel = kernel
+			plan, err := transformLookup(work, req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			out := work.Programs["p"].Instructions
+			cert, premises := validationCertificate(t, in, out, plan.hooks, -64)
+			counts, err := injectcheck.Check(in, out, cert, premises)
+			if err != nil || counts.Sites != len(plan.sites) {
+				t.Fatalf("counts %+v sites %d err %v", counts, len(plan.sites), err)
+			}
+		})
+	}
+}
