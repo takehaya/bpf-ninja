@@ -1,9 +1,11 @@
 package inject
 
 import (
+	"slices"
 	"testing"
 
 	"github.com/cilium/ebpf"
+	"github.com/cilium/ebpf/asm"
 	"github.com/takehaya/bpf-ninja/internal/testutil"
 )
 
@@ -79,5 +81,41 @@ func TestBpfCallHookRowSmpProcessorID(t *testing.T) {
 		if got[0] != uint64(plan.hooks[0].Sites[0].SitePC) || got[1] != out[0] {
 			t.Fatalf("run %d: hook site %d ret %d, want %d and %d", run, got[0], got[1], plan.hooks[0].Sites[0].SitePC, out[0])
 		}
+	}
+}
+
+// testCallHookRowScalars hooks each of names in ctxScalarFixture(typ, fns...)
+// and checks over three runs that each hook sees, at its site, the result
+// the program stores, and that the action is unchanged.
+func testCallHookRowScalars(t *testing.T, typ ebpf.ProgramType, names []string, fns ...asm.BuiltinFunc) [4]uint64 {
+	testutil.SkipIfNotRoot(t)
+	_, pass, _ := callVerdicts(typ)
+	coll, plan, obs := callHooked(t, ctxScalarFixture(typ, fns...), callReq(names...))
+	var out [4]uint64
+	for run := 1; run <= 3; run++ {
+		var ret uint32
+		ret, out = runCallFixture(t, coll, make([]byte, 64), nil)
+		if int32(ret) != pass {
+			t.Fatalf("run %d: action %d, want %d", run, ret, pass)
+		}
+		for _, h := range plan.hooks {
+			slot := slices.Index(names, h.Call)
+			got := lastCall(t, obs[h.Call], run)
+			if got[0] != uint64(h.Sites[0].SitePC) || got[1] != out[slot] {
+				t.Fatalf("run %d %s: site %d ret %#x, want %d and %#x", run, h.Call, got[0], got[1], h.Sites[0].SitePC, out[slot])
+			}
+		}
+	}
+	return out
+}
+
+func TestBpfCallHookRowHashCookieTC(t *testing.T) {
+	out := testCallHookRowScalars(t, ebpf.SchedCLS, []string{"bpf_get_hash_recalc", "bpf_get_socket_cookie"}, asm.FnGetHashRecalc, asm.FnGetSocketCookie)
+	t.Logf("hash %#x cookie %#x", out[0], out[1])
+}
+
+func TestBpfCallHookRowXdpBuffLen(t *testing.T) {
+	if out := testCallHookRowScalars(t, ebpf.XDP, []string{"bpf_xdp_get_buff_len"}, asm.FnXdpGetBuffLen); out[0] != 64 {
+		t.Fatalf("bpf_xdp_get_buff_len %d, want 64", out[0])
 	}
 }

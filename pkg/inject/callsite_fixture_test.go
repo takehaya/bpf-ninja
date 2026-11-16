@@ -665,3 +665,14 @@ func fastcallFixture() *ebpf.CollectionSpec {
 	insns = append(append(insns, outStore(0, asm.R0)...), outStore(1, asm.R6)...)
 	return callFixtureSpec(ebpf.XDP, append(insns, asm.Mov.Imm(asm.R0, 2), asm.Return()))
 }
+
+// ctxScalarFixture keeps ctx in R6, calls each of fns with ctx in R1, stores
+// the results in out slots 0 on and returns pass.
+func ctxScalarFixture(typ ebpf.ProgramType, fns ...asm.BuiltinFunc) *ebpf.CollectionSpec {
+	insns := asm.Instructions{asm.Mov.Reg(asm.R6, asm.R1)}
+	for i, fn := range fns {
+		insns = append(append(insns, asm.Mov.Reg(asm.R1, asm.R6), fn.Call()), outStore(int16(i), asm.R0)...)
+	}
+	_, pass, _ := callVerdicts(typ)
+	return callFixtureSpec(typ, append(insns, asm.Mov.Imm(asm.R0, pass), asm.Return()))
+}

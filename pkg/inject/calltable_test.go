@@ -70,11 +70,11 @@ func callRow(t testing.TB, name string) *CallRow {
 }
 
 func TestCallTable(t *testing.T) {
-	want := []string{"bpf_ktime_get_ns", "bpf_jiffies64", "bpf_get_prandom_u32", "bpf_get_smp_processor_id", "bpf_fib_lookup", "bpf_xdp_ct_lookup", "bpf_skb_ct_lookup"}
+	want := []string{"bpf_ktime_get_ns", "bpf_jiffies64", "bpf_get_prandom_u32", "bpf_get_smp_processor_id", "bpf_get_hash_recalc", "bpf_get_socket_cookie", "bpf_xdp_get_buff_len", "bpf_fib_lookup", "bpf_xdp_ct_lookup", "bpf_skb_ct_lookup"}
 	if got := SupportedCalls(); !slices.Equal(got, want) {
 		t.Fatalf("SupportedCalls() = %v, want %v", got, want)
 	}
-	for name, id := range map[string]asm.BuiltinFunc{"bpf_ktime_get_ns": 5, "bpf_jiffies64": 118, "bpf_get_prandom_u32": 7, "bpf_get_smp_processor_id": 8, "bpf_fib_lookup": 69} {
+	for name, id := range map[string]asm.BuiltinFunc{"bpf_ktime_get_ns": 5, "bpf_jiffies64": 118, "bpf_get_prandom_u32": 7, "bpf_get_smp_processor_id": 8, "bpf_get_hash_recalc": 34, "bpf_get_socket_cookie": 46, "bpf_xdp_get_buff_len": 188, "bpf_fib_lookup": 69} {
 		if got := callRow(t, name).Helper; got != id {
 			t.Errorf("%s helper %d, want %d", name, got, id)
 		}
