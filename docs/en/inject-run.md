@@ -131,12 +131,12 @@ The hook receives the call's result as `ret` and, for a callee with a memory arg
 - A name the program never calls adds no hook.
 - `calls` works on its own and with `map`, `auto`, `entry` and `tail_calls`, but not with `dispatch`.
 - `ops`, `maps`, `func`, `line`, `all_matches`, `site_pcs` and `copy_read_only` select map calls and do not apply to `calls`.
-- A call site that cannot be hooked runs unchanged and is listed in `skipped` with a reason starting with `call:`: a call right before or after another call, a call that is the first instruction of its function, a function without a context or without stack room for the slots, an argument size that is not a constant, or a program that calls `bpf_spin_lock`, `bpf_preempt_disable` or `bpf_res_spin_lock*`.
+- A call site that cannot be hooked runs unchanged and is listed in `skipped` with a reason, which for the cases below starts with `call:`: a call right before or after another call, a call that is the first instruction of its function, a function without a context or without stack room for the slots, an argument size that is not a constant, or a program that calls `bpf_spin_lock`, `bpf_preempt_disable` or `bpf_res_spin_lock*`.
   If no call site and no other hook is left, the transformation fails with `no call site is instrumented (N skipped)`.
-- When `arg` cannot be typed, it is `const void *` with its size in the `bpf-ninja:arg_size=N` decl tag, as on other untrusted hooks. On kernels without `arg:untrusted`, or with `static_untrusted`, such a hook is static and keeps the typed prototype.
+- When `arg` cannot be typed, and on every hook whose `ret` is a pointer, `arg` is `const void *` with its size in the `bpf-ninja:arg_size=N` decl tag, as on other untrusted hooks. On kernels without `arg:untrusted`, or with `static_untrusted`, such a hook is static and keeps the typed prototype.
 - `inject-run` reads the running kernel's BTF once, when a rule has `calls`, to name kfunc calls and type their arguments.
   If it cannot, it logs `kernel BTF unavailable: kernel-function calls are not hooked` with the cause, and a program that calls a kfunc gets no call hooks.
-- Kernel functions in modules, such as conntrack on most distribution kernels, are not hooked.
+- A program that calls a kernel function from a module, such as conntrack on most distribution kernels, gets no call hooks, its helper call sites included.
 
 The word "calls" also appears elsewhere with another meaning: `calls` in the [lookups file](#lookups-file) lists map helper calls, and `calls` in [`--list-maps`](#map-listing-of-a-running-program) lists the BPF functions a function calls.
 
@@ -511,7 +511,7 @@ The longest suffix a rule appends limits the length of `hook`:
 | `push`, `peek`, `lookup:miss` or `lookup:any` with `auto` | `_0_push`, `_0_peek`, `_0_miss` | up to 120 |
 | `update` or `delete` | `_0_update`, `_0_delete` | up to 118 |
 | `tail_calls` | `_tail_call` | up to 117 |
-| `calls` | `_` and the longest name in `calls`, such as `_bpf_get_prandom_u32` | 126 minus that name's length, up to 107 |
+| `calls` | `_` and the longest name in `calls`, such as `_bpf_get_prandom_u32` | 126 minus that name's length (107 to 113) |
 
 [lookup-site-injection.md](lookup-site-injection.md#automatic-selection) describes the full hook ABI, including the `info` bits.
 
