@@ -149,7 +149,14 @@ func buildEntry(params []attach.FuncParamInfo, maxBytes int) (*record.Layout, er
 			if p.Kind == "" && p.Size == 8 {
 				l.Status = record.Scalar{Name: "status", ParamIndex: p.Index, Size: 8}
 			}
-		case "key":
+		case "ret":
+			// Only an integer result: a pointer result's address must not
+			// reach the capture file.
+			if p.Kind == "" && p.Size == 8 {
+				l.Status = record.Scalar{Name: "ret", ParamIndex: p.Index, Size: 8}
+			}
+		case "key", "arg":
+			// A call hook's arg takes the key's slot; it never has a key.
 			l.Key = entryBytes(p, maxBytes)
 		case "value":
 			l.Value = entryBytes(p, maxBytes)
@@ -161,7 +168,7 @@ func buildEntry(params []attach.FuncParamInfo, maxBytes int) (*record.Layout, er
 	return l, nil
 }
 
-// entryBytes sizes a key or value argument. A pointer's pointee size comes
+// entryBytes sizes a key, value or arg argument. A pointer's pointee size comes
 // from BTF; a const void pointer (an untrusted or generic hook) takes its
 // size from the hook's size decl tag (VoidSize, non-zero only on a generated
 // hook), recording the raw bytes when inject-run supplied it and nothing
