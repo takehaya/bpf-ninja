@@ -2,7 +2,10 @@ package inject
 
 import (
 	"encoding/binary"
+	"fmt"
+	"net"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/cilium/ebpf"
@@ -158,4 +161,117 @@ func TestBpfCallHookRowLoadBytesXDP(t *testing.T) {
 
 func TestBpfCallHookRowLoadBytesTC(t *testing.T) {
 	testCallHookRowLoadBytes(t, ebpf.SchedCLS, "bpf_skb_load_bytes", unix.EFAULT)
+}
+
+// skFixture is skLookupFixture(typ, dport) calling fn in place of
+// bpf_sk_lookup_tcp, and with release false the bpf_sk_release replaced by
+// r1 = 0.
+func skFixture(typ ebpf.ProgramType, fn asm.BuiltinFunc, dport uint16, release bool) *ebpf.CollectionSpec {
+	spec := skLookupFixture(typ, dport)
+	insns := spec.Programs["p"].Instructions
+	for i := range insns {
+		switch {
+		case insns[i].IsBuiltinCall() && insns[i].Constant == int64(asm.FnSkLookupTcp):
+			insns[i] = fn.Call()
+		case !release && insns[i].IsBuiltinCall() && insns[i].Constant == int64(asm.FnSkRelease):
+			insns[i] = asm.Mov.Imm(asm.R1, 0)
+		}
+	}
+	return spec
+}
+
+var skRows = []struct {
+	name    string
+	fn      asm.BuiltinFunc
+	network string
+}{
+	{"bpf_sk_lookup_tcp", asm.FnSkLookupTcp, "tcp4"},
+	{"bpf_sk_lookup_udp", asm.FnSkLookupUdp, "udp4"},
+	{"bpf_skc_lookup_tcp", asm.FnSkcLookupTcp, "tcp4"},
+}
+
+// testCallHookRowSk hooks each socket lookup on a socket bound to
+// 127.0.0.1: the hook sees the tuple's addresses through arg and a non-NULL
+// ret while the socket exists, NULL once it is closed, and the actions match
+// the plain program's.
+func testCallHookRowSk(t *testing.T, typ ebpf.ProgramType, static bool) {
+	testutil.SkipIfNotRoot(t)
+	_, pass, drop := callVerdicts(typ)
+	addrs := binary.LittleEndian.Uint64([]byte{127, 0, 0, 1, 127, 0, 0, 1})
+	for _, r := range skRows {
+		t.Run(r.name, func(t *testing.T) {
+			var port uint16
+			var closer interface{ Close() error }
+			if r.network == "udp4" {
+				c, err := net.ListenPacket(r.network, "127.0.0.1:0")
+				if err != nil {
+					t.Fatal(err)
+				}
+				closer, port = c, uint16(c.LocalAddr().(*net.UDPAddr).Port)
+			} else {
+				l, err := net.Listen(r.network, "127.0.0.1:0")
+				if err != nil {
+					t.Fatal(err)
+				}
+				closer, port = l, uint16(l.Addr().(*net.TCPAddr).Port)
+			}
+			defer func() { _ = closer.Close() }()
+			req := callReq(r.name)
+			req.StaticUntrusted = static
+			plain := loadCallFixture(t, skFixture(typ, r.fn, port, true))
+			coll, plan, obs := callHooked(t, skFixture(typ, r.fn, port, true), req)
+			h := plan.hooks[0]
+			if !h.RetPtr || h.ArgReg != 2 || h.ArgSize != 12 || h.Static != static || h.Untrusted == static {
+				t.Fatalf("hook %+v", h)
+			}
+			for run, action := range []int32{pass, drop} {
+				if run == 1 {
+					if err := closer.Close(); err != nil {
+						t.Fatal(err)
+					}
+				}
+				pret, _ := runCallFixture(t, plain, make([]byte, 64), nil)
+				ret, _ := runCallFixture(t, coll, make([]byte, 64), nil)
+				got := lastCall(t, obs[r.name], run+1)
+				if int32(ret) != action || pret != ret {
+					t.Fatalf("run %d: hooked %d, plain %d, want %d", run, ret, pret, action)
+				}
+				if got[0] != uint64(h.Sites[0].SitePC) || got[1] != addrs || (got[2] != 0) != (action == pass) {
+					t.Fatalf("run %d: hook site %d arg %#x ret %#x", run, got[0], got[1], got[2])
+				}
+			}
+		})
+	}
+}
+
+func TestBpfCallHookRowSkXDP(t *testing.T) { testCallHookRowSk(t, ebpf.XDP, true) }
+func TestBpfCallHookRowSkTC(t *testing.T)  { testCallHookRowSk(t, ebpf.SchedCLS, true) }
+
+// The global pointer-result hook takes arg:untrusted, which 6.15 and older lack.
+func TestBpfCallHookRowSkUntrusted(t *testing.T) { testCallHookRowSk(t, ebpf.XDP, false) }
+
+// Without the release each hooked socket lookup is rejected as the plain
+// program is: the hook does not hide the acquired reference.
+func TestBpfCallHookRowSkNoRelease(t *testing.T) {
+	testutil.SkipIfNotRoot(t)
+	for _, r := range skRows {
+		if coll, err := ebpf.NewCollection(skFixture(ebpf.XDP, r.fn, 1, false)); err == nil {
+			coll.Close()
+			t.Fatalf("%s: plain program without the release loaded", r.name)
+		}
+		req := callReq(r.name)
+		req.StaticUntrusted = true
+		work := skFixture(ebpf.XDP, r.fn, 1, false)
+		if _, err := transformLookup(work, req); err != nil {
+			t.Fatal(err)
+		}
+		coll, err := ebpf.NewCollection(work)
+		if err == nil {
+			coll.Close()
+			t.Fatalf("%s: hooked program without the release loaded", r.name)
+		}
+		if log := fmt.Sprintf("%+v", err); !strings.Contains(log, "Unreleased reference") && !strings.Contains(log, "reference leak") {
+			t.Fatalf("%s: hooked program rejected for another reason: %+v", r.name, err)
+		}
+	}
 }
