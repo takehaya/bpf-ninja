@@ -119,7 +119,7 @@ func BuildLookupTargets(out asm.Instructions, hooks []LookupHook) ([]injectcheck
 	for _, hook := range hooks {
 		when := injectcheck.TargetWhen(hook.When)
 		switch {
-		case hook.Kind == HookEntry || hook.Kind == HookTailCall:
+		case hook.Kind == HookEntry || hook.Kind == HookTailCall || hook.Kind == HookCall:
 			when = injectcheck.TargetAny
 		case hook.Kind == HookLookup && when == "":
 			when = injectcheck.TargetHit
@@ -140,6 +140,14 @@ func BuildLookupTargets(out asm.Instructions, hooks []LookupHook) ([]injectcheck
 				return nil, err
 			}
 			target := injectcheck.SiteTarget{Site: site.InstructionIndex, When: when, Hook: starts[hook.Name], Ctx: ctx, Args: args(hook, when)}
+			if hook.Kind == HookCall {
+				// The two call argument lists (injectcheck's callABIs).
+				target.Args = []injectcheck.ArgRole{injectcheck.ArgCtx, injectcheck.ArgSite, injectcheck.ArgRet}
+				if hook.ArgReg != 0 {
+					target.Args = []injectcheck.ArgRole{injectcheck.ArgCtx, injectcheck.ArgSite, injectcheck.ArgArg, injectcheck.ArgRet}
+				}
+				target.ArgReg = hook.ArgReg
+			}
 			if hook.SiteArg && target.Args != nil {
 				target.SitePC = int32(site.SitePC)
 			}

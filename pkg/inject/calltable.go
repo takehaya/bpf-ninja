@@ -45,7 +45,7 @@ func SupportedCalls() []string {
 // A helper is found by id. A kfunc is named by ins.Reference() when set (ELF path), else, when
 // ins.Offset == 0 and kernel != nil, by the FUNC whose BTF id is ins.Constant (raw path).
 // named is false only for a kfunc call that cannot be named.
-func callee(ins *asm.Instruction, kernel *btf.Spec) (row *CallRow, name string, named bool) { //nolint:unused // for the call-site rewriter, which is not merged yet
+func callee(ins *asm.Instruction, kernel *btf.Spec) (row *CallRow, name string, named bool) {
 	switch {
 	case ins.IsBuiltinCall():
 		for i := range callTable {
@@ -81,7 +81,7 @@ func callee(ins *asm.Instruction, kernel *btf.Spec) (row *CallRow, name string, 
 // and its name ("" for bytes): the program's struct named row.ArgType, or row.ArgType + "___" + suffix,
 // of size n; else a copy (btf.Copy) of the kernel's struct of that name when its size is at most n;
 // else orBytes(nil, n).
-func callArgType(row *CallRow, n uint32, prog, kernel *btf.Spec) (typ btf.Type, name string) { //nolint:unused // for the call-site rewriter, which is not merged yet
+func callArgType(row *CallRow, n uint32, prog, kernel *btf.Spec) (typ btf.Type, name string) {
 	if row.ArgType == "" {
 		return orBytes(nil, n), ""
 	}
@@ -115,7 +115,7 @@ func callArgType(row *CallRow, n uint32, prog, kernel *btf.Spec) (typ btf.Type, 
 // callsBlocked returns why no call site of the program may be hooked, or "": the program calls
 // bpf_spin_lock, bpf_preempt_disable or a kfunc whose name starts with bpf_res_spin_lock, under which
 // a hook call may be refused, or holds a kfunc call that cannot be named (see callee).
-func callsBlocked(insns asm.Instructions, kernel *btf.Spec) string { //nolint:unused // for the call-site rewriter, which is not merged yet
+func callsBlocked(insns asm.Instructions, kernel *btf.Spec) string {
 	for i := range insns {
 		ins := &insns[i]
 		lock := ""
