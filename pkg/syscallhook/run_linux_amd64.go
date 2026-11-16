@@ -908,7 +908,7 @@ func (s *supervisor) entry(pid int, t *thread, regs unix.PtraceRegs) error {
 		return nil
 	}
 	err = parseProgAttr(attr)
-	if err == nil && u64(attr, 120) != 0 {
+	if err == nil && fdArray(attr) != 0 {
 		var insns []byte
 		if insns, err = readMemory(pid, u64(attr, 8), uint64(u32(attr, 4))*8); err == nil {
 			err = fdArrayMapIndex(insns)
@@ -1294,11 +1294,7 @@ func (s *supervisor) transformLoad(r *remote, attr []byte, rule Rule, form HookF
 	if len(rule.Calls) > 0 {
 		raw.Kernel = s.kernel // only a rule with calls names kfunc calls and types their arguments
 		if s.kernel != nil {
-			var fdArray uint64
-			if len(attr) >= 128 {
-				fdArray = u64(attr, 120)
-			}
-			raw.Modules = s.moduleBTFs(raw.Instructions, fdArray,
+			raw.Modules = s.moduleBTFs(raw.Instructions, fdArray(attr),
 				func(addr, size uint64) ([]byte, error) { return readMemory(r.pid, addr, size) },
 				func(fd uint32) ([]byte, error) { return r.info(fd, 32) }, loadModuleBTF)
 		}

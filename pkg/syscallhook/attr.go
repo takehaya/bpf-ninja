@@ -74,6 +74,15 @@ func parseProgAttr(b []byte) error {
 	return nil
 }
 
+// fdArray returns the fd_array pointer of a program load, or 0 when the attr
+// ends before that field, as it does for loaders built against older headers.
+func fdArray(attr []byte) uint64 {
+	if len(attr) < 128 {
+		return 0
+	}
+	return u64(attr, 120)
+}
+
 // fdArrayMapIndex refuses a map load that names its map by an fd_array index
 // (BPF_PSEUDO_MAP_IDX, BPF_PSEUDO_MAP_IDX_VALUE): the raw path resolves maps by
 // the fd in the instruction only, so it would not know which map is loaded.

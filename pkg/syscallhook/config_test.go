@@ -289,6 +289,21 @@ func TestFdArrayMapIndex(t *testing.T) {
 	}
 }
 
+// A load whose attr ends before fd_array has no fd array: parseProgAttr
+// accepts attrs from 108 bytes on, and the field ends at 128.
+func TestFdArrayShortAttr(t *testing.T) {
+	for _, n := range []int{108, 112, 116, 120, 124, 127} {
+		if got := fdArray(make([]byte, n)); got != 0 {
+			t.Errorf("attr of %d bytes: fd_array %#x, want 0", n, got)
+		}
+	}
+	attr := make([]byte, 128)
+	attr[120] = 0x10
+	if got := fdArray(attr); got != 0x10 {
+		t.Errorf("attr of 128 bytes: fd_array %#x, want 0x10", got)
+	}
+}
+
 func testRule() Rule {
 	return Rule{Program: "p", Map: "sessions", Hook: "lookup_hook"}
 }
