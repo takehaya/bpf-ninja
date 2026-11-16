@@ -176,6 +176,41 @@ func TestCallBlockedBySpinLock(t *testing.T) {
 	}
 }
 
+// An unnameable kfunc skips every requested call site without affecting the
+// request's other hooks.
+func TestCallBlockedByUnnameableKfunc(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		offset int16
+		kernel *btf.Spec
+	}{
+		{name: "nil kernel"},
+		{name: "missing module", offset: 1, kernel: testKernelSpec(t)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			spec := scalarFixture()
+			insns := spec.Programs["p"].Instructions
+			call := kfuncCall(1)
+			call.Offset = tc.offset
+			spec.Programs["p"].Instructions = slices.Insert(insns, len(insns)-1, call)
+			req := callReq("bpf_get_prandom_u32", "bpf_jiffies64")
+			req.Entry, req.Kernel = true, tc.kernel
+			plan, err := transformLookup(spec, req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(plan.hooks) != 1 || plan.hooks[0].Kind != HookEntry || len(plan.skipped) != 2 {
+				t.Fatalf("hooks %+v skipped %+v", plan.hooks, plan.skipped)
+			}
+			for _, site := range plan.skipped {
+				if site.Reason != "call: a kernel-function call in the program cannot be named" {
+					t.Errorf("skipped %+v", site)
+				}
+			}
+		})
+	}
+}
+
 // Auto names its map hooks around the call hooks' names, which do not count
 // as map sites.
 func TestCallWithAutoAndNames(t *testing.T) {
