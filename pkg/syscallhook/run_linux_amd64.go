@@ -150,6 +150,60 @@ func (s *supervisor) loadKernel(load func() (*btf.Spec, error)) {
 	s.kernel = spec
 }
 
+// moduleBTFs returns the module BTF, split on s.kernel, of each distinct
+// nonzero offset of a kfunc call in insns, keyed by that offset: as in the
+// verifier, the u32 at fdArray + 4*offset is a module BTF fd of the tracee.
+// read reads tracee memory, info returns the fd's 32-byte bpf_btf_info and
+// load opens a kernel BTF by id. An offset that fails is left out and logged,
+// so its calls stay unnamed and the load goes on.
+func (s *supervisor) moduleBTFs(insns asm.Instructions, fdArray uint64, read func(addr, size uint64) ([]byte, error),
+	info func(fd uint32) ([]byte, error), load func(id btf.ID, base *btf.Spec) (*btf.Spec, error)) map[int16]*btf.Spec {
+	var modules map[int16]*btf.Spec
+	failed := map[int16]bool{}
+	for i := range insns {
+		off := insns[i].Offset
+		if !insns[i].IsKfuncCall() || off == 0 || modules[off] != nil || failed[off] {
+			continue
+		}
+		spec, err := func() (*btf.Spec, error) {
+			if off < 0 || fdArray == 0 {
+				return nil, fmt.Errorf("no fd_array entry")
+			}
+			fd, err := read(fdArray+4*uint64(off), 4)
+			if err != nil {
+				return nil, err
+			}
+			bi, err := info(u32(fd, 0))
+			if err != nil {
+				return nil, err
+			}
+			if u32(bi, 28) != 1 {
+				return nil, fmt.Errorf("fd %d is not a kernel BTF", u32(fd, 0))
+			}
+			return load(btf.ID(u32(bi, 12)), s.kernel)
+		}()
+		if err != nil {
+			failed[off] = true
+			s.log("module BTF at fd_array offset %d unavailable: its kernel-function calls are not hooked: %v", off, err)
+			continue
+		}
+		if modules == nil {
+			modules = map[int16]*btf.Spec{}
+		}
+		modules[off] = spec
+	}
+	return modules
+}
+
+func loadModuleBTF(id btf.ID, base *btf.Spec) (*btf.Spec, error) {
+	h, err := btf.NewHandleFromID(id)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = h.Close() }()
+	return h.Spec(base)
+}
+
 func retryOriginalOrRefuse(failClosed bool, retry func() (int64, error)) (int64, error) {
 	if failClosed {
 		return -int64(unix.EPERM), nil
@@ -1239,6 +1293,15 @@ func (s *supervisor) transformLoad(r *remote, attr []byte, rule Rule, form HookF
 	}
 	if len(rule.Calls) > 0 {
 		raw.Kernel = s.kernel // only a rule with calls names kfunc calls and types their arguments
+		if s.kernel != nil {
+			var fdArray uint64
+			if len(attr) >= 128 {
+				fdArray = u64(attr, 120)
+			}
+			raw.Modules = s.moduleBTFs(raw.Instructions, fdArray,
+				func(addr, size uint64) ([]byte, error) { return readMemory(r.pid, addr, size) },
+				func(fd uint32) ([]byte, error) { return r.info(fd, 32) }, loadModuleBTF)
+		}
 	}
 	if err := supplyMapTypes(&raw, rule); err != nil {
 		return 0, nil, "", err

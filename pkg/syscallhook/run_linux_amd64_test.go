@@ -19,6 +19,7 @@ import (
 	"unsafe"
 
 	"github.com/cilium/ebpf"
+	"github.com/cilium/ebpf/asm"
 	"github.com/cilium/ebpf/btf"
 	"github.com/takehaya/bpf-ninja/pkg/inject"
 	"golang.org/x/sys/unix"
@@ -103,6 +104,59 @@ func TestLoadKernel(t *testing.T) {
 		if s.kernel != tc.want || loads != tc.loads || log.String() != tc.wantLog {
 			t.Errorf("%s: kernel=%p loads=%d log=%q", tc.name, s.kernel, loads, log.String())
 		}
+	}
+}
+
+// Each distinct nonzero kfunc offset reads fd_array[offset] once, requires a
+// kernel BTF and loads it by id on s.kernel; a failure is logged once and
+// leaves that offset out.
+func TestModuleBTFs(t *testing.T) {
+	kfunc := func(off int16) asm.Instruction {
+		return asm.Instruction{OpCode: asm.OpCode(asm.JumpClass).SetJumpOp(asm.Call), Src: asm.PseudoKfuncCall, Constant: 7, Offset: off}
+	}
+	insns := asm.Instructions{kfunc(0), kfunc(1), kfunc(1), kfunc(2), kfunc(3), kfunc(-1), asm.FnKtimeGetNs.Call()}
+	const base = 0x1000
+	fds := map[uint64]uint32{base + 4: 10, base + 8: 11} // offset 3 is unreadable
+	infos := map[uint32][]byte{}
+	for fd, kernelBTF := range map[uint32]uint32{10: 1, 11: 0} {
+		b := make([]byte, 32)
+		put32(b, 12, fd+100)
+		put32(b, 28, kernelBTF)
+		infos[fd] = b
+	}
+	var log bytes.Buffer
+	s := supervisor{options: Options{Log: &log}, kernel: &btf.Spec{}}
+	mod := &btf.Spec{}
+	reads, loads := 0, 0
+	got := s.moduleBTFs(insns, base, func(addr, size uint64) ([]byte, error) {
+		reads++
+		fd, ok := fds[addr]
+		if !ok || size != 4 {
+			return nil, errors.New("unreadable")
+		}
+		b := make([]byte, 4)
+		put32(b, 0, fd)
+		return b, nil
+	}, func(fd uint32) ([]byte, error) { return infos[fd], nil }, func(id btf.ID, b *btf.Spec) (*btf.Spec, error) {
+		loads++
+		if id != 110 || b != s.kernel {
+			return nil, errors.New("wrong id or base")
+		}
+		return mod, nil
+	})
+	if len(got) != 1 || got[1] != mod || reads != 3 || loads != 1 {
+		t.Fatalf("modules=%v reads=%d loads=%d", got, reads, loads)
+	}
+	for _, want := range []string{"offset 2 unavailable: its kernel-function calls are not hooked: fd 11 is not a kernel BTF", "offset 3 unavailable", "offset -1 unavailable"} {
+		if !strings.Contains(log.String(), want) {
+			t.Errorf("log %q lacks %q", log.String(), want)
+		}
+	}
+	if n := strings.Count(log.String(), "\n"); n != 3 {
+		t.Errorf("%d log lines, want 3", n)
+	}
+	if got := s.moduleBTFs(insns, 0, nil, nil, nil); got != nil {
+		t.Errorf("no fd_array: modules=%v", got)
 	}
 }
 
