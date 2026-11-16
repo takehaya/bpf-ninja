@@ -1,6 +1,8 @@
 package inject
 
 import (
+	"strings"
+
 	"github.com/cilium/ebpf/asm"
 	"github.com/cilium/ebpf/btf"
 )
@@ -43,7 +45,35 @@ func SupportedCalls() []string {
 // A helper is found by id. A kfunc is named by ins.Reference() when set (ELF path), else, when
 // ins.Offset == 0 and kernel != nil, by the FUNC whose BTF id is ins.Constant (raw path).
 // named is false only for a kfunc call that cannot be named.
-func callee(ins *asm.Instruction, kernel *btf.Spec) (row *CallRow, name string, named bool) { //nolint:unused // stub until the call-site rewriter uses it
+func callee(ins *asm.Instruction, kernel *btf.Spec) (row *CallRow, name string, named bool) { //nolint:unused // for the call-site rewriter, which is not merged yet
+	switch {
+	case ins.IsBuiltinCall():
+		for i := range callTable {
+			if callTable[i].Helper != 0 && callTable[i].Helper == asm.BuiltinFunc(ins.Constant) {
+				return &callTable[i], callTable[i].Name, true
+			}
+		}
+		return nil, "", true
+	case ins.IsKfuncCall():
+		name = ins.Reference()
+		if name == "" {
+			if ins.Offset != 0 || kernel == nil {
+				return nil, "", false
+			}
+			typ, err := kernel.TypeByID(btf.TypeID(ins.Constant))
+			fn, ok := typ.(*btf.Func)
+			if err != nil || !ok {
+				return nil, "", false
+			}
+			name = fn.Name
+		}
+		for i := range callTable {
+			if callTable[i].Helper == 0 && callTable[i].Name == name {
+				return &callTable[i], name, true
+			}
+		}
+		return nil, name, true
+	}
 	return nil, "", true
 }
 
@@ -51,13 +81,59 @@ func callee(ins *asm.Instruction, kernel *btf.Spec) (row *CallRow, name string, 
 // and its name ("" for bytes): the program's struct named row.ArgType, or row.ArgType + "___" + suffix,
 // of size n; else a copy (btf.Copy) of the kernel's struct of that name when its size is at most n;
 // else orBytes(nil, n).
-func callArgType(row *CallRow, n uint32, prog, kernel *btf.Spec) (typ btf.Type, name string) { //nolint:unused // stub until the call-site rewriter uses it
+func callArgType(row *CallRow, n uint32, prog, kernel *btf.Spec) (typ btf.Type, name string) { //nolint:unused // for the call-site rewriter, which is not merged yet
+	if row.ArgType == "" {
+		return orBytes(nil, n), ""
+	}
+	if prog != nil {
+		var flavour *btf.Struct
+		for t, err := range prog.All() {
+			s, ok := t.(*btf.Struct)
+			if err != nil || !ok || s.Size != n {
+				continue
+			}
+			if s.Name == row.ArgType {
+				return s, s.Name
+			}
+			if flavour == nil && strings.HasPrefix(s.Name, row.ArgType+"___") {
+				flavour = s
+			}
+		}
+		if flavour != nil {
+			return flavour, flavour.Name
+		}
+	}
+	if kernel != nil {
+		var s *btf.Struct
+		if kernel.TypeByName(row.ArgType, &s) == nil && s.Size <= n {
+			return btf.Copy(s), s.Name
+		}
+	}
 	return orBytes(nil, n), ""
 }
 
 // callsBlocked returns why no call site of the program may be hooked, or "": the program calls
 // bpf_spin_lock, bpf_preempt_disable or a kfunc whose name starts with bpf_res_spin_lock, under which
 // a hook call may be refused, or holds a kfunc call that cannot be named (see callee).
-func callsBlocked(insns asm.Instructions, kernel *btf.Spec) string { //nolint:unused // stub until the call-site rewriter uses it
+func callsBlocked(insns asm.Instructions, kernel *btf.Spec) string { //nolint:unused // for the call-site rewriter, which is not merged yet
+	for i := range insns {
+		ins := &insns[i]
+		lock := ""
+		switch {
+		case ins.IsBuiltinCall() && asm.BuiltinFunc(ins.Constant) == asm.FnSpinLock:
+			lock = "bpf_spin_lock"
+		case ins.IsKfuncCall():
+			_, name, named := callee(ins, kernel)
+			if !named {
+				return "call: a kernel-function call in the program cannot be named"
+			}
+			if name == "bpf_preempt_disable" || strings.HasPrefix(name, "bpf_res_spin_lock") {
+				lock = name
+			}
+		}
+		if lock != "" {
+			return "call: the program calls " + lock + ", under which a hook call may be refused"
+		}
+	}
 	return ""
 }
