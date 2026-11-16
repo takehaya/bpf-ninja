@@ -150,7 +150,7 @@ window sits in T, and `core_kind` is the set of obligations it is judged by:
 
 | `core_kind` | Window |
 |---|---|
-| `site` | code before and after an original helper call |
+| `site` | code before and after an original helper call or kfunc call |
 | `site-P4` | the same around `bpf_tail_call` (no r0 obligation) |
 | `site-P8` | the code before `call W`, with the wrapper body W inlined |
 | `prologue-P1` | the entry prologue of the program |
@@ -280,7 +280,9 @@ No row writes r10, and register numbers above r10 are refused. Everything else
 is refused inside a window, including `st` (immediate stores), atomics, xor,
 other jump conditions, `ld_imm64`, `ld_abs` and `ld_ind`, kfunc calls,
 `callx` and `gotox`. Original instructions outside windows are only compared
-with O.
+with O. The centre of a site window may be a kfunc call: `layout.go` hands
+it to both cores as a helper call with the same immediate (source 0, offset
+0), only when neither neighbouring original instruction is a call.
 
 ## What it trusts
 
@@ -312,6 +314,15 @@ wrong.
   this. For a wrapper site, running W as a second frame (see
   [Dafny core](#dafny-core)) matches the kernel. A load from memory outside
   the stack changes nothing but its destination register.
+- **A kfunc call at a site centre is a helper call.** It returns once to the
+  next instruction, sets r0, leaves r1 to r5 unreadable, keeps r6 to r10,
+  and writes the caller's stack only in `[f, 0)`. The load of T resolves it
+  to the same kernel function as the load of O: `kappa` compares its BTF id
+  and module BTF index with O's, and the load's `fd_array`, which the capture
+  does not record, is taken to be the same. `bpf_throw`, kfuncs that take a
+  callback and kfuncs the verifier rewrites at the call do not meet this,
+  and regionval cannot tell them apart. The proof in `dafny/sim` does not
+  cover a site centred on a kfunc.
 - **The original program is valid.** O passed the verifier, so it never reads
   r1 to r5 after a call before writing them. The liveness used by `P9` relies
   on this and on a table of argument counts for common helpers (unknown helpers
