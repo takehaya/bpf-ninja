@@ -27,6 +27,7 @@ var callTable = []CallRow{
 	{Name: "bpf_ktime_get_ns", Helper: asm.FnKtimeGetNs},
 	{Name: "bpf_jiffies64", Helper: asm.FnJiffies64},
 	{Name: "bpf_get_prandom_u32", Helper: asm.FnGetPrandomU32},
+	{Name: "bpf_get_smp_processor_id", Helper: asm.FnGetSmpProcessorId},
 	{Name: "bpf_fib_lookup", Helper: asm.FnFibLookup, ArgReg: asm.R2, SizeReg: asm.R3, ArgType: "bpf_fib_lookup", Writes: true},
 	{Name: "bpf_xdp_ct_lookup", RetPtr: true, ArgReg: asm.R4, SizeReg: asm.R5, ArgType: "bpf_ct_opts", Writes: true},
 	{Name: "bpf_skb_ct_lookup", RetPtr: true, ArgReg: asm.R4, SizeReg: asm.R5, ArgType: "bpf_ct_opts", Writes: true},

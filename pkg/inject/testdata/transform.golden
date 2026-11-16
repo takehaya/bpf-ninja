@@ -968,3 +968,5 @@ calls/fib-frames	elf	064b391914420a530bbaec1ac2442066ebfa61f395aabc21e927f5d5ea8
 calls/fib-frames	raw	84330b6549b147220c5da8c58e47d43f9308d13a3a81545f37c84c8bab371326
 refused/calls-dispatch	elf	error "inject: refused: Calls does not combine with Dispatch"
 refused/calls-dispatch	raw	error "inject: refused: Calls does not combine with Dispatch"
+calls/fastcall	elf	903170a26d7dcf5c34ec29db5c0767dca7e1f74ddf152bf1885952f45f8e71bf
+calls/fastcall	raw	1d98c058826e32bc6f7e542d27bba364ef35e1832bd156bdf1b24ef736bfb608

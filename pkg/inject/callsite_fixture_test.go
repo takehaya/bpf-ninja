@@ -650,3 +650,18 @@ func testCallFixtureCt(t *testing.T, typ ebpf.ProgramType, dport uint16) {
 
 func TestBpfCallFixtureCtXDP(t *testing.T) { testCallFixtureCt(t, ebpf.XDP, 8101) }
 func TestBpfCallFixtureCtTC(t *testing.T)  { testCallFixtureCt(t, ebpf.SchedCLS, 8102) }
+
+// fastcallFixture (XDP) wraps bpf_get_smp_processor_id at 2 in the fastcall
+// spill and fill of R1 at fp-8, stores the result in out slot 0 and the
+// filled R1 (7) in slot 1, and returns XDP_PASS.
+func fastcallFixture() *ebpf.CollectionSpec {
+	insns := asm.Instructions{
+		asm.Mov.Imm(asm.R1, 7),
+		asm.StoreMem(asm.RFP, -8, asm.R1, asm.DWord),
+		asm.FnGetSmpProcessorId.Call(),
+		asm.LoadMem(asm.R1, asm.RFP, -8, asm.DWord),
+		asm.Mov.Reg(asm.R6, asm.R1),
+	}
+	insns = append(append(insns, outStore(0, asm.R0)...), outStore(1, asm.R6)...)
+	return callFixtureSpec(ebpf.XDP, append(insns, asm.Mov.Imm(asm.R0, 2), asm.Return()))
+}

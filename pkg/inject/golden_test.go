@@ -270,6 +270,7 @@ func goldenCases() []goldenCase {
 	add("calls/fib-untyped-static", fibUntypedFixture, callReq(), callsOf("bpf_fib_lookup"), static)
 	add("calls/fib-frames", xdp(fibSubprogFixture), callReq(), callsOf("bpf_fib_lookup"), frames(16, map[string]int16{"p": -8, "fib_sub": -64}))
 	add("refused/calls-dispatch", scalarFixture, callReq(), callsOf("bpf_jiffies64"), dispatch)
+	add("calls/fastcall", fastcallFixture, callReq(), callsOf("bpf_get_smp_processor_id"), floor(-8))
 	return cases
 }
 
