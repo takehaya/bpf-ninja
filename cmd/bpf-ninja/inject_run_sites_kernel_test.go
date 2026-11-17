@@ -322,3 +322,153 @@ func TestBpfSitesCapture(t *testing.T) {
 	data, _ = os.ReadFile(hooks)
 	t.Logf("hooks:\n%s", data)
 }
+
+// Capture by site at a queue push: the ready rule is auto, so the push gets a
+// typed hook whose prototype takes the site, and --site with the push's label
+// from the hooks file attaches to that hook. The loader pushes once per run.
+func TestBpfSitesCaptureQueue(t *testing.T) {
+	if out := os.Getenv("BPF_NINJA_SITES_CHILD"); out != "" {
+		loadQueueProgram(t, out, os.Getenv("BPF_NINJA_SITES_HOOKS"))
+		return
+	}
+	if os.Geteuid() != 0 {
+		t.Skip("requires root and BPF privileges")
+	}
+	t.Setenv("BPF_NINJA_INJECT_CONFIG", "")
+	dir := t.TempDir()
+	child := []string{"--", os.Args[0], "-test.run=^TestBpfSitesCaptureQueue$"}
+	run := func(name string, flags ...string) {
+		t.Helper()
+		t.Setenv("BPF_NINJA_SITES_CHILD", filepath.Join(dir, name+".out"))
+		if err := newRootCommand().Run(context.Background(), append(append([]string{"bpf-ninja", "inject-run"}, flags...), child...)); err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if _, err := os.Stat(filepath.Join(dir, name+".out")); err != nil {
+			t.Fatalf("%s: the loader did not finish: %v", name, err)
+		}
+	}
+	sites := filepath.Join(dir, "sites.json")
+	run("list", "--lookups-json", sites)
+	data, err := os.ReadFile(sites)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var listing lookupsFileJSON
+	if err := json.Unmarshal(data, &listing); err != nil || len(listing.Programs) != 1 || !listing.Programs[0].Rule.Auto {
+		t.Fatalf("listing: %v\n%s", err, data)
+	}
+	encoded, _ := json.Marshal([]syscallhook.Rule{listing.Programs[0].Rule})
+	config, hooks := filepath.Join(dir, "rules.json"), filepath.Join(dir, "hooks.json")
+	if err := os.WriteFile(config, encoded, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("BPF_NINJA_SITES_HOOKS", hooks)
+	run("capture", "--config", config, "--hooks-json", hooks)
+	data, _ = os.ReadFile(hooks)
+	t.Logf("rule %s\nhooks:\n%s", encoded, data)
+}
+
+// loadQueueProgram loads an XDP program that pushes a u32 from an array to
+// the queue q and returns XDP_PASS. While it is loaded it reads the hooks file at hooks,
+// captures the push site with --site and runs the program twice: the capture
+// of two packets ends. It writes a sitesResult to path.
+func loadQueueProgram(t *testing.T, path, hooks string) {
+	if err := rlimit.RemoveMemlock(); err != nil {
+		t.Fatal(err)
+	}
+	u32 := &btf.Int{Name: "u32", Size: 4}
+	m, err := ebpf.NewMap(&ebpf.MapSpec{Name: "q", Type: ebpf.Queue, ValueSize: 4, MaxEntries: 4, Value: u32})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = m.Close() }()
+	// The value is in an array, not on the stack: before 6.8 a stack
+	// pointer passed to a push makes the stack floor unknown.
+	scratch, err := ebpf.NewMap(&ebpf.MapSpec{Name: "scratch", Type: ebpf.Array, KeySize: 4, ValueSize: 4, MaxEntries: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = scratch.Close() }()
+	fn := &btf.Func{Name: "pushes", Linkage: btf.GlobalFunc, Type: &btf.FuncProto{
+		Return: &btf.Int{Name: "int", Size: 4, Encoding: btf.Signed},
+		Params: []btf.FuncParam{{Name: "ctx", Type: &btf.Pointer{Target: &btf.Struct{Name: "xdp_md", Size: 24}}}},
+	}}
+	insns := asm.Instructions{
+		asm.LoadMapValue(asm.R2, scratch.FD(), 0), asm.StoreImm(asm.R2, 0, 7, asm.Word), asm.Mov.Imm(asm.R3, 0),
+		asm.LoadMapPtr(asm.R1, m.FD()), asm.FnMapPushElem.Call(),
+		asm.Mov.Imm(asm.R0, 2), asm.Return(),
+	}
+	insns[0] = btf.WithFuncMetadata(insns[0].WithSymbol(fn.Name).WithSource(asm.Comment("queue loader")), fn)
+	var out sitesResult
+	p, err := ebpf.NewProgram(&ebpf.ProgramSpec{Name: "pushes", Type: ebpf.XDP, License: "GPL", Instructions: insns})
+	if err != nil {
+		out.Error = err.Error()
+	} else {
+		defer func() { _ = p.Close() }()
+		if out.Action, _, err = p.Test(make([]byte, 64)); err != nil {
+			t.Fatal(err)
+		}
+		if hooks != "" { // not while listing
+			captureQueueSite(t, p, hooks)
+		}
+	}
+	data, _ := json.Marshal(out)
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// captureQueueSite captures prog's push site by its label with --site.
+func captureQueueSite(t *testing.T, prog *ebpf.Program, hooks string) {
+	data, err := os.ReadFile(hooks)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var file hooksFileJSON
+	if err := json.Unmarshal(data, &file); err != nil || len(file.Programs) != 1 {
+		t.Fatalf("hooks file: %v\n%s", err, data)
+	}
+	var hook, label string
+	for _, h := range file.Programs[0].Hooks {
+		for _, s := range h.Sites {
+			if s.Kind == "push" {
+				hook, label = h.Name, s.Label
+			}
+		}
+	}
+	if label == "" {
+		t.Fatalf("no push site in the hooks file:\n%s", data)
+	}
+	info, err := prog.Info()
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, _ := info.ID()
+	pcap := filepath.Join(filepath.Dir(hooks), "queue.pcapng")
+	c := startCapture(t, "-p", fmt.Sprint(id), "--hooks-json", hooks, "--site", label, "-w", pcap, "-c", "2", "--no-cpu-affinity", "-v")
+	// A refused --site returns before the capture writes a line.
+	for started := false; !started; {
+		select {
+		case line := <-c.lines:
+			c.all.WriteString(line + "\n")
+			started = strings.Contains(line, "capturing (")
+		case err := <-c.done:
+			c.restore()
+			t.Fatalf("capture --site %s: %v\n%s", label, err, c.all.String())
+		case <-time.After(20 * time.Second):
+			t.Fatalf("no \"capturing (\" within 20s:\n%s", c.all.String())
+		}
+	}
+	for range 2 {
+		if _, _, err := prog.Test(make([]byte, 64)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	stderr := c.finish()
+	if n := len(epbInterfaces(t, pcap)); n != 2 {
+		t.Errorf("%d packets, want 2\n%s", n, stderr)
+	}
+	if !strings.Contains(stderr, fmt.Sprintf("attach target: prog id=%d func=%q", id, hook)) {
+		t.Errorf("no attach to the push hook %s:\n%s", hook, stderr)
+	}
+}

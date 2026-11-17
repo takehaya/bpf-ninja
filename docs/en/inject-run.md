@@ -667,7 +667,7 @@ If a rewrite fails, `inject-run` reports it on stderr and keeps running the targ
       "ctx_type": "xdp_md",
       "hook_form": {"form": "global", "reason": "probe_arg_untrusted_supported"},
       "hooks": [
-        {"name": "ninja_seen_peek", "kind": "typed", "when": "error", "map": "seen", "sites": [{"kind": "peek", "pc": 11, "map": "seen", "func": "entry", "file": "prog.c", "line": 33, "label": "seen/peek@entry:33", "ctx_source": "entry", "frame": "entry", "floor": -24}], "untrusted": false, "copied": false, "static": false, "read_only": false}
+        {"name": "ninja_seen_peek", "kind": "typed", "when": "error", "map": "seen", "sites": [{"kind": "peek", "pc": 11, "map": "seen", "func": "entry", "file": "prog.c", "line": 33, "label": "seen/peek@entry:33", "ctx_source": "entry", "frame": "entry", "floor": -24}], "untrusted": false, "copied": false, "static": false, "read_only": false, "site_param": true}
       ],
       "skipped": [],
       "stack": {"source": "verifier", "kernel": "7.0.13", "frame_rounding": 16, "functions": [{"name": "entry", "verified_depth": 24, "text_depth": 24, "text_exact": false, "floor": -24, "source": "verifier", "slots": {"ctx": -32, "key": -40, "result": -48, "map": -56, "value": -64}, "deepest_text_access": {"pc": 6, "file": "prog.c", "line": 30, "offset": -20}}]}

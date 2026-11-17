@@ -191,7 +191,7 @@ inject-run: program "entry": injected hook "ninja_seen_peek" (peek map "seen", s
  "hooks": [
   {"name": "ninja_seen_peek", "kind": "typed", "when": "error", "map": "seen",
    "sites": [{"kind": "peek", "pc": 11, "map": "seen", "func": "entry", "file": "prog.c", "line": 33, "label": "seen/peek@entry:33", "ctx_source": "entry", "frame": "entry", "floor": -24}],
-   "untrusted": false, "copied": false, "static": false, "read_only": false},
+   "untrusted": false, "copied": false, "static": false, "read_only": false, "site_param": true},
   ...
  ]}
 ```

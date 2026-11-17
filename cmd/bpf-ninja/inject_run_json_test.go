@@ -75,6 +75,9 @@ func TestInjectionJSON(t *testing.T) {
 			{Name: "obs_sessions", Kind: inject.HookLookup, When: string(inject.LookupHit), MapName: "sessions", Sites: []inject.LookupSite{site(12, "sessions")}},
 			{Name: "obs_sessions_miss", Kind: inject.HookLookup, When: string(inject.LookupMiss), MapName: "sessions", Sites: []inject.LookupSite{site(12, "sessions")}},
 			{Name: "obs_flows", Kind: inject.HookLookup, MapName: "flows", ReadOnly: true, Copied: true, Sites: []inject.LookupSite{site(18, "flows")}},
+			// A typed push, pop, peek, update or delete hook takes the site
+			// whatever SiteArg says: lookup.go sets it only on lookup hooks.
+			{Name: "obs_q_push", Kind: inject.HookPush, When: string(inject.CallAny), MapName: "q", Sites: []inject.LookupSite{{SitePC: 25, MapName: "q", Op: inject.HookPush}}},
 			{Name: "obs_any", Kind: inject.HookLookup, Generic: true, Untrusted: true, Sites: []inject.LookupSite{{SitePC: 51}}},
 			{Name: "obs_entry", Kind: inject.HookEntry},
 			{Name: "obs_tail_call", Kind: inject.HookTailCall, Sites: []inject.LookupSite{{SitePC: 60, FuncName: "sub"}}},
@@ -83,6 +86,7 @@ func TestInjectionJSON(t *testing.T) {
 				`{"name":"obs_sessions","kind":"typed","when":"hit","map":"sessions","sites":[{"kind":"lookup","pc":12,"map":"sessions","func":"xdp_ingress","file":"x.c","line":12,"ctx_source":"entry"}],"untrusted":false,"copied":false,"static":false,"read_only":false},` +
 				`{"name":"obs_sessions_miss","kind":"typed","when":"miss","map":"sessions","sites":[{"kind":"lookup","pc":12,"map":"sessions","func":"xdp_ingress","file":"x.c","line":12,"ctx_source":"entry"}],"untrusted":false,"copied":false,"static":false,"read_only":false},` +
 				`{"name":"obs_flows","kind":"typed","map":"flows","sites":[{"kind":"lookup","pc":18,"map":"flows","func":"xdp_ingress","file":"x.c","line":18,"ctx_source":"entry"}],"untrusted":false,"copied":true,"static":false,"read_only":true},` +
+				`{"name":"obs_q_push","kind":"typed","when":"any","map":"q","sites":[{"kind":"push","pc":25,"map":"q"}],"untrusted":false,"copied":false,"static":false,"read_only":false,"site_param":true},` +
 				`{"name":"obs_any","kind":"generic","sites":[{"kind":"lookup","pc":51}],"untrusted":true,"copied":false,"static":false,"read_only":false},` +
 				`{"name":"obs_entry","kind":"entry","sites":[{"kind":"entry","pc":4294967295}],"untrusted":false,"copied":false,"static":false,"read_only":false},` +
 				`{"name":"obs_tail_call","kind":"tail_call","sites":[{"kind":"tail_call","pc":60,"func":"sub"}],"untrusted":false,"copied":false,"static":false,"read_only":false,"site_param":true}],` +
