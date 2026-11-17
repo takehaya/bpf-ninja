@@ -167,6 +167,28 @@ func TestFunctionLimitWithoutCallGroups(t *testing.T) {
 	}
 }
 
+// A drop list that removes every map site of a rule with nothing else to
+// hook is refused with that cause.
+func TestDropEveryMapSite(t *testing.T) {
+	for _, req := range []LookupRequest{
+		{ProgramName: "p", HookName: "obs", Auto: true, Stack: StackAudit{LowestOffset: -64}},
+		{ProgramName: "p", HookName: "obs", Auto: true, Updates: CallAny, Stack: StackAudit{LowestOffset: -64}},
+	} {
+		spec := mixedCallFixture()
+		req.Drop = dropOf(t, spec, req, func(s LookupSite) bool { return s.Op != HookCall })
+		if _, err := transformLookup(spec, req); !errors.Is(err, ErrRefused) || !strings.Contains(err.Error(), "no supported lookup sites: Drop removes all 2") {
+			t.Errorf("%+v: %v", req, err)
+		}
+	}
+	// One site left out of the drop list keeps its hook.
+	spec := mixedCallFixture()
+	req := LookupRequest{ProgramName: "p", HookName: "obs", Auto: true, Stack: StackAudit{LowestOffset: -64}}
+	req.Drop = dropOf(t, spec, req, func(s LookupSite) bool { return s.MapName == "sessions" })
+	if plan, err := transformLookup(spec, req); err != nil || len(plan.hooks) != 1 {
+		t.Fatalf("err %v hooks %+v", err, plan.hooks)
+	}
+}
+
 // uncalled finds a function nothing calls.
 func TestUncalled(t *testing.T) {
 	insns := slices.Clone(stackCallFixture().Programs["caller"].Instructions)

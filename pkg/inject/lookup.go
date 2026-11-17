@@ -1503,6 +1503,9 @@ func selectLookups(sites []discoveredLookup, req LookupRequest, reserved []strin
 			named = append(named, group)
 		}
 		if len(named) == 0 && !req.Entry && !req.TailCalls && len(req.Calls) == 0 {
+			if n := len(skipped); n != 0 && !slices.ContainsFunc(skipped, func(s LookupSite) bool { _, ok := req.Drop[s.SitePC]; return !ok }) {
+				return nil, skipped, refuse("no supported lookup sites: Drop removes all %d", n)
+			}
 			return nil, skipped, refuse("no supported lookup sites (%d skipped)", len(skipped))
 		}
 		return named, skipped, nil
