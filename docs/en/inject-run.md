@@ -513,7 +513,7 @@ A failed transformation prints `program "P": injection skipped: inject: refused:
 Without `--fail-closed`, that program then loads unchanged, without hooks; the loader's other programs are still matched against the rules.
 With `--fail-closed`, that load fails with `EPERM`.
 
-If trial loading or statistics parsing fails, a rule that names its one site with `map` refuses the load, every other rule (`auto`, or `calls`, `entry` or `tail_calls` without `auto`) leaves the original program unchanged, and `--fail-closed` refuses either kind.
+If trial loading fails other than by a verifier refusal of the original, or statistics parsing fails, a rule that names its one site with `map` refuses the load, every other rule (`auto`, or `calls`, `entry` or `tail_calls` without `auto`) leaves the original program unchanged, and `--fail-closed` refuses either kind.
 A program the analysis cannot take (function matching refuses it, or the analysis fails on it) loads unchanged under every rule, `map` included, and `--fail-closed` refuses it.
 A program with an [indirect jump](#load-stream-check) has no trial load and no floor: an explicit rule loads it unchanged, and `--fail-closed` still refuses it.
 
