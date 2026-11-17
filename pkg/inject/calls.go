@@ -127,9 +127,17 @@ func selectCalls(sites []discoveredLookup, req LookupRequest, types *btf.Spec) (
 // prototype and an empty body. A pointer result is always const void *ret,
 // tagged arg:untrusted or, with StaticUntrusted, static with an empty body;
 // when retTypeOf knows the struct behind it, a ret_type decl tag names it
-// (the verifier does not interpret func decl tags).
+// (the verifier does not interpret func decl tags). A narrow scalar result
+// carries its size and sign tags on every path, with or without an arg.
 func callHook(group lookupGroup, ctx btf.Type, req LookupRequest) (asm.Instructions, LookupHook) {
 	hook, plan := callHookBody(group, ctx, req)
+	if row := group.call; !row.RetPtr && row.RetSize != 0 {
+		fn := btf.FuncMetadata(&hook[0])
+		fn.Tags = append(fn.Tags, hookabi.SizeTag("ret", row.RetSize))
+		if row.RetSigned {
+			fn.Tags = append(fn.Tags, hookabi.RetSignedTag)
+		}
+	}
 	if group.call.RetPtr && group.retType != "" {
 		fn := btf.FuncMetadata(&hook[0])
 		fn.Tags = append(fn.Tags, hookabi.RetTypeTag(group.retType))
@@ -143,15 +151,7 @@ func callHookBody(group lookupGroup, ctx btf.Type, req LookupRequest) (asm.Instr
 	plan := LookupHook{Name: group.name, Kind: HookCall, When: string(CallAny), SiteArg: true, Sites: publicLookupSites(group.sites),
 		Call: row.Name, RetPtr: row.RetPtr, RetSize: row.RetSize, RetSigned: row.RetSigned, ArgReason: group.argReason}
 	if row.ArgReg == 0 && !row.RetPtr {
-		hook := pointerHook(group.name, ctx, nil, true, false, "ret")
-		if row.RetSize != 0 {
-			fn := btf.FuncMetadata(&hook[0])
-			fn.Tags = append(fn.Tags, hookabi.SizeTag("ret", row.RetSize))
-			if row.RetSigned {
-				fn.Tags = append(fn.Tags, hookabi.RetSignedTag)
-			}
-		}
-		return hook, plan
+		return pointerHook(group.name, ctx, nil, true, false, "ret"), plan
 	}
 	if row.ArgReg == 0 {
 		ret := []btf.FuncParam{{Name: "ret", Type: &btf.Void{}}}

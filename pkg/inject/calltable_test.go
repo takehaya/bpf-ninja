@@ -9,6 +9,8 @@ import (
 
 	"github.com/cilium/ebpf/asm"
 	"github.com/cilium/ebpf/btf"
+
+	"github.com/takehaya/bpf-ninja/internal/hookabi"
 )
 
 // specOf is the parsed BTF of types.
@@ -302,6 +304,9 @@ func TestCallHookMetadataArg(t *testing.T) {
 			}
 			h := plan.hooks[0]
 			fn, params := callHookFn(t, spec.Programs["p"].Instructions, h.Name)
+			if !slices.Contains(fn.Tags, hookabi.SizeTag("ret", 4)) || !slices.Contains(fn.Tags, hookabi.RetSignedTag) {
+				t.Errorf("%s (kernel BTF %v): hook tags %v lack the narrow signed ret", tc.name, withKernel, fn.Tags)
+			}
 			if !withKernel {
 				if h.ArgReg != 0 || !strings.Contains(h.ArgReason, "not in the kernel BTF") || slices.Contains(params, "arg") || h.RetSize != 4 {
 					t.Errorf("%s without kernel BTF: hook %+v params %v", tc.name, h, params)
