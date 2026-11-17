@@ -243,3 +243,16 @@ func TestFilterCallHooks(t *testing.T) {
 		}
 	}
 }
+
+// TestEntryNarrowRet: a call hook whose callee's integer result is narrower
+// than 8 bytes carries bpf-ninja:ret_size=N; its ret is recorded in N bytes,
+// so the BPF side stores only the result's low bytes.
+func TestEntryNarrowRet(t *testing.T) {
+	l := entry(t, callHook(t, []string{hookabi.SizeTag("ret", 4)}, btf.FuncParam{Name: "ret", Type: u64}), 256)
+	if l.Status.Name != "ret" || l.Status.Size != 4 {
+		t.Fatalf("status %+v", l.Status)
+	}
+	if l = entry(t, callHook(t, nil, btf.FuncParam{Name: "ret", Type: u64}), 256); l.Status.Size != 8 {
+		t.Fatalf("status without the tag %+v", l.Status)
+	}
+}

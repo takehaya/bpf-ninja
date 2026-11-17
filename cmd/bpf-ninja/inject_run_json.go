@@ -50,8 +50,10 @@ type injectedProgJSON struct {
 // any for updates, deletes, pushes, pops and peeks. A dispatch hook's When is
 // its lookups'; its other map call sites carry their own. A call hook runs
 // after every call of Call: ArgReg, ArgType and ArgSize describe its arg
-// parameter (absent without one; ArgType absent for plain bytes) and Ret is
-// "scalar" or "pointer".
+// parameter (absent without one; ArgType absent for plain bytes), Ret is
+// "scalar" or "pointer", and RetSize is the byte width of a kernel function's
+// integer result narrower than 8 bytes, whose upper bytes in ret are not part
+// of the result.
 type hookJSON struct {
 	Name           string         `json:"name"`
 	Kind           string         `json:"kind"`
@@ -62,6 +64,7 @@ type hookJSON struct {
 	ArgType        string         `json:"arg_type,omitempty"`
 	ArgSize        uint32         `json:"arg_size,omitempty"`
 	Ret            string         `json:"ret,omitempty"`
+	RetSize        uint32         `json:"ret_size,omitempty"`
 	Sites          []hookSiteJSON `json:"sites"`
 	Untrusted      bool           `json:"untrusted"`
 	Copied         bool           `json:"copied"`
@@ -245,7 +248,7 @@ func injectionJSON(inj syscallhook.Injection) injectedProgJSON {
 			h.Map = hook.MapName
 		}
 		if hook.Kind == inject.HookCall {
-			h.Call, h.ArgReg, h.ArgType, h.ArgSize, h.Ret = hook.Call, hook.ArgReg, hook.ArgType, hook.ArgSize, "scalar"
+			h.Call, h.ArgReg, h.ArgType, h.ArgSize, h.Ret, h.RetSize = hook.Call, hook.ArgReg, hook.ArgType, hook.ArgSize, "scalar", hook.RetSize
 			if hook.RetPtr {
 				h.Ret = "pointer"
 			}

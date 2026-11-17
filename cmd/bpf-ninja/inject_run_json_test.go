@@ -105,11 +105,13 @@ func TestInjectionJSON(t *testing.T) {
 			{Name: "obs_bpf_xdp_ct_lookup", Kind: inject.HookCall, When: "any", SiteArg: true, Call: "bpf_xdp_ct_lookup", ArgReg: 4, ArgType: "bpf_ct_opts___local", ArgSize: 16, RetPtr: true, Static: true,
 				Sites: []inject.LookupSite{{SitePC: 309, Op: inject.HookCall, Call: "bpf_xdp_ct_lookup", FuncName: "upf_ip_entrypoint_func", CtxSource: "entry"}}},
 			{Name: "obs_bpf_ktime_get_ns", Kind: inject.HookCall, When: "any", SiteArg: true, Call: "bpf_ktime_get_ns", Sites: []inject.LookupSite{{SitePC: 40, Op: inject.HookCall, Call: "bpf_ktime_get_ns"}}},
+			{Name: "obs_bpf_dynptr_from_xdp", Kind: inject.HookCall, When: "any", SiteArg: true, Call: "bpf_dynptr_from_xdp", RetSize: 4, Sites: []inject.LookupSite{{SitePC: 50, Op: inject.HookCall, Call: "bpf_dynptr_from_xdp"}}},
 		}, Skipped: []inject.LookupSite{{SitePC: 33, Op: inject.HookCall, Call: "bpf_ktime_get_ns", FuncName: "upf_ip_entrypoint_func", Reason: "call: the instruction before or after the call is a call"}}},
 			`{"program":"upf","func":"upf_ip_entrypoint_func","type":"XDP","prog_id":0,"ctx_type":"xdp_md","hook_form":{"form":"global","reason":"probe_arg_untrusted_supported"},"hooks":[` +
 				`{"name":"obs_bpf_fib_lookup","kind":"call","when":"any","call":"bpf_fib_lookup","arg_reg":2,"arg_type":"bpf_fib_lookup","arg_size":64,"ret":"scalar","sites":[{"kind":"call","pc":560,"call":"bpf_fib_lookup","func":"upf_ip_entrypoint_func","ctx_source":"entry"}],"untrusted":false,"copied":false,"static":false,"read_only":false},` +
 				`{"name":"obs_bpf_xdp_ct_lookup","kind":"call","when":"any","call":"bpf_xdp_ct_lookup","arg_reg":4,"arg_type":"bpf_ct_opts___local","arg_size":16,"ret":"pointer","sites":[{"kind":"call","pc":309,"call":"bpf_xdp_ct_lookup","func":"upf_ip_entrypoint_func","ctx_source":"entry"}],"untrusted":false,"copied":false,"static":true,"read_only":false},` +
-				`{"name":"obs_bpf_ktime_get_ns","kind":"call","when":"any","call":"bpf_ktime_get_ns","ret":"scalar","sites":[{"kind":"call","pc":40,"call":"bpf_ktime_get_ns"}],"untrusted":false,"copied":false,"static":false,"read_only":false}],` +
+				`{"name":"obs_bpf_ktime_get_ns","kind":"call","when":"any","call":"bpf_ktime_get_ns","ret":"scalar","sites":[{"kind":"call","pc":40,"call":"bpf_ktime_get_ns"}],"untrusted":false,"copied":false,"static":false,"read_only":false},` +
+				`{"name":"obs_bpf_dynptr_from_xdp","kind":"call","when":"any","call":"bpf_dynptr_from_xdp","ret":"scalar","ret_size":4,"sites":[{"kind":"call","pc":50,"call":"bpf_dynptr_from_xdp"}],"untrusted":false,"copied":false,"static":false,"read_only":false}],` +
 				`"skipped":[{"kind":"call","pc":33,"call":"bpf_ktime_get_ns","func":"upf_ip_entrypoint_func","reason":"call: the instruction before or after the call is a call"}]}`},
 	} {
 		got, err := json.Marshal(injectionJSON(tc.inj))
