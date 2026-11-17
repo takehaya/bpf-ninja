@@ -1219,7 +1219,9 @@ func (s *supervisor) entry(pid int, t *thread, regs unix.PtraceRegs) error {
 				s.log("program %q: injection skipped: %v", name, injectErr)
 			}
 		}
-		refuse := step == stepRefuse
+		// --fail-closed refuses every load that ends without hooks, whatever
+		// step the last decision gave.
+		refuse := s.options.FailClosed || step == stepRefuse
 		ret, err = retryOriginalOrRefuse(refuse, func() (int64, error) {
 			// Substituted attrs and buffers live in scratch memory, so the original
 			// registers, attr and input buffers still describe the unchanged load.

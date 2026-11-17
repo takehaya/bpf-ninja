@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/cilium/ebpf"
@@ -1752,12 +1753,13 @@ func transformLookupProgramGuarded(insns asm.Instructions, typ ebpf.ProgramType,
 	groups = append(kept, callGroups...)
 	noCalls := func() error {
 		if len(req.Calls) != 0 && len(groups) == 0 && !req.Entry && !req.TailCalls {
-			names := ""
+			var quoted []string
 			for _, site := range unknown {
-				names += fmt.Sprintf(", %q", site.Call)
+				quoted = append(quoted, strconv.Quote(site.Call))
 			}
-			if names != "" {
-				names = "; Calls names that are neither a helper nor a kernel function of this load: " + names[2:]
+			names := ""
+			if len(quoted) != 0 {
+				names = "; Calls names that are neither a helper nor a kernel function of this load: " + strings.Join(quoted, ", ")
 			}
 			return refuse("no call site is instrumented (%d skipped)%s", len(plan.skipped), names)
 		}
