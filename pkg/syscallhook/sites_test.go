@@ -32,11 +32,12 @@ func TestConfigSites(t *testing.T) {
 }
 
 // sitesListing is a listing with two calls of one helper on one line, a
-// third call of it elsewhere, another callee, a lookup and an update of map
-// a, a lookup of b and a tail call.
+// third call of it elsewhere, another callee, two lookups and an update of
+// map a, a lookup of b and a tail call.
 func sitesListing() ([]inject.LookupSite, map[uint32]string) {
 	sites := []inject.LookupSite{
 		{Op: inject.HookLookup, MapName: "a", SitePC: 2},
+		{Op: inject.HookLookup, MapName: "a", SitePC: 4},
 		{Op: inject.HookUpdate, MapName: "a", SitePC: 6},
 		{Op: inject.HookLookup, MapName: "b", SitePC: 9},
 		{Op: inject.HookCall, Call: "bpf_ktime_get_ns", SitePC: 12},
@@ -45,7 +46,7 @@ func sitesListing() ([]inject.LookupSite, map[uint32]string) {
 		{Op: inject.HookCall, Call: "bpf_jiffies64", SitePC: 22},
 		{Op: inject.HookTailCall, SitePC: 30},
 	}
-	labels := map[uint32]string{2: "a@p:3", 6: "a.update@p:5", 9: "b@p:7", 12: "bpf_ktime_get_ns@p:9#1", 14: "bpf_ktime_get_ns@p:9#2",
+	labels := map[uint32]string{2: "a@p:3", 4: "a@p:4", 6: "a.update@p:5", 9: "b@p:7", 12: "bpf_ktime_get_ns@p:9#1", 14: "bpf_ktime_get_ns@p:9#2",
 		20: "bpf_ktime_get_ns@p:11", 22: "bpf_jiffies64@p:12", 30: "tail_call@p:14"}
 	return sites, labels
 }
@@ -65,19 +66,20 @@ func TestSitesDrop(t *testing.T) {
 		}
 		return drop
 	}
-	all := []uint32{2, 6, 9, 12, 14, 20, 22, 30}
+	all := []uint32{2, 4, 6, 9, 12, 14, 20, 22, 30}
 	for name, c := range map[string]struct {
 		sel  Sites
 		want map[uint32]string
 	}{
-		// A name with a selected site keeps only those; other names keep all.
-		"only one copy by label":  {Sites{Only: []SiteRef{{Label: "bpf_ktime_get_ns@p:9#2"}}}, keep(2, 6, 9, 14, 22, 30)},
-		"only one copy by number": {Sites{Only: []SiteRef{pcRef(12)}}, keep(2, 6, 9, 12, 22, 30)},
-		"only the base label":     {Sites{Only: []SiteRef{{Label: "bpf_ktime_get_ns@p:9"}}}, keep(2, 6, 9, 12, 14, 22, 30)},
-		"only a unique label":     {Sites{Only: []SiteRef{{Label: "bpf_ktime_get_ns@p:11"}}}, keep(2, 6, 9, 20, 22, 30)},
-		"only a map's update":     {Sites{Only: []SiteRef{{Label: "a.update@p:5"}}}, keep(6, 9, 12, 14, 20, 22, 30)},
+		// A unit with a selected site keeps only those; other units keep all.
+		"only one copy by label":  {Sites{Only: []SiteRef{{Label: "bpf_ktime_get_ns@p:9#2"}}}, keep(2, 4, 6, 9, 14, 22, 30)},
+		"only one copy by number": {Sites{Only: []SiteRef{pcRef(12)}}, keep(2, 4, 6, 9, 12, 22, 30)},
+		"only the base label":     {Sites{Only: []SiteRef{{Label: "bpf_ktime_get_ns@p:9"}}}, keep(2, 4, 6, 9, 12, 14, 22, 30)},
+		"only a unique label":     {Sites{Only: []SiteRef{{Label: "bpf_ktime_get_ns@p:11"}}}, keep(2, 4, 6, 9, 20, 22, 30)},
+		"only a map's update":     {Sites{Only: []SiteRef{{Label: "a.update@p:5"}}}, keep(all...)},
+		"only one of two lookups": {Sites{Only: []SiteRef{pcRef(4)}}, keep(4, 6, 9, 12, 14, 20, 22, 30)},
 		"only the tail call":      {Sites{Only: []SiteRef{pcRef(30)}}, keep(all...)},
-		"only two names":          {Sites{Only: []SiteRef{pcRef(20), {Label: "b@p:7"}}}, keep(2, 6, 9, 20, 22, 30)},
+		"only two units":          {Sites{Only: []SiteRef{pcRef(20), {Label: "b@p:7"}}}, keep(2, 4, 6, 9, 20, 22, 30)},
 		"only nothing":            {Sites{Only: []SiteRef{}}, keep(all...)},
 		"except one copy":         {Sites{Except: []SiteRef{{Label: "bpf_ktime_get_ns@p:9#1"}}}, map[uint32]string{12: dropReason}},
 		"except the base label":   {Sites{Except: []SiteRef{{Label: "bpf_ktime_get_ns@p:9"}}}, map[uint32]string{12: dropReason, 14: dropReason}},

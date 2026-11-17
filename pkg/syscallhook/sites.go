@@ -13,9 +13,10 @@ import (
 // Sites selects sites of a hook_prefix rule as a listing names them. Build
 // is the listing fingerprint (inject.ListingFingerprint) the entries were
 // copied from; a load with another fingerprint gets no hooks. Only keeps,
-// for each map, callee or tail_call that has a selected site, just the
-// selected sites, and leaves every other name's sites as the rule selects
-// them; Except removes the sites it names. Exactly one of the two is given.
+// for each hook unit that has a selected site, just the selected sites, and
+// leaves every other unit's sites as the rule selects them; a unit is what
+// gets its own hook: a callee, one op of one map, or tail_call. Except
+// removes the sites it names. Exactly one of the two is given.
 // Removing sites never adds a hook.
 type Sites struct {
 	Build  string    `json:"build"`
@@ -122,7 +123,8 @@ func (s *Sites) drop(build string, sites []inject.LookupSite, labels map[uint32]
 		}
 		return drop, nil
 	}
-	// A name with a selected site keeps only its selected sites.
+	// A unit with a selected site keeps only its selected sites: a callee,
+	// one op of one map (the unit that gets its own hook), or tail_call.
 	key := func(site inject.LookupSite) string {
 		switch site.Op {
 		case inject.HookCall:
@@ -130,7 +132,7 @@ func (s *Sites) drop(build string, sites []inject.LookupSite, labels map[uint32]
 		case inject.HookTailCall:
 			return "tail_call"
 		}
-		return "map " + site.MapName
+		return "map " + site.MapName + " " + string(site.Op)
 	}
 	selected := map[string]bool{}
 	for _, site := range sites {
