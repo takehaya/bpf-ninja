@@ -1,0 +1,143 @@
+package syscallhook
+
+import (
+	"encoding/json"
+	"fmt"
+	"slices"
+	"strconv"
+	"strings"
+
+	"github.com/takehaya/bpf-ninja/pkg/inject"
+)
+
+// Sites selects sites of a hook_prefix rule as a listing names them. Build
+// is the listing fingerprint (inject.ListingFingerprint) the entries were
+// copied from; a load with another fingerprint gets no hooks. Only keeps,
+// for each map, callee or tail_call that has a selected site, just the
+// selected sites, and leaves every other name's sites as the rule selects
+// them; Except removes the sites it names. Exactly one of the two is given.
+// Removing sites never adds a hook.
+type Sites struct {
+	Build  string    `json:"build"`
+	Only   []SiteRef `json:"only,omitempty"`
+	Except []SiteRef `json:"except,omitempty"`
+}
+
+// SiteRef is one entry of Sites: a label as the listing prints it, or the
+// site's instruction number (the listing's pc) as a JSON number. A label
+// without its #N suffix names every site sharing it.
+type SiteRef struct {
+	Label string
+	PC    *uint32
+}
+
+func (s *SiteRef) UnmarshalJSON(data []byte) error {
+	if len(data) != 0 && data[0] == '"' {
+		return json.Unmarshal(data, &s.Label)
+	}
+	pc, err := strconv.ParseUint(string(data), 10, 32)
+	if err != nil {
+		return fmt.Errorf("a sites entry is a label string or an instruction number, not %s", data)
+	}
+	n := uint32(pc)
+	s.PC = &n
+	return nil
+}
+
+func (s SiteRef) MarshalJSON() ([]byte, error) {
+	if s.PC != nil {
+		return json.Marshal(*s.PC)
+	}
+	return json.Marshal(s.Label)
+}
+
+func (s SiteRef) String() string {
+	if s.PC != nil {
+		return fmt.Sprintf("pc %d", *s.PC)
+	}
+	return strconv.Quote(s.Label)
+}
+
+func (r Rule) validateSites() error {
+	if r.Sites == nil {
+		return nil
+	}
+	switch {
+	case r.HookPrefix == "":
+		return fmt.Errorf("sites needs a rule written with hook_prefix; a rule written with hook selects sites with map, func, line, all_matches or site_pcs")
+	case r.Map != "" || r.Func != "" || r.Line != 0 || r.AllMatches || len(r.SitePCs) != 0:
+		return fmt.Errorf("sites does not combine with map, func, line, all_matches or site_pcs")
+	case r.Sites.Only != nil && r.Sites.Except != nil:
+		return fmt.Errorf("sites takes only or except, not both")
+	case r.Sites.Only == nil && r.Sites.Except == nil:
+		return fmt.Errorf("sites needs only or except")
+	case r.Sites.Build == "":
+		return fmt.Errorf("sites.build is required: copy the program's build from the listing")
+	}
+	return nil
+}
+
+// dropReason is the reason a site left out by Sites is skipped with.
+const dropReason = "not selected by the rule's sites"
+
+// drop resolves the selection against the listing of this load: build is
+// its fingerprint, sites every site of the full discovery and labels their
+// labels by pc (inject.CallDiscovery). It returns the pcs the transform
+// drops (inject.LookupRequest.Drop), or an error when the listing is of
+// another build or an entry names no site of this program.
+func (s *Sites) drop(build string, sites []inject.LookupSite, labels map[uint32]string) (map[uint32]string, error) {
+	if build != s.Build {
+		return nil, fmt.Errorf("rule sites were listed from build %s but this load is build %s; list again with --lookups-json and copy the sites from the new file", s.Build, build)
+	}
+	named := map[uint32]bool{}
+	for _, ref := range slices.Concat(s.Only, s.Except) {
+		found := false
+		for pc, label := range labels {
+			if ref.PC != nil && *ref.PC == pc || ref.PC == nil && (label == ref.Label || baseLabel(label) == ref.Label) {
+				named[pc], found = true, true
+			}
+		}
+		if !found {
+			return nil, fmt.Errorf("rule sites: %s names no site of this program", ref)
+		}
+	}
+	drop := map[uint32]string{}
+	if s.Except != nil {
+		for pc := range named {
+			drop[pc] = dropReason
+		}
+		return drop, nil
+	}
+	// A name with a selected site keeps only its selected sites.
+	key := func(site inject.LookupSite) string {
+		switch site.Op {
+		case inject.HookCall:
+			return "call " + site.Call
+		case inject.HookTailCall:
+			return "tail_call"
+		}
+		return "map " + site.MapName
+	}
+	selected := map[string]bool{}
+	for _, site := range sites {
+		if named[site.SitePC] {
+			selected[key(site)] = true
+		}
+	}
+	for _, site := range sites {
+		if selected[key(site)] && !named[site.SitePC] {
+			drop[site.SitePC] = dropReason
+		}
+	}
+	return drop, nil
+}
+
+// baseLabel is label without its #N suffix (inject.SiteLabels).
+func baseLabel(label string) string {
+	if i := strings.LastIndexByte(label, '#'); i >= 0 {
+		if _, err := strconv.ParseUint(label[i+1:], 10, 32); err == nil {
+			return label[:i]
+		}
+	}
+	return label
+}

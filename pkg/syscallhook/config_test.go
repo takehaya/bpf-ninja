@@ -60,7 +60,8 @@ func TestRuleRequestForwardsOptions(t *testing.T) {
 		f := reflect.ValueOf(&r).Elem().Field(i)
 		f.Set(reflect.Zero(f.Type()))
 		// HookPrefix wins over an equal or (refused) different Hook; TestConfigHookPrefix covers Hook alone.
-		if forwarded := !reflect.DeepEqual(r.request(), want); forwarded != (name != "Program" && name != "MapBTF" && name != "StackLowestOffset" && name != "LegacyFrameRounding" && name != "Hook") {
+		// Sites becomes the request's Drop at load time (Sites.drop).
+		if forwarded := !reflect.DeepEqual(r.request(), want); forwarded != (name != "Program" && name != "MapBTF" && name != "StackLowestOffset" && name != "LegacyFrameRounding" && name != "Hook" && name != "Sites") {
 			t.Errorf("%s: forwarded=%v", name, forwarded)
 		}
 	}

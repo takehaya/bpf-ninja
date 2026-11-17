@@ -47,6 +47,9 @@ import (
 // rule a missing or empty maps, ops or calls selects none of that kind, so
 // deleting a name never adds a hook. A rule written with Hook keeps the
 // meanings above. A rule may carry both only when they are equal.
+//
+// Sites narrows a hook_prefix rule to sites of one listing (see Sites); it
+// does not combine with map, func, line, all_matches or site_pcs.
 type Rule struct {
 	Program             string          `json:"program"`
 	Auto                bool            `json:"auto,omitempty"`
@@ -66,6 +69,7 @@ type Rule struct {
 	SitePCs             []uint32        `json:"site_pcs,omitempty"`
 	Hook                string          `json:"hook,omitempty"`
 	HookPrefix          string          `json:"hook_prefix,omitempty"`
+	Sites               *Sites          `json:"sites,omitempty"`
 	StackLowestOffset   json.RawMessage `json:"stack_lowest_offset,omitempty"`
 	LegacyFrameRounding json.RawMessage `json:"frame_rounding,omitempty"`
 }
@@ -192,6 +196,9 @@ func Validate(rules []Rule) error {
 		}
 		if r.Auto && r.Map != "" {
 			return fmt.Errorf("rule %d: auto selects every supported lookup; map must be empty", i)
+		}
+		if err := r.validateSites(); err != nil {
+			return fmt.Errorf("rule %d: %w", i, err)
 		}
 		if seen[r.Program] {
 			return fmt.Errorf("rule %d: only one rule per program is supported", i)
