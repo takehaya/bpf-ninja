@@ -174,6 +174,7 @@ def audit(events, expected, kernel):
 SYSCALLHOOK_TESTS = (
     "TestIntegrationMapTypes", "TestIntegrationLoader", "TestIntegrationIndirectJump", "TestIntegrationJumpLimit",
     "TestIntegrationInjectHold", "TestIntegrationRetry", "TestIntegrationRetryPreempt", "TestIntegrationDevBound",
+    "TestIntegrationVerifierRefused",
     "TestBpfAutoStatic", "TestBPFStopsBehaviour", "TestBPFStopsCount", "TestBPFStopsDefault", "TestBPFStopsFallback",
     "TestBPFStopsOutlivingChild", "TestBPFStopsLeaderExit", "TestBPFStopsCancelEndsChild",
     "TestBPFStopsChildNotInstrumented", "TestBPFStopsTargetListener", "TestBPFStopsCommonAttrs",

@@ -1449,16 +1449,32 @@ func offloadAudit(attr []byte) error {
 }
 
 // trialLoadError is the error of a stack trial the kernel refused with
-// loadErr and log: errTrialVerifier when the verifier refused it (EACCES or
-// EINVAL without the stats line), else errAuditUnavailable.
+// loadErr and log: errTrialVerifier for EACCES or EINVAL when the log has a
+// line other than the statistics the kernel prints after every check,
+// refused or not (the verifier's reason), or no line at all (the kernel
+// refused the program before the verifier ran, as for a device that is
+// gone); the original then gets the kernel's own error. Else
+// errAuditUnavailable.
 func trialLoadError(loadErr error, log string) error {
-	if (errors.Is(loadErr, unix.EACCES) || errors.Is(loadErr, unix.EINVAL)) && !strings.Contains(log, "processed") {
+	if (errors.Is(loadErr, unix.EACCES) || errors.Is(loadErr, unix.EINVAL)) && (strings.TrimSpace(log) == "" || !statsOnly(log)) {
 		return fmt.Errorf("%w: %v: %s", errTrialVerifier, loadErr, strings.TrimSpace(log))
 	}
 	if log != "" {
 		return fmt.Errorf("%w: trial PROG_LOAD: %w: %s", errAuditUnavailable, loadErr, strings.TrimSpace(log))
 	}
 	return fmt.Errorf("%w: trial PROG_LOAD: %w", errAuditUnavailable, loadErr)
+}
+
+// statsOnly says whether every line of a verifier log is one of the
+// statistics lines print_verification_stats writes with BPF_LOG_STATS.
+func statsOnly(log string) bool {
+	for line := range strings.Lines(log) {
+		line = strings.TrimSpace(line)
+		if line != "" && !strings.HasPrefix(line, "verification time ") && !strings.HasPrefix(line, "stack depth ") && !strings.HasPrefix(line, "processed ") {
+			return false
+		}
+	}
+	return true
 }
 
 func (s *supervisor) preloadDepths(r *remote, attr []byte, rounding int) (report inject.StackReport, err error) {

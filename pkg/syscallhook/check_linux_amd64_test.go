@@ -298,6 +298,8 @@ func TestStackErrorClass(t *testing.T) {
 	_, absent := frameFloors([]int{8}, []string{"q"}, raw, inject.KernelInfo{Major: 7})
 	offload := make([]byte, 128)
 	put32(offload, 64, 3)
+	const refusedStats = "verification time 6 usec\nstack depth 0\nprocessed 1 insns (limit 1000000) max_states_per_insn 0 total_states 0 peak_states 0 mark_read 0\n"
+	refusedLog := "0: R1=ctx() R10=fp0\n0: (95) exit\nR0 !read_ok\n" + refusedStats
 	mapRule := Rule{Program: "p", HookPrefix: "h", Map: "m"}
 	for _, tc := range []struct {
 		name     string
@@ -310,6 +312,14 @@ func TestStackErrorClass(t *testing.T) {
 		{"trial-enomem", trialLoadError(unix.ENOMEM, ""), stepRefuse, "stack"},
 		{"func-info", fmt.Errorf("%w: %w", errAuditUnavailable, unix.EFAULT), stepRefuse, "stack"},
 		{"trial-verifier", trialLoadError(unix.EACCES, "R0 !read_ok"), stepOriginal, "verifier"},
+		// The kernel prints the statistics after a refused check as well.
+		{"trial-verifier-stats", trialLoadError(unix.EACCES, refusedLog), stepOriginal, "verifier"},
+		{"trial-einval-stats", trialLoadError(unix.EINVAL, "func#0 @0\n"+refusedStats), stepOriginal, "verifier"},
+		// Refused before the verifier ran (a device that is gone): the original loads.
+		{"trial-einval-no-log", trialLoadError(unix.EINVAL, ""), stepOriginal, "verifier"},
+		// The check passed and the load failed later.
+		{"trial-einval-stats-only", trialLoadError(unix.EINVAL, refusedStats), stepRefuse, "stack"},
+		{"trial-eperm-log", trialLoadError(unix.EPERM, refusedLog), stepRefuse, "stack"},
 		{"no-depth-line", analysisErr(noDepth), stepOriginal, "analysis"},
 		{"depth-count", analysisErr(depthCount), stepOriginal, "analysis"},
 		{"ambiguous-name", analysisErr(ambiguous), stepOriginal, "analysis"},

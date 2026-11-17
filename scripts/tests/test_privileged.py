@@ -208,7 +208,7 @@ class RunnerTests(unittest.TestCase):
         binary = [*module.SYSCALLHOOK_TESTS, *module.SYSCALLHOOK_UNPRIVILEGED, "TestConfig", "TestBPFStopFilterCommands"]
         stops = "".join(f"--- PASS: {name} (0.01s)\n" for name in module.SYSCALLHOOK_TESTS if name.startswith("TestBPFStops"))
         every_passed = ("--- PASS: TestBpfAutoStatic (0.01s)\n--- PASS: TestIntegrationMapTypes (0.01s)\n--- PASS: TestIntegrationLoader (0.01s)\n--- PASS: TestIntegrationIndirectJump (0.01s)\n--- PASS: TestIntegrationJumpLimit (0.01s)\n--- PASS: TestIntegrationInjectHold (0.01s)\n"
-                        "--- PASS: TestIntegrationRetry (0.01s)\n--- PASS: TestIntegrationRetryPreempt (0.01s)\n--- PASS: TestIntegrationDevBound (0.01s)\n"
+                        "--- PASS: TestIntegrationRetry (0.01s)\n--- PASS: TestIntegrationRetryPreempt (0.01s)\n--- PASS: TestIntegrationDevBound (0.01s)\n--- PASS: TestIntegrationVerifierRefused (0.01s)\n"
                         "--- PASS: TestBpfFdArray (0.01s)\n--- PASS: TestBpfLoaderLogSmall (0.01s)\n--- PASS: TestBpfTailCallReachabilityProbe (0.01s)\n")
         passed = every_passed + stops
         for output, code, expected in (
@@ -230,7 +230,7 @@ class RunnerTests(unittest.TestCase):
              "=== RUN   TestIntegrationIndirectJump\n--- PASS: TestIntegrationIndirectJump (0.01s)\n"
              "=== RUN   TestIntegrationJumpLimit\n--- PASS: TestIntegrationJumpLimit (0.01s)\n"
              "=== RUN   TestIntegrationInjectHold\n--- PASS: TestIntegrationInjectHold (0.01s)\n"
-             "--- PASS: TestIntegrationRetry (0.01s)\n--- PASS: TestIntegrationRetryPreempt (0.01s)\n--- PASS: TestIntegrationDevBound (0.01s)\n"
+             "--- PASS: TestIntegrationRetry (0.01s)\n--- PASS: TestIntegrationRetryPreempt (0.01s)\n--- PASS: TestIntegrationDevBound (0.01s)\n--- PASS: TestIntegrationVerifierRefused (0.01s)\n"
              "--- PASS: TestBpfFdArray (0.01s)\n--- PASS: TestBpfLoaderLogSmall (0.01s)\n--- PASS: TestBpfTailCallReachabilityProbe (0.01s)\n" + stops, 0, 0),
             # Kernels before 6.10 lack bpf_preempt_disable.
             (passed.replace("--- PASS: TestIntegrationRetryPreempt (0.01s)\n",
@@ -285,7 +285,7 @@ class RunnerTests(unittest.TestCase):
 
     def test_syscallhook_every_syscall_pass_is_a_gate(self):
         every = ("--- PASS: TestBpfAutoStatic (0.01s)\n--- PASS: TestIntegrationMapTypes (0.01s)\n--- PASS: TestIntegrationLoader (0.01s)\n--- PASS: TestIntegrationIndirectJump (0.01s)\n--- PASS: TestIntegrationJumpLimit (0.01s)\n--- PASS: TestIntegrationInjectHold (0.01s)\n"
-                 "--- PASS: TestIntegrationRetry (0.01s)\n--- PASS: TestIntegrationRetryPreempt (0.01s)\n--- PASS: TestIntegrationDevBound (0.01s)\n"
+                 "--- PASS: TestIntegrationRetry (0.01s)\n--- PASS: TestIntegrationRetryPreempt (0.01s)\n--- PASS: TestIntegrationDevBound (0.01s)\n--- PASS: TestIntegrationVerifierRefused (0.01s)\n"
                  "--- PASS: TestBpfFdArray (0.01s)\n--- PASS: TestBpfLoaderLogSmall (0.01s)\n--- PASS: TestBpfTailCallReachabilityProbe (0.01s)\n")
         default = every + "".join(
             f"--- PASS: {name} (0.01s)\n" for name in module.SYSCALLHOOK_TESTS if name.startswith("TestBPFStops")
