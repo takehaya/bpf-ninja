@@ -40,7 +40,13 @@ const (
 // ArgSite argument carries. A wrapped site needs Args. Elsewhere nil Args
 // leaves the arguments to the provenance rules alone. A target whose Args is
 // one of the callABIs is a call target: a hook right after a helper outside
-// the map helpers, or after a kernel-function call, on condition any.
+// the map helpers, or after a kernel-function call, on condition any. A call
+// target after a helper that runs or registers a callback is refused. For a
+// kernel function the no-callback, no-lock and returns-once premises are
+// enforced by the transformer's deny-list, not here: the checker sees only a
+// BTF id, never a kernel function's name. An accepted hook is safe because
+// checkHook admits only load-only hook bodies and the postlude restores R0
+// and keeps R6-R9 and the stack, not because the kernel refuses the load.
 type SiteTarget struct {
 	Site   int        `json:"site"`
 	When   TargetWhen `json:"when"`
@@ -804,6 +810,9 @@ func supportedHelper(ins asm.Instruction) bool {
 }
 // callbackHelper reports the helpers that take a callback (ARG_PTR_TO_FUNC
 // in Linux 6.12 and 7.0): a hook after one is outside the proof's premise S0.
+// It covers helpers only. Kernel functions that take a callback, take a lock
+// or do not return once are refused by the transformer's deny-list, since
+// the checker cannot see kernel-function names.
 func callbackHelper(id asm.BuiltinFunc) bool {
 	switch id {
 	case asm.FnForEachMapElem, asm.FnTimerSetCallback, asm.FnFindVma, asm.FnLoop, asm.FnUserRingbufDrain:

@@ -136,6 +136,10 @@ nil metadata key はロード時の意味を持たないため checker と命令
 map 関連付け前に、両命令列で共有する変化のない外部 symbol/FD 対応表の下で検査する。
 数値 FD はその名前空間の識別子であり、プロセスをまたぐ実 map の保存形式ではない。
 
+call target (`Args` が call hook の引数列である target) を受理するのは、map helper、tail call、callback を実行または登録する helper (id 164, 170, 180, 181, 209) 以外の helper の直後か、kernel function 呼び出しの直後に限る。
+kernel function について callback を取らない、lock を取らない、一度だけ戻るという前提は transformer の deny-list が保証する。checker は BTF id を見るが kernel function の名前を見ないためである。
+受理した call hook の安全性は kernel がロードを拒否することに依らない。hook 本体の検査 (P7、本体はロードだけを行う) と、R0 を戻し R6-R9 と床より上の stack を保つことを確かめる postlude の検査に依る。
+
 受理は元プログラムと変換後プログラムの BPF validity、呼び出し規約、信頼済みの関数別 stack の床、plan 由来の信頼済み Targets を前提とする。
 kernel の受理、BTF/CO-RE の意味、JIT の正しさ、observer noninterference、明記した検査以外の観測引数、並行実行、時刻、乱数は証明しない。
 検査で BPF のロード、attach、pin は行わない。

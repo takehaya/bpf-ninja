@@ -130,6 +130,10 @@ Associated maps are refused in both streams even if the associations are identic
 Check before map association, using a shared, unchanged external symbol/FD binding table.
 Numeric FDs are identifiers in that namespace, not transferable live maps.
 
+A call target (a target whose `Args` is a call-hook list) is accepted only after a helper outside the map helpers, the tail call and the helpers that run or register a callback (ids 164, 170, 180, 181, 209), or after a kernel-function call.
+For kernel functions the no-callback, no-lock and returns-once premises are enforced by the transformer's deny-list, because the checker sees a BTF id but not the kernel function's name.
+The safety of an accepted call hook rests on the hook-body check (P7: the body only loads) and on the postlude checks that restore R0 and keep R6-R9 and the stack above the floor, not on the kernel refusing the load.
+
 Acceptance is conditional on valid original and transformed BPF, the calling convention, trusted per-function floors, and trusted plan-derived targets.
 The checker does not establish kernel acceptance, BTF/CO-RE meaning, JIT correctness, observer noninterference, observation arguments beyond the listed checks, concurrency, time or randomness.
 It does not load, attach or pin BPF.
