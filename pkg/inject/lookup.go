@@ -1740,6 +1740,14 @@ func transformLookupProgramGuarded(insns asm.Instructions, typ ebpf.ProgramType,
 		if len(allTails) == 0 {
 			return nil, plan, refuse("TailCalls: no bpf_tail_call in the program")
 		}
+		if len(tails) == 0 {
+			// A tail-call hook nothing calls is not a subprogram to the
+			// kernel, which then refuses the func_info that lists it.
+			req.TailCalls = false
+			if len(groups) == 0 && !req.Entry {
+				return nil, plan, refuse("no tail-call site can be hooked (%d skipped)", len(plan.skipped))
+			}
+		}
 	}
 	names := map[string]bool{}
 	for _, group := range groups {

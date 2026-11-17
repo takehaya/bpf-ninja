@@ -1177,3 +1177,23 @@ func TestBpfTailCallInSubprogram(t *testing.T) {
 		}
 	}
 }
+
+// A program whose tail calls are all skipped loads with its other hooks: the
+// kernel refused it while the transform still generated the tail-call hook.
+func TestBpfTailCallHookWithoutSites(t *testing.T) {
+	testutil.SkipIfNotRoot(t)
+	caller := tailCallerFixture()
+	drop := map[uint32]string{}
+	for _, tail := range tailCallSites(caller.Programs["caller"].Instructions) {
+		drop[tail.SitePC] = "dropped"
+	}
+	plan, err := transformLookup(caller, LookupRequest{ProgramName: "caller", Entry: true, TailCalls: true, HookName: "obs", Stack: StackAudit{LowestOffset: 0}, Drop: drop})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.hooks) != 1 || plan.hooks[0].Name != "obs_entry" {
+		t.Fatalf("hooks: %+v", plan.hooks)
+	}
+	loaded := loadOrSkip(t, caller)
+	loaded.Close()
+}
