@@ -107,7 +107,7 @@ func skStorageFixture() *ebpf.CollectionSpec {
 	return spec
 }
 
-// localStorageMap is a socket or cgroup storage map of int to u64.
+// localStorageMap is a socket, task or cgroup storage map of int to u64.
 func localStorageMap(typ ebpf.MapType) *ebpf.MapSpec {
 	return &ebpf.MapSpec{Name: "storage", Type: typ, KeySize: 4, ValueSize: 8, Flags: 1, // BPF_F_NO_PREALLOC
 		Key: &btf.Int{Name: "int", Size: 4, Encoding: btf.Signed}, Value: &btf.Int{Name: "u64", Size: 8}}
@@ -177,8 +177,9 @@ func TestBpfCallAllPointerDynptrData(t *testing.T) {
 }
 
 // currentTaskFixture (tc) takes the current task with
-// bpf_get_current_task_btf and then, with what bpf_task_pt_regs, its
-// registers; it stores 1 in out slot 0 and returns TC_ACT_OK.
+// bpf_get_current_task_btf and then, by what, its registers
+// (bpf_task_pt_regs) or its task_storage entry without creating one
+// (bpf_task_storage_get); it stores 1 in out slot 0 and returns TC_ACT_OK.
 func currentTaskFixture(what asm.BuiltinFunc) func() *ebpf.CollectionSpec {
 	return func() *ebpf.CollectionSpec {
 		insns := asm.Instructions{
@@ -186,12 +187,20 @@ func currentTaskFixture(what asm.BuiltinFunc) func() *ebpf.CollectionSpec {
 			asm.Mov.Imm(asm.R7, 0),
 			asm.FnGetCurrentTaskBtf.Call(),
 		}
-		if what == asm.FnTaskPtRegs {
+		switch what {
+		case asm.FnTaskPtRegs:
 			insns = append(insns, asm.Mov.Reg(asm.R1, asm.R0), asm.FnTaskPtRegs.Call())
+		case asm.FnTaskStorageGet:
+			insns = append(insns, asm.Mov.Reg(asm.R2, asm.R0), asm.LoadMapPtr(asm.R1, 0).WithReference("storage"),
+				asm.Mov.Imm(asm.R3, 0), asm.Mov.Imm(asm.R4, 0), asm.FnTaskStorageGet.Call())
 		}
 		insns = append(insns, asm.JEq.Imm(asm.R0, 0, "store"), asm.Mov.Imm(asm.R7, 1), asm.Mov.Imm(asm.R0, 0).WithSymbol("store"))
 		insns = append(append(insns, outStore(0, asm.R7)...), asm.Mov.Imm(asm.R0, 0), asm.Return())
-		return callFixtureSpec(ebpf.SchedCLS, insns)
+		spec := callFixtureSpec(ebpf.SchedCLS, insns)
+		if what == asm.FnTaskStorageGet {
+			spec.Maps["storage"] = localStorageMap(ebpf.TaskStorage)
+		}
+		return spec
 	}
 }
 
@@ -200,6 +209,12 @@ func TestBpfCallAllPointerGetCurrentTaskBtf(t *testing.T) {
 }
 func TestBpfCallAllPointerTaskPtRegs(t *testing.T) {
 	testPointerKind(t, helperOffered(t, currentTaskFixture(asm.FnTaskPtRegs)), "bpf_task_pt_regs", nil)
+}
+
+// tc may call bpf_task_storage_get from 6.18 on; older kernels refuse the
+// unmodified fixture, and the test skips with the kernel's message.
+func TestBpfCallAllPointerTaskStorageGet(t *testing.T) {
+	testPointerKind(t, helperOffered(t, currentTaskFixture(asm.FnTaskStorageGet)), "bpf_task_storage_get", nil)
 }
 
 // cgrpStorageFixture (tc) acquires the root cgroup (id 1) with the kfunc

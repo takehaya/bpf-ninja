@@ -43,6 +43,11 @@ def allowed_skip(package, test, output, kernel):
         if test in {"TestBpfCallKfuncScalar", "TestBpfCallKfuncDynptrSlice", "TestBpfCallKfuncAcquired",
                     "TestBpfCallKfuncAcquiredMissingRelease", "TestBpfCallAllPointerCgrpStorageGet"} and "kernel lacks kfunc" in output:
             return kernel == "6.1"
+        # tc may call bpf_task_storage_get from 6.18 on; older kernels refuse
+        # the unmodified fixture with "unknown func" (6.1) or "cannot use helper".
+        if test == "TestBpfCallAllPointerTaskStorageGet":
+            return kernel in {"6.1", "6.6", "6.12", "6.15"} and "kernel does not offer the helper here" in output and (
+                "unknown func bpf_task_storage_get" in output or "cannot use helper bpf_task_storage_get" in output)
         if test == "TestBpfCallKfuncPointer" and "kernel lacks kfunc" in output:
             return kernel in {"6.1", "6.6", "6.12"}
         # 7.3 rejects a tail call reachable from a bpf_loop callback outright.
