@@ -493,7 +493,7 @@ A failed transformation prints `program "P": injection skipped: inject: refused:
 Without `--fail-closed`, that program then loads unchanged, without hooks; the loader's other programs are still matched against the rules.
 With `--fail-closed`, that load fails with `EPERM`.
 
-If trial loading, statistics parsing, or function matching fails, automatic rules leave the original program unchanged, explicit rules refuse the load, and `--fail-closed` refuses either kind.
+If trial loading, statistics parsing, or function matching fails, a rule that names its one site with `map` refuses the load, every other rule (`auto`, or `calls`, `entry` or `tail_calls` without `auto`) leaves the original program unchanged, and `--fail-closed` refuses either kind.
 A program with an [indirect jump](#load-stream-check) has no trial load and no floor: an explicit rule loads it unchanged, and `--fail-closed` still refuses it.
 
 The `stack` block in `--lookups-json` and `--hooks-json` records the kernel release, every function's verifier and direct-text depths, the selected floor, source, and reserved slots.
@@ -972,6 +972,7 @@ In both modes, cancelling or killing `inject-run` kills the target, and with the
 - Loads must use 8-byte `func_info` and 16-byte `line_info` records.
   Each input buffer can be at most 16 MiB, and the attr at most 4096 bytes.
   `inject-run` refuses loads with kernel-side CO-RE records, fd arrays, tokens, signatures or other unknown extensions.
+- A device-bound XDP program (loaded with `prog_ifindex`, as the XDP metadata kernel functions require) gets no hooks: its trial load reports no stack depth, so every site has the reason `stack audit unavailable`.
 - A program with an indirect jump (`BPF_JA|BPF_X`) is never rewritten, so its sites are not observed and it does not appear in `--lookups-json`.
 - A program that a rule matches or `--lookups-json` discovers, and that references a `BPF_MAP_TYPE_INSN_ARRAY` map without an indirect jump, fails to load under `inject-run`, even when failing open.
   A successful trial load binds the array, so the loads that follow get `EBUSY`; the loader may report a different final error after retrying.

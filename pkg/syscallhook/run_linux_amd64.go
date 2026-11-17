@@ -237,6 +237,15 @@ func loadModuleBTF(id btf.ID, base *btf.Spec) (*btf.Spec, error) {
 	return h.Spec(base)
 }
 
+// refuseOriginal says whether a matched load whose rewrite did not load is
+// refused instead of loading the original: always with failClosed, and when
+// the stack audit is unavailable (stackErr) for a rule that names its one
+// site with map, which must be hooked. A rule with calls, entry or
+// tail_calls and no auto loads the original like an auto rule.
+func refuseOriginal(failClosed bool, rule Rule, stackErr error) bool {
+	return failClosed || stackErr != nil && !rule.Auto && rule.Map != "" && !errors.Is(stackErr, errTrialVerifier) && !errors.Is(stackErr, errIndirectJump)
+}
+
 func retryOriginalOrRefuse(failClosed bool, retry func() (int64, error)) (int64, error) {
 	if failClosed {
 		return -int64(unix.EPERM), nil
@@ -1041,8 +1050,7 @@ func (s *supervisor) entry(pid int, t *thread, regs unix.PtraceRegs) error {
 		if errors.As(injectErr, &sitesRefusal{}) && s.options.OnRefuse != nil {
 			s.options.OnRefuse(Refusal{Program: name, Func: entry, Reason: injectErr.Error()})
 		}
-		refuse := s.options.FailClosed || stackErr != nil && !rule.Auto && !errors.Is(stackErr, errTrialVerifier) && !errors.Is(stackErr, errIndirectJump)
-		ret, err = retryOriginalOrRefuse(refuse, func() (int64, error) {
+		ret, err = retryOriginalOrRefuse(refuseOriginal(s.options.FailClosed, *rule, stackErr), func() (int64, error) {
 			// Substituted attrs and buffers live in scratch memory, so the original
 			// registers, attr and input buffers still describe the unchanged load.
 			// A verifier attempt may have written the caller-owned log buffer.

@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"testing"
 
@@ -82,5 +83,34 @@ func TestCallxCheckPolicy(t *testing.T) {
 	check, err = loadCheckPolicy(notApplicable, true)
 	if check || !errors.Is(err, inject.ErrCheckerNotApplicable) {
 		t.Fatalf("fail-closed did not refuse: check=%v err=%v", check, err)
+	}
+}
+
+// Only a rule that names its one site with map refuses a load whose stack
+// audit is unavailable; a rule with calls, entry or tail_calls and no auto
+// loads the original like an auto rule, and --fail-closed refuses every kind.
+func TestRefuseOriginal(t *testing.T) {
+	audit := fmt.Errorf("offloaded programs do not expose local verifier stack accounting")
+	for _, tc := range []struct {
+		name       string
+		rule       Rule
+		failClosed bool
+		stackErr   error
+		want       bool
+	}{
+		{"map", Rule{Map: "sessions"}, false, audit, true},
+		{"map-audited", Rule{Map: "sessions"}, false, nil, false},
+		{"map-trial-verifier", Rule{Map: "sessions"}, false, fmt.Errorf("%w: x", errTrialVerifier), false},
+		{"map-indirect-jump", Rule{Map: "sessions"}, false, fmt.Errorf("%w at instruction 3", errIndirectJump), false},
+		{"auto", Rule{Auto: true}, false, audit, false},
+		{"calls", Rule{HookPrefix: "h", Calls: []string{"bpf_xdp_metadata_rx_timestamp"}}, false, audit, false},
+		{"entry", Rule{Hook: "h", Entry: true}, false, audit, false},
+		{"tail-calls", Rule{Hook: "h", TailCalls: true}, false, audit, false},
+		{"calls-fail-closed", Rule{HookPrefix: "h", Calls: []string{"bpf_ktime_get_ns"}}, true, audit, true},
+		{"auto-fail-closed", Rule{Auto: true}, true, nil, true},
+	} {
+		if got := refuseOriginal(tc.failClosed, tc.rule, tc.stackErr); got != tc.want {
+			t.Errorf("%s: refuseOriginal = %v, want %v", tc.name, got, tc.want)
+		}
 	}
 }

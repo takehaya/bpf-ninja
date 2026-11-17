@@ -65,6 +65,8 @@ func TestIntegrationLoader(t *testing.T) {
 		{"pre68-inexact", inexactExpected, false, false, func(r *Rule) {}},
 		{"preload-auto", "plain", false, true, func(r *Rule) { r.Auto, r.Map = true, "" }},
 		{"preload-explicit", "refused", false, true, func(r *Rule) {}},
+		// A rule without auto that names no site with map loads the original.
+		{"preload-entry", "plain", false, true, func(r *Rule) { r.Entry, r.Map = true, "" }},
 		{"preload-closed", "refused", true, true, func(r *Rule) { r.Auto, r.Map = true, "" }},
 		// The loader's map is BPF_F_RDONLY_PROG, whose hook becomes static.
 		{"static-untrusted", "hook-rdonly", true, false, func(r *Rule) { r.Auto, r.Map, r.StaticUntrusted = true, "", true }},
