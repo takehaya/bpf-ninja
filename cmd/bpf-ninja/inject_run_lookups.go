@@ -203,6 +203,9 @@ func discoveryJSON(d syscallhook.Discovery, kinds map[string]bool) discoveredPro
 	out.Rule.Auto = true
 	if len(kinds) == 1 && kinds["lookups"] {
 		out.Rule.Hook = lookupsRuleHook
+		if len(d.Lookups) == 0 {
+			out.Rule = syscallhook.Rule{} // it would hook nothing: every load would refuse it
+		}
 		return out
 	}
 	out.Rule = readyRule(out, d, kinds)

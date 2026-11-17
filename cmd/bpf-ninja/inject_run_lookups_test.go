@@ -226,4 +226,23 @@ func TestDiscoveryJSONReadyRule(t *testing.T) {
 	if data, _ := json.Marshal(out); strings.Contains(string(data), `"rule"`) {
 		t.Errorf("empty ready rule written: %s", data)
 	}
+	// A program with nothing to hook gets a ready rule for no subset of
+	// kinds but one with entry.
+	empty := syscallhook.Discovery{Program: "p", Func: "p", Type: ebpf.XDP, Maps: map[string]ebpf.MapType{"services": ebpf.Hash}}
+	for mask := 1; mask < 1<<len(lookupsKinds); mask++ {
+		var names []string
+		for i, kind := range lookupsKinds {
+			if mask&(1<<i) != 0 {
+				names = append(names, kind)
+			}
+		}
+		k, err := parseLookupsKinds(strings.Join(names, ","))
+		if err != nil {
+			t.Fatal(err)
+		}
+		data, _ := json.Marshal(discoveryJSON(empty, k))
+		if written := strings.Contains(string(data), `"rule"`); written != k["entry"] {
+			t.Errorf("%s: rule written %v: %s", strings.Join(names, ","), written, data)
+		}
+	}
 }
