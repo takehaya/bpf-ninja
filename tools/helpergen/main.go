@@ -8,9 +8,12 @@
 //
 // Ids and names come from ___BPF_FUNC_MAPPER in include/uapi/linux/bpf.h.
 // Result kinds come from the .ret_type of every struct bpf_func_proto
-// initialiser in the tree's .c files, joined to ids through
-// "case BPF_FUNC_x: return &proto;" switch arms. Ids that join no prototype,
-// or prototypes of different kinds, take their kind from overrides.txt.
+// initialiser in the tree's .c files (every variant of a name, also under
+// #ifdef; none is RET_INTEGER, the kernel's zero value), joined to ids
+// through "case BPF_FUNC_x: return &proto;" switch arms. Ids that join no
+// prototype, or prototypes of different kinds, take their kind from
+// overrides.txt, which must then be one of the joined kinds. An override
+// for an id the tree does not have, or a second one for an id, is an error.
 // A helper's argument count is the largest N with an .argN_type other than
 // ARG_DONTCARE over all prototypes it joins, the union over its variants.
 // argoverrides.txt gives the count of an id that joins no prototype and
@@ -154,8 +157,10 @@ func load(ksrc string) ([]helper, string, error) {
 			return nil
 		}
 		src := string(b)
-		for name, kind := range parseProtos(src) {
-			add(protos, name, kind)
+		for name, kinds := range parseProtos(src) {
+			for kind := range kinds {
+				add(protos, name, kind)
+			}
 		}
 		for name, n := range parseProtoArgs(src) {
 			protoArgs[name] = max(protoArgs[name], n)
@@ -174,6 +179,9 @@ func load(ksrc string) ([]helper, string, error) {
 	if err != nil {
 		return nil, "", err
 	}
+	if err := checkOverrideIDs("overrides.txt", len(helpers), keys(overrides)); err != nil {
+		return nil, "", err
+	}
 	if err := resolve(helpers, protos, joins, overrides); err != nil {
 		return nil, "", err
 	}
@@ -181,10 +189,33 @@ func load(ksrc string) ([]helper, string, error) {
 	if err != nil {
 		return nil, "", err
 	}
+	if err := checkOverrideIDs("argoverrides.txt", len(helpers), keys(argOverrides)); err != nil {
+		return nil, "", err
+	}
 	if err := resolveArgs(helpers, protoArgs, joins, argOverrides); err != nil {
 		return nil, "", err
 	}
 	return helpers, version, nil
+}
+
+func keys[V any](m map[int]V) []int {
+	var out []int
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Ints(out)
+	return out
+}
+
+// checkOverrideIDs fails for an override of an id that is not a helper of
+// the tree: id 0 or past its last id (a stale entry).
+func checkOverrideIDs(file string, n int, ids []int) error {
+	for _, id := range ids {
+		if id <= 0 || id >= n {
+			return fmt.Errorf("%s: id %d is not a helper of this tree (ids 1-%d)", file, id, n-1)
+		}
+	}
+	return nil
 }
 
 func add(m map[string]map[string]bool, k, v string) {
@@ -248,21 +279,24 @@ func parseMapper(src string) ([]helper, error) {
 	return hs, nil
 }
 
-// parseProtos returns the result kind of each bpf_func_proto initialiser.
-func parseProtos(src string) map[string]string {
-	out := map[string]string{}
+// parseProtos returns the result kinds of each bpf_func_proto initialiser
+// name, over all its variants in src (#ifdef branches define one name more
+// than once). An initialiser without .ret_type returns RET_INTEGER, the
+// enum's zero value.
+func parseProtos(src string) map[string]map[string]bool {
+	out := map[string]map[string]bool{}
 	for _, m := range protoRE.FindAllStringSubmatch(src, -1) {
-		r := retTypeRE.FindStringSubmatch(m[2])
-		if r == nil {
-			continue
+		ret := "RET_INTEGER"
+		if r := retTypeRE.FindStringSubmatch(m[2]); r != nil {
+			ret = strings.TrimSpace(r[1])
 		}
-		switch ret := strings.TrimSpace(r[1]); {
+		switch {
 		case ret == "RET_INTEGER":
-			out[m[1]] = kindScalar
+			add(out, m[1], kindScalar)
 		case ret == "RET_VOID":
-			out[m[1]] = kindVoid
+			add(out, m[1], kindVoid)
 		case strings.HasPrefix(ret, "RET_"):
-			out[m[1]] = kindPointer
+			add(out, m[1], kindPointer)
 		}
 	}
 	return out
@@ -317,7 +351,7 @@ func parseJoins(src string) map[string]map[string]bool {
 	return out
 }
 
-// parseOverrides reads "id kind # reason" lines.
+// parseOverrides reads "id kind # reason" lines, at most one per id.
 func parseOverrides(txt string) (map[int]string, error) {
 	out := map[int]string{}
 	for i, line := range strings.Split(txt, "\n") {
@@ -330,6 +364,9 @@ func parseOverrides(txt string) (map[int]string, error) {
 		kind := kindOf(f[len(f)-1])
 		if len(f) != 2 || err != nil || kind == "" {
 			return nil, fmt.Errorf("overrides.txt:%d: want \"id scalar|pointer|void # reason\"", i+1)
+		}
+		if _, dup := out[id]; dup {
+			return nil, fmt.Errorf("overrides.txt:%d: a second override of id %d", i+1, id)
 		}
 		out[id] = kind
 	}
@@ -352,6 +389,9 @@ func parseArgOverrides(txt string) (map[int]int, error) {
 		}
 		if len(f) != 2 || err != nil || n < 0 || n > 5 {
 			return nil, fmt.Errorf("argoverrides.txt:%d: want \"id 0-5 # reason\"", i+1)
+		}
+		if _, dup := out[id]; dup {
+			return nil, fmt.Errorf("argoverrides.txt:%d: a second count of id %d", i+1, id)
 		}
 		out[id] = n
 	}
@@ -402,6 +442,8 @@ func resolve(hs []helper, protos, joins map[string]map[string]bool, overrides ma
 			for k := range kinds {
 				h.Kind = k
 			}
+		case haveOverride && len(kinds) > 1 && !kinds[o]:
+			problems = append(problems, fmt.Sprintf("%d %s: override %s is none of the joined kinds %v", h.ID, h.Name, o, used))
 		case haveOverride:
 			h.Kind = o
 		case len(kinds) == 0:

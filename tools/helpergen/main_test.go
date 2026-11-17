@@ -105,14 +105,38 @@ func TestParseMapper(t *testing.T) {
 
 func TestParseProtos(t *testing.T) {
 	got := parseProtos(testC)
-	want := map[string]string{
-		"bpf_map_lookup_elem_proto":  kindPointer,
-		"bpf_tail_call_proto":        kindVoid,
-		"bpf_get_stack_proto":        kindScalar,
-		"bpf_get_stack_proto_raw_tp": kindScalar,
-		"bpf_bind_proto":             kindPointer,
+	want := map[string]map[string]bool{
+		"bpf_map_lookup_elem_proto":  {kindPointer: true},
+		"bpf_tail_call_proto":        {kindVoid: true},
+		"bpf_get_stack_proto":        {kindScalar: true},
+		"bpf_get_stack_proto_raw_tp": {kindScalar: true},
+		"bpf_bind_proto":             {kindPointer: true},
 	}
 	if !reflect.DeepEqual(got, want) {
+		t.Errorf("parseProtos = %v, want %v", got, want)
+	}
+}
+
+// Every variant of a prototype name in one file counts, as under #ifdef,
+// and a prototype without .ret_type returns RET_INTEGER.
+func TestParseProtosVariants(t *testing.T) {
+	src := `
+#ifdef CONFIG_X
+const struct bpf_func_proto bpf_x_proto = {
+	.ret_type	= RET_PTR_TO_MEM_OR_NULL,
+};
+#else
+const struct bpf_func_proto bpf_x_proto = {
+	.ret_type	= RET_INTEGER,
+};
+#endif
+static const struct bpf_func_proto bpf_y_proto = {
+	.func		= bpf_y,
+	.arg1_type	= ARG_ANYTHING,
+};
+`
+	want := map[string]map[string]bool{"bpf_x_proto": {kindPointer: true, kindScalar: true}, "bpf_y_proto": {kindScalar: true}}
+	if got := parseProtos(src); !reflect.DeepEqual(got, want) {
 		t.Errorf("parseProtos = %v, want %v", got, want)
 	}
 }
@@ -196,10 +220,7 @@ func TestParseResolve(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	protos := map[string]map[string]bool{}
-	for p, k := range parseProtos(testC) {
-		add(protos, p, k)
-	}
+	protos := parseProtos(testC)
 	joins := parseJoins(testC)
 	if err := resolve(hs, protos, joins, nil); err == nil || !strings.Contains(err.Error(), "5 trace_printk: no prototype joined") {
 		t.Fatalf("resolve without override: %v", err)
@@ -236,5 +257,45 @@ func TestParseResolve(t *testing.T) {
 	}
 	if _, err := parseOverrides("2 maybe\n"); err == nil {
 		t.Error("bad override kind accepted")
+	}
+
+	// Prototypes of different kinds need an override, which must be one of them.
+	add(protos, "bpf_get_stack_proto_raw_tp", kindPointer)
+	if err := resolve(hs, protos, joins, overrides); err == nil || !strings.Contains(err.Error(), "3 get_stack: prototypes disagree") {
+		t.Errorf("disagreeing prototypes: %v", err)
+	}
+	for _, tc := range []struct{ txt, want string }{
+		{"5 scalar #\n3 void # neither kind\n", "3 get_stack: override RetVoid is none of the joined kinds"},
+	} {
+		o, err := parseOverrides(tc.txt)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := resolve(hs, protos, joins, o); err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%q: %v", tc.txt, err)
+		}
+	}
+	o, _ := parseOverrides("5 scalar #\n3 pointer # one of them\n")
+	if err := resolve(hs, protos, joins, o); err != nil || hs[3].Kind != kindPointer {
+		t.Errorf("joined-kind override: %v, kind %s", err, hs[3].Kind)
+	}
+}
+
+// A second override of an id, and an override of an id the tree does not
+// have, are errors.
+func TestOverrideIDs(t *testing.T) {
+	if _, err := parseOverrides("5 scalar # a\n5 scalar # b\n"); err == nil || !strings.Contains(err.Error(), "a second override of id 5") {
+		t.Errorf("duplicate override: %v", err)
+	}
+	if _, err := parseArgOverrides("5 5 # a\n5 4 # b\n"); err == nil || !strings.Contains(err.Error(), "a second count of id 5") {
+		t.Errorf("duplicate argument override: %v", err)
+	}
+	for _, ids := range [][]int{{0}, {6}, {2, 9}} {
+		if err := checkOverrideIDs("overrides.txt", 6, ids); err == nil || !strings.Contains(err.Error(), "is not a helper of this tree") {
+			t.Errorf("ids %v: %v", ids, err)
+		}
+	}
+	if err := checkOverrideIDs("overrides.txt", 6, []int{1, 5}); err != nil {
+		t.Error(err)
 	}
 }
