@@ -55,6 +55,10 @@ func TestHookSummary(t *testing.T) {
 		{"copy", inject.LookupResultRaw{Hooks: []inject.LookupHook{
 			{Name: "obs_flows", Kind: inject.HookLookup, MapName: "flows", Copied: true, Sites: pcs(18)},
 		}}, `hook "obs_flows" (lookup map "flows", value copied to stack, site pc 18)`},
+		{"unmatched-maps-name", inject.LookupResultRaw{
+			Hooks:   []inject.LookupHook{{Name: "obs_a", Kind: inject.HookLookup, MapName: "a", Sites: pcs(4)}},
+			Skipped: []inject.LookupSite{{MapName: "b", Reason: `Maps name "b" matches no lookup`}},
+		}, `hook "obs_a" (lookup map "a", site pc 4); skipped map "b" (Maps name "b" matches no lookup)`},
 		{"dispatch-static", inject.LookupResultRaw{Hooks: []inject.LookupHook{
 			{Name: "d", Kind: inject.HookLookup, MapName: "sessions", Static: true, Dispatch: true, Sites: pcs(13)},
 			{Name: "d", Kind: inject.HookEntry, Static: true, Dispatch: true},
@@ -72,9 +76,10 @@ func TestHookSummary(t *testing.T) {
 	}
 }
 
-// Kernel BTF is loaded only for a rule with calls; a failed load is logged
-// and leaves it nil: a program without kernel-function calls keeps its
-// helper call hooks, and one with such a call gets no call hooks.
+// Kernel BTF is loaded for rules or a listing, which label kfunc call sites
+// with it; a failed load is logged and leaves it nil: a program without
+// kernel-function calls keeps its helper call hooks, and one with such a
+// call gets no call hooks.
 func TestLoadKernel(t *testing.T) {
 	spec := &btf.Spec{}
 	noCalls := []Rule{{Program: "p", Auto: true, Hook: "h"}}
@@ -87,12 +92,17 @@ func TestLoadKernel(t *testing.T) {
 		loads   int
 		wantLog string
 	}{
-		{"no calls", noCalls, nil, nil, 0, ""},
+		{"no calls", noCalls, nil, spec, 1, ""},
+		{"nothing to do", nil, nil, nil, 0, ""},
 		{"calls", withCalls, nil, spec, 1, ""},
 		{"unavailable", withCalls, errors.New("no vmlinux"), nil, 1, "inject-run: kernel BTF unavailable: kernel-function calls are not hooked: no vmlinux\n"},
+		{"listing", nil, nil, spec, 1, ""},
 	} {
 		var log bytes.Buffer
 		s := supervisor{options: Options{Rules: tc.rules, Log: &log}}
+		if tc.name == "listing" {
+			s.options.OnDiscover = func(Discovery) {}
+		}
 		loads := 0
 		s.loadKernel(func() (*btf.Spec, error) {
 			loads++

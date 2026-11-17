@@ -18,7 +18,8 @@ SYSCALLHOOK = "github.com/takehaya/bpf-ninja/pkg/syscallhook"
 
 def allowed_skip(package, test, output, kernel):
     if package == SYSCALLHOOK:
-        return test == "TestIntegrationIndirectJump" and "kernel lacks BPF_MAP_TYPE_INSN_ARRAY" in output
+        return ((test == "TestIntegrationIndirectJump" and "kernel lacks BPF_MAP_TYPE_INSN_ARRAY" in output)
+                or (test == "TestIntegrationRetryPreempt" and "kernel lacks bpf_preempt_disable" in output))
     if package == INJECT:
         # These tests require conntrack kfuncs in vmlinux BTF. The test checks
         # module BTF before emitting this reason.
@@ -36,6 +37,19 @@ def allowed_skip(package, test, output, kernel):
             return "set BPF_NINJA_VALIDATE_OBJECTS, BPF_NINJA_VALIDATE_CENSUS and BPF_NINJA_VALIDATE_OUTPUT" in output
         if test == "TestBpfLookupHooksNetfilter":
             return kernel == "6.1" and "BPF_PROG_TYPE_NETFILTER not supported" in output
+        # The kfunc tests skip on kernels without their kfuncs: 6.1 has none of
+        # bpf_dynptr_from_xdp, bpf_task_from_pid, bpf_cgroup_from_id and
+        # bpf_get_kmem_cache, which appears in 6.13.
+        if test in {"TestBpfCallKfuncScalar", "TestBpfCallKfuncDynptrSlice", "TestBpfCallKfuncAcquired",
+                    "TestBpfCallKfuncAcquiredMissingRelease", "TestBpfCallAllPointerCgrpStorageGet"} and "kernel lacks kfunc" in output:
+            return kernel == "6.1"
+        # tc may call bpf_task_storage_get from 6.18 on; older kernels refuse
+        # the unmodified fixture with "unknown func" (6.1) or "cannot use helper".
+        if test == "TestBpfCallAllPointerTaskStorageGet":
+            return kernel in {"6.1", "6.6", "6.12", "6.15"} and "kernel does not offer the helper here" in output and (
+                "unknown func bpf_task_storage_get" in output or "cannot use helper bpf_task_storage_get" in output)
+        if test == "TestBpfCallKfuncPointer" and "kernel lacks kfunc" in output:
+            return kernel in {"6.1", "6.6", "6.12"}
         # 7.3 rejects a tail call reachable from a bpf_loop callback outright.
         if test in {"TestBpfStackLimitsAcrossCalls/callback", "TestBpfStackLimitsAcrossCalls/callback-global"}:
             return kernel == "7.3-rc4" and "kernel forbids tail calls in callbacks" in output
@@ -64,7 +78,14 @@ def allowed_skip(package, test, output, kernel):
             "TestBpfQueueOpsInner", "TestBpfReadOnlyArg", "TestBpfReadOnlyArgShapes", "TestBpfReadOnlyArgCalls",
             "TestBpfReadOnlyKconfigArg", "TestBpfLookupWrapperGeneric",
             "TestBpfCallHookFibUntrusted", "TestBpfCallHookCtUntrusted", "TestBpfCallHookRowSkUntrusted",
-            "TestBpfCallHookRowLoadBytesMapUntrusted",
+            "TestBpfCallHookRowLoadBytesMapUntrusted", "TestBpfCallAllPointerSkFullsock", "TestBpfCallAllPointerTcpSock",
+            "TestBpfCallAllPointerRingbufReserve", "TestBpfCallAllPointerThisCpuPtr", "TestBpfCallAllPointerKptrXchg",
+            "TestBpfCallKfuncPointer", "TestBpfCallKfuncDynptrSlice", "TestBpfCallKfuncAcquired",
+            "TestBpfCallAllPointerGetListenerSock", "TestBpfCallAllPointerSkcToTcp6Sock", "TestBpfCallAllPointerSkcToTcpSock",
+            "TestBpfCallAllPointerSkcToTcpTimewaitSock", "TestBpfCallAllPointerSkcToTcpRequestSock",
+            "TestBpfCallAllPointerSkcToUdp6Sock", "TestBpfCallAllPointerSkcToUnixSock", "TestBpfCallAllPointerSkcToMptcpSock",
+            "TestBpfCallAllPointerSkStorageGet", "TestBpfCallAllPointerPerCpuPtr", "TestBpfCallAllPointerDynptrData",
+            "TestBpfCallAllPointerGetCurrentTaskBtf", "TestBpfCallAllPointerTaskPtRegs", "TestBpfCallAllPointerCgrpStorageGet",
         } and "kernel lacks arg:untrusted" in output
     # The record tests at untrusted and non-static dispatch hooks need
     # arg:untrusted, which 6.15 and older reject; the static dispatch case
@@ -132,7 +153,7 @@ def audit(events, expected, kernel):
 # syscall-stop modes, including the fallback from the seccomp filter.
 SYSCALLHOOK_TESTS = (
     "TestIntegrationMapTypes", "TestIntegrationLoader", "TestIntegrationIndirectJump", "TestIntegrationJumpLimit",
-    "TestIntegrationInjectHold",
+    "TestIntegrationInjectHold", "TestIntegrationRetry", "TestIntegrationRetryPreempt",
     "TestBpfAutoStatic", "TestBPFStopsBehaviour", "TestBPFStopsCount", "TestBPFStopsDefault", "TestBPFStopsFallback",
     "TestBPFStopsOutlivingChild", "TestBPFStopsLeaderExit", "TestBPFStopsCancelEndsChild",
     "TestBPFStopsChildNotInstrumented", "TestBPFStopsTargetListener", "TestBPFStopsCommonAttrs",
@@ -167,6 +188,8 @@ def syscallhook_suite(binary, log_path):
                     started = re.match(r"=== RUN\s+([^/\s]+)$", line)
                     if started and running is None:
                         running = started[1]
+                    if running is not None:
+                        events.append({"Package": SYSCALLHOOK, "Test": running, "Output": line})
                     match = re.match(r"\s*--- (PASS|FAIL|SKIP): (\S+)", line)
                     if match and running in (None, match[2].split("/", 1)[0]):
                         events.append({"Package": SYSCALLHOOK, "Test": match[2], "Action": match[1].lower()})
@@ -179,7 +202,7 @@ def syscallhook_suite(binary, log_path):
                 print(f"AUDIT FAIL ({name}): {failure}", file=sys.stderr)
             if failures:
                 return 1
-    print("Privileged supervisor audit passed in default and every-syscall modes: all required tests passed; no skips.")
+    print("Privileged supervisor audit passed in default and every-syscall modes: all required tests passed; no unexpected skips.")
     return 0
 
 

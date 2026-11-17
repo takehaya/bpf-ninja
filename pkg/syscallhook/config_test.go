@@ -52,13 +52,16 @@ func TestRuleRequestForwardsOptions(t *testing.T) {
 		fillNonZero(t, v.Field(i))
 	}
 	full.Ops = []string{"lookup:miss", "update:any", "delete", "push", "pop:any", "peek"} // ops parseOps accepts
+	full.HookPrefix = full.Hook + "_prefix"
 	want := full.request()
 	for i := range v.NumField() {
 		name := v.Type().Field(i).Name
 		r := full
 		f := reflect.ValueOf(&r).Elem().Field(i)
 		f.Set(reflect.Zero(f.Type()))
-		if forwarded := !reflect.DeepEqual(r.request(), want); forwarded != (name != "Program" && name != "MapBTF" && name != "StackLowestOffset" && name != "LegacyFrameRounding") {
+		// HookPrefix wins over an equal or (refused) different Hook; TestConfigHookPrefix covers Hook alone.
+		// Sites becomes the request's Drop at load time (Sites.drop).
+		if forwarded := !reflect.DeepEqual(r.request(), want); forwarded != (name != "Program" && name != "MapBTF" && name != "StackLowestOffset" && name != "LegacyFrameRounding" && name != "Hook" && name != "Sites") {
 			t.Errorf("%s: forwarded=%v", name, forwarded)
 		}
 	}
@@ -191,10 +194,15 @@ func TestConfigCalls(t *testing.T) {
 			t.Errorf("%s: request Calls = %q", keys, got)
 		}
 	}
-	supported := strings.Join(inject.SupportedCalls(), ", ")
+	// A name that is not a helper may be a kernel function: only the kernel
+	// BTF of the load tells, so the configuration accepts it.
+	if _, err := ParseConfig(strings.NewReader(`[{"program":"p","calls":["bpf_no_such_call"],"hook":"h"}]`)); err != nil {
+		t.Errorf("unknown name: %v", err)
+	}
 	for keys, want := range map[string]string{
 		`"calls":[]`:                                  "rule 0: program and one of map, auto, entry, tail_calls or calls are required",
-		`"calls":["bpf_map_lookup_elem"]`:             `rule 0: inject: refused: Calls name "bpf_map_lookup_elem" is not supported; supported calls: ` + supported,
+		`"calls":["bpf_map_lookup_elem"]`:             `rule 0: inject: refused: Calls name "bpf_map_lookup_elem" cannot be hooked: a map helper: the rule's maps and ops observe it`,
+		`"calls":["bpf_iter_num_new"]`:                `rule 0: inject: refused: Calls name "bpf_iter_num_new" cannot be hooked: an iterator: the verifier forks and prunes loop states at its next`,
 		`"calls":["bpf_fib_lookup","bpf_fib_lookup"]`: `rule 0: inject: refused: Calls names must be non-empty and unique; got "bpf_fib_lookup"`,
 		`"calls":[""]`:                                `rule 0: inject: refused: Calls names must be non-empty and unique; got ""`,
 		`"calls":["bpf_fib_lookup"],"auto":true,"dispatch":true`: "rule 0: inject: refused: Calls does not combine with Dispatch",

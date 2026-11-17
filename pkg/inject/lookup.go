@@ -21,7 +21,7 @@ import (
 // Empty names or zero Line mean the input did not supply that information.
 // Reason explains why a site cannot be injected; discovery still lists it.
 type LookupSite struct {
-	Op               HookKind // HookLookup, HookUpdate, HookDelete, HookPush, HookPop or HookPeek; HookTailCall on a tail call
+	Op               HookKind // HookLookup, HookUpdate, HookDelete, HookPush, HookPop or HookPeek; HookTailCall on a tail call; empty, with no pc, on a skipped Maps name that matches no site (SkipUnmatchedMaps)
 	MapName          string
 	KeyTypeName      string
 	ValueTypeName    string
@@ -84,7 +84,9 @@ func (s LookupSelector) empty() bool {
 //
 // Maps limits Auto to lookups on the named maps (exact kernel names); the
 // others are reported in Skipped. A name that matches no discovered lookup is
-// a refusal, so a typo cannot silently instrument nothing. A lookup whose map
+// a refusal, so a typo cannot silently instrument nothing; with
+// SkipUnmatchedMaps it is reported in Skipped instead (a site with only
+// MapName and Reason), so deleting an op never turns the other hooks off. A lookup whose map
 // is known only at run time has no name and is never selected.
 //
 // The hooks take the entry function's context: struct xdp_md * in an XDP
@@ -184,9 +186,15 @@ type LookupRequest struct {
 	Peeks           CallWhen
 	HookName        string
 	Stack           StackAudit
-	Calls           []string            // callee names from the call table; each gets PREFIX_<name>; see CallRow
+	Calls           []string            // helper names, and kernel-function names from the call table; each gets PREFIX_<name>; see CallRow
 	Kernel          *btf.Spec           // kernel BTF for naming kfunc calls by id and for typing arguments; nil is allowed
 	Modules         map[int16]*btf.Spec // module BTF (split on Kernel) by a kfunc call's fd_array offset; a missing offset leaves the call unnamed
+
+	SkipUnmatchedMaps bool // a Maps name matching no site is skipped, not refused; see Maps
+	// Drop maps a site's SitePC to the reason it gets no hook: the site is
+	// listed as skipped with that reason. An explicitly selected lookup
+	// (Site) is refused instead. Tail-call sites are dropped the same way.
+	Drop map[uint32]string
 }
 
 // LookupWhen is a set of lookup results; see LookupRequest.Lookups.
@@ -266,8 +274,11 @@ func checkOps(req LookupRequest) error {
 		if name == "" || slices.Contains(req.Calls[:i], name) {
 			return refuse("Calls names must be non-empty and unique; got %q", name)
 		}
-		if !slices.Contains(SupportedCalls(), name) {
-			return refuse("Calls name %q is not supported; supported calls: %s", name, strings.Join(SupportedCalls(), ", "))
+		// Without kernel BTF (a configuration check) a name that is not a helper may still be a kernel function.
+		if row, reason := namedCall(name, req.Kernel, req.Modules); row == nil && reason != "" {
+			return refuse("Calls name %q cannot be hooked: %s", name, reason)
+		} else if row == nil && req.Kernel != nil {
+			return refuse("Calls name %q is not supported: it is neither a helper nor a kernel function of the running kernel or of a module BTF the program passes", name)
 		}
 	}
 	return nil
@@ -374,6 +385,8 @@ type LookupHook struct {
 	ArgType   string `json:",omitempty"` // BTF struct name of arg's pointee; "" with ArgReg != 0: struct { u8 bytes[ArgSize]; }
 	ArgSize   uint32 `json:",omitempty"` // size of arg's pointee in bytes
 	RetPtr    bool   `json:",omitempty"` // ret is const void *; false: u64 ret
+	RetSize   uint32 `json:",omitempty"` // byte size of the callee's integer result when narrower than 8: only its low bytes are the result
+	ArgReason string `json:",omitempty"` // why the hook of a callee whose row has an argument takes none (selectCalls); "" otherwise
 }
 
 // LookupResult reports the selected original sites and the transformed clone.
@@ -507,11 +520,13 @@ type discoveredLookup struct {
 	pass []ctxflow.Pass
 	// row is a HookCall site's call-table row; argOwn says its argument
 	// register holds R10 plus a constant set in this block, argSize is the
-	// constant its size register holds.
-	row     *CallRow
-	argOwn  bool
-	argSize uint32
-	module  int16 // a module kfunc call's fd_array offset, else 0
+	// constant its size register holds, and argReason says why the size is
+	// not such a constant (the callee's hook then carries no argument).
+	row       *CallRow
+	argOwn    bool
+	argSize   uint32
+	argReason string
+	module    int16 // a module kfunc call's fd_array offset, else 0
 }
 
 func kfuncModule(ins *asm.Instruction) int16 {
@@ -638,10 +653,6 @@ func discoverSites(insns asm.Instructions, typ ebpf.ProgramType, resolve lookupM
 	// and consts those holding a constant set in this block.
 	var ownStack, isConst [asm.R10 + 1]bool
 	var consts [asm.R10 + 1]int64
-	blocked := ""
-	if len(req.Calls) != 0 {
-		blocked = callsBlocked(insns, req.Kernel, req.Modules)
-	}
 	it = insns.Iterate()
 	for it.Next() {
 		pc, ins := int(it.Offset), it.Ins
@@ -661,7 +672,13 @@ func discoverSites(insns asm.Instructions, typ ebpf.ProgramType, resolve lookupM
 		}
 		var row *CallRow
 		if op == "" && len(req.Calls) != 0 && (ins.IsBuiltinCall() || ins.IsKfuncCall()) {
-			if r, _, _ := callee(ins, req.Kernel, req.Modules); r != nil && slices.Contains(req.Calls, r.Name) {
+			r, name, _ := callee(ins, req.Kernel, req.Modules)
+			if r == nil && ins.IsBuiltinCall() {
+				r, _ = helperCall(asm.BuiltinFunc(ins.Constant))
+			} else if r == nil && name != "" {
+				r, _ = kfuncRow(name, kfuncProto(ins, req.Kernel, req.Modules))
+			}
+			if r != nil && slices.Contains(req.Calls, r.Name) {
 				op, row = HookCall, r
 			}
 		}
@@ -718,14 +735,13 @@ func discoverSites(insns asm.Instructions, typ ebpf.ProgramType, resolve lookupM
 			}
 			var argOwn bool
 			var argSize uint32
+			var argReason string
 			if site.Reason == "" && row != nil {
 				switch {
-				case blocked != "":
-					site.Reason = blocked
 				case callReason(insns, it.Index) != "":
 					site.Reason = callReason(insns, it.Index)
 				case row.ArgReg != 0 && (!isConst[row.SizeReg] || consts[row.SizeReg] <= 0 || consts[row.SizeReg] > 512):
-					site.Reason = fmt.Sprintf("call: the argument size in %s is not a constant set in this basic block", regName(row.SizeReg))
+					argReason = fmt.Sprintf("the argument size in %s at pc %d is not a constant set in its basic block", regName(row.SizeReg), pc)
 				case row.ArgReg != 0:
 					argOwn, argSize = ownStack[row.ArgReg], uint32(consts[row.SizeReg])
 				}
@@ -766,7 +782,7 @@ func discoverSites(insns asm.Instructions, typ ebpf.ProgramType, resolve lookupM
 			}
 			sites = append(sites, discoveredLookup{LookupSite: site, mapID: mapID, mapInfo: m, generic: generic,
 				typedOnly: typedOnly, readOnlyArg: readOnlyArg, ctxReg: ctxReg, ctxSlot: ctxSlot, callback: callback, callbackStart: callbackStart, pass: pass,
-				row: row, argOwn: argOwn, argSize: argSize, module: kfuncModule(ins)})
+				row: row, argOwn: argOwn, argSize: argSize, argReason: argReason, module: kfuncModule(ins)})
 		}
 		// Track direct R1 definitions only; calls also clobber R1. Atomic
 		// operations and legacy packet loads are conservatively barriers.
@@ -1296,12 +1312,14 @@ type lookupGroup struct {
 	sites    []discoveredLookup
 	generic  bool
 	// A HookCall group's row and the pointee of its hook's arg (see
-	// selectCalls); typed says the hook takes const T *arg.
-	call    *CallRow
-	argType btf.Type
-	argName string
-	argSize uint32
-	typed   bool
+	// selectCalls); typed says the hook takes const T *arg, and argReason
+	// why a row callee's hook takes no arg.
+	call      *CallRow
+	argType   btf.Type
+	argName   string
+	argSize   uint32
+	typed     bool
+	argReason string
 }
 
 // readOnlyArg reports whether a site of group may pass a pointer into a
@@ -1394,6 +1412,10 @@ func selectLookups(sites []discoveredLookup, req LookupRequest, reserved []strin
 				what := "lookup"
 				if req.mapCalls() {
 					what = "map call"
+				}
+				if req.SkipUnmatchedMaps {
+					skipped = append(skipped, LookupSite{MapName: name, Reason: fmt.Sprintf("Maps name %q matches no %s", name, what)})
+					continue
 				}
 				return nil, nil, refuse("Maps name %q matches no %s", name, what)
 			}
@@ -1584,6 +1606,12 @@ func transformLookupProgramGuarded(insns asm.Instructions, typ ebpf.ProgramType,
 			sites[i].generic, sites[i].typedOnly, sites[i].Generic = false, false, false // not for the generic hook either
 		}
 	}
+	for i, site := range sites {
+		if reason, ok := req.Drop[site.SitePC]; ok {
+			sites[i].Reason = reason
+			sites[i].generic, sites[i].typedOnly, sites[i].Generic = false, false, false // not for the generic hook either
+		}
+	}
 	if req.Dispatch && req.CopyReadOnly {
 		return nil, plan, refuse("Dispatch passes untrusted pointers; it does not combine with CopyReadOnly")
 	}
@@ -1680,6 +1708,12 @@ func transformLookupProgramGuarded(insns asm.Instructions, typ ebpf.ProgramType,
 	var tails []tailCallSite
 	if req.TailCalls {
 		for _, tail := range allTails {
+			if reason, ok := req.Drop[tail.SitePC]; ok {
+				site := tail.LookupSite
+				site.Reason = reason
+				plan.skipped = append(plan.skipped, site)
+				continue
+			}
 			floor, ok := req.Stack.Frames[tail.FuncName]
 			if req.Stack.perFrame() && !ok {
 				site := tail.LookupSite
@@ -1705,6 +1739,14 @@ func transformLookupProgramGuarded(insns asm.Instructions, typ ebpf.ProgramType,
 		}
 		if len(allTails) == 0 {
 			return nil, plan, refuse("TailCalls: no bpf_tail_call in the program")
+		}
+		if len(tails) == 0 {
+			// A tail-call hook nothing calls is not a subprogram to the
+			// kernel, which then refuses the func_info that lists it.
+			req.TailCalls = false
+			if len(groups) == 0 && !req.Entry {
+				return nil, plan, refuse("no tail-call site can be hooked (%d skipped)", len(plan.skipped))
+			}
 		}
 	}
 	names := map[string]bool{}
@@ -1848,22 +1890,31 @@ func transformLookupProgramGuarded(insns asm.Instructions, typ ebpf.ProgramType,
 	if err != nil {
 		return nil, plan, err
 	}
-	// Call sites go first, for every request, when a limit breaks.
-	limit := broken
-	if n := funcCount(spliced); limit == "" && n > maxFuncs {
-		limit = fmt.Sprintf("call: the program would have %d functions, more than the kernel's %d", n, maxFuncs)
-	}
-	if dropped := false; limit != "" {
-		if groups, plan.skipped, dropped = dropCalls(groups, plan.skipped, limit); dropped {
-			if err := noCalls(); err != nil {
-				return nil, plan, err
-			}
-			if spliced, hooks, err = emit.splice(groups); err != nil {
-				return nil, plan, err
-			}
-			if broken, err = stackLimitsBroken(insns, spliced, req.Stack); err != nil {
-				return nil, plan, err
-			}
+	// Call sites go first, for every request, when a limit breaks: all of
+	// them for a stack limit, and for the function limit as many call groups
+	// as it takes, from the end of RetryRank's order.
+	for n := funcCount(spliced); broken != "" || n > maxFuncs; n = funcCount(spliced) {
+		dropped, wasBroken := false, broken != ""
+		if wasBroken {
+			groups, plan.skipped, dropped = dropCalls(groups, plan.skipped, broken)
+		} else {
+			reason := fmt.Sprintf("call: the program would have %d functions, more than the kernel's %d", n, maxFuncs)
+			groups, plan.skipped, dropped = dropLastCalls(groups, plan.skipped, n-maxFuncs, reason)
+		}
+		if !dropped {
+			break
+		}
+		if err := noCalls(); err != nil {
+			return nil, plan, err
+		}
+		if spliced, hooks, err = emit.splice(groups); err != nil {
+			return nil, plan, err
+		}
+		if broken, err = stackLimitsBroken(insns, spliced, req.Stack); err != nil {
+			return nil, plan, err
+		}
+		if wasBroken {
+			break
 		}
 	}
 	// Passed-context sites go first, then callback sites, each kind at once:

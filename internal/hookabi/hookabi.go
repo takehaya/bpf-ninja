@@ -18,13 +18,14 @@ const HookTag = "bpf-ninja:hook"
 
 const sizePrefix = "bpf-ninja:"
 
-// SizeTag is the func-level decl tag carrying an untyped key or value size:
-// name is "key" or "value".
+// SizeTag is the func-level decl tag carrying an untyped key, value or arg
+// size, or the width of a call hook's integer ret narrower than 8 bytes:
+// name is "key", "value", "arg" or "ret".
 func SizeTag(name string, size uint32) string {
 	return fmt.Sprintf("%s%s_size=%d", sizePrefix, name, size)
 }
 
-// SizeTags parses the key, value and arg sizes from a function's decl tags.
+// SizeTags parses the key, value, arg and ret sizes from a function's decl tags.
 func SizeTags(tags []string) map[string]uint32 {
 	out := map[string]uint32{}
 	for _, tag := range tags {
@@ -32,7 +33,7 @@ func SizeTags(tags []string) map[string]uint32 {
 		if !ok {
 			continue
 		}
-		for _, name := range []string{"key", "value", "arg"} {
+		for _, name := range []string{"key", "value", "arg", "ret"} {
 			if v, ok := strings.CutPrefix(rest, name+"_size="); ok {
 				if n, err := strconv.ParseUint(v, 10, 32); err == nil {
 					out[name] = uint32(n)

@@ -77,6 +77,8 @@ GLOBAL OPTIONS:
    --list-maps                                      with --list-progs, also list each function's calls and the maps it uses, with the op (lookup, update, delete, tail_call, ...) and source line, as a tree that replaces the --list-progs text; needs root to read the translated instructions
    --lookups-json string                            with --list-maps, read the file inject-run --lookups-json wrote and mark each map use with the load-time site of the same call and why it cannot be instrumented
    --json                                           emit --list-progs / --list-funcs / --list-params output as JSON on stdout instead of human-readable text on stderr
+   --site string                                    capture at one injected site: a label or pc from the file inject-run --hooks-json wrote (needs --hooks-json and one -p); sets --func to the site's hook, adds --arg-filter site==PC, ANDed with other --arg-filter, and does not follow reloads
+   --hooks-json string                              with --site, the file inject-run --hooks-json wrote; its entry for -p must have the loaded program's tag
    --arg-filter string [ --arg-filter string ]      filter by function argument value (requires --func or an entry function with filterable parameters); format: param=value (or ==), param!=value, param>=val, param<=val, param=min..max; also param->member.member with constant array indexes as in param->member[N].member, param[0], status.ret and status.flags at a generated hook, be16/32/64(value) for equality, pointer=null/!=null, or @NAME to match against a --set pinned-map set
    --set string [ --set string ]                    define a named match set backed by a pinned BPF hash map: NAME=/sys/fs/bpf/path[,key(field=arg:param,...)]; reference it with --arg-filter @NAME (function arg) or the DSL predicate layer[field in @NAME] (packet field). Use bpf-ninja set to update entries during capture without re-attaching
    --list-params                                    list filterable parameters for the target function (requires --func or an entry function with filterable parameters) and exit
@@ -135,6 +137,8 @@ GLOBAL OPTIONS:
 | <code>list-maps</code> | <code>bool</code> | <code></code> | false | false | <code></code> |
 | <code>lookups-json</code> | <code>string</code> | <code></code> | false | false | <code></code> |
 | <code>json</code> | <code>bool</code> | <code></code> | false | false | <code></code> |
+| <code>site</code> | <code>string</code> | <code></code> | false | false | <code></code> |
+| <code>hooks-json</code> | <code>string</code> | <code></code> | false | false | <code></code> |
 | <code>arg-filter</code> | <code>string</code> | <code></code> | false | true | <code></code> |
 | <code>set</code> | <code>string</code> | <code></code> | false | true | <code></code> |
 | <code>list-params</code> | <code>bool</code> | <code></code> | false | false | <code></code> |
@@ -214,6 +218,8 @@ GLOBAL OPTIONS:
    --list-maps                                      with --list-progs, also list each function's calls and the maps it uses, with the op (lookup, update, delete, tail_call, ...) and source line, as a tree that replaces the --list-progs text; needs root to read the translated instructions
    --lookups-json string                            with --list-maps, read the file inject-run --lookups-json wrote and mark each map use with the load-time site of the same call and why it cannot be instrumented
    --json                                           emit --list-progs / --list-funcs / --list-params output as JSON on stdout instead of human-readable text on stderr
+   --site string                                    capture at one injected site: a label or pc from the file inject-run --hooks-json wrote (needs --hooks-json and one -p); sets --func to the site's hook, adds --arg-filter site==PC, ANDed with other --arg-filter, and does not follow reloads
+   --hooks-json string                              with --site, the file inject-run --hooks-json wrote; its entry for -p must have the loaded program's tag
    --arg-filter string [ --arg-filter string ]      filter by function argument value (requires --func or an entry function with filterable parameters); format: param=value (or ==), param!=value, param>=val, param<=val, param=min..max; also param->member.member with constant array indexes as in param->member[N].member, param[0], status.ret and status.flags at a generated hook, be16/32/64(value) for equality, pointer=null/!=null, or @NAME to match against a --set pinned-map set
    --set string [ --set string ]                    define a named match set backed by a pinned BPF hash map: NAME=/sys/fs/bpf/path[,key(field=arg:param,...)]; reference it with --arg-filter @NAME (function arg) or the DSL predicate layer[field in @NAME] (packet field). Use bpf-ninja set to update entries during capture without re-attaching
    --list-params                                    list filterable parameters for the target function (requires --func or an entry function with filterable parameters) and exit
@@ -331,6 +337,8 @@ GLOBAL OPTIONS:
    --list-maps                                      with --list-progs, also list each function's calls and the maps it uses, with the op (lookup, update, delete, tail_call, ...) and source line, as a tree that replaces the --list-progs text; needs root to read the translated instructions
    --lookups-json string                            with --list-maps, read the file inject-run --lookups-json wrote and mark each map use with the load-time site of the same call and why it cannot be instrumented
    --json                                           emit --list-progs / --list-funcs / --list-params output as JSON on stdout instead of human-readable text on stderr
+   --site string                                    capture at one injected site: a label or pc from the file inject-run --hooks-json wrote (needs --hooks-json and one -p); sets --func to the site's hook, adds --arg-filter site==PC, ANDed with other --arg-filter, and does not follow reloads
+   --hooks-json string                              with --site, the file inject-run --hooks-json wrote; its entry for -p must have the loaded program's tag
    --arg-filter string [ --arg-filter string ]      filter by function argument value (requires --func or an entry function with filterable parameters); format: param=value (or ==), param!=value, param>=val, param<=val, param=min..max; also param->member.member with constant array indexes as in param->member[N].member, param[0], status.ret and status.flags at a generated hook, be16/32/64(value) for equality, pointer=null/!=null, or @NAME to match against a --set pinned-map set
    --set string [ --set string ]                    define a named match set backed by a pinned BPF hash map: NAME=/sys/fs/bpf/path[,key(field=arg:param,...)]; reference it with --arg-filter @NAME (function arg) or the DSL predicate layer[field in @NAME] (packet field). Use bpf-ninja set to update entries during capture without re-attaching
    --list-params                                    list filterable parameters for the target function (requires --func or an entry function with filterable parameters) and exit
@@ -405,6 +413,8 @@ GLOBAL OPTIONS:
    --list-maps                                      with --list-progs, also list each function's calls and the maps it uses, with the op (lookup, update, delete, tail_call, ...) and source line, as a tree that replaces the --list-progs text; needs root to read the translated instructions
    --lookups-json string                            with --list-maps, read the file inject-run --lookups-json wrote and mark each map use with the load-time site of the same call and why it cannot be instrumented
    --json                                           emit --list-progs / --list-funcs / --list-params output as JSON on stdout instead of human-readable text on stderr
+   --site string                                    capture at one injected site: a label or pc from the file inject-run --hooks-json wrote (needs --hooks-json and one -p); sets --func to the site's hook, adds --arg-filter site==PC, ANDed with other --arg-filter, and does not follow reloads
+   --hooks-json string                              with --site, the file inject-run --hooks-json wrote; its entry for -p must have the loaded program's tag
    --arg-filter string [ --arg-filter string ]      filter by function argument value (requires --func or an entry function with filterable parameters); format: param=value (or ==), param!=value, param>=val, param<=val, param=min..max; also param->member.member with constant array indexes as in param->member[N].member, param[0], status.ret and status.flags at a generated hook, be16/32/64(value) for equality, pointer=null/!=null, or @NAME to match against a --set pinned-map set
    --set string [ --set string ]                    define a named match set backed by a pinned BPF hash map: NAME=/sys/fs/bpf/path[,key(field=arg:param,...)]; reference it with --arg-filter @NAME (function arg) or the DSL predicate layer[field in @NAME] (packet field). Use bpf-ninja set to update entries during capture without re-attaching
    --list-params                                    list filterable parameters for the target function (requires --func or an entry function with filterable parameters) and exit
@@ -476,6 +486,8 @@ GLOBAL OPTIONS:
    --list-maps                                      with --list-progs, also list each function's calls and the maps it uses, with the op (lookup, update, delete, tail_call, ...) and source line, as a tree that replaces the --list-progs text; needs root to read the translated instructions
    --lookups-json string                            with --list-maps, read the file inject-run --lookups-json wrote and mark each map use with the load-time site of the same call and why it cannot be instrumented
    --json                                           emit --list-progs / --list-funcs / --list-params output as JSON on stdout instead of human-readable text on stderr
+   --site string                                    capture at one injected site: a label or pc from the file inject-run --hooks-json wrote (needs --hooks-json and one -p); sets --func to the site's hook, adds --arg-filter site==PC, ANDed with other --arg-filter, and does not follow reloads
+   --hooks-json string                              with --site, the file inject-run --hooks-json wrote; its entry for -p must have the loaded program's tag
    --arg-filter string [ --arg-filter string ]      filter by function argument value (requires --func or an entry function with filterable parameters); format: param=value (or ==), param!=value, param>=val, param<=val, param=min..max; also param->member.member with constant array indexes as in param->member[N].member, param[0], status.ret and status.flags at a generated hook, be16/32/64(value) for equality, pointer=null/!=null, or @NAME to match against a --set pinned-map set
    --set string [ --set string ]                    define a named match set backed by a pinned BPF hash map: NAME=/sys/fs/bpf/path[,key(field=arg:param,...)]; reference it with --arg-filter @NAME (function arg) or the DSL predicate layer[field in @NAME] (packet field). Use bpf-ninja set to update entries during capture without re-attaching
    --list-params                                    list filterable parameters for the target function (requires --func or an entry function with filterable parameters) and exit
@@ -547,6 +559,8 @@ GLOBAL OPTIONS:
    --list-maps                                      with --list-progs, also list each function's calls and the maps it uses, with the op (lookup, update, delete, tail_call, ...) and source line, as a tree that replaces the --list-progs text; needs root to read the translated instructions
    --lookups-json string                            with --list-maps, read the file inject-run --lookups-json wrote and mark each map use with the load-time site of the same call and why it cannot be instrumented
    --json                                           emit --list-progs / --list-funcs / --list-params output as JSON on stdout instead of human-readable text on stderr
+   --site string                                    capture at one injected site: a label or pc from the file inject-run --hooks-json wrote (needs --hooks-json and one -p); sets --func to the site's hook, adds --arg-filter site==PC, ANDed with other --arg-filter, and does not follow reloads
+   --hooks-json string                              with --site, the file inject-run --hooks-json wrote; its entry for -p must have the loaded program's tag
    --arg-filter string [ --arg-filter string ]      filter by function argument value (requires --func or an entry function with filterable parameters); format: param=value (or ==), param!=value, param>=val, param<=val, param=min..max; also param->member.member with constant array indexes as in param->member[N].member, param[0], status.ret and status.flags at a generated hook, be16/32/64(value) for equality, pointer=null/!=null, or @NAME to match against a --set pinned-map set
    --set string [ --set string ]                    define a named match set backed by a pinned BPF hash map: NAME=/sys/fs/bpf/path[,key(field=arg:param,...)]; reference it with --arg-filter @NAME (function arg) or the DSL predicate layer[field in @NAME] (packet field). Use bpf-ninja set to update entries during capture without re-attaching
    --list-params                                    list filterable parameters for the target function (requires --func or an entry function with filterable parameters) and exit
@@ -618,6 +632,8 @@ GLOBAL OPTIONS:
    --list-maps                                      with --list-progs, also list each function's calls and the maps it uses, with the op (lookup, update, delete, tail_call, ...) and source line, as a tree that replaces the --list-progs text; needs root to read the translated instructions
    --lookups-json string                            with --list-maps, read the file inject-run --lookups-json wrote and mark each map use with the load-time site of the same call and why it cannot be instrumented
    --json                                           emit --list-progs / --list-funcs / --list-params output as JSON on stdout instead of human-readable text on stderr
+   --site string                                    capture at one injected site: a label or pc from the file inject-run --hooks-json wrote (needs --hooks-json and one -p); sets --func to the site's hook, adds --arg-filter site==PC, ANDed with other --arg-filter, and does not follow reloads
+   --hooks-json string                              with --site, the file inject-run --hooks-json wrote; its entry for -p must have the loaded program's tag
    --arg-filter string [ --arg-filter string ]      filter by function argument value (requires --func or an entry function with filterable parameters); format: param=value (or ==), param!=value, param>=val, param<=val, param=min..max; also param->member.member with constant array indexes as in param->member[N].member, param[0], status.ret and status.flags at a generated hook, be16/32/64(value) for equality, pointer=null/!=null, or @NAME to match against a --set pinned-map set
    --set string [ --set string ]                    define a named match set backed by a pinned BPF hash map: NAME=/sys/fs/bpf/path[,key(field=arg:param,...)]; reference it with --arg-filter @NAME (function arg) or the DSL predicate layer[field in @NAME] (packet field). Use bpf-ninja set to update entries during capture without re-attaching
    --list-params                                    list filterable parameters for the target function (requires --func or an entry function with filterable parameters) and exit
@@ -698,6 +714,8 @@ GLOBAL OPTIONS:
    --list-maps                                      with --list-progs, also list each function's calls and the maps it uses, with the op (lookup, update, delete, tail_call, ...) and source line, as a tree that replaces the --list-progs text; needs root to read the translated instructions
    --lookups-json string                            with --list-maps, read the file inject-run --lookups-json wrote and mark each map use with the load-time site of the same call and why it cannot be instrumented
    --json                                           emit --list-progs / --list-funcs / --list-params output as JSON on stdout instead of human-readable text on stderr
+   --site string                                    capture at one injected site: a label or pc from the file inject-run --hooks-json wrote (needs --hooks-json and one -p); sets --func to the site's hook, adds --arg-filter site==PC, ANDed with other --arg-filter, and does not follow reloads
+   --hooks-json string                              with --site, the file inject-run --hooks-json wrote; its entry for -p must have the loaded program's tag
    --arg-filter string [ --arg-filter string ]      filter by function argument value (requires --func or an entry function with filterable parameters); format: param=value (or ==), param!=value, param>=val, param<=val, param=min..max; also param->member.member with constant array indexes as in param->member[N].member, param[0], status.ret and status.flags at a generated hook, be16/32/64(value) for equality, pointer=null/!=null, or @NAME to match against a --set pinned-map set
    --set string [ --set string ]                    define a named match set backed by a pinned BPF hash map: NAME=/sys/fs/bpf/path[,key(field=arg:param,...)]; reference it with --arg-filter @NAME (function arg) or the DSL predicate layer[field in @NAME] (packet field). Use bpf-ninja set to update entries during capture without re-attaching
    --list-params                                    list filterable parameters for the target function (requires --func or an entry function with filterable parameters) and exit
@@ -783,6 +801,8 @@ GLOBAL OPTIONS:
    --list-maps                                      with --list-progs, also list each function's calls and the maps it uses, with the op (lookup, update, delete, tail_call, ...) and source line, as a tree that replaces the --list-progs text; needs root to read the translated instructions
    --lookups-json string                            with --list-maps, read the file inject-run --lookups-json wrote and mark each map use with the load-time site of the same call and why it cannot be instrumented
    --json                                           emit --list-progs / --list-funcs / --list-params output as JSON on stdout instead of human-readable text on stderr
+   --site string                                    capture at one injected site: a label or pc from the file inject-run --hooks-json wrote (needs --hooks-json and one -p); sets --func to the site's hook, adds --arg-filter site==PC, ANDed with other --arg-filter, and does not follow reloads
+   --hooks-json string                              with --site, the file inject-run --hooks-json wrote; its entry for -p must have the loaded program's tag
    --arg-filter string [ --arg-filter string ]      filter by function argument value (requires --func or an entry function with filterable parameters); format: param=value (or ==), param!=value, param>=val, param<=val, param=min..max; also param->member.member with constant array indexes as in param->member[N].member, param[0], status.ret and status.flags at a generated hook, be16/32/64(value) for equality, pointer=null/!=null, or @NAME to match against a --set pinned-map set
    --set string [ --set string ]                    define a named match set backed by a pinned BPF hash map: NAME=/sys/fs/bpf/path[,key(field=arg:param,...)]; reference it with --arg-filter @NAME (function arg) or the DSL predicate layer[field in @NAME] (packet field). Use bpf-ninja set to update entries during capture without re-attaching
    --list-params                                    list filterable parameters for the target function (requires --func or an entry function with filterable parameters) and exit
@@ -838,12 +858,13 @@ USAGE:
    bpf-ninja inject-run [options] -- <target> [args...]
 
 OPTIONS:
-   --config string        JSON injection rules file (otherwise BPF_NINJA_INJECT_CONFIG contains JSON)
-   --fail-closed          refuse matched loads when injection fails; default retries the original load
-   --hooks-json string    write the injected programs' hooks and skipped sites as JSON to this file, rewritten after each injected load
-   --stop-every-syscall   stop the target at every syscall, not only at program and BTF loads; the default falls back to this where its seccomp filter cannot be used
-   --lookups-json string  write every loaded XDP, tc, cgroup_skb and netfilter program's lookups and maps, with a rule to edit, as JSON to this file; rules become optional
-   --help, -h             show help
+   --config string         JSON injection rules file (otherwise BPF_NINJA_INJECT_CONFIG contains JSON)
+   --fail-closed           refuse matched loads when injection fails; default retries the original load
+   --hooks-json string     write the injected programs' hooks and skipped sites as JSON to this file, rewritten after each injected load
+   --stop-every-syscall    stop the target at every syscall, not only at program and BTF loads; the default falls back to this where its seccomp filter cannot be used
+   --lookups-json string   write every loaded XDP, tc, cgroup_skb and netfilter program's lookups and maps, with a rule to edit, as JSON to this file; rules become optional
+   --lookups-kinds string  with --lookups-json, the comma-separated kinds to list and name in each rule: lookups, map_calls, helpers, kfuncs, tail_calls, entry (default all); lookups alone writes the rule of version 2
+   --help, -h              show help
 
 GLOBAL OPTIONS:
    --interface string, -i string                    network interface to capture on
@@ -861,6 +882,8 @@ GLOBAL OPTIONS:
    --list-maps                                      with --list-progs, also list each function's calls and the maps it uses, with the op (lookup, update, delete, tail_call, ...) and source line, as a tree that replaces the --list-progs text; needs root to read the translated instructions
    --lookups-json string                            with --list-maps, read the file inject-run --lookups-json wrote and mark each map use with the load-time site of the same call and why it cannot be instrumented
    --json                                           emit --list-progs / --list-funcs / --list-params output as JSON on stdout instead of human-readable text on stderr
+   --site string                                    capture at one injected site: a label or pc from the file inject-run --hooks-json wrote (needs --hooks-json and one -p); sets --func to the site's hook, adds --arg-filter site==PC, ANDed with other --arg-filter, and does not follow reloads
+   --hooks-json string                              with --site, the file inject-run --hooks-json wrote; its entry for -p must have the loaded program's tag
    --arg-filter string [ --arg-filter string ]      filter by function argument value (requires --func or an entry function with filterable parameters); format: param=value (or ==), param!=value, param>=val, param<=val, param=min..max; also param->member.member with constant array indexes as in param->member[N].member, param[0], status.ret and status.flags at a generated hook, be16/32/64(value) for equality, pointer=null/!=null, or @NAME to match against a --set pinned-map set
    --set string [ --set string ]                    define a named match set backed by a pinned BPF hash map: NAME=/sys/fs/bpf/path[,key(field=arg:param,...)]; reference it with --arg-filter @NAME (function arg) or the DSL predicate layer[field in @NAME] (packet field). Use bpf-ninja set to update entries during capture without re-attaching
    --list-params                                    list filterable parameters for the target function (requires --func or an entry function with filterable parameters) and exit
@@ -907,4 +930,5 @@ GLOBAL OPTIONS:
 | <code>hooks-json</code> | <code>string</code> | <code></code> | false | false | <code></code> |
 | <code>stop-every-syscall</code> | <code>bool</code> | <code></code> | false | false | <code></code> |
 | <code>lookups-json</code> | <code>string</code> | <code></code> | false | false | <code></code> |
+| <code>lookups-kinds</code> | <code>string</code> | <code></code> | false | false | <code></code> |
 | <code>help, h</code> | <code>bool</code> | <code>(help では省略)</code> | false | false | <code></code> |

@@ -321,8 +321,8 @@ wrong.
   and module BTF index with O's, and the load's `fd_array`, which the capture
   does not record, is taken to be the same. `bpf_throw`, kfuncs that take a
   callback and kfuncs the verifier rewrites at the call do not meet this,
-  and regionval cannot tell them apart. The proof in `dafny/sim` does not
-  cover a site centred on a kfunc.
+  and regionval cannot tell them apart. The proof in `dafny/sim` admits a
+  kfunc call as the centre of a site; a wrapper site's centre is a helper call.
 - **The original program is valid.** O passed the verifier, so it never reads
   r1 to r5 after a call before writing them. The liveness used by `P9` relies
   on this and on a table of argument counts for common helpers (unknown helpers
@@ -446,6 +446,7 @@ Go core validates is not validated and has rule `dafny`.
 
 `dafny/sim` proves the step from windows to whole runs.
 If `Validate` returns `Validated` for every inserted window with the spec `dafny/contract` chooses for its kind, the structural conditions hold, and the premises in `Premises.dfy` hold (the original program has the required instruction shape, `E0Shape`, and uses only the modelled callback helpers, `S0`; its admissible runs end normally, `E0` with `A1b`; stack accesses respect their frame floors, `A1a`; helper argument tables cover the arguments read, `A3b`; the observer changes only its own state, `A5`; lookup oracle answers are independent of frame depth and wrappers, `A8`; and the rewritten program fits the kernel's instruction limit, `Loadable`), the rewritten program ends with the same observation as the original for the same admissible input and oracle answers: how the run ends, segment-local memory, the final map state, and the trace of original events.
+A further premise is not modelled: the original program contains no call on the transformer's deny list (callees that run or register callbacks, take or release locks or critical sections, or read native code addresses or branch records). inject-run still hooks such a program outside those calls, but marks the load in the hooks file (`outside_premise`) as one the theorem is not claimed for.
 
 - `Model.dfy` is the semantics of both programs: frames and bpf-to-bpf calls,
   `bpf_loop` and `bpf_for_each_map_elem` callbacks, tail calls, hooks and the

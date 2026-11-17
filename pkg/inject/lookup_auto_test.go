@@ -1835,3 +1835,32 @@ func TestReadOnlyDevMapRelay(t *testing.T) {
 		t.Errorf("stats2 update hook is typed: %+v", plan.hooks[0])
 	}
 }
+
+// When every tail call is skipped the tail-call hook is not generated: nothing
+// would call it, the kernel would not find it as a subprogram, and it refuses
+// a func_info that lists it.
+func TestTailCallHookNotEmittedWithoutSites(t *testing.T) {
+	spec := tailCallerFixture()
+	drop := map[uint32]string{}
+	for _, tail := range tailCallSites(spec.Programs["caller"].Instructions) {
+		drop[tail.SitePC] = "dropped"
+	}
+	req := LookupRequest{ProgramName: "caller", Entry: true, TailCalls: true, HookName: "h", Stack: StackAudit{LowestOffset: -8}, Drop: drop}
+	plan, err := transformLookup(spec, req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.hooks) != 1 || plan.hooks[0].Name != "h_entry" || len(plan.skipped) != len(drop) {
+		t.Fatalf("hooks %+v, skipped %+v", plan.hooks, plan.skipped)
+	}
+	for _, ins := range spec.Programs["caller"].Instructions {
+		if fn := btf.FuncMetadata(&ins); fn != nil && fn.Name == "h_tail_call" {
+			t.Fatal("the tail-call hook is generated although nothing calls it")
+		}
+	}
+	// With nothing else requested there is nothing to load.
+	req.Entry = false
+	if _, err := transformLookup(tailCallerFixture(), req); !errors.Is(err, ErrRefused) {
+		t.Fatalf("tail calls only: %v", err)
+	}
+}

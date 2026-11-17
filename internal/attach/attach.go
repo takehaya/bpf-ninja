@@ -645,6 +645,10 @@ type FuncParamInfo struct {
 	// internal/hookabi). Zero when the pointee has a BTF type, no tag is
 	// present, or the function is not a generated hook.
 	VoidSize uint32
+	// RetSize is the width in bytes of a generated call hook's u64 ret when
+	// the callee's integer result is narrower (the ret_size decl tag); its
+	// upper bytes are not part of the result. Zero otherwise.
+	RetSize uint32
 	// StatusWord marks a generated hook's u64 status argument, which is
 	// (u32)ret | flags << 32 and so has the fields status.ret and status.flags.
 	StatusWord bool
@@ -728,13 +732,17 @@ func GetFuncParamsFromSpec(spec *btf.Spec, funcName string) ([]FuncParamInfo, er
 			continue
 		}
 
-		params = append(params, FuncParamInfo{
+		info := FuncParamInfo{
 			Name:       p.Name,
 			Index:      i,
 			Size:       intType.Size,
 			Signed:     intType.Encoding == btf.Signed,
 			StatusWord: p.Name == "status" && intType.Size == 8 && slices.Contains(fn.Tags, hookabi.HookTag),
-		})
+		}
+		if p.Name == "ret" && intType.Size == 8 && voidSize["ret"] < 8 {
+			info.RetSize = voidSize["ret"]
+		}
+		params = append(params, info)
 	}
 
 	return params, nil

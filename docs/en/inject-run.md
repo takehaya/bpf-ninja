@@ -14,11 +14,11 @@ Each substituted instruction stream that the checker can pair is checked by `pkg
 Run as root.
 
 ```sh
-# 1. List the programs and map calls the loader loads. Nothing is rewritten.
+# 1. List the programs the loader loads, with every map, helper, kernel-function and tail call. Nothing is rewritten.
 bpf-ninja inject-run --lookups-json lookups.json -- ./loader
 
-# 2. Take the suggested rule and load with hooks.
-jq '[.programs[0].rule]' lookups.json > rules.json
+# 2. Take the ready rules, delete the names you do not want, and load with hooks.
+jq '[.programs[].rule]' lookups.json > rules.json
 bpf-ninja inject-run --config rules.json --hooks-json hooks.json -- ./loader
 
 # 3. In another terminal, while the loader runs, capture the packets that reach a hook.
@@ -28,9 +28,13 @@ bpf-ninja -p "$PROG_ID" --func "$HOOK" -c 10 -w hook.pcap
 ```
 
 - `inject-run` obtains each function's stack floor from a trial verifier load; see [Stack floor](#stack-floor).
-- The suggested rule uses `auto` with the hook prefix `ninja`, so a lookup on the map `sessions` gets the hook `ninja_sessions`.
+- The ready rule uses `auto` with the hook prefix `ninja`, so a lookup on the map `sessions` gets the hook `ninja_sessions`.
+  It names every map with a call, each op the program calls as `op:any`, the entry, every callee that can be hooked and, when the program has one, the tail calls; see [Lookups file](#lookups-file).
+- To observe less, delete names from `maps`, `ops` or `calls`, or delete `entry` or `tail_calls`.
+  In a rule written with `hook_prefix`, a missing or empty list hooks nothing of its kind, so deleting a name never adds a hook.
 - stderr reports each injection, for example `inject-run: program "xdp_ingress": injected hook "ninja_sessions" (lookup map "sessions", site pc 6), tracee fd 9`.
-  If `inject-run` cannot rewrite a load, it logs `injection skipped` and lets the original program load.
+  If the kernel refuses the rewritten program, `inject-run` drops sites until a rewrite loads; see [Refused rewrites](#refused-rewrites).
+  If `inject-run` cannot rewrite a load at all, it logs `injection skipped` and lets the original program load.
 
 ## Common tasks
 
@@ -129,19 +133,72 @@ The hook receives the call's result as `ret` and, for a callee with a memory arg
 | `bpf_probe_read_kernel` | `(ctx, u32 site, const struct { u8 bytes[N]; } *arg, u64 ret)` | the destination buffer (R1) of the constant size N in R2, as the call left it | the result code |
 | `bpf_fib_lookup` | `(ctx, u32 site, const struct bpf_fib_lookup *arg, u64 ret)` | the lookup parameters (R2), after the lookup has filled them in | the lookup result code |
 | `bpf_xdp_ct_lookup`, `bpf_skb_ct_lookup` | `(ctx, u32 site, const struct bpf_ct_opts *arg, const void *ret)` | the options (R4), with the error the lookup set | the connection pointer; test it for NULL, it cannot be read through |
+| any other helper with an integer result, such as `bpf_get_numa_node_id` or `bpf_redirect` | `(ctx, u32 site, u64 ret)` | none | the value |
+| `bpf_sk_fullsock`, `bpf_tcp_sock`, `bpf_ringbuf_reserve`, `bpf_this_cpu_ptr`, `bpf_kptr_xchg`, `bpf_get_listener_sock`, the `bpf_skc_to_*` casts, `bpf_sk_storage_get`, `bpf_cgrp_storage_get`, `bpf_task_storage_get` (tc from kernel 6.18), `bpf_per_cpu_ptr`, `bpf_dynptr_data`, `bpf_get_current_task_btf`, `bpf_task_pt_regs` | `(ctx, u32 site, const void *ret)` | none | the pointer; test it for NULL, it cannot be read through |
+| any other kernel function with an integer or enum result, such as `bpf_dynptr_from_xdp` | `(ctx, u32 site, u64 ret)` | none | the value; a result narrower than 8 bytes fills only the low bytes (see below) |
+| any other kernel function with a pointer result, `void *` included, such as `bpf_dynptr_slice` or `bpf_task_from_pid` | `(ctx, u32 site, const void *ret)` | none | the pointer; test it for NULL, it cannot be read through |
 
-- Only the names above are accepted; any other name, an empty name or a name given twice is a configuration error.
+- Besides the callees with a row above, `calls` accepts every helper, and every kernel function of the running kernel or of a module whose BTF the program passes in its fd array, by its kernel name, except:
+  - callees that run or register a callback (for a kernel function, any parameter that points to a function prototype), take or release a lock or a critical section, do not return, or return nothing;
+  - iterator kernel functions (`bpf_iter_*_new`, `_next`, `_destroy`), the kernel functions the verifier lets run with a lock held (`bpf_list_*`, `bpf_rbtree_*` and others), allocation (`bpf_obj_new_impl` and its relatives), the casts `bpf_cast_to_kern_ctx` and `bpf_rdonly_cast`, and the calls the verifier inlines or refuses;
+  - `bpf_get_stack`, `bpf_get_stackid`, `bpf_get_task_stack`, `bpf_get_branch_snapshot` and `bpf_get_func_ip`, which read native code addresses or branch records that the inserted code may change;
+  - the map helpers and `bpf_tail_call`, which `ops` and `tail_calls` observe;
+  - helpers with a pointer result other than those in the table (`bpf_get_local_storage`, `bpf_inode_storage_get` and `bpf_sock_from_file`): each helper's pointer kind is enabled only with a kernel test.
+- Such a name is refused with `Calls name "NAME" cannot be hooked: REASON`. An empty name or a name given twice is a configuration error.
+- A name that is neither a helper nor a kernel function can be told apart only with the kernel's BTF, so the configuration check accepts it and the load refuses it: `Calls name "NAME" is not supported: it is neither a helper nor a kernel function of the running kernel or of a module BTF the program passes`. The program then loads without hooks, or is refused with `--fail-closed`.
+- A kernel function's integer result narrower than 8 bytes fills only the low bytes of `ret`; the bytes above it are not part of the result. The hooks file gives the width as `ret_size`, and a capture records only those bytes.
+  A filter compares all 64 bits of `ret`, so write such a result as an unsigned number of its width: a failing `int` result, -22, is `--arg-filter 'ret==0xffffffea'` (or `ret==4294967274`), not `ret==-22`, which compares with 0xffffffffffffffea.
+  On x86-64 the bytes above a 32-bit result reached the hook as zero; for a 1- or 2-byte result they are not guaranteed, so a filter on such a result may not match.
+  The [lookups file](#lookups-file) lists every callee of a program in `callees`; a callee that cannot be hooked has a `reason`.
 - A name the program never calls adds no hook.
 - `calls` works on its own and with `map`, `auto`, `entry` and `tail_calls`, but not with `dispatch`.
 - `ops`, `maps`, `func`, `line`, `all_matches`, `site_pcs` and `copy_read_only` select map calls and do not apply to `calls`.
-- A call site that cannot be hooked runs unchanged and is listed in `skipped` with a reason, which for the cases below starts with `call:`: a call right before or after another call, a call that is the first instruction of its function, a function without a context or without stack room for the slots, an argument size that is not a constant, or a program that calls `bpf_spin_lock`, `bpf_preempt_disable` or `bpf_res_spin_lock*`.
+- A call site that cannot be hooked runs unchanged and is listed in `skipped` with a reason, which for the cases below starts with `call:`: a call right before or after another call, a call that is the first instruction of its function, a function without a context or without stack room for the slots, or a hook that would take the program past the kernel's 256 functions.
+  A callee with a row whose `arg` would need more than one size in one program, or a size that is not a constant set in the call's basic block, is not skipped: all its sites fall back to the hook a callee without a row gets, `(ctx, u32 site, u64 ret)` or `(ctx, u32 site, const void *ret)` by its result, under the same name. The hooks file then gives no `arg_reg`, `arg_type` or `arg_size` for it, and `arg_reason` says why, such as `bpf_xdp_load_bytes is called with more than one argument size in this program (14 and 20)`; the supervisor logs the same reason once per program and hook.
+  At that limit the call hooks go one callee at a time, from the end of the order in [Refused rewrites](#refused-rewrites), until the program fits.
+  A call the kernel refuses to hook, such as one inside a `bpf_preempt_disable` region on kernels 6.10 to 6.14, is dropped by the retry in [Refused rewrites](#refused-rewrites) with a reason that starts with `load:`; the program's other sites keep their hooks.
+  A program that takes a spin lock keeps its call hooks: with a lock held the kernel accepts only `bpf_spin_unlock` and a few kfuncs, none of which can be hooked, so no hooked call lies inside a locked region.
   If no call site and no other hook is left, the transformation fails with `no call site is instrumented (N skipped)`.
 - When `arg` cannot be typed, and on every hook whose `ret` is a pointer, `arg` is `const void *` with its size in the `bpf-ninja:arg_size=N` decl tag, as on other untrusted hooks. On kernels without `arg:untrusted`, or with `static_untrusted`, such a hook is static and keeps the typed prototype.
-- `inject-run` reads the running kernel's BTF once, when a rule has `calls`, to name kfunc calls and type their arguments.
+- `inject-run` reads the running kernel's BTF once, when there are rules or `--lookups-json` is given, to name kfunc calls, label their sites and type their arguments.
   If it cannot, it logs `kernel BTF unavailable: kernel-function calls are not hooked` with the cause, and a program that calls a kfunc gets no call hooks.
-- A program that calls a kernel function from a module, such as conntrack on most distribution kernels, gets no call hooks, its helper call sites included.
+- A kernel function from a module, such as conntrack on most distribution kernels, is named through the module's BTF, which the program passes in its fd array. If `inject-run` cannot read it, it logs `module BTF at fd_array offset N unavailable`, and the program gets no call hooks, its helper call sites included.
 
 The word "calls" also appears elsewhere with another meaning: `calls` in the [lookups file](#lookups-file) lists map helper calls, and `calls` in [`--list-maps`](#map-listing-of-a-running-program) lists the BPF functions a function calls.
+
+### Choose sites from the listing
+
+Deleting names narrows a rule per map or callee.
+To keep only some calls of one callee, copy their labels or `pc` values from the [lookups file](#lookups-file) into `sites`.
+In this example `route()` is an inlined function that calls `bpf_fib_lookup` on line 41 of `fwd.c`, and the program calls it twice; it also reads the clock twice:
+
+```json
+"build": "sha256:5d0c9e0f41aa...",
+"call_sites": [
+  {"kind": "call", "pc": 20, "call": "bpf_ktime_get_ns", "func": "xdp_fwd_main", "file": "fwd.c", "line": 30, "label": "bpf_ktime_get_ns@xdp_fwd_main:30"},
+  {"kind": "call", "pc": 61, "call": "bpf_fib_lookup", "func": "xdp_fwd_main", "file": "fwd.c", "line": 41, "label": "bpf_fib_lookup@xdp_fwd_main:41#1"},
+  {"kind": "call", "pc": 97, "call": "bpf_fib_lookup", "func": "xdp_fwd_main", "file": "fwd.c", "line": 41, "label": "bpf_fib_lookup@xdp_fwd_main:41#2"},
+  {"kind": "call", "pc": 130, "call": "bpf_ktime_get_ns", "func": "xdp_fwd_main", "file": "fwd.c", "line": 77, "label": "bpf_ktime_get_ns@xdp_fwd_main:77"}
+]
+```
+
+Both copies of the inlined call have the same base label, `bpf_fib_lookup@xdp_fwd_main:41`, so each gets a suffix.
+To hook only the second lookup and only the second clock read, add to the ready rule:
+
+```json
+"sites": {"build": "sha256:5d0c9e0f41aa...", "only": ["bpf_fib_lookup@xdp_fwd_main:41#2", 130]}
+```
+
+- An entry is a label as listed, or the site's `pc` as a JSON number. A label without its `#N` suffix names every copy: `"except": ["bpf_fib_lookup@xdp_fwd_main:41"]` removes both lookups.
+- `only` narrows per hook: a callee, one op of one map (its lookups, its updates, and so on) or the tail call with a selected site keeps only its selected sites, and every other one keeps all its sites, so selecting an update of a map leaves that map's lookups alone. Here the maps, the entry and the other callees keep their hooks, `bpf_fib_lookup` is hooked at pc 97 and `bpf_ktime_get_ns` at pc 130.
+- `except` removes the sites it names and keeps the rest.
+- A site left out is listed in `skipped` with the reason `not selected by the rule's sites`. `sites` never adds a hook that the rule without it would not place.
+- `build` is the listing's fingerprint. When the program is rebuilt, or loaded on another kernel, the load has another fingerprint, and the selection may no longer mean the same calls. `inject-run` then loads the program without hooks, logs `program "xdp_fwd_main": injection skipped: rule sites were listed from build sha256:5d0c... but this load is build sha256:9b77...; list again with --lookups-json and copy the sites from the new file`, and lists the load in the hooks file's `refused`. With `--fail-closed` the load is refused. List the program again and copy the sites from the new file.
+- An entry that names no site of the program, such as a label of another program, is refused the same way: `rule sites: "L" names no site of this program`.
+- `sites` needs a rule written with `hook_prefix`, takes `only` or `except` but not both, and does not combine with `map`, `func`, `line`, `all_matches` or `site_pcs`.
+- When the compiler merges calls from several source lines into one instruction, they are one site with one label, and they cannot be selected apart.
+
+To capture at one site, see [Capture packets at a hook](#capture-packets-at-a-hook).
 
 ### See every site through one hook
 
@@ -163,6 +220,7 @@ bpf-ninja -p "$PROG_ID" --func ninja_sessions --arg-filter 'value->action==2' -w
 ```
 
 - The capture sees a packet only when the program calls the hook, so your rule sets what gets captured.
+- `--site LABEL|PC --hooks-json hooks.json` captures at one site: it reads the entry of `-p` in the [hooks file](#hooks-file), checks that its `tag` is the loaded program's, and attaches to the hooks that report the site with `--arg-filter site==PC`, ANDed with your own `--arg-filter`. For example `bpf-ninja -p "$PROG_ID" --hooks-json hooks.json --site 'bpf_fib_lookup@xdp_fwd_main:41#2' -w fib.pcap`. It needs one `-p` and no `--func`, and refuses with `--site: FILE has no program with prog_id N`, `--site: FILE lists prog_id N with tag X but the loaded program has tag Y; the file is from another load`, or `--site: no site "L" in program N`. A label without its suffix that names several copies is refused with `--site: "L" names N sites; give one of L#1 L#2 ...`, because the argument filters are ANDed and cannot say `site==A || site==B`: pick one copy. The `pc` names the site in this load only, so a `--site` capture does not follow the hook to reloaded programs, as with `--no-follow`.
 - `--arg-filter` can select members of the key and value, and `site` and `status` where the hook has them. `status.ret` and `status.flags` select one half of `status`.
 - At a hook that `inject-run` generated, the capture writes decision state as each packet's pcapng comment. `--record` picks it:
   - `filter` (the default) records the arguments and members that `--arg-filter` and `--set` keys read, and records nothing without them;
@@ -200,7 +258,7 @@ It learns of a new program in two ways:
 - A later program joins the pcapng interface, counters and rings of the first `-p` target with that hook name.
   `--arg-filter`, `--set` and `--record` are resolved again against the new program's own BTF.
 - Following applies to hooks tagged `bpf-ninja:hook`, in a capture with a single `--mode`. A function that only has the hook's name is not followed, and neither is a gated (entry + exit) capture.
-- `--no-follow` restricts the capture to the programs named at start.
+- `--no-follow` restricts the capture to the programs named at start. A capture with `--site` does not follow either.
 
 A follower is attached only when every tracing link already on the program belongs to the same capture.
 An incomplete link-list read is treated as another observer.
@@ -353,7 +411,7 @@ Choose an ELF and types that describe the live map, including CO-RE or loader ad
 ### Command line
 
 ```text
-bpf-ninja inject-run [--config FILE] [--fail-closed] [--hooks-json FILE] [--lookups-json FILE] [--stop-every-syscall] -- TARGET [ARGS...]
+bpf-ninja inject-run [--config FILE] [--fail-closed] [--hooks-json FILE] [--lookups-json FILE [--lookups-kinds KINDS]] [--stop-every-syscall] -- TARGET [ARGS...]
 ```
 
 | Flag | Meaning |
@@ -361,7 +419,8 @@ bpf-ninja inject-run [--config FILE] [--fail-closed] [--hooks-json FILE] [--look
 | `--config FILE` | Rules file (JSON). Without it, the environment variable `BPF_NINJA_INJECT_CONFIG` holds the JSON itself. |
 | `--fail-closed` | Refuse a matched load with `EPERM` when transformation, checking, or the substituted kernel load fails, or when the checker is not applicable. By default a failed check loads the original program, while a checker-inapplicable transformed program loads without validation. |
 | `--hooks-json FILE` | Write the injected programs and their hooks to FILE. See [Hooks file](#hooks-file). |
-| `--lookups-json FILE` | Write every XDP, tc, cgroup_skb and netfilter program the target loads, with its map calls and a suggested rule. Rules are then optional. See [Lookups file](#lookups-file). |
+| `--lookups-json FILE` | Write every XDP, tc, cgroup_skb and netfilter program the target loads, with its map, helper, kernel-function and tail calls and a ready rule. Rules are then optional. See [Lookups file](#lookups-file). |
+| `--lookups-kinds KINDS` | With `--lookups-json`: the comma-separated kinds to list and name in each rule, from `lookups`, `map_calls`, `helpers`, `kfuncs`, `tail_calls` and `entry`. The default is all. `lookups` alone writes a `hook` rule for the maps with lookups. |
 | `--stop-every-syscall` | Stop the target at the entry and exit of every syscall instead of only at program and BTF loads. See [Syscall stops](#syscall-stops). |
 
 - Flags before `--` belong to `inject-run`; the command and arguments after it belong to the target.
@@ -387,15 +446,16 @@ A rule whose `program` never loads produces no diagnostic at all.
 | Key | Type | Default | Meaning | Constraints |
 |---|---|---|---|---|
 | `program` | string | required | The program to rewrite: its kernel name or its entry function name. | Kernel names have at most 15 characters; a function name can be longer. One rule per program. |
-| `hook` | string | required | The hook name. With `auto`, `entry`, `tail_calls`, `calls` or `ops`, the prefix of the hook names. With `dispatch`, the name of the one hook. | A C identifier. It must leave room for the longest suffix within 127 bytes; see [Hook names](#hook-names). |
+| `hook_prefix` | string | `hook_prefix` or `hook` is required | The prefix of the hook names; the lookup hook of a `map` rule and the one hook of a `dispatch` rule carry no suffix. A rule written with `hook_prefix` states every kind: a missing or empty `maps`, `ops` or `calls` hooks nothing of that kind. A `map` rule names its one site itself and observes its lookup without `ops`, as with `hook`. | As `hook`. With `hook`, both must be equal. |
+| `hook` | string | `hook_prefix` or `hook` is required | The hook name. With `auto`, `entry`, `tail_calls`, `calls` or `ops`, the prefix of the hook names. With `dispatch`, the name of the one hook. In a rule written with `hook`, `maps` and `ops` keep the defaults below. | A C identifier. It must leave room for the longest suffix within 127 bytes; see [Hook names](#hook-names). |
 | `map` | string | none | Observe lookups on this map, by exact kernel map name. | Not with `auto`. A rule needs one of `map`, `auto`, `entry`, `tail_calls` or `calls`. |
 | `func` | string | none | With `map`: only lookups in this BTF function. | Needs `map`. |
 | `line` | integer | none | With `map`: only lookups on this source line. | Needs `map`. |
 | `all_matches` | bool | false | With `map`: take every matching lookup instead of requiring exactly one. | Needs `map`. Not with `site_pcs`. |
 | `site_pcs` | integer array | none | With `map`: take the lookups at these load-time instruction indexes. | Needs `map`. Not with `all_matches`. Each PC must be a lookup that matches the other filters, and must appear once. |
 | `auto` | bool | false | Instrument every supported call of the observed ops (lookups by default, or the ops that `ops` lists), with one hook per map and op. | Not with `map`, `func`, `line`, `all_matches` or `site_pcs`. |
-| `maps` | string array | every map | With `auto`: only calls on these maps, by exact kernel name. Calls on other maps run unchanged. | Needs `auto`. Names must be unique, and each must match a call the rule observes. |
-| `ops` | string array | `["lookup"]` | The calls and results that call a hook; see the [ops table](#choose-the-maps-and-operations-to-observe). | Needs `map` or `auto`. Ops other than `lookup` need `auto`. Each op appears once, so `lookup:hit` and `lookup:miss` together are refused; use `lookup:any`. |
+| `maps` | string array | every map; none with `hook_prefix` | With `auto`: only calls on these maps, by exact kernel name. Calls on other maps run unchanged. | Needs `auto`. Names must be unique. With `hook`, each must match a call the rule observes; with `hook_prefix`, a name without such a call gets no hook and is listed in `skipped_maps` with the reason. |
+| `ops` | string array | `["lookup"]`; none with `hook_prefix` | The calls and results that call a hook; see the [ops table](#choose-the-maps-and-operations-to-observe). | Needs `map` or `auto`. Ops other than `lookup` need `auto`. Each op appears once, so `lookup:hit` and `lookup:miss` together are refused; use `lookup:any`. |
 | `entry` | bool | false | Add `HOOK_entry(ctx)` at program start. | |
 | `tail_calls` | bool | false | Add `HOOK_tail_call(ctx, site, index)` after each failed tail call. | The program must call `bpf_tail_call`. |
 | `calls` | string array | none | Add `HOOK_<name>` after every call of each named helper or kernel function; see [Observe helper and kernel-function calls](#observe-helper-and-kernel-function-calls). | Names from that section's table, each once. Not with `dispatch`. |
@@ -403,6 +463,7 @@ A rule whose `program` never loads produces no diagnostic at all.
 | `copy_read_only` | bool | false | Pass a stack copy of a `BPF_F_RDONLY_PROG` map's value to a typed hook. | Not with `dispatch`. The copy needs stack below the slots. |
 | `static_untrusted` | bool | false (probe) | Make hooks that would take `arg:untrusted` pointers static, without probing. | |
 | `map_btf` | object | none | Key and value types for a map created without BTF. | See [Map types from a loader ELF](#map-types-from-a-loader-elf). |
+| `sites` | object | none | `{"build": FINGERPRINT, "only": [...]}` or `{"build": FINGERPRINT, "except": [...]}`: keep or remove sites by label or `pc`, bound to the listing's `build`; see [Choose sites from the listing](#choose-sites-from-the-listing). | Needs `hook_prefix`. Exactly one of `only` and `except`. Not with `map`, `func`, `line`, `all_matches` or `site_pcs`. |
 
 ### Stack floor
 
@@ -567,9 +628,12 @@ If a rewrite fails, `inject-run` reports it on stderr and keeps running the targ
 |---|---|
 | `version` | 2. It changes only when a field changes meaning or is removed; new fields can appear. |
 | `programs` | One entry per injected load, in load order; a program loaded twice appears twice. Loads that fell back or were refused are not listed. |
+| `refused` | The loads a rule's [`sites`](#choose-sites-from-the-listing) refused, each with `program`, `func` and `reason`. Each refused `BPF_PROG_LOAD` appears once, so a loader that repeats a refused load appears twice. Absent when there is none. |
 | `program`, `func` | The kernel program name and the entry function. |
 | `type` | `XDP`, `SchedCLS`, `SchedACT`, `CGroupSKB` or `Netfilter`. |
 | `prog_id` | The loaded program's kernel ID, for `-p` or `BPF_PROG_GET_FD_BY_ID`. 0 if `inject-run` could not query it; the diagnostic says why. |
+| `tag` | The loaded program's kernel tag in hex, as `bpftool prog` shows it. Capture `--site` compares it with the program it attaches to. Absent when `prog_id` is 0. |
+| `build` | The listing fingerprint of the original program, as the [lookups file](#lookups-file) gives it for the same load. Absent if the listing failed. |
 | `ctx_type` | The struct the hooks' `ctx` points to: `xdp_md`, `__sk_buff` or `bpf_nf_ctx`. |
 | `hook_form.form` | `global` or `static`: the choice for hooks that would take untrusted pointers, even if the program has none. |
 | `hook_form.reason` | `probe_arg_untrusted_supported`, `probe_arg_untrusted_unsupported`, `probe_inconclusive` or `config_static_untrusted_true`. |
@@ -580,8 +644,10 @@ If a rewrite fails, `inject-run` reports it on stderr and keeps running the targ
 | `hooks[].call` | The callee of a `call` hook, such as `bpf_fib_lookup`. |
 | `hooks[].arg_reg`, `arg_type`, `arg_size` | The `arg` parameter of a `call` hook: the callee's argument register (1 to 5), the struct name of what `arg` points to, and its size in bytes. `arg_type` is absent when `arg` is plain bytes; all three are absent when the hook has no `arg`. |
 | `hooks[].ret` | `scalar` (`u64 ret`) or `pointer` (`const void *ret`, compared with NULL only) on a `call` hook. |
+| `hooks[].arg_reason` | On a `call` hook of a callee with a row in the call table that has no `arg` in this program: why, either more than one argument size among its sites or a size that is not a constant set in the call's basic block. Absent otherwise. |
+| `hooks[].ret_size` | On a `scalar` call hook of a kernel function whose integer result is narrower than 8 bytes: the result's width in bytes. Only the low `ret_size` bytes of `ret` are the result. |
 | `stack` | The trial load's verifier accounting and the exact per-function floors used by this injection. |
-| `hooks[].sites` | The calls that call the hook, in instruction order: `kind` (`lookup`, `update`, `delete`, `push`, `pop`, `peek`, `tail_call`, `call` or `entry`), `pc` (the `site` argument, or the low 32 bits of `info`), and `map`, `call` (the callee of a `call` site), `func`, `file`, `line`, `ctx_source`, `frame` and `floor` where known. `ctx_source` is `entry`, `r6` through `r9`, or an aligned frame slot such as `fp-80`. `frame` owns the stack slots and `floor` is the value used for them. A dispatch hook lists the entry call first, as `pc` 4294967295. |
+| `hooks[].sites` | The calls that call the hook, in instruction order: `kind` (`lookup`, `update`, `delete`, `push`, `pop`, `peek`, `tail_call`, `call` or `entry`), `pc` (the `site` argument, or the low 32 bits of `info`), and `map`, `call` (the callee of a `call` site), `func`, `file`, `line`, `ctx_source`, `frame` and `floor` where known, and `label`, the site's label in the [lookups file](#lookups-file). `ctx_source` is `entry`, `r6` through `r9`, or an aligned frame slot such as `fp-80`. `frame` owns the stack slots and `floor` is the value used for them. A dispatch hook lists the entry call first, as `pc` 4294967295. |
 | `hooks[].untrusted` | The hook takes `arg:untrusted` pointers: its key and value are `const void *`. |
 | `hooks[].copied` | The value is a stack copy. |
 | `hooks[].static` | The hook is static; read every argument as a `u64`. |
@@ -589,7 +655,9 @@ If a rewrite fails, `inject-run` reports it on stderr and keeps running the targ
 | `hooks[].dead_in_this_load` | `true` when this generated hook is absent from the loaded program's `func_info`. Do not try to attach to it in this load. |
 | `hooks[].dead_cause` | Why a dead hook was marked. Currently this says that the verifier removed the generated hook as unreachable in this load. |
 | `hooks[].sites[].dead_in_this_load`, `dead_cause` | A site is dead only when every generated hook that reports that site is absent. For example, an absent miss hook does not make a site dead while its hit hook remains. |
-| `skipped` | Map calls that `auto` did not instrument and call sites of `calls` that could not be hooked, with the site fields and a `reason`. |
+| `skipped` | Map calls that `auto` did not instrument, call sites of `calls` that could not be hooked, sites a rule's `sites` left out (`not selected by the rule's sites`), and sites the [retry](#refused-rewrites) dropped (reason starting with `load:`), with the site fields and a `reason`. The requested sites of a retried load are those of `hooks` plus those dropped. |
+| `skipped_maps` | The `maps` names of a `hook_prefix` rule that match no call the rule observes, each with `map` and `reason`. Absent when there is none. |
+| `outside_premise` | `calls NAME, ...`: the callbacks, lock and critical-section calls and native-address helpers the original program calls. Hooks at its other calls work as usual; the equivalence proof does not cover such a program. A kernel-function call that could not be named (no kernel or module BTF) is listed as such, because it may be one of them. Absent when the program calls none. |
 | `dead_check_error` | Present when one or more hook comparisons failed. Affected hooks, and any site they may report, remain unmarked; independently confirmed absent hooks and sites can still be marked. Consumers must not guess from an unmarked result. |
 
 Treat a marked site as having no live observation point in this load, not as an attach failure.
@@ -598,11 +666,12 @@ The marks describe this program load only; a configuration change can make the s
 ### Lookups file
 
 `--lookups-json FILE` lists every XDP, tc, cgroup_skb and netfilter program the target loads with BTF, whether or not a rule selects it.
-Use it to write a rule before a run that injects:
+Use it to write the rules for a run that injects: take the ready rules, delete what you do not want to observe, and load.
 
 ```sh
 bpf-ninja inject-run --lookups-json lookups.json -- ./loader
-jq '[.programs[].rule | .dispatch = true | .maps = ["sessions"]]' lookups.json > rules.json
+jq '[.programs[].rule]' lookups.json > rules.json
+# Delete names from maps, ops or calls, or delete entry or tail_calls.
 bpf-ninja inject-run --config rules.json --hooks-json hooks.json -- ./loader
 ```
 
@@ -612,13 +681,44 @@ It writes the file like the hooks file: the file exists before the target starts
 
 ```json
 {
-  "version": 2,
+  "version": 3,
   "programs": [
     {
       "program": "p",
       "func": "entry_with_long_name",
       "type": "XDP",
       "ctx_type": "xdp_md",
+      "build": "sha256:93b64442cc32a9c427e8656fa7f209a09bd1d40fb397f972534cbcf6a26c46aa",
+      "maps": [
+        {"name": "sessions", "type": "Hash", "sites": [6], "ops": ["lookup"]}
+      ],
+      "lookups": [
+        {"kind": "lookup", "pc": 6, "map": "sessions", "func": "entry_with_long_name", "file": "p.c", "line": 41,
+         "label": "sessions@entry_with_long_name:41", "frame": "entry_with_long_name", "floor": -8}
+      ],
+      "calls": [
+        {"kind": "lookup", "pc": 6, "map": "sessions", "func": "entry_with_long_name", "file": "p.c", "line": 41,
+         "label": "sessions@entry_with_long_name:41", "frame": "entry_with_long_name", "floor": -8}
+      ],
+      "callees": [
+        {"name": "bpf_ktime_get_ns", "kind": "helper", "ret": "scalar", "typed": true, "sites": [10]},
+        {"name": "bpf_get_numa_node_id", "kind": "helper", "ret": "scalar", "typed": false, "sites": [12]}
+      ],
+      "call_sites": [
+        {"kind": "call", "pc": 10, "call": "bpf_ktime_get_ns", "func": "entry_with_long_name", "file": "p.c", "line": 44,
+         "label": "bpf_ktime_get_ns@entry_with_long_name:44", "ctx_source": "entry", "frame": "entry_with_long_name", "floor": -8},
+        {"kind": "call", "pc": 12, "call": "bpf_get_numa_node_id", "func": "entry_with_long_name", "file": "p.c", "line": 45,
+         "label": "bpf_get_numa_node_id@entry_with_long_name:45", "ctx_source": "entry", "frame": "entry_with_long_name", "floor": -8}
+      ],
+      "rule": {
+        "program": "entry_with_long_name",
+        "auto": true,
+        "maps": ["sessions"],
+        "entry": true,
+        "calls": ["bpf_ktime_get_ns", "bpf_get_numa_node_id"],
+        "ops": ["lookup:any"],
+        "hook_prefix": "ninja"
+      },
       "stack": {
         "source": "verifier",
         "kernel": "7.0.0",
@@ -628,23 +728,6 @@ It writes the file like the hooks file: the file exists before the target starts
            "text_exact": true, "floor": -8,
            "slots": {"ctx": -16, "key": -24, "result": -32, "map": -40, "value": -48}}
         ]
-      },
-      "maps": [
-        {"name": "sessions", "type": "Hash", "sites": [6], "ops": ["lookup"]}
-      ],
-      "lookups": [
-        {"kind": "lookup", "pc": 6, "map": "sessions", "func": "entry_with_long_name",
-         "frame": "entry_with_long_name", "floor": -8}
-      ],
-      "calls": [
-        {"kind": "lookup", "pc": 6, "map": "sessions", "func": "entry_with_long_name",
-         "frame": "entry_with_long_name", "floor": -8}
-      ],
-      "rule": {
-        "program": "entry_with_long_name",
-        "auto": true,
-        "maps": ["sessions"],
-        "hook": "ninja"
       }
     }
   ]
@@ -653,14 +736,24 @@ It writes the file like the hooks file: the file exists before the target starts
 
 | Field | Meaning |
 |---|---|
+| `version` | 3. It changes only when a field changes meaning or is removed; new fields can appear. `--list-maps --lookups-json` reads versions 1 to 3. |
+| `build` | The listing fingerprint: a SHA-256 over the instructions as the loader passed them (map fds zeroed, map-value offsets kept), the name and type of each map reference, every site with its label, and the BTF functions with their instruction ranges. A rebuilt program, another kernel or a loader that relocates differently per load gives another fingerprint. |
 | `maps` | Every map the program references. Maps with lookups come first, in the order of their first lookup, with each lookup's `pc` in `sites`. The others follow by name. `ops` lists the ops called on each map. |
 | `lookups` | The lookup calls, with the fields of a hooks-file site. |
 | `calls` | Every lookup, per-CPU lookup, update, delete, push, pop and peek call, with the op as `kind`. |
+| `callees` | Every helper and kernel function the program calls, other than the map helpers and `bpf_tail_call`: `kind` is `helper` or `kfunc`, `module` the fd-array offset of a module's kernel function, `ret` the result (`scalar`, `pointer` or `void`), and `sites` the `pc` of each call. A callee without a `reason` may be named in `calls`; `typed` ones have a row and a typed hook, the other helpers and kernel functions the result-only hook. Any other callee has a `reason` that says why it is never hooked, such as a callback, a lock, a call that does not return or returns nothing, a call the verifier rewrites, a pointer kind without a kernel test, or a kernel function whose prototype is not in the kernel BTF at hand. |
+| `call_sites` | The calls of `callees`, with `kind` `call` and the callee in `call`. A site of a callee that may be named has the `reason` a rule naming it would see. |
+| `tail_calls` | The `bpf_tail_call` sites. |
+| `label` on every site | A name for the site: `NAME@FUNC:LINE`, or `NAME@FUNC+SLOT` without line info, where SLOT counts instruction slots from the function's first instruction. NAME is the map of a lookup (`any` for a map known only at run time), `MAP.OP` for another map call, the callee of a call, or `tail_call`. When several sites share a label, every one of them gets `#1`, `#2`, ... in `pc` order, so the label without the suffix names them all. |
 | `reason` on a lookup or call | `auto` would skip it, unless it also has `"generic": true`, which means `auto` sends it to the generic hook. A site without a reason passed discovery and has a usable frame floor; whether its slots fit is decided only when `auto` selects (see [Map listing of a running program](#map-listing-of-a-running-program)). |
 | `ctx_source` on a lookup or call | The proven source used to initialize the site's frame: `entry`, `r6` through `r9`, or an aligned slot such as `fp-80`. It is omitted when no source was proven. |
 | `frame`, `floor` on a lookup or call | The function frame that owns the site and the floor used to place its spill slots. |
 | `stack` | The trial load's verifier accounting. A function with `skip_reason` is not instrumented, and when it is the entry function the whole program is not; see [Stack floor](#stack-floor). `dead` means the verifier omitted that function from this load. When `source` is `verifier`, every lookup or call in a function with either mark, or missing from `functions`, has the reason `stack floor unavailable for this function` and no `generic`: `auto` skips it, even where the generic hook could take it. When the trial load failed, `source` is `unavailable` and `error` gives the cause; `inject-run` then loads the program unchanged, and every lookup and call has the reason `stack audit unavailable` and no `generic`. |
-| `rule` | A rule that instruments the lookups on every named map. Its `program` is the entry function name. Edit `maps`, and add `ops`, `dispatch`, `entry` or `tail_calls` as needed. |
+| `rule` | A ready rule written with `hook_prefix`, whose `program` is the entry function name. It names every named map with a call of a listed op, each such op as `op:any`, the callees without a `reason` in `calls`, `entry`, and `tail_calls` when the program calls `bpf_tail_call`. It never sets `dispatch`. Delete names to observe less; a missing or empty list hooks nothing of its kind. |
+
+`--lookups-kinds` picks the kinds that `callees`, `call_sites`, `tail_calls` and `rule` cover: `lookups` (lookup ops), `map_calls` (the other map ops), `helpers`, `kfuncs`, `tail_calls` and `entry`.
+`maps`, `lookups` and `calls` are always written.
+With `--lookups-kinds lookups` alone, `rule` is the `hook` rule that instruments the lookups on every named map, and the new arrays are left out.
 
 A program loaded twice is listed twice.
 
@@ -721,8 +814,12 @@ Diagnostics go to stderr:
 | `program "P": checker not applicable: REASON; load not validated` | The checker cannot pair this stream. The substituted load proceeds unchecked by default; `--fail-closed` returns `EPERM`. |
 | `program "P": injection skipped: checker rejected the transform: ERR; probe was not installed; attempted ...` | The stream could not be read or decoded, or the checker rejected it. The original program is retried by default; `--fail-closed` returns `EPERM`. |
 | `program "P": injected hook "H" (...), tracee fd N` | The rewritten program loaded. The line names each hook with its map and site PCs, then each site `auto` skipped and why. After a [jump sequence limit](#jump-sequence-limit) retry it ends with `, lookup branches miss-first`. |
+| `program "P": hook "H" observes only the result of C: REASON` | Follows the line above for each call hook whose callee has a row with `arg` but gets the result-only hook in this program; REASON is the hook's `arg_reason` in the [hooks file](#hooks-file). |
 | `program "P": ...: verifier jump sequence limit: ...; retrying with lookup misses first` | The verifier refused the rewritten program with `The sequence of N jumps is too complex`; see [Jump sequence limit](#jump-sequence-limit). |
-| `program "P": injection skipped: ERR[; attempted ...]` | A read, metadata, transform or BTF-load error, or the kernel rejected the rewritten program. After a rejection the line names the hooks it attempted. |
+| `program "P": transformed PROG_LOAD: ERR; retrying with fewer sites` | The kernel refused the rewritten program; see [Refused rewrites](#refused-rewrites). |
+| `program "P": N sites requested, K kept after T trial loads (budget 24, U used before); dropped pc A: REASON; ...` | The retry's result: the sites the first rewrite hooked, the sites the loaded rewrite hooks, and each dropped site with its reason. |
+| `program "P": N sites requested, no rewrite loaded after T trial loads (budget 24, U used before); the original program loads` | The retry found no rewrite the kernel accepts, or the one it kept was refused when loaded. The original program loads; with `--fail-closed` the line ends with `the load is refused (--fail-closed)` instead. |
+| `program "P": injection skipped: ERR[; attempted ...]` | A read, metadata, transform or BTF-load error, or no rewrite loaded, not even after the retry. After a rejection the line names the hooks it attempted. |
 | `bpf command N: injection skipped: ERR` | `inject-run` could not read or accept the arguments of a `BPF_BTF_LOAD` or `BPF_PROG_LOAD` call, for example a matched load without BTF, or two rules match the same load (`ambiguous program selectors`). |
 | `global arg:untrusted probe inconclusive: ERR` | The probe failed for a reason other than the tag. The global form is kept. |
 | `program "P": lookup discovery skipped: ERR` or `failed: ERR` | `--lookups-json` could not list this program. |
@@ -734,9 +831,9 @@ Diagnostics go to stderr:
 | `captures cannot follow this run's loads: ERR` | All 32 sockets are taken by other `inject-run` processes in this network namespace. Captures then find this run's programs by polling. |
 | `program "P": map "M" types from ELF sha256 ...: key "K", value "V"` | `map_btf` supplied these types. |
 
-When the rewritten load fails, `inject-run` retries the original syscall with its original arguments.
+When no rewrite loads, `inject-run` retries the original syscall with its original arguments.
 It also retries the original syscall after a checker read, decode, or validation failure.
-It does not retry with another hook form; the only other rewrite it tries is the one in [Jump sequence limit](#jump-sequence-limit).
+It does not retry with another hook form; the only other rewrites it tries are the one in [Jump sequence limit](#jump-sequence-limit) and those with fewer sites in [Refused rewrites](#refused-rewrites).
 The loader's verifier log buffer can still hold the log of the attempted load.
 After an inconclusive probe, a rejection with `EINVAL`, `EOPNOTSUPP` or `EACCES` of a program with untrusted hooks adds a hint.
 The hint always suggests `"static_untrusted": true`; for a read-only map's lookup hook it also offers `"copy_read_only": true` as an alternative.
@@ -753,7 +850,24 @@ When the rewritten load of a program with hit or `any` lookup hooks fails, `inje
 If the reason is this limit, it rewrites the program with every lookup's miss following the test and the hit waiting, and loads that; the loader's log buffer then holds that load's log.
 The miss-first layout has the opposite cost, so it is only the fallback.
 A refused load binds no map, so the earlier attempts leave nothing behind.
-If the second layout fails as well, the load continues as any failed rewrite does: the original program, or `EPERM` with `--fail-closed`.
+If the second layout fails as well, the load continues as any refused rewrite does; see [Refused rewrites](#refused-rewrites).
+
+### Refused rewrites
+
+When the kernel refuses the rewritten program, `inject-run` looks for a smaller rewrite that loads, with trial loads that carry a verifier log of their own and close the program they loaded.
+It is a bounded heuristic, not a search for the one site at fault: a kernel may refuse two sites together and accept each alone.
+
+1. The sites it may drop are those the refused rewrite hooked, except a lookup the rule selects explicitly with `map`: lookups first, then the other map calls, tail calls, callees with a typed row, result-only hooks of helpers (scalar, then pointer) and of kernel functions (scalar, then pointer), by pc within each kind.
+   The entry hook is never dropped.
+2. The base, the rewrite without any of those sites, is loaded first. If the kernel refuses it, the original program loads, or with `--fail-closed` the load fails with `EPERM`.
+3. Otherwise it keeps the longest prefix of the sites that loads with the sites kept so far (by bisection), drops the next site, tries the other sites of that site's hook together and then each alone, and then tries the kept sites plus the rest, until no site is left.
+4. A site is dropped only after a trial in which it was the one site added to sites that loaded. Its reason is `load: refused in this combination (the kept sites plus this one): MESSAGE`, with the verifier's last message, or the errno where no log was read. It says nothing about the site on its own.
+5. At most 24 extra verifications run per program load: every trial, and the repeated load of [Jump sequence limit](#jump-sequence-limit). When they are used up, the sites not kept by then are dropped with `load: not kept: the budget of 24 trial loads was used up`.
+6. The last rewrite a trial accepted is loaded exactly as it was tried: the same sites, instructions and metadata, never a combination no trial loaded. If the kernel still refuses it, the original program loads, or the load fails with `EPERM` under `--fail-closed`.
+
+`--fail-closed` refuses the load only when no rewrite loads; dropped sites are accepted as skipped sites are.
+stderr names the requested and the kept sites and each dropped site with its reason, and the hooks file lists the dropped sites in `skipped`.
+Each trial costs one verification of the rewritten program, so a refused load of a large program can take up to 24 more verifications than before.
 
 With `--fail-closed`:
 
@@ -861,6 +975,11 @@ In both modes, cancelling or killing `inject-run` kills the target, and with the
 - A program with an indirect jump (`BPF_JA|BPF_X`) is never rewritten, so its sites are not observed and it does not appear in `--lookups-json`.
 - A program that a rule matches or `--lookups-json` discovers, and that references a `BPF_MAP_TYPE_INSN_ARRAY` map without an indirect jump, fails to load under `inject-run`, even when failing open.
   A successful trial load binds the array, so the loads that follow get `EBUSY`; the loader may report a different final error after retrying.
+- A rule's `sites` is bound to one listing fingerprint. A program loaded in several builds under one name is narrowed by names, not by sites. Source calls the compiler merged into one instruction are one site.
+- A result-only call hook sees the result only; arguments are captured only for the callees with a row. A pointer result shows only whether it is NULL and is never recorded.
+- Callees that return nothing, run or register a callback, lock, iterator and allocation kernel functions, casts, and a tail call that succeeds are not hooked.
+- Kernel-function calls are named through the running kernel's BTF, and a module's kernel function through the module BTF in the load's fd array. A kernel-function call that cannot be named is not hooked, and the program gets no call hooks at all.
+- The region validator treats a kernel-function call as reading r1 to r5, and the load-time checker does not see kernel-function names: the deny list for kernel functions is enforced by the transformer alone.
 - The integration tests use a Go loader built on cilium/ebpf.
   C and libbpf loaders go through the same syscall path but have no integration test.
 

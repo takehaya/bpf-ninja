@@ -267,3 +267,21 @@ func TestNilRecordSetProgramsByteIdentical(t *testing.T) {
 	params := []attach.FuncParamInfo{{Name: "site", Index: 1, Size: 4}, {Name: "key", Index: 2, Size: 8, Kind: "ptr-struct"}}
 	sum("argecho", buildArgEchoInsns(6, []filter.ArgFilter{arg, {ParamName: "site", ParamIndex: 1, ParamSize: 4, Op: filter.OpEqual, Value: 3}}, params))
 }
+
+// TestRecordNarrowRet: an entry block stores a ret of Size 4 with a 4-byte
+// store over the zeroed status slot, so the upper bytes are not recorded.
+func TestRecordNarrowRet(t *testing.T) {
+	for size, want := range map[uint32]asm.Size{4: asm.Word, 8: asm.DWord} {
+		l := &record.Layout{Mode: record.ModeEntry, Site: record.Scalar{ParamIndex: -1},
+			Status: record.Scalar{Name: "ret", ParamIndex: 2, Size: size},
+			Key:    record.Bytes{Name: "key", ParamIndex: -1}, Value: record.Bytes{Name: "value", ParamIndex: -1}}
+		store := fmt.Sprint(asm.StoreMem(asm.R1, int16(metadataSize)+record.EntryOffStatus, asm.R3, want))
+		found := false
+		for _, ins := range emitRecordBlock(l, nil) {
+			found = found || fmt.Sprint(ins) == store
+		}
+		if !found {
+			t.Errorf("size %d: no %s", size, store)
+		}
+	}
+}

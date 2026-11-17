@@ -9,8 +9,38 @@ import (
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/asm"
 	"github.com/cilium/ebpf/btf"
+	"github.com/cilium/ebpf/link"
 	"github.com/takehaya/bpf-ninja/internal/testutil"
+	"golang.org/x/sys/unix"
 )
+
+func TestForEachLinkSkipsVanishedIDs(t *testing.T) {
+	var calls int
+	err := forEachLink(func(after link.ID) (link.ID, link.Link, error) {
+		calls++
+		switch after {
+		case 0:
+			return 10, nil, unix.ENOENT
+		case 10:
+			return 11, nil, unix.EAGAIN
+		default:
+			return 0, nil, nil
+		}
+	}, func(link.ID, link.Link) error {
+		t.Fatal("visited a link that vanished while it was opened")
+		return nil
+	})
+	if err != nil || calls != 3 {
+		t.Fatalf("calls %d, error %v; want 3, nil", calls, err)
+	}
+
+	err = forEachLink(func(link.ID) (link.ID, link.Link, error) {
+		return 12, nil, unix.EPERM
+	}, func(link.ID, link.Link) error { return nil })
+	if !errors.Is(err, unix.EPERM) {
+		t.Fatalf("non-race error %v, want EPERM", err)
+	}
+}
 
 func TestSelectHookType(t *testing.T) {
 	edges := []extensionLink{{10, 20, 3}, {10, 21, 4}, {11, 22, 3}}

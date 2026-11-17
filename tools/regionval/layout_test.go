@@ -602,3 +602,30 @@ func TestPassCalleeCallsHelper7(t *testing.T) {
 		t.Errorf("%+v", r)
 	}
 }
+
+// A function that receives the context from its caller and calls
+// bpf_get_current_pid_tgid (helper 14, none of the 20 ids the validator
+// listed by hand before its table was generated), with a result-only hook
+// after the call: helper 14 reads no argument, so r5 = r_G is not live at
+// the function's entry and both the pass load and the site validate.
+func TestPassCalleeSiteAtHelper14(t *testing.T) {
+	p := pair{
+		o: []a{
+			mov(6, 1).begins("main"), jeq(6, "c"), movi(1, 7), call("sub").at("c"), exit(),
+			movi(0, 0).begins("sub"), helper(14), exit(),
+		},
+		t: []a{
+			stx(-24, 1).begins("main"), mov(6, 1), jeq(6, "pl"), movi(1, 7),
+			ldx(5, -24).at("pl"), call("sub"), exit(),
+			stx(-24, 5).begins("sub"), movi(0, 0), helper(14),
+			stx(-32, 0), ldx(1, -24), movw(2, 6), mov(3, 0), call("hook"), ldx(0, -32), // postlude
+			exit(),
+			movi(0, 0).begins("hook"), exit(),
+		},
+		kappa: []int{1, 2, 3, 5, 6, 8, 9, 16}, floor: -16,
+	}
+	r := runFile(t, p.capture(t))
+	if !r.Validated || r.Counts.ByKind["gap"] != 1 || r.Counts.ByKind["site"] != 1 {
+		t.Errorf("%+v", r)
+	}
+}

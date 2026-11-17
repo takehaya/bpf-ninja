@@ -11,6 +11,7 @@ import (
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/asm"
 	"github.com/takehaya/bpf-ninja/internal/testutil"
+	"github.com/takehaya/bpf-ninja/pkg/injectcheck"
 	"golang.org/x/sys/unix"
 )
 
@@ -351,6 +352,89 @@ func TestBpfCallHookRowProbeReadKernel(t *testing.T) {
 		}
 		if got := lastCall(t, obs["bpf_probe_read_kernel"], 1); got[0] != uint64(h.Sites[0].SitePC) || got[1] != c.data8 || got[2] != out[0] {
 			t.Fatalf("fail=%v: hook site %d arg %#x ret %#x", c.fail, got[0], got[1], got[2])
+		}
+	}
+}
+
+// loadBytesTwoSizesFixture is loadBytesFixture (XDP) with a second
+// bpf_xdp_load_bytes of 4 bytes at 40 into fp-16: the codes go to out slots 0
+// and 1, the buffers to 2 and 3, and it passes when both succeed, else drops.
+func loadBytesTwoSizesFixture() *ebpf.CollectionSpec {
+	insns := asm.Instructions{
+		asm.Mov.Reg(asm.R6, asm.R1),
+		asm.Mov.Imm(asm.R1, 0), asm.StoreMem(asm.RFP, -8, asm.R1, asm.DWord), asm.StoreMem(asm.RFP, -16, asm.R1, asm.DWord),
+		asm.Mov.Reg(asm.R1, asm.R6), asm.Mov.Imm(asm.R2, loadBytesAt),
+		asm.Mov.Reg(asm.R3, asm.RFP), asm.Add.Imm(asm.R3, -8), asm.Mov.Imm(asm.R4, loadBytesLen),
+		asm.FnXdpLoadBytes.Call(),
+		asm.Mov.Reg(asm.R7, asm.R0),
+		asm.Mov.Reg(asm.R1, asm.R6), asm.Mov.Imm(asm.R2, 40),
+		asm.Mov.Reg(asm.R3, asm.RFP), asm.Add.Imm(asm.R3, -16), asm.Mov.Imm(asm.R4, 4),
+		asm.FnXdpLoadBytes.Call(),
+		asm.Mov.Reg(asm.R8, asm.R0),
+	}
+	insns = append(insns, outStore(0, asm.R7)...)
+	insns = append(insns, asm.StoreMem(asm.R1, 8, asm.R8, asm.DWord),
+		asm.LoadMem(asm.R2, asm.RFP, -8, asm.DWord), asm.StoreMem(asm.R1, 16, asm.R2, asm.DWord),
+		asm.LoadMem(asm.R2, asm.RFP, -16, asm.DWord), asm.StoreMem(asm.R1, 24, asm.R2, asm.DWord),
+		asm.Or.Reg(asm.R7, asm.R8),
+		asm.JEq.Imm(asm.R7, 0, "lb2_pass"),
+		asm.Mov.Imm(asm.R0, 1), asm.Return(),
+		asm.Mov.Imm(asm.R0, 2).WithSymbol("lb2_pass"), asm.Return())
+	return callFixtureSpec(ebpf.XDP, insns)
+}
+
+// A callee with two argument sizes gets the result-only hook at both sites:
+// the load-time checker accepts the rewrite, the program acts and stores as
+// the unmodified one, and the hook sees each site's result, on a packet
+// where both loads succeed and on one where only the second does.
+func TestBpfCallHookRowLoadBytesTwoSizes(t *testing.T) {
+	testutil.SkipIfNotRoot(t)
+	work := loadBytesTwoSizesFixture()
+	in := slices.Clone(work.Programs["p"].Instructions)
+	injectcheck.Label(work.Programs["p"].Instructions)
+	req := callReq("bpf_xdp_load_bytes")
+	plan, err := transformLookup(work, req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.hooks) != 1 || len(plan.skipped) != 0 {
+		t.Fatalf("hooks %+v skipped %+v", plan.hooks, plan.skipped)
+	}
+	h := plan.hooks[0]
+	if h.ArgReg != 0 || h.ArgSize != 0 || h.RetPtr || h.Untrusted || h.Static || len(h.Sites) != 2 ||
+		h.ArgReason != fmt.Sprintf("bpf_xdp_load_bytes is called with more than one argument size in this program (%d and 4)", loadBytesLen) {
+		t.Fatalf("hook %+v", h)
+	}
+	out := work.Programs["p"].Instructions
+	cert, premises := validationCertificate(t, in, out, plan.hooks, req.Stack.LowestOffset)
+	if counts, err := injectcheck.Check(in, out, cert, premises); err != nil || counts.Sites != 2 {
+		t.Fatalf("checker: counts %+v err %v", counts, err)
+	}
+	plain := loadCallFixture(t, loadBytesTwoSizesFixture())
+	hooked := loadHooked(t, work, plan.hooks)
+	t.Cleanup(hooked.Close)
+	obs := attachArgObserver(t, h.Name, hooked.Programs["p"], false, false)
+	packet := make([]byte, 64)
+	for i := range packet {
+		packet[i] = byte(i)
+	}
+	for run, c := range []struct {
+		data   []byte
+		action uint32
+	}{{packet, 2}, {packet[:48], 1}} {
+		pret, pout := runCallFixture(t, plain, c.data, nil)
+		ret, got := runCallFixture(t, hooked, c.data, nil)
+		if ret != pret || got != pout || ret != c.action || got[1] != 0 {
+			t.Fatalf("%d-byte packet: hooked %d %#x, plain %d %#x", len(c.data), ret, got, pret, pout)
+		}
+		calls := observed(t, obs)
+		if len(calls) != 2*(run+1) {
+			t.Fatalf("%d-byte packet: %d hook calls, want %d", len(c.data), len(calls), 2*(run+1))
+		}
+		for i, site := range h.Sites {
+			if call := calls[2*run+i]; call[0] != uint64(site.SitePC) || call[1] != got[i] {
+				t.Fatalf("%d-byte packet: hook call %d site %d ret %#x, want %d %#x", len(c.data), i, call[0], call[1], site.SitePC, got[i])
+			}
 		}
 	}
 }

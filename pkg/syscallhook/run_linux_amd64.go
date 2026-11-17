@@ -4,7 +4,9 @@ package syscallhook
 
 import (
 	"bytes"
+	"cmp"
 	"context"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -48,6 +50,11 @@ type Options struct {
 	// thread. Other target threads keep running until the supervisor handles
 	// their next stop, then wait behind this callback. It must not wait on the target.
 	OnInject func(Injection)
+	// OnRefuse, if set, is called on the tracing thread for each load a
+	// rule's sites refused (see Sites): the listing was of another build, an
+	// entry names no site of the program, or the load could not be listed. The original program then
+	// loads, or the load is refused with FailClosed.
+	OnRefuse func(Refusal)
 	// OnDiscover, if set, is called on the tracing thread for every XDP, tc or
 	// cgroup_skb program load whose attr carries BTF, whether or not a rule selects it,
 	// before any transform. Rules may then be empty. It must not wait on the
@@ -68,13 +75,19 @@ type Options struct {
 	leftThreads *[]int
 	// pidfdOpen is a test-only fault injection point.
 	pidfdOpen func(int, int) (int, error)
+	// loadFault is a test-only fault injection point: a rewritten program
+	// the kernel loaded is refused when it returns an error for the hooks.
+	loadFault func([]inject.LookupHook) error
 }
 
 // Discovery lists the lookups of one program load (see
 // inject.DiscoverLookupsRaw), all its map calls with lookups among them
 // (inject.DiscoverMapCallsRaw), and the kinds of the maps it references, by
 // kernel map name. Program is the kernel program name and Func the entry
-// function.
+// function. CallSites lists every other helper and kernel-function call, with
+// labels for every site and the listing fingerprint
+// (inject.DiscoverCallSitesRaw); kernel functions are named only when the
+// running kernel's BTF loaded.
 type Discovery struct {
 	Program, Func string
 	Type          ebpf.ProgramType
@@ -82,12 +95,16 @@ type Discovery struct {
 	Calls         []inject.LookupSite
 	Maps          map[string]ebpf.MapType
 	Stack         inject.StackReport
+	CallSites     inject.CallDiscovery
 }
 
 // Injection describes one successful injected load. Program is the kernel
 // program name and Func the entry function. ProgID is the loaded program's
 // kernel ID, zero if the tracee could not query it. Hooks and Skipped are
-// the transform's (see inject.LookupResult).
+// the transform's (see inject.LookupResult). Build is the listing
+// fingerprint of the original program and Labels its site labels by pc, as
+// a listing of the same load gives them (inject.CallDiscovery); both are
+// empty when the listing failed.
 type Injection struct {
 	HookForm      HookForm
 	Program, Func string
@@ -96,6 +113,17 @@ type Injection struct {
 	Hooks         []inject.LookupHook
 	Skipped       []inject.LookupSite
 	Stack         inject.StackReport
+	Build         string
+	Labels        map[uint32]string
+	Tag           string // the loaded program's kernel tag in hex, empty with ProgID zero
+	// OutsidePremise names the denied callees the original program calls
+	// (inject.PremiseCalls): the theorem is not claimed for this load.
+	OutsidePremise []string
+}
+
+// Refusal is a load a rule's sites refused; Reason is the message.
+type Refusal struct {
+	Program, Func, Reason string
 }
 
 type rememberedBTF struct {
@@ -121,6 +149,9 @@ type supervisor struct {
 	filtered      bool
 	// kernel is the running kernel's BTF for rules with calls; nil without.
 	kernel *btf.Spec
+	// extra counts the extra verifications of the current load (see
+	// trialBudget) before the retry.
+	extra int
 }
 
 var errTrialVerifier = errors.New("trial load was rejected by the verifier")
@@ -135,11 +166,13 @@ func (s *supervisor) log(format string, args ...any) {
 	_, _ = fmt.Fprintf(s.options.Log, "inject-run: "+format+"\n", args...)
 }
 
-// loadKernel sets s.kernel once, only when a rule has calls. Without kernel
-// BTF the transform cannot name a kfunc call and skips every call site of a
-// program that makes one; programs without kfunc calls are unaffected.
+// loadKernel sets s.kernel once, when there are rules or loads are listed:
+// a listing, and the site labels and fingerprint of an injected load, name
+// kfunc calls with it. Without kernel BTF the transform cannot name a kfunc
+// call and skips every call site of a program that makes one; programs
+// without kfunc calls are unaffected.
 func (s *supervisor) loadKernel(load func() (*btf.Spec, error)) {
-	if !slices.ContainsFunc(s.options.Rules, func(r Rule) bool { return len(r.Calls) != 0 }) {
+	if s.options.OnDiscover == nil && len(s.options.Rules) == 0 {
 		return
 	}
 	spec, err := load()
@@ -969,25 +1002,32 @@ func (s *supervisor) entry(pid int, t *thread, regs unix.PtraceRegs) error {
 	}
 	s.log("program %q: untrusted hook form %s (%s)", name, form.Form, form.Reason)
 	var ret int64
-	var result *inject.LookupResultRaw
+	var rewrite *transformed
 	var entry string
 	var injectErr error
 	branches := ""
+	s.extra = 0
 	if stackErr != nil {
 		injectErr = fmt.Errorf("stack depth unavailable: %w", stackErr)
 	} else {
-		ret, result, entry, injectErr = s.transformLoad(r, attr, *rule, form, stack, false)
+		ret, rewrite, entry, injectErr = s.transformLoad(r, attr, *rule, form, stack, false)
 		if errors.Is(injectErr, errJumpLimit) && r.broken == nil {
 			s.log("program %q: %v; retrying with lookup misses first", name, injectErr)
 			branches = ", lookup branches miss-first"
-			ret, result, entry, injectErr = s.transformLoad(r, attr, *rule, form, stack, true)
+			ret, rewrite, entry, injectErr = s.transformLoad(r, attr, *rule, form, stack, true)
+		}
+		if errors.As(injectErr, &refusedLoad{}) && r.broken == nil {
+			s.log("program %q: %v; retrying with fewer sites", name, injectErr)
+			ret, rewrite, injectErr = s.retryLoad(r, attr, *rule, form, stack, rewrite, injectErr)
 		}
 	}
 	if r.broken != nil {
 		return r.broken
 	}
+	var result *inject.LookupResultRaw
 	summary := ""
-	if result != nil {
+	if rewrite != nil {
+		result = rewrite.result
 		summary = hookSummary(result)
 	}
 	if injectErr != nil {
@@ -997,6 +1037,9 @@ func (s *supervisor) entry(pid int, t *thread, regs unix.PtraceRegs) error {
 			} else {
 				s.log("program %q: injection skipped: %v", name, injectErr)
 			}
+		}
+		if errors.As(injectErr, &sitesRefusal{}) && s.options.OnRefuse != nil {
+			s.options.OnRefuse(Refusal{Program: name, Func: entry, Reason: injectErr.Error()})
 		}
 		refuse := s.options.FailClosed || stackErr != nil && !rule.Auto && !errors.Is(stackErr, errTrialVerifier) && !errors.Is(stackErr, errIndirectJump)
 		ret, err = retryOriginalOrRefuse(refuse, func() (int64, error) {
@@ -1010,13 +1053,23 @@ func (s *supervisor) entry(pid int, t *thread, regs unix.PtraceRegs) error {
 		}
 	} else {
 		s.log("program %q: injected %s, tracee fd %d%s", name, summary, ret, branches)
+		for _, hook := range result.Hooks {
+			if hook.ArgReason != "" {
+				s.log("program %q: hook %q observes only the result of %s: %s", name, hook.Name, hook.Call, hook.ArgReason)
+			}
+		}
+		premise := rewrite.premise
+		if len(premise) != 0 {
+			s.log("program %q: outside the theorem's premise: calls %s", name, strings.Join(premise, ", "))
+		}
 		if s.options.OnInject != nil {
-			inj := Injection{HookForm: form, Program: name, Func: entry, Type: ebpf.ProgramType(u32(attr, 0)), Hooks: result.Hooks, Skipped: result.Skipped, Stack: stack}
-			// bpf_prog_info starts with type and id.
-			if info, err := r.info(uint32(ret), 8); err != nil {
+			inj := Injection{HookForm: form, Program: name, Func: entry, Type: ebpf.ProgramType(u32(attr, 0)), Hooks: result.Hooks, Skipped: result.Skipped, Stack: stack,
+				Build: rewrite.build, Labels: rewrite.labels, OutsidePremise: premise}
+			// bpf_prog_info starts with type, id and the 8-byte tag.
+			if info, err := r.info(uint32(ret), 16); err != nil {
 				s.log("program %q: cannot query program ID: %v", name, err)
 			} else {
-				inj.ProgID = u32(info, 4)
+				inj.ProgID, inj.Tag = u32(info, 4), hex.EncodeToString(info[8:16])
 			}
 			if r.broken != nil {
 				return r.broken
@@ -1254,11 +1307,12 @@ func (s *supervisor) discover(r *remote, attr []byte, name string, stack inject.
 	if err != nil {
 		return err
 	}
-	calls, err := inject.DiscoverMapCallsRaw(raw)
+	raw.Kernel, raw.Modules = s.kernel, s.programModules(r, attr, raw.Instructions)
+	calls, callSites, err := listing(raw)
 	if err != nil {
 		return err
 	}
-	d := Discovery{Program: name, Func: entry, Type: raw.Type, Calls: calls, Maps: map[string]ebpf.MapType{}, Stack: stack}
+	d := Discovery{Program: name, Func: entry, Type: raw.Type, Calls: calls, Maps: map[string]ebpf.MapType{}, Stack: stack, CallSites: callSites}
 	for _, site := range calls {
 		if site.Op == inject.HookLookup {
 			d.Lookups = append(d.Lookups, site)
@@ -1271,77 +1325,164 @@ func (s *supervisor) discover(r *remote, attr []byte, name string, stack inject.
 	return nil
 }
 
-func (s *supervisor) transformLoad(r *remote, attr []byte, rule Rule, form HookForm, stack inject.StackReport, missFirst bool) (ret int64, result *inject.LookupResultRaw, entry string, err error) {
+// transformed is one rewrite of a program load as the load-time check saw
+// it. The retry keeps the last one a trial load accepted and loads exactly
+// that.
+type transformed struct {
+	result    *inject.LookupResultRaw
+	request   inject.LookupRequestRaw
+	original  asm.Instructions
+	insns     []byte
+	cert      injectcheck.Certificate
+	premises  injectcheck.Premises
+	check     bool
+	missFirst bool
+	retry     bool              // a trial of the retry, with its own drop list
+	build     string            // the listing fingerprint of the original
+	labels    map[uint32]string // the listing's site labels by pc
+	premise   []string          // inject.PremiseCalls of the original, named with the load's kernel and module BTF
+}
+
+// sitesRefusal is a load a rule's sites refused (Sites.drop).
+type sitesRefusal struct{ error }
+
+func (e sitesRefusal) Unwrap() error { return e.error }
+
+// programModules returns the module BTFs of insns' kfunc calls when kernel
+// BTF loaded (see moduleBTFs).
+func (s *supervisor) programModules(r *remote, attr []byte, insns asm.Instructions) map[int16]*btf.Spec {
+	if s.kernel == nil {
+		return nil
+	}
+	return s.moduleBTFs(insns, fdArray(attr),
+		func(addr, size uint64) ([]byte, error) { return readMemory(r.pid, addr, size) },
+		func(fd uint32) ([]byte, error) { return r.info(fd, 32) }, loadModuleBTF)
+}
+
+// refusedLoad marks the kernel's refusal of a rewritten program; why is the
+// verifier's last log line when a load with a log of its own read it.
+type refusedLoad struct {
+	error
+	why string
+}
+
+func (e refusedLoad) Unwrap() error { return e.error }
+
+// transformLoad rewrites the load and loads the rewrite in place of the
+// original. It returns the rewrite also when the kernel refused it
+// (refusedLoad), for the retry.
+func (s *supervisor) transformLoad(r *remote, attr []byte, rule Rule, form HookForm, stack inject.StackReport, missFirst bool) (ret int64, t *transformed, entry string, err error) {
+	t, entry, err = s.transform(r, attr, rule, form, stack, missFirst, nil)
+	if err != nil {
+		return 0, t, entry, err
+	}
+	ret, _, err = s.load(r, attr, rule.Program, form, t, false)
+	return ret, t, entry, err
+}
+
+// transform rewrites the load without the sites of drop (see
+// inject.LookupRequest.Drop) and without those the rule's sites leave out.
+// It lists the load as a listing would, for the hooks file and the sites
+// check; a sites rule whose listing differs gets a sitesRefusal.
+func (s *supervisor) transform(r *remote, attr []byte, rule Rule, form HookForm, stack inject.StackReport, missFirst bool, drop map[uint32]string) (t *transformed, entry string, err error) {
 	spec, err := s.programBTF(r, attr)
 	if err != nil {
-		return 0, nil, "", err
+		return nil, "", err
 	}
 	entry, err = readEntryName(r.pid, attr, spec)
 	if err != nil {
-		return 0, nil, "", err
+		return nil, "", err
 	}
 	liveRule, err := s.selectRule(cstring(attr[48:64]), entry)
 	if err != nil {
-		return 0, nil, "", err
+		return nil, "", err
 	}
 	if liveRule == nil || liveRule.Program != rule.Program {
-		return 0, nil, "", fmt.Errorf("BTF fd identity changed; selector no longer matches")
+		return nil, "", fmt.Errorf("BTF fd identity changed; selector no longer matches")
 	}
 	raw, err := extractRaw(r, attr, spec)
 	if err != nil {
-		return 0, nil, "", err
+		return nil, "", err
 	}
+	listed := raw
+	listed.Kernel, listed.Modules = s.kernel, s.programModules(r, attr, raw.Instructions)
 	if len(rule.Calls) > 0 {
-		raw.Kernel = s.kernel // only a rule with calls names kfunc calls and types their arguments
-		if s.kernel != nil {
-			raw.Modules = s.moduleBTFs(raw.Instructions, fdArray(attr),
-				func(addr, size uint64) ([]byte, error) { return readMemory(r.pid, addr, size) },
-				func(fd uint32) ([]byte, error) { return r.info(fd, 32) }, loadModuleBTF)
+		raw.Kernel, raw.Modules = listed.Kernel, listed.Modules // only a rule with calls names kfunc calls and types their arguments
+	}
+	mapCalls, list, listErr := listing(listed)
+	if listErr != nil && rule.Sites != nil {
+		return nil, entry, sitesRefusal{fmt.Errorf("listing the load for the rule's sites: %w", listErr)}
+	}
+	if listErr != nil && drop == nil {
+		s.log("program %q: no site labels: %v", rule.Program, listErr)
+	}
+	request := rule.request()
+	request.Drop = drop
+	if rule.Sites != nil {
+		selected, err := rule.Sites.drop(list.Fingerprint, slices.Concat(mapCalls, list.Sites, list.TailCalls), list.Labels)
+		if err != nil {
+			return nil, entry, sitesRefusal{err}
 		}
+		maps.Copy(selected, drop) // the retry drops only sites the selection kept
+		request.Drop = selected
 	}
 	if err := supplyMapTypes(&raw, rule); err != nil {
-		return 0, nil, "", err
+		return nil, "", err
 	}
-	if rule.MapBTF != nil {
+	if rule.MapBTF != nil && drop == nil {
 		for _, m := range raw.Maps {
 			if m.Name == rule.Map && m.Key != nil && m.Value != nil {
 				s.log("program %q: map %q types from ELF sha256 %.12s: key %q, value %q", rule.Program, rule.Map, strings.ToLower(rule.MapBTF.SHA256), m.Key.TypeName(), m.Value.TypeName())
 			}
 		}
 	}
-	request := rule.request()
 	request.StaticUntrusted = form.Form == "static"
 	request.MissFirst = missFirst
 	request.Stack = inject.StackAudit{Frames: stack.Frames(), Source: stack.Source, FrameRounding: stack.FrameRounding}
 	injectcheck.Label(raw.Instructions)
-	result, err = inject.TransformLookupRawGuarded(raw, request, s.probeTailCallReachability)
+	result, err := inject.TransformLookupRawGuarded(raw, request, s.probeTailCallReachability)
 	if err != nil {
-		return 0, nil, "", err
+		return nil, "", err
 	}
-	cert, premises, err := loadCheckInputs(raw.Instructions, result, request.Stack, stack)
-	if errors.Is(err, inject.ErrCheckerNotApplicable) {
+	t = &transformed{result: result, request: request, original: raw.Instructions, missFirst: missFirst, retry: drop != nil,
+		build: list.Fingerprint, labels: list.Labels, premise: inject.PremiseCalls(raw.Instructions, listed.Kernel, listed.Modules)}
+	t.cert, t.premises, err = loadCheckInputs(raw.Instructions, result, request.Stack, stack)
+	if errors.Is(err, inject.ErrCheckerNotApplicable) && drop == nil {
 		s.log("program %q: %v; load not validated", rule.Program, err)
 	}
-	check, err := loadCheckPolicy(err, s.options.FailClosed)
+	t.check, err = loadCheckPolicy(err, s.options.FailClosed)
 	if err != nil {
-		return 0, result, entry, err
+		return t, entry, err
 	}
 	var instructions bytes.Buffer
 	if err := result.Instructions.Marshal(&instructions, wire); err != nil {
-		return 0, nil, "", err
+		return nil, "", err
 	}
+	t.insns = instructions.Bytes()
+	return t, entry, nil
+}
+
+// load loads t in the tracee in place of the original program. A trial
+// load (see retry) carries a log of its own and closes the program it
+// loaded; when the kernel refuses it, why is the verifier's last log line.
+// The caller's attr and log are untouched. Otherwise the load is the one the
+// tracee asked for, and a refusal of a rewrite without dropped sites is
+// repeated once to see whether the jump limit caused it (hitJumpLimit). A
+// refusal is a refusedLoad.
+func (s *supervisor) load(r *remote, attr []byte, name string, form HookForm, t *transformed, trial bool) (ret int64, why string, err error) {
+	result := t.result
 	// Load BTF inside the tracee. A supervisor-owned fd is not a valid substitute
 	// for prog_btf_fd, even when its numeric value happens to match a target fd.
 	btfAddr, err := r.alloc(result.BTFBytes)
 	if err != nil {
-		return 0, nil, "", err
+		return 0, "", err
 	}
 	btfAttr := make([]byte, 32)
 	put64(btfAttr, 0, btfAddr)
 	put32(btfAttr, 16, uint32(len(result.BTFBytes)))
 	fd, err := r.bpf(unix.BPF_BTF_LOAD, btfAttr)
 	if err != nil {
-		return 0, nil, "", fmt.Errorf("tracee extended BTF load: %w", err)
+		return 0, "", fmt.Errorf("tracee extended BTF load: %w", err)
 	}
 	defer func() {
 		closed, closeErr := r.call(unix.SYS_CLOSE, uint64(fd))
@@ -1356,11 +1497,11 @@ func (s *supervisor) transformLoad(r *remote, attr []byte, rule Rule, form HookF
 		data                            []byte
 		ptr, count, sizeOff, recordSize int
 	}{
-		{instructions.Bytes(), 8, 4, -1, 8}, {result.FuncInfo, 80, 88, 76, 8}, {result.LineInfo, 96, 104, 92, 16},
+		{t.insns, 8, 4, -1, 8}, {result.FuncInfo, 80, 88, 76, 8}, {result.LineInfo, 96, 104, 92, 16},
 	} {
 		addr, err := r.alloc(buffer.data)
 		if err != nil {
-			return 0, nil, "", err
+			return 0, "", err
 		}
 		put64(patched, buffer.ptr, addr)
 		put32(patched, buffer.count, uint32(len(buffer.data)/buffer.recordSize))
@@ -1368,52 +1509,161 @@ func (s *supervisor) transformLoad(r *remote, attr []byte, rule Rule, form HookF
 			put32(patched, buffer.sizeOff, uint32(buffer.recordSize))
 		}
 	}
+	const logSize = 64 << 10
+	var logAddr uint64
+	if trial {
+		if logAddr, err = r.alloc(make([]byte, logSize)); err != nil {
+			return 0, "", err
+		}
+		put32(patched, 24, 4) // BPF_LOG_STATS; verifier errors print at any level
+		put32(patched, 28, logSize)
+		put64(patched, 32, logAddr)
+	}
 	// Preserve kernel output fields (currently log_true_size) in the caller's attr.
 	addr, err := r.alloc(patched)
 	if err != nil {
-		return 0, nil, "", err
+		return 0, "", err
 	}
 	// This checks the bytes read from attr.insns immediately before the traced
 	// thread resumes. It neither freezes sibling threads nor proves kernel
 	// acceptance, BTF meaning, fd bindings, verifier behavior, or JIT behavior.
 	var verdict injectcheck.Verdict
-	if check {
+	if t.check {
 		encoded, err := readMemory(r.pid, u64(patched, 8), uint64(u32(patched, 4))*8)
 		if err != nil {
-			return 0, result, entry, fmt.Errorf("checker rejected the transform: read substituted load stream: %w; probe was not installed", err)
+			return 0, "", fmt.Errorf("checker rejected the transform: read substituted load stream: %w; probe was not installed", err)
 		}
-		verdict, err = checkLoad(raw.Instructions, encoded, cert, premises)
+		verdict, err = checkLoad(t.original, encoded, t.cert, t.premises)
 		if err != nil {
-			return 0, result, entry, fmt.Errorf("checker rejected the transform: %w; probe was not installed", err)
+			return 0, "", fmt.Errorf("checker rejected the transform: %w; probe was not installed", err)
 		}
 	}
-	// The original command and common attr keep a 7.3 caller's log request.
-	ret, err = r.call(unix.SYS_BPF, r.saved.Rdi, addr, uint64(len(patched)), r.saved.R10, r.saved.R8)
+	if trial {
+		ret, err = r.call(unix.SYS_BPF, unix.BPF_PROG_LOAD, addr, uint64(len(patched)))
+	} else {
+		// The original command and common attr keep a 7.3 caller's log request.
+		ret, err = r.call(unix.SYS_BPF, r.saved.Rdi, addr, uint64(len(patched)), r.saved.R10, r.saved.R8)
+	}
 	if err != nil {
-		return 0, nil, "", err
+		return 0, "", err
 	}
-	if check {
-		s.log("program %q: checker accepted sites=%d hooks=%d floor=%d", rule.Program, verdict.Counts.Sites, verdict.Counts.Hooks, verdict.Premises.LowestOffset)
+	if t.check && !trial {
+		s.log("program %q: checker accepted sites=%d hooks=%d floor=%d", name, verdict.Counts.Sites, verdict.Counts.Hooks, verdict.Premises.LowestOffset)
 	}
-	if len(patched) >= 144 {
+	if len(patched) >= 144 && !trial {
 		out, e := readMemory(r.pid, addr+140, 4)
 		if e == nil {
 			e = writeMemory(r.pid, r.saved.Rsi+140, out)
 		}
 		if e != nil {
 			r.broken = e
-			return 0, nil, "", e
+			return 0, "", e
 		}
 	}
+	if ret >= 0 && s.options.loadFault != nil {
+		if fault := s.options.loadFault(result.Hooks); fault != nil {
+			if err := s.closeProgram(r, ret); err != nil {
+				return 0, "", err
+			}
+			ret, why = -int64(unix.EACCES), fault.Error()
+		}
+	}
+	if trial && ret >= 0 {
+		return 0, "", s.closeProgram(r, ret)
+	}
 	if err := syscallError(ret, nil); err != nil {
-		if !missFirst && missFirstDiffers(request, result) && s.hitJumpLimit(r, patched) {
-			err = fmt.Errorf("%w: %w", errJumpLimit, err)
+		if trial {
+			if why == "" {
+				log, readErr := readMemory(r.pid, logAddr, logSize)
+				if readErr != nil {
+					return 0, "", fmt.Errorf("reading the trial load's log: %w", readErr)
+				}
+				why = lastLogLine(cstring(log))
+			}
+			why = cmp.Or(why, err.Error())
+			return 0, why, refusedLoad{fmt.Errorf("trial PROG_LOAD: %w", err), why}
+		}
+		// Not after the retry: its rewrite is final, and the load would go
+		// past the budget.
+		if !t.missFirst && !t.retry && missFirstDiffers(t.request, result) {
+			s.extra++
+			hit, diagnosed := s.hitJumpLimit(r, patched)
+			if hit {
+				err = fmt.Errorf("%w: %w", errJumpLimit, err)
+			}
+			why = cmp.Or(why, diagnosed)
 		}
 		// Carry the summary so the caller can name the attempted hooks, and a
 		// hint when an untrusted-pointer ABI mismatch may be the cause.
-		return 0, result, entry, fmt.Errorf("transformed PROG_LOAD: %w%s", err, untrustedHint(form, result, err))
+		return 0, why, refusedLoad{fmt.Errorf("transformed PROG_LOAD: %w%s", err, untrustedHint(form, result, err)), why}
 	}
-	return ret, result, entry, nil
+	return ret, "", nil
+}
+
+// closeProgram closes the program fd a trial or refused load got.
+func (s *supervisor) closeProgram(r *remote, fd int64) error {
+	closed, err := r.call(unix.SYS_CLOSE, uint64(fd))
+	if err = syscallError(closed, err); err != nil {
+		r.broken = fmt.Errorf("close trial program fd: %w", err)
+		return r.broken
+	}
+	return nil
+}
+
+// retryLoad looks for a rewrite the kernel accepts after it refused failed
+// with cause, dropping sites by trial loads (see degrade), and loads exactly
+// the one it keeps. The rewrite it returns lists the dropped sites as
+// skipped with their reasons.
+func (s *supervisor) retryLoad(r *remote, attr []byte, rule Rule, form HookForm, stack inject.StackReport, failed *transformed, cause error) (int64, *transformed, error) {
+	sites := retrySites(failed.result.Hooks, failed.request.Auto)
+	trial := func(drop map[uint32]string) (*transformed, bool, string, error) {
+		defer func(used uint64) { r.used = used }(r.used) // the scratch a trial used is free again
+		t, _, err := s.transform(r, attr, rule, form, stack, failed.missFirst, drop)
+		if err != nil {
+			if r.broken != nil || !errors.Is(err, inject.ErrRefused) {
+				return nil, false, "", err
+			}
+			return nil, false, err.Error(), nil // nothing to load, as without hooks
+		}
+		_, why, err := s.load(r, attr, rule.Program, form, t, true)
+		if errors.As(err, &refusedLoad{}) {
+			return t, false, why, nil
+		}
+		return t, err == nil, "", err
+	}
+	why := cause.Error()
+	if refused := (refusedLoad{}); errors.As(cause, &refused) && refused.why != "" {
+		why = refused.why
+	}
+	out, ret, err := degrade(sites, why, trialBudget-s.extra, trial, func(t *transformed) (int64, error) {
+		ret, _, err := s.load(r, attr, rule.Program, form, t, false)
+		return ret, err
+	})
+	if !out.loaded || err != nil {
+		// Neither a trial nor the final load of the kept rewrite passed:
+		// the caller loads the original program or refuses the load.
+		fallback := "the original program loads"
+		if s.options.FailClosed {
+			fallback = "the load is refused (--fail-closed)"
+		}
+		s.log("program %q: %d sites requested, no rewrite loaded after %d trial loads (budget %d, %d used before); %s",
+			rule.Program, len(sites), out.trials, trialBudget, s.extra, fallback)
+	} else {
+		s.log("program %q: %d sites requested, %d kept after %d trial loads (budget %d, %d used before); dropped %s",
+			rule.Program, len(sites), len(out.kept), out.trials, trialBudget, s.extra, cmp.Or(droppedSummary(out.dropped), "none"))
+	}
+	if !out.loaded {
+		return 0, failed, fmt.Errorf("%w; %w", cause, err)
+	}
+	if err != nil {
+		return 0, out.art, err
+	}
+	for i, site := range out.art.result.Skipped {
+		if reason, ok := out.dropped[site.SitePC]; ok && !unmatchedMapsName(site) {
+			out.art.result.Skipped[i].Reason = reason
+		}
+	}
+	return ret, out.art, nil
 }
 
 // missFirstDiffers reports whether MissFirst would change the rewrite: some
@@ -1429,11 +1679,13 @@ func missFirstDiffers(request inject.LookupRequestRaw, result *inject.LookupResu
 // errno cannot say: it differs across kernels and E2BIG also means the
 // instruction limit, and the loader's log may be off or end before the message.
 // A refused load binds no map, and this one does not touch the loader's log.
-func (s *supervisor) hitJumpLimit(r *remote, attr []byte) bool {
+// why is the log's last line (lastLogLine), when the repeated load was
+// refused too.
+func (s *supervisor) hitJumpLimit(r *remote, attr []byte) (hit bool, why string) {
 	const logSize = 64 << 10
 	logAddr, err := r.alloc(make([]byte, logSize))
 	if err != nil {
-		return false
+		return false, ""
 	}
 	trial := bytes.Clone(attr)
 	put32(trial, 24, 4) // BPF_LOG_STATS
@@ -1445,10 +1697,13 @@ func (s *supervisor) hitJumpLimit(r *remote, attr []byte) bool {
 		if closeErr = syscallError(closed, closeErr); closeErr != nil {
 			r.broken = fmt.Errorf("close repeated load fd: %w", closeErr)
 		}
-		return false
+		return false, ""
 	}
 	log, err := readMemory(r.pid, logAddr, logSize)
-	return err == nil && strings.Contains(cstring(log), "jumps is too complex")
+	if err != nil {
+		return false, ""
+	}
+	return strings.Contains(cstring(log), "jumps is too complex"), lastLogLine(cstring(log))
 }
 
 // untrustedHint explains how to load a program whose hooks take arg:untrusted
@@ -1491,7 +1746,8 @@ func copyReadOnlyHelps(hook inject.LookupHook) bool {
 //
 //	hook "NAME" (KIND[ map "MAP"][ generic[ map "MAP"...][ runtime map]][, untrusted pointers][, value copied to stack][, static][, dispatch][, site pc N, N])
 //
-// separated by ", ", then "; skipped pc N (reason)" for each skipped lookup.
+// separated by ", ", then "; skipped pc N (reason)" for each skipped lookup,
+// or "; skipped map "MAP" (reason)" for a Maps name that matches no site.
 // A generic hook names each map its sites reference directly, such as a
 // sockhash, and says "runtime map" when a site's map is known only at run
 // time.
@@ -1547,9 +1803,19 @@ func hookSummary(result *inject.LookupResultRaw) string {
 		b.WriteByte(')')
 	}
 	for _, site := range result.Skipped {
+		if unmatchedMapsName(site) {
+			fmt.Fprintf(&b, "; skipped map %q (%s)", site.MapName, site.Reason)
+			continue
+		}
 		fmt.Fprintf(&b, "; skipped pc %d (%s)", site.SitePC, site.Reason)
 	}
 	return b.String()
+}
+
+// unmatchedMapsName reports a skipped entry for a Maps name that matches no
+// site (inject.LookupRequest.SkipUnmatchedMaps): it has no op and no pc.
+func unmatchedMapsName(site inject.LookupSite) bool {
+	return site.Op == "" && site.SitePC == 0 && site.MapName != ""
 }
 
 func extractRaw(r *remote, attr []byte, spec *btf.Spec) (inject.RawProgram, error) {

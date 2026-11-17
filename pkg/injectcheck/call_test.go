@@ -6,6 +6,7 @@ package injectcheck
 
 import (
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/cilium/ebpf/asm"
@@ -213,6 +214,35 @@ func TestCallSiteRejects(t *testing.T) {
 			assertKind(t, err, tc.kind)
 			t.Logf("%s: %v", tc.name, err)
 		})
+	}
+}
+
+// Every helper outside the map helpers and the tail call stays a call-target
+// centre, except the ones that run or register a callback and id 0, which is
+// not a helper.
+func TestCallSiteHelperCentres(t *testing.T) {
+	for id := int64(0); id <= 211; id++ {
+		fn := asm.BuiltinFunc(id)
+		counts, err := callCase{"entry", fn.Call(), 0}.build(nil).check()
+		want := ""
+		switch {
+		case id == 0:
+			want = "helper id 0, which is not a helper"
+		case supportedHelper(fn.Call()):
+			want = "not a call of a helper outside the map helpers"
+		case callbackHelper(fn):
+			want = fn.String() + ", which runs or registers a callback"
+		}
+		if want == "" {
+			if err != nil || counts.Sites != 1 {
+				t.Errorf("%v: sites=%d err=%v", fn, counts.Sites, err)
+			}
+			continue
+		}
+		assertInputKind(t, err, InputTarget)
+		if err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("%v: %v, want %q", fn, err, want)
+		}
 	}
 }
 

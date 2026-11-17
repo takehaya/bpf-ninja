@@ -98,18 +98,23 @@ func TestInjectionJSON(t *testing.T) {
 			`{"program":"tc_main","func":"","type":"SchedCLS","prog_id":0,"ctx_type":"__sk_buff","hook_form":{"form":"static","reason":"config_static_untrusted_true"},"hooks":[` +
 				`{"name":"d","kind":"dispatch","when":"any","sites":[{"kind":"entry","pc":4294967295},{"kind":"lookup","pc":13,"map":"a"},{"kind":"tail_call","pc":20},{"kind":"lookup","pc":30,"map":"b"}],"untrusted":false,"copied":false,"static":true,"read_only":false}],` +
 				`"skipped":[]}`},
-		// A call hook carries its callee and arg; a skipped call site is listed by its callee.
+		// A call hook carries its callee and arg, or why it has none; a skipped call site is listed by its callee.
 		{"calls", syscallhook.Injection{HookForm: syscallhook.HookForm{Form: "global", Reason: "probe_arg_untrusted_supported"}, Program: "upf", Func: "upf_ip_entrypoint_func", Type: ebpf.XDP, Hooks: []inject.LookupHook{
 			{Name: "obs_bpf_fib_lookup", Kind: inject.HookCall, When: "any", SiteArg: true, Call: "bpf_fib_lookup", ArgReg: 2, ArgType: "bpf_fib_lookup", ArgSize: 64,
 				Sites: []inject.LookupSite{{SitePC: 560, Op: inject.HookCall, Call: "bpf_fib_lookup", FuncName: "upf_ip_entrypoint_func", CtxSource: "entry"}}},
 			{Name: "obs_bpf_xdp_ct_lookup", Kind: inject.HookCall, When: "any", SiteArg: true, Call: "bpf_xdp_ct_lookup", ArgReg: 4, ArgType: "bpf_ct_opts___local", ArgSize: 16, RetPtr: true, Static: true,
 				Sites: []inject.LookupSite{{SitePC: 309, Op: inject.HookCall, Call: "bpf_xdp_ct_lookup", FuncName: "upf_ip_entrypoint_func", CtxSource: "entry"}}},
 			{Name: "obs_bpf_ktime_get_ns", Kind: inject.HookCall, When: "any", SiteArg: true, Call: "bpf_ktime_get_ns", Sites: []inject.LookupSite{{SitePC: 40, Op: inject.HookCall, Call: "bpf_ktime_get_ns"}}},
+			{Name: "obs_bpf_dynptr_from_xdp", Kind: inject.HookCall, When: "any", SiteArg: true, Call: "bpf_dynptr_from_xdp", RetSize: 4, Sites: []inject.LookupSite{{SitePC: 50, Op: inject.HookCall, Call: "bpf_dynptr_from_xdp"}}},
+			{Name: "obs_bpf_xdp_load_bytes", Kind: inject.HookCall, When: "any", SiteArg: true, Call: "bpf_xdp_load_bytes", ArgReason: "bpf_xdp_load_bytes is called with more than one argument size in this program (14 and 20)",
+				Sites: []inject.LookupSite{{SitePC: 70, Op: inject.HookCall, Call: "bpf_xdp_load_bytes"}, {SitePC: 90, Op: inject.HookCall, Call: "bpf_xdp_load_bytes"}}},
 		}, Skipped: []inject.LookupSite{{SitePC: 33, Op: inject.HookCall, Call: "bpf_ktime_get_ns", FuncName: "upf_ip_entrypoint_func", Reason: "call: the instruction before or after the call is a call"}}},
 			`{"program":"upf","func":"upf_ip_entrypoint_func","type":"XDP","prog_id":0,"ctx_type":"xdp_md","hook_form":{"form":"global","reason":"probe_arg_untrusted_supported"},"hooks":[` +
 				`{"name":"obs_bpf_fib_lookup","kind":"call","when":"any","call":"bpf_fib_lookup","arg_reg":2,"arg_type":"bpf_fib_lookup","arg_size":64,"ret":"scalar","sites":[{"kind":"call","pc":560,"call":"bpf_fib_lookup","func":"upf_ip_entrypoint_func","ctx_source":"entry"}],"untrusted":false,"copied":false,"static":false,"read_only":false},` +
 				`{"name":"obs_bpf_xdp_ct_lookup","kind":"call","when":"any","call":"bpf_xdp_ct_lookup","arg_reg":4,"arg_type":"bpf_ct_opts___local","arg_size":16,"ret":"pointer","sites":[{"kind":"call","pc":309,"call":"bpf_xdp_ct_lookup","func":"upf_ip_entrypoint_func","ctx_source":"entry"}],"untrusted":false,"copied":false,"static":true,"read_only":false},` +
-				`{"name":"obs_bpf_ktime_get_ns","kind":"call","when":"any","call":"bpf_ktime_get_ns","ret":"scalar","sites":[{"kind":"call","pc":40,"call":"bpf_ktime_get_ns"}],"untrusted":false,"copied":false,"static":false,"read_only":false}],` +
+				`{"name":"obs_bpf_ktime_get_ns","kind":"call","when":"any","call":"bpf_ktime_get_ns","ret":"scalar","sites":[{"kind":"call","pc":40,"call":"bpf_ktime_get_ns"}],"untrusted":false,"copied":false,"static":false,"read_only":false},` +
+				`{"name":"obs_bpf_dynptr_from_xdp","kind":"call","when":"any","call":"bpf_dynptr_from_xdp","ret":"scalar","ret_size":4,"sites":[{"kind":"call","pc":50,"call":"bpf_dynptr_from_xdp"}],"untrusted":false,"copied":false,"static":false,"read_only":false},` +
+				`{"name":"obs_bpf_xdp_load_bytes","kind":"call","when":"any","call":"bpf_xdp_load_bytes","ret":"scalar","arg_reason":"bpf_xdp_load_bytes is called with more than one argument size in this program (14 and 20)","sites":[{"kind":"call","pc":70,"call":"bpf_xdp_load_bytes"},{"kind":"call","pc":90,"call":"bpf_xdp_load_bytes"}],"untrusted":false,"copied":false,"static":false,"read_only":false}],` +
 				`"skipped":[{"kind":"call","pc":33,"call":"bpf_ktime_get_ns","func":"upf_ip_entrypoint_func","reason":"call: the instruction before or after the call is a call"}]}`},
 	} {
 		got, err := json.Marshal(injectionJSON(tc.inj))
@@ -175,6 +180,15 @@ func TestHooksWriter(t *testing.T) {
 	if len(w.lastDead) != 0 {
 		t.Fatalf("unchecked dead notices: %+v", w.lastDead)
 	}
+	if strings.Contains(mustRead(t, path), `"refused"`) {
+		t.Fatal("refused written without a refusal")
+	}
+	if err := w.refuse(syscallhook.Refusal{Program: "c", Func: "c_main", Reason: "rule sites: pc 3 names no site of this program"}); err != nil {
+		t.Fatal(err)
+	}
+	if f := read(); len(f.Programs) != 2 || len(f.Refused) != 1 || f.Refused[0] != (refusedJSON{Program: "c", Func: "c_main", Reason: "rule sites: pc 3 names no site of this program"}) {
+		t.Fatalf("after a refusal: %+v", f)
+	}
 	if entries, _ := os.ReadDir(filepath.Dir(path)); len(entries) != 1 {
 		t.Fatalf("temporary files left: %v", entries)
 	}
@@ -195,5 +209,49 @@ func TestInjectionJSONHookForm(t *testing.T) {
 		if err := json.Unmarshal(data, &got); err != nil || got.HookForm != form {
 			t.Fatalf("hook_form: %s, %v", data, err)
 		}
+	}
+}
+
+// A load whose original program calls a denied callee is marked once on its
+// program entry; any other load has no such field.
+func TestInjectionJSONOutsidePremise(t *testing.T) {
+	marked, err := json.Marshal(injectionJSON(syscallhook.Injection{Program: "p", Type: ebpf.XDP, OutsidePremise: []string{"bpf_spin_lock", "bpf_loop"}}))
+	if err != nil || !strings.Contains(string(marked), `"outside_premise":"calls bpf_spin_lock, bpf_loop"`) {
+		t.Errorf("marked: %s %v", marked, err)
+	}
+	if plain, _ := json.Marshal(injectionJSON(syscallhook.Injection{Program: "p", Type: ebpf.XDP})); strings.Contains(string(plain), "outside_premise") {
+		t.Errorf("unmarked: %s", plain)
+	}
+}
+
+// A maps name that matches no site has no pc: it is listed in skipped_maps,
+// not as a site at instruction 0.
+func TestInjectionJSONSkippedMaps(t *testing.T) {
+	out, err := json.Marshal(injectionJSON(syscallhook.Injection{Program: "p", Type: ebpf.XDP,
+		Skipped: []inject.LookupSite{{MapName: "b", Reason: "no lookup"}}}))
+	if err != nil || !strings.Contains(string(out), `"skipped":[],"skipped_maps":[{"map":"b","reason":"no lookup"}]`) {
+		t.Errorf("%s %v", out, err)
+	}
+}
+
+func mustRead(t *testing.T, path string) string {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(data)
+}
+
+// Every hooked and skipped site carries its label, and the program its
+// listing fingerprint.
+func TestInjectionJSONLabels(t *testing.T) {
+	out := injectionJSON(syscallhook.Injection{Program: "p", Type: ebpf.XDP, Build: "sha256:ab",
+		Labels: map[uint32]string{3: "bpf_ktime_get_ns@p:9#1", 5: "bpf_ktime_get_ns@p:9#2"},
+		Hooks: []inject.LookupHook{{Name: "h_bpf_ktime_get_ns", Kind: inject.HookCall, Call: "bpf_ktime_get_ns",
+			Sites: []inject.LookupSite{{Op: inject.HookCall, Call: "bpf_ktime_get_ns", SitePC: 3}}}},
+		Skipped: []inject.LookupSite{{Op: inject.HookCall, Call: "bpf_ktime_get_ns", SitePC: 5, Reason: "not selected by the rule's sites"}}})
+	if out.Build != "sha256:ab" || out.Hooks[0].Sites[0].Label != "bpf_ktime_get_ns@p:9#1" || out.Skipped[0].Label != "bpf_ktime_get_ns@p:9#2" {
+		t.Errorf("%+v", out)
 	}
 }

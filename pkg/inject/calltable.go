@@ -1,6 +1,9 @@
 package inject
 
 import (
+	"fmt"
+	"maps"
+	"slices"
 	"strings"
 
 	"github.com/cilium/ebpf/asm"
@@ -16,6 +19,7 @@ type CallRow struct {
 	SizeReg asm.Register    // register holding the argument's size in bytes at the call
 	ArgType string          // struct name looked up for the pointee
 	Writes  bool            // the callee's own argument check is a write on every supported kernel
+	RetSize uint32          // byte size of a kernel function's integer result narrower than 8 bytes; 0: 8
 }
 
 // callTable lists the callees LookupRequest.Calls may name. A row is never
@@ -40,6 +44,172 @@ var callTable = []CallRow{
 	{Name: "bpf_fib_lookup", Helper: asm.FnFibLookup, ArgReg: asm.R2, SizeReg: asm.R3, ArgType: "bpf_fib_lookup", Writes: true},
 	{Name: "bpf_xdp_ct_lookup", RetPtr: true, ArgReg: asm.R4, SizeReg: asm.R5, ArgType: "bpf_ct_opts", Writes: true},
 	{Name: "bpf_skb_ct_lookup", RetPtr: true, ArgReg: asm.R4, SizeReg: asm.R5, ArgType: "bpf_ct_opts", Writes: true},
+}
+
+// pointerResults are the helpers with a pointer result and no row that get
+// the result-only pointer hook. A pointer kind is listed only when its kernel
+// test (calls_all_kernel_test.go, calls_helpers_kernel_test.go) passes on 6.1,
+// 6.12, 6.18 and 7.0 where the helper exists and XDP or tc may call it
+// (bpf_task_storage_get: tc from 6.18). Off: bpf_get_local_storage,
+// bpf_inode_storage_get and bpf_sock_from_file, which neither XDP nor tc may
+// call.
+var pointerResults = []string{"bpf_sk_fullsock", "bpf_tcp_sock", "bpf_ringbuf_reserve", "bpf_this_cpu_ptr", "bpf_kptr_xchg",
+	"bpf_get_listener_sock", "bpf_skc_to_tcp6_sock", "bpf_skc_to_tcp_sock", "bpf_skc_to_tcp_timewait_sock", "bpf_skc_to_tcp_request_sock",
+	"bpf_skc_to_udp6_sock", "bpf_skc_to_unix_sock", "bpf_skc_to_mptcp_sock", "bpf_sk_storage_get", "bpf_per_cpu_ptr", "bpf_dynptr_data",
+	"bpf_get_current_task_btf", "bpf_task_pt_regs", "bpf_cgrp_storage_get",
+	"bpf_task_storage_get"}
+
+// noPointerTest is the reason a helper with a pointer result outside
+// pointerResults gets no hook.
+const noPointerTest = "a pointer result of a kind no kernel test covers yet"
+
+// helperCall returns the row a call of helper id gets when a rule names it:
+// its call-table row, else a result-only row (no argument; RetPtr for a
+// pointer result). Otherwise the row is nil and reason says why.
+func helperCall(id asm.BuiltinFunc) (row *CallRow, reason string) {
+	for i := range callTable {
+		if callTable[i].Helper != 0 && callTable[i].Helper == id {
+			return &callTable[i], ""
+		}
+	}
+	h, ok := helperByID(int64(id))
+	_, mapCall := mapCallOps[id]
+	switch {
+	case !ok:
+		return nil, fmt.Sprintf("helper id %d is past the helper table", id)
+	case h.Ret == RetUnsupported:
+		return nil, "not a callable helper"
+	case mapCall:
+		return nil, "a map helper: the rule's maps and ops observe it"
+	case id == asm.FnTailCall:
+		return nil, "a tail call: the rule's tail_calls observes it"
+	case denyReason(h.Name) != "":
+		return nil, denyReason(h.Name)
+	case h.Ret == RetVoid:
+		return nil, "returns nothing"
+	case h.Ret == RetPointer && !slices.Contains(pointerResults, h.Name):
+		return nil, noPointerTest
+	}
+	return &CallRow{Name: h.Name, Helper: id, RetPtr: h.Ret == RetPointer}, ""
+}
+
+// namedCall is helperCall for a rule's Calls name: the row of a kernel
+// function with a row, else of the helper of that name, else kfuncRow of the
+// kernel function of that name in kernel or one of modules. Without kernel, or
+// for a name neither has, a denied name gets its deny reason and any other
+// name a nil row and "".
+func namedCall(name string, kernel *btf.Spec, modules map[int16]*btf.Spec) (*CallRow, string) {
+	for i := range callTable {
+		if callTable[i].Name == name {
+			return &callTable[i], ""
+		}
+	}
+	if id := slices.IndexFunc(helperTable[:], func(h helperRow) bool { return h.Name == name }); id >= 0 {
+		return helperCall(asm.BuiltinFunc(id))
+	}
+	if proto := kfuncByName(name, kernel, modules); proto != nil {
+		return kfuncRow(name, proto)
+	}
+	return nil, denyReason(name)
+}
+
+// kfuncRow returns the row a call of the kernel function name without a row
+// gets when a rule names it: a result-only row, RetPtr for any pointer result
+// (void * included) and RetSize for an integer or enum narrower than 8 bytes.
+// Otherwise the row is nil and reason says why: the deny list, a parameter
+// that points to a function prototype (the verifier's callback test), no
+// result, or a prototype that cannot be read (proto nil).
+func kfuncRow(name string, proto *btf.FuncProto) (row *CallRow, reason string) {
+	if reason := denyReason(name); reason != "" {
+		return nil, reason
+	}
+	if proto == nil {
+		return nil, "its prototype is not in the kernel BTF at hand"
+	}
+	for _, p := range proto.Params {
+		if ptr, ok := btf.UnderlyingType(p.Type).(*btf.Pointer); ok {
+			if _, ok := btf.UnderlyingType(ptr.Target).(*btf.FuncProto); ok {
+				return nil, "runs or registers a callback"
+			}
+		}
+	}
+	var size uint32
+	switch ret := btf.UnderlyingType(proto.Return).(type) {
+	case *btf.Pointer:
+		return &CallRow{Name: name, RetPtr: true}, ""
+	case *btf.Int:
+		size = ret.Size
+	case *btf.Enum:
+		size = ret.Size
+	case *btf.Void, nil:
+		return nil, "returns nothing"
+	default:
+		return nil, "its result is neither an integer nor a pointer"
+	}
+	row = &CallRow{Name: name}
+	if size < 8 {
+		row.RetSize = size
+	}
+	return row, ""
+}
+
+// kfuncProto is the BTF prototype of a kernel-function call: by the BTF id
+// ins.Constant in kernel, or for a module kfunc in modules[ins.Offset]; by
+// name (kfuncByName) when the call carries a reference (ELF path). nil when
+// it cannot be read.
+func kfuncProto(ins *asm.Instruction, kernel *btf.Spec, modules map[int16]*btf.Spec) *btf.FuncProto {
+	if ins.Reference() != "" {
+		return kfuncByName(ins.Reference(), kernel, nil)
+	}
+	spec := kernel
+	if ins.Offset != 0 {
+		spec = modules[ins.Offset]
+	}
+	if spec == nil {
+		return nil
+	}
+	typ, err := spec.TypeByID(btf.TypeID(ins.Constant))
+	if fn, ok := typ.(*btf.Func); err == nil && ok {
+		proto, _ := fn.Type.(*btf.FuncProto)
+		return proto
+	}
+	return nil
+}
+
+// kfuncByName is the prototype of the function name in kernel, else in the
+// module BTF of modules (split on kernel) in offset order; nil when none has
+// it. This is the BTF a load passes: a module kfunc the program does not
+// reference in its fd_array is not found.
+func kfuncByName(name string, kernel *btf.Spec, modules map[int16]*btf.Spec) *btf.FuncProto {
+	specs := []*btf.Spec{kernel}
+	for _, off := range slices.Sorted(maps.Keys(modules)) {
+		specs = append(specs, modules[off])
+	}
+	for _, spec := range specs {
+		if spec == nil {
+			continue
+		}
+		types, _ := spec.AnyTypesByName(name)
+		for _, typ := range types {
+			if fn, ok := typ.(*btf.Func); ok {
+				if proto, ok := fn.Type.(*btf.FuncProto); ok {
+					return proto
+				}
+			}
+		}
+	}
+	return nil
+}
+
+// hookableHelpers returns the names of the helpers a rule's Calls may name, in id order.
+func hookableHelpers() []string {
+	var names []string
+	for id := range helperTable {
+		if row, _ := helperCall(asm.BuiltinFunc(id)); row != nil {
+			names = append(names, row.Name)
+		}
+	}
+	return names
 }
 
 // SupportedCalls returns the names of callTable in table order.
@@ -125,30 +295,4 @@ func callArgType(row *CallRow, n uint32, prog, kernel *btf.Spec) (typ btf.Type, 
 		}
 	}
 	return orBytes(nil, n), ""
-}
-
-// callsBlocked returns why no call site of the program may be hooked, or "": the program calls
-// bpf_spin_lock, bpf_preempt_disable or a kfunc whose name starts with bpf_res_spin_lock, under which
-// a hook call may be refused, or holds a kfunc call that cannot be named (see callee).
-func callsBlocked(insns asm.Instructions, kernel *btf.Spec, modules map[int16]*btf.Spec) string {
-	for i := range insns {
-		ins := &insns[i]
-		lock := ""
-		switch {
-		case ins.IsBuiltinCall() && asm.BuiltinFunc(ins.Constant) == asm.FnSpinLock:
-			lock = "bpf_spin_lock"
-		case ins.IsKfuncCall():
-			_, name, named := callee(ins, kernel, modules)
-			if !named {
-				return "call: a kernel-function call in the program cannot be named"
-			}
-			if name == "bpf_preempt_disable" || strings.HasPrefix(name, "bpf_res_spin_lock") {
-				lock = name
-			}
-		}
-		if lock != "" {
-			return "call: the program calls " + lock + ", under which a hook call may be refused"
-		}
-	}
-	return ""
 }

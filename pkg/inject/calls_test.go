@@ -167,7 +167,18 @@ func TestCallRefusals(t *testing.T) {
 		want string
 	}{
 		{"dispatch", func(r *LookupRequest) { r.Dispatch = true }, "Calls does not combine with Dispatch"},
-		{"unknown", func(r *LookupRequest) { r.Calls = []string{"bpf_trace_printk"} }, `Calls name "bpf_trace_printk" is not supported; supported calls: `},
+		{"unknown", func(r *LookupRequest) { r.Calls, r.Kernel = []string{"bpf_dynptr_from_xdp"}, testKernelSpec(t) },
+			`Calls name "bpf_dynptr_from_xdp" is not supported: it is neither a helper nor a kernel function of the running kernel or of a module BTF the program passes`},
+		{"lock", func(r *LookupRequest) { r.Calls = []string{"bpf_spin_lock"} }, `Calls name "bpf_spin_lock" cannot be hooked: takes or releases a lock or a critical section`},
+		{"callback", func(r *LookupRequest) { r.Calls = []string{"bpf_loop"} }, `Calls name "bpf_loop" cannot be hooked: runs or registers a callback`},
+		{"void", func(r *LookupRequest) { r.Calls = []string{"bpf_ringbuf_submit"} }, `Calls name "bpf_ringbuf_submit" cannot be hooked: returns nothing`},
+		{"map helper", func(r *LookupRequest) { r.Calls = []string{"bpf_map_update_elem"} }, `Calls name "bpf_map_update_elem" cannot be hooked: a map helper: the rule's maps and ops observe it`},
+		{"tail call", func(r *LookupRequest) { r.Calls = []string{"bpf_tail_call"} }, `Calls name "bpf_tail_call" cannot be hooked: a tail call: the rule's tail_calls observes it`},
+		{"unspec", func(r *LookupRequest) { r.Calls = []string{"bpf_unspec"} }, `Calls name "bpf_unspec" cannot be hooked: not a callable helper`},
+		{"pointer kind", func(r *LookupRequest) { r.Calls = []string{"bpf_get_local_storage"} }, `Calls name "bpf_get_local_storage" cannot be hooked: ` + noPointerTest},
+		{"native stack", func(r *LookupRequest) { r.Calls = []string{"bpf_get_stackid"} },
+			`Calls name "bpf_get_stackid" cannot be hooked: reads native code addresses or branch records, which inserted code may change`},
+		{"denied kfunc", func(r *LookupRequest) { r.Calls = []string{"bpf_throw"} }, `Calls name "bpf_throw" cannot be hooked: does not return`},
 		{"repeated", func(r *LookupRequest) { r.Calls = []string{"bpf_jiffies64", "bpf_jiffies64"} }, `Calls names must be non-empty and unique; got "bpf_jiffies64"`},
 		{"empty", func(r *LookupRequest) { r.Calls = []string{""} }, `Calls names must be non-empty and unique; got ""`},
 		{"no site", func(r *LookupRequest) { r.Calls = []string{"bpf_fib_lookup"} }, "no call site is instrumented (0 skipped)"},
@@ -179,7 +190,8 @@ func TestCallRefusals(t *testing.T) {
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("err = %v, want %q", err, tc.want)
 			}
-			if tc.name != "no site" {
+			// Without kernel BTF a configuration check cannot tell an unknown name from a kernel function.
+			if tc.name != "no site" && tc.name != "unknown" {
 				if err := ValidateRaw(LookupRequestRaw{HookName: req.HookName, Dispatch: req.Dispatch, Calls: req.Calls, Stack: req.Stack}); err == nil || !strings.Contains(err.Error(), tc.want) {
 					t.Fatalf("ValidateRaw: %v", err)
 				}
@@ -188,52 +200,43 @@ func TestCallRefusals(t *testing.T) {
 	}
 }
 
-// A program that takes a spin lock gets no call hook at all.
-func TestCallBlockedBySpinLock(t *testing.T) {
-	spec := scalarFixture()
-	insns := spec.Programs["p"].Instructions
-	// A spin-lock call before the return, never reached on a load.
-	insns = slices.Insert(insns, len(insns)-1, asm.Mov.Imm(asm.R1, 0), asm.FnSpinLock.Call(), asm.Mov.Imm(asm.R0, 2))
-	spec.Programs["p"].Instructions = insns
-	plan, err := transformLookup(spec, callReq("bpf_jiffies64"))
-	if err == nil || !strings.Contains(err.Error(), "no call site is instrumented (1 skipped)") {
-		t.Fatalf("err = %v", err)
+// A program that takes a spin lock keeps its call hooks: the lock blocks
+// nothing, and the lock helpers themselves are never hooked.
+func TestCallNotBlockedBySpinLock(t *testing.T) {
+	plan, err := transformLookup(spinLockFixture(), callReq("bpf_get_numa_node_id", "bpf_ktime_get_ns"))
+	if err != nil {
+		t.Fatal(err)
 	}
-	if len(plan.skipped) != 1 || !strings.HasPrefix(plan.skipped[0].Reason, "call: the program calls bpf_spin_lock") {
-		t.Fatalf("skipped %+v", plan.skipped)
+	if len(plan.hooks) != 2 || len(plan.skipped) != 0 {
+		t.Fatalf("hooks %+v skipped %+v", plan.hooks, plan.skipped)
 	}
 }
 
-// An unnameable kfunc skips every requested call site without affecting the
-// request's other hooks.
-func TestCallBlockedByUnnameableKfunc(t *testing.T) {
+// Neither an unnameable kfunc nor bpf_preempt_disable keeps the program's
+// other call sites from their hooks: a site the kernel refuses inside a
+// preemption-disabled region is left to the load retry.
+func TestCallNotBlockedByKfuncs(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
-		offset int16
+		call   asm.Instruction
 		kernel *btf.Spec
 	}{
-		{name: "nil kernel"},
-		{name: "missing module", offset: 1, kernel: testKernelSpec(t)},
+		{"nil kernel", kfuncCall(1), nil},
+		{"missing module", asm.Instruction{OpCode: asm.OpCode(asm.JumpClass).SetJumpOp(asm.Call), Src: asm.PseudoKfuncCall, Constant: 1, Offset: 1}, testKernelSpec(t)},
+		{"preempt disable", kfuncCall(-1).WithReference("bpf_preempt_disable"), nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			spec := scalarFixture()
 			insns := spec.Programs["p"].Instructions
-			call := kfuncCall(1)
-			call.Offset = tc.offset
-			spec.Programs["p"].Instructions = slices.Insert(insns, len(insns)-1, call)
+			spec.Programs["p"].Instructions = slices.Insert(insns, len(insns)-1, tc.call)
 			req := callReq("bpf_get_prandom_u32", "bpf_jiffies64")
 			req.Entry, req.Kernel = true, tc.kernel
 			plan, err := transformLookup(spec, req)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if len(plan.hooks) != 1 || plan.hooks[0].Kind != HookEntry || len(plan.skipped) != 2 {
+			if len(plan.hooks) != 3 || len(plan.skipped) != 0 {
 				t.Fatalf("hooks %+v skipped %+v", plan.hooks, plan.skipped)
-			}
-			for _, site := range plan.skipped {
-				if site.Reason != "call: a kernel-function call in the program cannot be named" {
-					t.Errorf("skipped %+v", site)
-				}
 			}
 		})
 	}
@@ -379,7 +382,8 @@ func TestCallSequenceBUntyped(t *testing.T) {
 	}
 }
 
-// A size that is not a constant set in this block skips the site.
+// A size that is not a constant set in this block gives the callee the
+// result-only hook, with the reason in ArgReason.
 func TestCallSizeNotConstant(t *testing.T) {
 	spec := fibFixture(ebpf.XDP)
 	insns := spec.Programs["p"].Instructions
@@ -387,9 +391,35 @@ func TestCallSizeNotConstant(t *testing.T) {
 	insns[i] = asm.Mov.Reg(asm.R3, asm.R8)
 	insns = slices.Insert(insns, 1, asm.Mov.Imm(asm.R8, 64))
 	spec.Programs["p"].Instructions = insns
-	plan, err := transformLookup(spec, fibReq(t))
-	if err == nil || len(plan.skipped) != 1 || plan.skipped[0].Reason != "call: the argument size in r3 is not a constant set in this basic block" {
-		t.Fatalf("err %v skipped %+v", err, plan.skipped)
+	pc := slices.IndexFunc(insns, func(ins asm.Instruction) bool { return ins.IsBuiltinCall() && ins.Constant == int64(asm.FnFibLookup) })
+	checkResultOnly(t, spec, fibReq(t), 1, fmt.Sprintf("the argument size in r3 at pc %d is not a constant set in its basic block", insns[:pc].Size()/asm.InstructionSize))
+}
+
+// checkResultOnly checks that req gives spec one result-only scalar hook of
+// bpf_fib_lookup over sites sites, with reason, that injectcheck accepts.
+func checkResultOnly(t *testing.T, spec *ebpf.CollectionSpec, req LookupRequest, sites int, reason string) {
+	t.Helper()
+	injectcheck.Label(spec.Programs["p"].Instructions)
+	in := append(asm.Instructions(nil), spec.Programs["p"].Instructions...)
+	plan, err := transformLookup(spec, req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.hooks) != 1 || len(plan.skipped) != 0 {
+		t.Fatalf("hooks %+v skipped %+v", plan.hooks, plan.skipped)
+	}
+	h := plan.hooks[0]
+	if h.Call != "bpf_fib_lookup" || h.ArgReg != 0 || h.ArgSize != 0 || h.ArgType != "" || h.RetPtr || h.Untrusted || h.Static ||
+		len(h.Sites) != sites || h.ArgReason != reason {
+		t.Fatalf("hook %+v", h)
+	}
+	out := spec.Programs["p"].Instructions
+	if _, params := callHookFn(t, out, h.Name); !slices.Equal(params, []string{"ctx", "site", "ret"}) {
+		t.Errorf("params %v", params)
+	}
+	cert, premises := validationCertificate(t, in, out, plan.hooks, -64)
+	if counts, err := injectcheck.Check(in, out, cert, premises); err != nil || counts.Sites != sites {
+		t.Fatalf("counts %+v err %v", counts, err)
 	}
 }
 
@@ -416,7 +446,7 @@ func TestCallKfuncRaw(t *testing.T) {
 	if !slices.Equal(params, []string{"ctx", "site", "arg", "ret"}) || fn.ParamTags[2][0] != "arg:untrusted" || fn.ParamTags[3][0] != "arg:untrusted" {
 		t.Errorf("params %v tags %v", params, fn.ParamTags)
 	}
-	// Without kernel BTF the kfunc cannot be named: every call site is skipped.
+	// Without kernel BTF the kfunc cannot be named, so it is not a site.
 	req.Kernel = nil
 	spec = ctFixture(ebpf.XDP, func(name string) asm.Instruction { return testKfunc(t, kernel, name) }, 0, 8101, false)
 	plan, err = transformLookup(spec, req)
@@ -497,21 +527,29 @@ func TestCallCheckerAccepts(t *testing.T) {
 	}
 }
 
-// Two sizes for one callee skip all its sites.
+// Two sizes for one callee give all its sites the result-only hook.
 func TestCallTwoSizes(t *testing.T) {
 	second := fibCall(ebpf.XDP)
 	i := slices.IndexFunc(second, func(ins asm.Instruction) bool { return ins.Dst == asm.R3 && ins.Constant == 64 })
 	second[i] = asm.Mov.Imm(asm.R3, 48)
 	insns := append(asm.Instructions{asm.Mov.Reg(asm.R6, asm.R1)}, fibCall(ebpf.XDP)...)
 	insns = append(append(insns, second...), fibVerdict(ebpf.XDP)...)
+	checkResultOnly(t, callFixtureSpec(ebpf.XDP, insns), fibReq(t), 2, "bpf_fib_lookup is called with more than one argument size in this program (64 and 48)")
+}
+
+// Two sites with one size keep the typed hook, with no ArgReason.
+func TestCallOneSizeTwice(t *testing.T) {
+	insns := append(asm.Instructions{asm.Mov.Reg(asm.R6, asm.R1)}, fibCall(ebpf.XDP)...)
+	insns = append(append(insns, fibCall(ebpf.XDP)...), fibVerdict(ebpf.XDP)...)
 	plan, err := transformLookup(callFixtureSpec(ebpf.XDP, insns), fibReq(t))
-	if err == nil || len(plan.skipped) != 2 {
-		t.Fatalf("err %v skipped %+v", err, plan.skipped)
+	if err != nil {
+		t.Fatal(err)
 	}
-	for _, s := range plan.skipped {
-		if s.Reason != "call: bpf_fib_lookup is called with more than one argument size in this program (64 and 48)" {
-			t.Errorf("skipped %+v", s)
-		}
+	if len(plan.hooks) != 1 || len(plan.skipped) != 0 {
+		t.Fatalf("hooks %+v skipped %+v", plan.hooks, plan.skipped)
+	}
+	if h := plan.hooks[0]; h.ArgReg != 2 || h.ArgSize != 64 || h.ArgType != "bpf_fib_lookup" || h.Untrusted || len(h.Sites) != 2 || h.ArgReason != "" {
+		t.Fatalf("hook %+v", h)
 	}
 }
 
@@ -531,6 +569,41 @@ func TestCallFunctionLimit(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "no call site is instrumented (1 skipped)") ||
 		len(plan.skipped) != 1 || plan.skipped[0].Reason != "call: the program would have 257 functions, more than the kernel's 256" {
 		t.Fatalf("err %v skipped %+v", err, plan.skipped)
+	}
+}
+
+// Past the kernel's 256 functions, call groups go from the end of
+// RetryRank's order until the program fits: the result-only hook of a helper
+// without a row before the hook of a row callee.
+func TestCallFunctionLimitDropsFromTheEnd(t *testing.T) {
+	insns := asm.Instructions{asm.Mov.Reg(asm.R6, asm.R1), asm.FnGetNumaNodeId.Call(), asm.Mov.Imm(asm.R0, 2), asm.FnJiffies64.Call(), asm.Mov.Imm(asm.R0, 2)}
+	for i := range 254 {
+		insns = append(insns, asm.Call.Label(fmt.Sprintf("f%d", i)), asm.Mov.Imm(asm.R0, 2))
+	}
+	insns = append(insns, asm.Return())
+	for i := range 254 {
+		name := fmt.Sprintf("f%d", i)
+		insns = append(insns, btf.WithFuncMetadata(asm.Mov.Imm(asm.R0, 0).WithSymbol(name).WithSource(asm.Comment(name)), staticFunc(name)), asm.Return())
+	}
+	plan, err := transformLookup(callFixtureSpec(ebpf.XDP, insns), callReq("bpf_get_numa_node_id", "bpf_jiffies64"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.hooks) != 1 || plan.hooks[0].Call != "bpf_jiffies64" || len(plan.skipped) != 1 || plan.skipped[0].Call != "bpf_get_numa_node_id" ||
+		plan.skipped[0].Reason != "call: the program would have 257 functions, more than the kernel's 256" {
+		t.Fatalf("hooks %+v skipped %+v", plan.hooks, plan.skipped)
+	}
+}
+
+// RetryRank orders the kinds as the retry tries them.
+func TestRetryRank(t *testing.T) {
+	hooks := []LookupHook{{Kind: HookLookup}, {Kind: HookDelete}, {Kind: HookTailCall}, {Kind: HookCall, Call: "bpf_fib_lookup"},
+		{Kind: HookCall, Call: "bpf_get_numa_node_id"}, {Kind: HookCall, Call: "bpf_sk_fullsock", RetPtr: true},
+		{Kind: HookCall, Call: "bpf_dynptr_from_xdp"}, {Kind: HookCall, Call: "bpf_task_from_pid", RetPtr: true}}
+	for i, h := range hooks {
+		if got := RetryRank(h); got != i {
+			t.Errorf("RetryRank(%+v) = %d, want %d", h, got, i)
+		}
 	}
 }
 
@@ -569,5 +642,64 @@ func TestCallNameRoomAndReserve(t *testing.T) {
 		if got := LookupStackReserve(req); got != 24 {
 			t.Errorf("LookupStackReserve(%+v) = %d, want 24", req, got)
 		}
+	}
+}
+
+// Drop takes the sites it names out of the request, whatever their kind,
+// and lists them as skipped with the given reason; the other sites keep
+// their hooks. An explicitly selected lookup is refused instead.
+func TestDrop(t *testing.T) {
+	const reason = "load: dropped by the caller"
+	sitePCs := func(plan lookupPlan) []uint32 {
+		var pcs []uint32
+		for _, h := range plan.hooks {
+			for _, s := range h.Sites {
+				pcs = append(pcs, s.SitePC)
+			}
+		}
+		return pcs
+	}
+	for _, tc := range []struct {
+		name string
+		spec func() *ebpf.CollectionSpec
+		req  LookupRequest
+	}{
+		{"calls", scalarFixture, callReq("bpf_jiffies64", "bpf_get_prandom_u32")},
+		{"auto lookups", multiLookupFixture, LookupRequest{ProgramName: "p", HookName: "obs", Auto: true, Entry: true, Stack: StackAudit{LowestOffset: -16}}},
+		{"generic lookup", mapInMapFixture, LookupRequest{ProgramName: "p", HookName: "obs", Auto: true, Entry: true, Stack: StackAudit{LowestOffset: -16}}},
+		{"tail calls", tailCallerFixture, LookupRequest{ProgramName: "caller", HookName: "h", TailCalls: true, Entry: true, Stack: StackAudit{LowestOffset: -8}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			full, err := transformLookup(tc.spec(), tc.req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			all := sitePCs(full)
+			if len(all) == 0 {
+				t.Fatalf("no site hooked: %+v", full.hooks)
+			}
+			req := tc.req
+			req.Drop = map[uint32]string{all[0]: reason}
+			plan, err := transformLookup(tc.spec(), req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := sitePCs(plan); !slices.Equal(got, all[1:]) {
+				t.Fatalf("hooked sites %v, want %v", got, all[1:])
+			}
+			i := slices.IndexFunc(plan.skipped, func(s LookupSite) bool { return s.SitePC == all[0] })
+			if i < 0 || plan.skipped[i].Reason != reason || len(plan.skipped) != len(full.skipped)+1 {
+				t.Fatalf("skipped %+v", plan.skipped)
+			}
+		})
+	}
+	req := LookupRequest{ProgramName: "p", HookName: "obs", Site: LookupSelector{MapName: "sessions"}, Stack: StackAudit{LowestOffset: -16}}
+	full, err := transformLookup(lookupFixture(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Drop = map[uint32]string{full.hooks[0].Sites[0].SitePC: reason}
+	if _, err := transformLookup(lookupFixture(), req); err == nil || !strings.Contains(err.Error(), reason) {
+		t.Fatalf("explicit site dropped: err = %v", err)
 	}
 }

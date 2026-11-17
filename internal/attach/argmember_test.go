@@ -511,3 +511,32 @@ func TestResolveStatusFields(t *testing.T) {
 		t.Errorf("untagged status has fields: %+v", got)
 	}
 }
+
+// A generated call hook's u64 ret takes its width from the ret_size tag.
+func TestRetSizeTag(t *testing.T) {
+	u64 := &btf.Int{Name: "u64", Size: 8}
+	proto := &btf.FuncProto{Return: &btf.Int{Name: "int", Size: 4, Encoding: btf.Signed}, Params: []btf.FuncParam{
+		{Name: "ctx", Type: &btf.Pointer{Target: &btf.Struct{Name: "xdp_md", Size: 4}}}, {Name: "ret", Type: u64}}}
+	for tags, want := range map[string]uint32{"tagged": 4, "untagged": 0} {
+		fn := &btf.Func{Name: "rec_hook", Linkage: btf.GlobalFunc, Type: proto, Tags: []string{hookabi.HookTag}}
+		if tags == "tagged" {
+			fn.Tags = append(fn.Tags, hookabi.SizeTag("ret", 4))
+		}
+		b, err := btf.NewBuilder([]btf.Type{fn}, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		raw, err := b.Marshal(nil, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		spec, err := btf.LoadSpecFromReader(bytes.NewReader(raw))
+		if err != nil {
+			t.Fatal(err)
+		}
+		params, err := GetFuncParamsFromSpec(spec, "rec_hook")
+		if err != nil || len(params) != 1 || params[0].RetSize != want {
+			t.Errorf("%s: params %+v %v", tags, params, err)
+		}
+	}
+}

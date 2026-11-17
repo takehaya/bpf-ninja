@@ -246,6 +246,7 @@ func TestAnnounceUnresponsiveAndGone(t *testing.T) {
 }
 
 func TestAnnounceDropsUnresponsiveCapture(t *testing.T) {
+	const announcements = 500
 	opts := testOptions(t)
 	opts.Deadline = 50 * time.Millisecond
 	s := listen(t, opts)
@@ -268,7 +269,7 @@ func TestAnnounceDropsUnresponsiveCapture(t *testing.T) {
 
 	done := make(chan struct{})
 	go func() {
-		for id := uint32(1); id <= 500; id++ {
+		for id := uint32(1); id <= announcements; id++ {
 			acks <- uint64(id)
 			s.Announce(id, []string{"hook_a"})
 		}
@@ -278,7 +279,7 @@ func TestAnnounceDropsUnresponsiveCapture(t *testing.T) {
 	}()
 	select {
 	case <-done:
-	case <-time.After(time.Second):
+	case <-time.After((announcements + 1) * opts.Deadline):
 		_ = silent.conn.Close()
 		t.Fatal("Announce blocked while writing to an unresponsive capture")
 	}

@@ -125,7 +125,7 @@ func emitRecordBlock(l *record.Layout, snap *fieldSnap) asm.Instructions {
 		insns = append(insns, emitRecordScalar(s.ParamIndex, 4, base+record.EntryOffSite, record.ValidSite)...)
 	}
 	if s := l.Status; s.Present() {
-		insns = append(insns, emitRecordScalar(s.ParamIndex, 8, base+record.EntryOffStatus, record.ValidStatus)...)
+		insns = append(insns, emitRecordScalar(s.ParamIndex, s.Size, base+record.EntryOffStatus, record.ValidStatus)...)
 	}
 	off := base + record.EntryOffBytes
 	insns = append(insns, emitRecordBytes(l.Key, off, record.ValidKey, "rec_key")...)

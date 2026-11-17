@@ -1,0 +1,6 @@
+# Kinds for helper ids whose prototype the parser cannot join, as
+# "id kind # reason". Keep this list small; each entry was checked by hand.
+6 scalar # kernel/bpf/helpers.c returns bpf_get_trace_printk_proto(), which returns &bpf_trace_printk_proto (kernel/trace/bpf_trace.c, RET_INTEGER)
+36 scalar # Linux 6.12 kernel/trace/bpf_trace.c returns bpf_get_probe_write_proto(), which returns &bpf_probe_write_user_proto (RET_INTEGER); 7.0 joins it directly
+55 scalar # kernel/bpf/helpers.c returns bpf_get_perf_event_read_value_proto(), which returns &bpf_perf_event_read_value_proto (kernel/trace/bpf_trace.c, RET_INTEGER)
+177 scalar # kernel/bpf/helpers.c returns bpf_get_trace_vprintk_proto(), which returns &bpf_trace_vprintk_proto (kernel/trace/bpf_trace.c, RET_INTEGER)
