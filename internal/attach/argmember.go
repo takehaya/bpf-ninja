@@ -50,10 +50,6 @@ func ResolveArg(expr string, params []FuncParamInfo) (FuncParamInfo, error) {
 			if p.Kind != "" {
 				return FuncParamInfo{}, fmt.Errorf("parameter %q is a pointer; select an integer member with %s->member or %s[0], or compare it with null", name, name, name)
 			}
-			if p.RetSize != 0 {
-				// Only the low RetSize bytes of a narrow result are the result.
-				p.Size, p.Signed, p.RetSize = p.RetSize, p.RetSigned, 0
-			}
 			return p, nil
 		}
 		ptr, ok := btf.UnderlyingType(p.Type).(*btf.Pointer)

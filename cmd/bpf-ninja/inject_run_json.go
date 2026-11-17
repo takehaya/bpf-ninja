@@ -80,7 +80,7 @@ type injectedProgJSON struct {
 // parameter (absent without one; ArgType absent for plain bytes), Ret is
 // "scalar" or "pointer", and RetSize is the byte width of a kernel function's
 // integer result narrower than 8 bytes, whose upper bytes in ret are not part
-// of the result. RetType names the kernel struct or union a pointer ret
+// of the result; RetSigned marks it signed. RetType names the kernel struct or union a pointer ret
 // points to, absent when it is untyped. ArgReason says why the hook of a callee that has an arg
 // parameter elsewhere (a call-table row) takes none in this program.
 type hookJSON struct {
@@ -94,6 +94,7 @@ type hookJSON struct {
 	ArgSize        uint32         `json:"arg_size,omitempty"`
 	Ret            string         `json:"ret,omitempty"`
 	RetSize        uint32         `json:"ret_size,omitempty"`
+	RetSigned      bool           `json:"ret_signed,omitempty"`
 	RetType        string         `json:"ret_type,omitempty"`
 	ArgReason      string         `json:"arg_reason,omitempty"`
 	Sites          []hookSiteJSON `json:"sites"`
@@ -309,7 +310,7 @@ func injectionJSON(inj syscallhook.Injection) injectedProgJSON {
 			h.Map = hook.MapName
 		}
 		if hook.Kind == inject.HookCall {
-			h.Call, h.ArgReg, h.ArgType, h.ArgSize, h.Ret, h.RetSize = hook.Call, hook.ArgReg, hook.ArgType, hook.ArgSize, "scalar", hook.RetSize
+			h.Call, h.ArgReg, h.ArgType, h.ArgSize, h.Ret, h.RetSize, h.RetSigned = hook.Call, hook.ArgReg, hook.ArgType, hook.ArgSize, "scalar", hook.RetSize, hook.RetSigned
 			h.ArgReason, h.RetType = hook.ArgReason, hook.RetType
 			if hook.RetPtr {
 				h.Ret = "pointer"

@@ -148,7 +148,8 @@ The hook receives the call's result as `ret` and, for a callee with a memory arg
 - Such a name is refused with `Calls name "NAME" cannot be hooked: REASON`. An empty name or a name given twice is a configuration error.
 - A name that is neither a helper nor a kernel function can be told apart only with the kernel's BTF, so the configuration check accepts it and the load refuses it: `Calls name "NAME" is not supported: it is neither a helper nor a kernel function of the running kernel or of a module BTF the program passes`. The program then loads without hooks, or is refused with `--fail-closed`.
 - A kernel function's integer result narrower than 8 bytes fills only the low bytes of `ret`; the bytes above it are not part of the result. The hooks file gives the width as `ret_size`, and a capture records only those bytes.
-  A filter compares only those bytes, sign-extended when the result is signed, so a failing `int` result is `--arg-filter 'ret==-22'`; an unsigned result takes an unsigned number of its width. A capture writes a signed result as a signed decimal (`ret=-22`).
+  A filter compares only those bytes, sign-extended when the result is signed, so a failing `int` result is `--arg-filter 'ret==-22'`; an unsigned result takes an unsigned number of its width.
+  An 8-byte result, a helper's or a `long` kernel function's, compares unsigned: `ret<=-1` matches every call. A capture writes a signed result as a signed decimal (`ret=-22`).
   The [lookups file](#lookups-file) lists every callee of a program in `callees`; a callee that cannot be hooked has a `reason`.
 - A name the program never calls adds no hook.
 - `calls` works on its own and with `map`, `auto`, `entry` and `tail_calls`, but not with `dispatch`.
@@ -667,6 +668,7 @@ If a rewrite fails, `inject-run` reports it on stderr and keeps running the targ
 | `hooks[].ret_type` | On a `pointer` call hook, the kernel struct or union `ret` points to, such as `nf_conn`; a capture reads `ret->member` through it. Absent when `ret` is untyped and compared with NULL only. |
 | `hooks[].arg_reason` | On a `call` hook of a callee with a row in the call table that has no `arg` in this program: why, either more than one argument size among its sites or a size that is not a constant set in the call's basic block. Absent otherwise. |
 | `hooks[].ret_size` | On a `scalar` call hook of a kernel function whose integer result is narrower than 8 bytes: the result's width in bytes. Only the low `ret_size` bytes of `ret` are the result. |
+| `hooks[].ret_signed` | `true` when that narrow result is signed. Absent otherwise. |
 | `stack` | The trial load's verifier accounting and the exact per-function floors used by this injection. |
 | `hooks[].sites` | The calls that call the hook, in instruction order: `kind` (`lookup`, `update`, `delete`, `push`, `pop`, `peek`, `tail_call`, `call` or `entry`), `pc` (the `site` argument, or the low 32 bits of `info`), and `map`, `call` (the callee of a `call` site), `func`, `file`, `line`, `ctx_source`, `frame` and `floor` where known, and `label`, the site's label in the [lookups file](#lookups-file). `ctx_source` is `entry`, `r6` through `r9`, or an aligned frame slot such as `fp-80`. `frame` owns the stack slots and `floor` is the value used for them. A dispatch hook lists the entry call first, as `pc` 4294967295. |
 | `hooks[].untrusted` | The hook takes `arg:untrusted` pointers: its key and value are `const void *`. |

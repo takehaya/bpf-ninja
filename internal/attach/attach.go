@@ -647,7 +647,8 @@ type FuncParamInfo struct {
 	VoidSize uint32
 	// RetSize is the width in bytes of a generated call hook's u64 ret when
 	// the callee's integer result is narrower (the ret_size decl tag); its
-	// upper bytes are not part of the result. Zero otherwise.
+	// upper bytes are not part of the result, so Size and Signed already
+	// describe the result (RetSize and RetSigned). Zero otherwise.
 	RetSize uint32
 	// RetSigned marks that narrow result as signed (hookabi.RetSignedTag).
 	RetSigned bool
@@ -747,6 +748,11 @@ func GetFuncParamsFromSpec(spec *btf.Spec, funcName string) ([]FuncParamInfo, er
 		if p.Name == "ret" && intType.Size == 8 && voidSize["ret"] < 8 {
 			info.RetSize = voidSize["ret"]
 			info.RetSigned = info.RetSize != 0 && slices.Contains(fn.Tags, hookabi.RetSignedTag)
+			if info.RetSize != 0 {
+				// The parameter is the result: every reader (listing, echo,
+				// filter, record) sees its width and signedness.
+				info.Size, info.Signed = info.RetSize, info.RetSigned
+			}
 		}
 		params = append(params, info)
 	}

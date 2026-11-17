@@ -132,7 +132,7 @@ func callHook(group lookupGroup, ctx btf.Type, req LookupRequest) (asm.Instructi
 func callHookBody(group lookupGroup, ctx btf.Type, req LookupRequest) (asm.Instructions, LookupHook) {
 	row := group.call
 	plan := LookupHook{Name: group.name, Kind: HookCall, When: string(CallAny), SiteArg: true, Sites: publicLookupSites(group.sites),
-		Call: row.Name, RetPtr: row.RetPtr, RetSize: row.RetSize, ArgReason: group.argReason}
+		Call: row.Name, RetPtr: row.RetPtr, RetSize: row.RetSize, RetSigned: row.RetSigned, ArgReason: group.argReason}
 	if row.ArgReg == 0 && !row.RetPtr {
 		hook := pointerHook(group.name, ctx, nil, true, false, "ret")
 		if row.RetSize != 0 {

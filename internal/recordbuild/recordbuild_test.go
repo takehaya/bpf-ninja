@@ -3,6 +3,7 @@ package recordbuild_test
 import (
 	"bytes"
 	"encoding/binary"
+	"math"
 	"strings"
 	"testing"
 
@@ -259,15 +260,17 @@ func TestEntryNarrowRet(t *testing.T) {
 }
 
 // narrowRetComment renders an entry block of a call hook with tags whose
-// BPF side stored the 4-byte result ret over a zeroed slot.
-func narrowRetComment(t *testing.T, tags []string, ret int32) string {
+// BPF side stored the low size bytes of the result ret over a zeroed slot.
+func narrowRetComment(t *testing.T, tags []string, size int, ret int64) string {
 	t.Helper()
 	l := entry(t, callHook(t, tags, btf.FuncParam{Name: "ret", Type: u64}), 256)
 	b := make([]byte, l.Size())
 	binary.NativeEndian.PutUint16(b[record.OffLen:], uint16(len(b)))
 	b[record.OffVersion], b[record.OffKind] = record.BlockVersion, l.Kind()
 	binary.NativeEndian.PutUint32(b[record.OffValid:], record.ValidSite|record.ValidStatus)
-	binary.NativeEndian.PutUint32(b[record.EntryOffStatus:], uint32(ret))
+	var full [8]byte
+	binary.NativeEndian.PutUint64(full[:], uint64(ret))
+	copy(b[record.EntryOffStatus:record.EntryOffStatus+size], full[:size])
 	got, err := l.Comment(b)
 	if err != nil {
 		t.Fatal(err)
@@ -275,13 +278,27 @@ func narrowRetComment(t *testing.T, tags []string, ret int32) string {
 	return got
 }
 
-// A narrow signed result is sign-extended (ret=-22), an unsigned one is not.
+// A narrow signed result is sign-extended at its width, an unsigned one is
+// not.
 func TestEntryNarrowSignedRet(t *testing.T) {
-	if got := narrowRetComment(t, []string{hookabi.SizeTag("ret", 4), hookabi.RetSignedTag}, -22); !strings.Contains(got, "ret=-22") {
-		t.Fatalf("signed: %q", got)
-	}
-	if got := narrowRetComment(t, []string{hookabi.SizeTag("ret", 4)}, -22); !strings.Contains(got, "ret=4294967274") {
-		t.Fatalf("unsigned: %q", got)
+	for _, tc := range []struct {
+		size          int
+		ret           int64
+		signed, plain string
+	}{
+		{4, -22, "ret=-22", "ret=4294967274"},
+		{4, -100000, "ret=-100000", "ret=4294867296"},
+		{4, math.MinInt32, "ret=-2147483648", "ret=2147483648"},
+		{2, -300, "ret=-300", "ret=65236"},
+		{1, -5, "ret=-5", "ret=251"},
+	} {
+		size := hookabi.SizeTag("ret", uint32(tc.size))
+		if got := narrowRetComment(t, []string{size, hookabi.RetSignedTag}, tc.size, tc.ret); !strings.Contains(got, tc.signed+" ") && !strings.HasSuffix(got, tc.signed) {
+			t.Errorf("size %d signed %d: %q, want %s", tc.size, tc.ret, got, tc.signed)
+		}
+		if got := narrowRetComment(t, []string{size}, tc.size, tc.ret); !strings.Contains(got, tc.plain+" ") && !strings.HasSuffix(got, tc.plain) {
+			t.Errorf("size %d unsigned %d: %q, want %s", tc.size, tc.ret, got, tc.plain)
+		}
 	}
 }
 
