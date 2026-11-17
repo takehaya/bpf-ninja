@@ -1687,7 +1687,8 @@ func (s *supervisor) retryLoad(r *remote, attr []byte, rule Rule, form HookForm,
 	if refused := (refusedLoad{}); errors.As(cause, &refused) && refused.why != "" {
 		why = refused.why
 	}
-	out, ret, err := degrade(sites, why, trialBudget-s.extra, trial, func(t *transformed) (int64, error) {
+	bare := baseHooksNothing(failed.result.Hooks, sites, failed.request.Entry)
+	out, ret, err := degrade(sites, why, trialBudget-s.extra, bare, trial, func(t *transformed) (int64, error) {
 		ret, _, err := s.load(r, attr, rule.Program, form, t, false)
 		return ret, err
 	})

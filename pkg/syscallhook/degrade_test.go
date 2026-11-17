@@ -102,7 +102,7 @@ func checkRetry(t *testing.T, f *fakeLoader, out retryResult[[]uint32], budget i
 func runRetry(t *testing.T, sites []retrySite, accepts func([]uint32) bool, budget int) (*fakeLoader, retryResult[[]uint32]) {
 	t.Helper()
 	f := &fakeLoader{sites: sites, accepts: accepts}
-	out, err := retry(sites, "refused all", budget, f.trial)
+	out, err := retry(sites, "refused all", budget, false, f.trial)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -177,7 +177,7 @@ func TestRetryNonMonotone(t *testing.T) {
 // A refused base ends the retry: nothing loads, and degrade says so.
 func TestRetryBaseRefused(t *testing.T) {
 	f := &fakeLoader{sites: testSites(4, nil), accepts: func([]uint32) bool { return false }}
-	out, _, err := degrade(f.sites, "refused all", trialBudget, f.trial, func([]uint32) (int64, error) {
+	out, _, err := degrade(f.sites, "refused all", trialBudget, false, f.trial, func([]uint32) (int64, error) {
 		t.Fatal("loaded although no trial passed")
 		return 0, nil
 	})
@@ -193,7 +193,7 @@ func TestDegradeFinalLoadRefused(t *testing.T) {
 	f := &fakeLoader{sites: testSites(4, nil), accepts: refusing(20)}
 	refusal := errors.New("refused at the final load")
 	var loaded [][]uint32
-	out, _, err := degrade(f.sites, "refused all", trialBudget, f.trial, func(art []uint32) (int64, error) {
+	out, _, err := degrade(f.sites, "refused all", trialBudget, false, f.trial, func(art []uint32) (int64, error) {
 		loaded = append(loaded, art)
 		return 0, refusal
 	})
@@ -227,5 +227,59 @@ func TestLastLogLine(t *testing.T) {
 	log := "0: R1=ctx() R10=fp0\nglobal function calls are not allowed with preemption disabled\nprocessed 12 insns (limit 1000000)\nverification time 5 usec\nstack depth 8\n"
 	if got := lastLogLine(log); got != "global function calls are not allowed with preemption disabled" {
 		t.Fatalf("lastLogLine = %q", got)
+	}
+}
+
+// A rule without entry: the base hooks nothing, and the transform refuses
+// it as it refuses the empty set here. The base is the original, not tried
+// and not charged to the budget, and the search keeps the sites that load.
+func TestRetryBareBase(t *testing.T) {
+	accepts := func(keep []uint32) bool { return len(keep) != 0 && !slices.Contains(keep, 20) }
+	f := &fakeLoader{sites: testSites(4, nil), accepts: accepts}
+	var loaded [][]uint32
+	out, _, err := degrade(f.sites, "refused all", 3, true, f.trial, func(art []uint32) (int64, error) {
+		loaded = append(loaded, art)
+		return 0, nil
+	})
+	if err != nil || !out.loaded || !slices.Equal(out.kept, []uint32{10, 30, 40}) || len(loaded) != 1 || !slices.Equal(loaded[0], out.kept) {
+		t.Fatalf("err %v loaded %v kept %v trials %+v", err, out.loaded, out.kept, f.trials)
+	}
+	if out.trials > 3 || slices.ContainsFunc(f.trials, func(tr fakeTrial) bool { return len(tr.keep) == 0 }) {
+		t.Fatalf("the base was tried or the budget exceeded: %+v", f.trials)
+	}
+	if !slices.ContainsFunc(f.trials, func(tr fakeTrial) bool { return tr.ok && slices.Equal(tr.keep, out.kept) }) {
+		t.Fatalf("kept %v was not accepted by a trial: %+v", out.kept, f.trials)
+	}
+	// Every site refused: no artifact, so the original loads.
+	f = &fakeLoader{sites: testSites(4, nil), accepts: func([]uint32) bool { return false }}
+	out, _, err = degrade(f.sites, "refused all", trialBudget, true, f.trial, func([]uint32) (int64, error) {
+		t.Fatal("loaded although no trial passed")
+		return 0, nil
+	})
+	if !errors.Is(err, errNothingLoads) || out.loaded || slices.ContainsFunc(f.trials, func(tr fakeTrial) bool { return len(tr.keep) == 0 }) {
+		t.Fatalf("err %v loaded %v trials %+v", err, out.loaded, f.trials)
+	}
+	// One site: nothing to try, the original loads.
+	f = &fakeLoader{sites: testSites(1, nil), accepts: accepts}
+	if out, err := retry(f.sites, "refused all", trialBudget, true, f.trial); err != nil || out.loaded || len(f.trials) != 0 {
+		t.Fatalf("err %v loaded %v trials %+v", err, out.loaded, f.trials)
+	}
+}
+
+func TestBaseHooksNothing(t *testing.T) {
+	site := func(pc uint32) inject.LookupSite { return inject.LookupSite{SitePC: pc} }
+	calls := []inject.LookupHook{{Name: "h_bpf_ktime_get_ns", Kind: inject.HookCall, Sites: []inject.LookupSite{site(1), site(5)}}}
+	explicit := append(slices.Clone(calls), inject.LookupHook{Name: "h", Kind: inject.HookLookup, Sites: []inject.LookupSite{site(9)}})
+	if !baseHooksNothing(calls, retrySites(calls, false), false) {
+		t.Fatal("calls only: the base hooks something")
+	}
+	if baseHooksNothing(calls, retrySites(calls, false), true) {
+		t.Fatal("entry: the base hooks nothing")
+	}
+	if baseHooksNothing(explicit, retrySites(explicit, false), false) {
+		t.Fatal("explicit lookup: the base hooks nothing")
+	}
+	if !baseHooksNothing(explicit, retrySites(explicit, true), false) {
+		t.Fatal("auto lookup: the base hooks something")
 	}
 }

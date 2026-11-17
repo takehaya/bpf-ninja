@@ -52,6 +52,26 @@ func retrySites(hooks []inject.LookupHook, auto bool) []retrySite {
 	return out
 }
 
+// baseHooksNothing says whether the retry's base, hooks without any of
+// sites, hooks nothing: entry is false and every site of hooks is one the
+// retry may drop. The transform refuses such a request; it stands for the
+// original program.
+func baseHooksNothing(hooks []inject.LookupHook, sites []retrySite, entry bool) bool {
+	if entry {
+		return false
+	}
+	droppable := map[uint32]bool{}
+	for _, site := range sites {
+		droppable[site.pc] = true
+	}
+	for _, h := range hooks {
+		if h.Kind == inject.HookEntry || slices.ContainsFunc(h.Sites, func(site inject.LookupSite) bool { return !droppable[site.SitePC] }) {
+			return false
+		}
+	}
+	return true
+}
+
 // refusedHere is the reason of a site whose trial the kernel refused: the
 // sites kept so far loaded without it and did not with it. It says nothing
 // about the site alone.
@@ -81,14 +101,16 @@ type retryResult[A any] struct {
 // log line when not; an error ends the search. At most budget trials run.
 //
 // The base, without any of sites, is tried first; when it is refused nothing
-// loads. Then, while sites are left: the longest prefix of them that loads
+// loads. When bare, the base hooks nothing: it is the original program, so
+// it is neither tried nor charged to the budget and is never the result.
+// Then, while sites are left: the longest prefix of them that loads
 // with the sites kept so far is found by bisection and kept, the next site is
 // dropped as refused in this combination, the other sites of its hook are
 // tried together and then each on its own, and the kept sites plus the rest
 // are tried. A site is dropped only after a trial in which it was the one
 // added to sites that loaded. When the budget ends, sites not kept by then are
 // dropped with budgetUsedUp. The result is always a set a trial accepted.
-func retry[A any](sites []retrySite, why string, budget int, trial func(drop map[uint32]string) (A, bool, string, error)) (retryResult[A], error) {
+func retry[A any](sites []retrySite, why string, budget int, bare bool, trial func(drop map[uint32]string) (A, bool, string, error)) (retryResult[A], error) {
 	out := retryResult[A]{dropped: map[uint32]string{}}
 	refused := map[uint32]string{}
 	try := func(keep []retrySite) (bool, string, error) {
@@ -124,8 +146,10 @@ func retry[A any](sites []retrySite, why string, budget int, trial func(drop map
 	if budget <= 0 || len(sites) == 0 {
 		return out, nil
 	}
-	if ok, _, err := try(nil); err != nil || !ok {
-		return out, err
+	if !bare {
+		if ok, _, err := try(nil); err != nil || !ok {
+			return out, err
+		}
 	}
 	with := func(good []retrySite, more ...retrySite) []retrySite { return append(slices.Clone(good), more...) }
 	var good []retrySite
@@ -202,15 +226,15 @@ func retry[A any](sites []retrySite, why string, budget int, trial func(drop map
 }
 
 // errNothingLoads ends a retry in which no trial load passed, not even the
-// base without the sites it may drop.
+// base without the sites it may drop (when the base hooks something).
 var errNothingLoads = errors.New("no trial load passed, not even without every site the retry may drop")
 
 // degrade runs retry and loads exactly the rewrite it kept with load. Its
 // error, or errNothingLoads, leaves the caller to load the original program
 // or to refuse the load.
-func degrade[A any](sites []retrySite, why string, budget int, trial func(map[uint32]string) (A, bool, string, error),
+func degrade[A any](sites []retrySite, why string, budget int, bare bool, trial func(map[uint32]string) (A, bool, string, error),
 	load func(A) (int64, error)) (retryResult[A], int64, error) {
-	out, err := retry(sites, why, budget, trial)
+	out, err := retry(sites, why, budget, bare, trial)
 	if err == nil && !out.loaded {
 		err = errNothingLoads
 	}

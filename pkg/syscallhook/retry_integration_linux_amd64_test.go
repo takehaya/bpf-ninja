@@ -100,9 +100,9 @@ func retryKfunc(t *testing.T, name string) asm.Instruction {
 }
 
 // runRetryLoader runs the loader of test under the supervisor with a rule that
-// hooks the entry and both calls, and returns the injections, the
+// hooks both calls, and the entry when entry is set, and returns the injections, the
 // supervisor's log and the loader's output.
-func runRetryLoader(t *testing.T, test, mode string, failClosed bool, fault func([]inject.LookupHook) error) ([]Injection, string, string) {
+func runRetryLoader(t *testing.T, test, mode string, entry, failClosed bool, fault func([]inject.LookupHook) error) ([]Injection, string, string) {
 	t.Helper()
 	t.Setenv("SYSCALLHOOK_RETRY_CHILD", mode)
 	out, err := os.CreateTemp(t.TempDir(), "loader.out")
@@ -110,7 +110,7 @@ func runRetryLoader(t *testing.T, test, mode string, failClosed bool, fault func
 		t.Fatal(err)
 	}
 	defer func() { _ = out.Close() }()
-	rule := Rule{Program: "p", Hook: "h", Entry: true, Calls: []string{"bpf_ktime_get_ns", "bpf_get_prandom_u32"}}
+	rule := Rule{Program: "p", Hook: "h", Entry: entry, Calls: []string{"bpf_ktime_get_ns", "bpf_get_prandom_u32"}}
 	var logs bytes.Buffer
 	var injected []Injection
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -166,7 +166,7 @@ func TestIntegrationRetry(t *testing.T) {
 		}
 	}
 	t.Run("one-site", func(t *testing.T) {
-		injected, logs, out := runRetryLoader(t, "TestIntegrationRetry", "hook", false, withSite(5))
+		injected, logs, out := runRetryLoader(t, "TestIntegrationRetry", "hook", true, false, withSite(5))
 		if len(injected) != 1 || !slices.Equal(hookedSites(injected[0]), []uint32{1}) || len(injected[0].Hooks) != 2 {
 			t.Fatalf("injections %+v", injected)
 		}
@@ -180,9 +180,23 @@ func TestIntegrationRetry(t *testing.T) {
 			t.Fatal("retry not reported or hooks missing")
 		}
 	})
+	// Without entry the base hooks nothing: it stands for the original, and
+	// the retry still keeps site 1. With --fail-closed that rewrite loads.
+	for _, failClosed := range []bool{false, true} {
+		t.Run(fmt.Sprintf("no-entry-fail-closed=%v", failClosed), func(t *testing.T) {
+			injected, logs, out := runRetryLoader(t, "TestIntegrationRetry", "hook", false, failClosed, withSite(5))
+			if len(injected) != 1 || !slices.Equal(hookedSites(injected[0]), []uint32{1}) || len(injected[0].Hooks) != 1 {
+				t.Fatalf("injections %+v", injected)
+			}
+			if !strings.Contains(logs, `program "p": 2 sites requested, 1 kept after `) || strings.Contains(out, "h_entry") ||
+				!strings.Contains(out, "h_bpf_ktime_get_ns") || strings.Contains(out, "h_bpf_get_prandom_u32") {
+				t.Fatal("retry not reported or hooks wrong")
+			}
+		})
+	}
 	all := func([]inject.LookupHook) error { return planted }
 	t.Run("nothing-loads", func(t *testing.T) {
-		injected, logs, out := runRetryLoader(t, "TestIntegrationRetry", "plain", false, all)
+		injected, logs, out := runRetryLoader(t, "TestIntegrationRetry", "plain", true, false, all)
 		if len(injected) != 0 || !strings.Contains(logs, "no trial load passed") || strings.Contains(out, "h_entry") {
 			t.Fatalf("injections %+v", injected)
 		}
@@ -192,7 +206,7 @@ func TestIntegrationRetry(t *testing.T) {
 		}
 	})
 	t.Run("nothing-loads-fail-closed", func(t *testing.T) {
-		injected, logs, out := runRetryLoader(t, "TestIntegrationRetry", "refused", true, all)
+		injected, logs, out := runRetryLoader(t, "TestIntegrationRetry", "refused", true, true, all)
 		if len(injected) != 0 || !strings.Contains(out, "load refused") {
 			t.Fatalf("injections %+v", injected)
 		}
@@ -215,7 +229,7 @@ func TestIntegrationRetryPreempt(t *testing.T) {
 		return
 	}
 	retryKfunc(t, "bpf_preempt_disable")
-	injected, logs, _ := runRetryLoader(t, "TestIntegrationRetryPreempt", "hook", false, nil)
+	injected, logs, _ := runRetryLoader(t, "TestIntegrationRetryPreempt", "hook", true, false, nil)
 	if len(injected) != 1 || !strings.Contains(logs, "checker accepted") {
 		t.Fatalf("injections %+v", injected)
 	}
