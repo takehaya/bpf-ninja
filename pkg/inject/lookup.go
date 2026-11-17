@@ -275,11 +275,11 @@ func checkOps(req LookupRequest) error {
 		if name == "" || slices.Contains(req.Calls[:i], name) {
 			return refuse("Calls names must be non-empty and unique; got %q", name)
 		}
-		// Without kernel BTF (a configuration check) a name that is not a helper may still be a kernel function.
+		// A name that is neither a helper nor a kernel function the load
+		// passes has no site in this program; a configuration check without
+		// kernel BTF cannot tell it from a kernel function either.
 		if row, reason := namedCall(name, req.Kernel, req.Modules); row == nil && reason != "" {
 			return refuse("Calls name %q cannot be hooked: %s", name, reason)
-		} else if row == nil && req.Kernel != nil {
-			return refuse("Calls name %q is not supported: it is neither a helper nor a kernel function of the running kernel or of a module BTF the program passes", name)
 		}
 	}
 	return nil

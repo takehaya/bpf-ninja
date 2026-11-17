@@ -169,8 +169,7 @@ func TestCallRefusals(t *testing.T) {
 		want string
 	}{
 		{"dispatch", func(r *LookupRequest) { r.Dispatch = true }, "Calls does not combine with Dispatch"},
-		{"unknown", func(r *LookupRequest) { r.Calls, r.Kernel = []string{"bpf_dynptr_from_xdp"}, testKernelSpec(t) },
-			`Calls name "bpf_dynptr_from_xdp" is not supported: it is neither a helper nor a kernel function of the running kernel or of a module BTF the program passes`},
+		{"unknown", func(r *LookupRequest) { r.Calls, r.Kernel = []string{"bpf_dynptr_from_xdp"}, testKernelSpec(t) }, "no call site is instrumented (0 skipped)"},
 		{"lock", func(r *LookupRequest) { r.Calls = []string{"bpf_spin_lock"} }, `Calls name "bpf_spin_lock" cannot be hooked: takes or releases a lock or a critical section`},
 		{"callback", func(r *LookupRequest) { r.Calls = []string{"bpf_loop"} }, `Calls name "bpf_loop" cannot be hooked: runs or registers a callback`},
 		{"void", func(r *LookupRequest) { r.Calls = []string{"bpf_ringbuf_submit"} }, `Calls name "bpf_ringbuf_submit" cannot be hooked: returns nothing`},
@@ -258,11 +257,40 @@ func TestCallWithAutoAndNames(t *testing.T) {
 	if len(plan.hooks) != 1 || plan.hooks[0].Name != "obs_bpf_jiffies64" {
 		t.Fatalf("hooks %+v", plan.hooks)
 	}
-	if got := hookSuffix(callReq("bpf_ktime_get_ns", "bpf_get_prandom_u32")); got != "_bpf_get_prandom_u32" {
+	if got := hookSuffix(callReq("bpf_ktime_get_ns", "bpf_get_prandom_u32")); got != "" {
 		t.Errorf("hookSuffix = %q", got)
 	}
 	if got := LookupStackReserve(LookupRequest{Calls: []string{"bpf_jiffies64"}, Entry: true}); got < 24 {
 		t.Errorf("LookupStackReserve = %d", got)
+	}
+}
+
+// A Calls name the program does not call, or that the kernel does not have,
+// is no refusal: the rule hooks the callees it does call.
+func TestCallUnknownNameNoSite(t *testing.T) {
+	req := callReq("bpf_jiffies64", "bpf_dynptr_from_xdp", "bpf_get_numa_node_id")
+	req.Kernel = testKernelSpec(t)
+	plan, err := transformLookup(scalarFixture(), req)
+	if err != nil || len(plan.hooks) != 1 || plan.hooks[0].Call != "bpf_jiffies64" || len(plan.skipped) != 0 {
+		t.Fatalf("err %v hooks %+v skipped %+v", err, plan.hooks, plan.skipped)
+	}
+}
+
+// A Calls name too long for its hook name passes the configuration check;
+// the transform skips that callee and hooks the others.
+func TestCallNameTooLong(t *testing.T) {
+	req := callReq("bpf_get_prandom_u32", "bpf_jiffies64")
+	req.HookName = strings.Repeat("h", MaxHookName-len("_bpf_jiffies64"))
+	if err := ValidateRaw(LookupRequestRaw{HookName: req.HookName, Calls: req.Calls, Stack: req.Stack}); err != nil {
+		t.Fatal(err)
+	}
+	plan, err := transformLookup(scalarFixture(), req)
+	if err != nil || len(plan.hooks) != 1 || plan.hooks[0].Call != "bpf_jiffies64" {
+		t.Fatalf("err %v hooks %+v", err, plan.hooks)
+	}
+	if len(plan.skipped) != 1 || plan.skipped[0].Call != "bpf_get_prandom_u32" ||
+		plan.skipped[0].Reason != fmt.Sprintf("hook name %q is longer than %d bytes", req.HookName+"_bpf_get_prandom_u32", MaxHookName) {
+		t.Fatalf("skipped %+v", plan.skipped)
 	}
 }
 
@@ -697,15 +725,15 @@ func TestCallEmptyPreludeAtFunctionStart(t *testing.T) {
 	}
 }
 
-// ValidateRaw leaves room for "_" plus the longest Calls name, and Calls
-// reserves the three base slots with Entry or TailCalls alone.
+// ValidateRaw leaves no room for Calls names: a name too long for its hook
+// skips that callee (TestCallNameTooLong). Calls reserves the three base
+// slots with Entry or TailCalls alone.
 func TestCallNameRoomAndReserve(t *testing.T) {
 	long := strings.Repeat("h", MaxHookName-len("_bpf_jiffies64"))
-	if err := ValidateRaw(LookupRequestRaw{HookName: long, Calls: []string{"bpf_jiffies64"}}); err != nil {
-		t.Fatalf("fitting name: %v", err)
-	}
-	if err := ValidateRaw(LookupRequestRaw{HookName: long + "h", Calls: []string{"bpf_jiffies64"}}); err == nil {
-		t.Fatal("ValidateRaw accepts a hook name with no room for the call suffix")
+	for _, name := range []string{long, long + "h"} {
+		if err := ValidateRaw(LookupRequestRaw{HookName: name, Calls: []string{"bpf_jiffies64"}}); err != nil {
+			t.Fatalf("%d bytes: %v", len(name), err)
+		}
 	}
 	for _, req := range []LookupRequest{{Calls: []string{"bpf_jiffies64"}, Entry: true}, {Calls: []string{"bpf_jiffies64"}, TailCalls: true}} {
 		if got := LookupStackReserve(req); got != 24 {

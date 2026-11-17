@@ -81,10 +81,10 @@ func TestKfuncRow(t *testing.T) {
 	}
 }
 
-// A Calls name that is neither a helper nor a kernel function is refused
-// where kernel BTF is at hand (the transform), and accepted by a
-// configuration check without it; a kernel function found only in a module
-// BTF the program passes is accepted.
+// A Calls name that is neither a helper nor a kernel function the load
+// passes is no refusal, with kernel BTF (the transform) or without it (a
+// configuration check): it has no site in the program. A name the kernel BTF
+// has but cannot hook is refused.
 func TestKfuncNameCheck(t *testing.T) {
 	kernel := kfuncKernelSpec(t)
 	module := specOf(t, &btf.Func{Name: "m_int", Type: &btf.FuncProto{Return: &btf.Int{Name: "int", Size: 4}}, Linkage: btf.GlobalFunc})
@@ -94,8 +94,8 @@ func TestKfuncNameCheck(t *testing.T) {
 		modules map[int16]*btf.Spec
 		want    string
 	}{
-		{[]string{"k_missing"}, kernel, nil, `Calls name "k_missing" is not supported: it is neither a helper nor a kernel function of the running kernel or of a module BTF the program passes`},
-		{[]string{"m_int"}, kernel, nil, `Calls name "m_int" is not supported`},
+		{[]string{"k_missing"}, kernel, nil, ""},
+		{[]string{"m_int"}, kernel, nil, ""},
 		{[]string{"m_int"}, kernel, map[int16]*btf.Spec{1: module}, ""},
 		{[]string{"k_missing", "k_void"}, nil, nil, ""},
 		{[]string{"k_void"}, kernel, nil, `Calls name "k_void" cannot be hooked: returns nothing`},
@@ -157,10 +157,13 @@ func TestCallKfuncResultOnly(t *testing.T) {
 	if h := byCall["k_voidp"]; !h.RetPtr || !h.Untrusted || h.RetSize != 0 {
 		t.Errorf("k_voidp: hook %+v", h)
 	}
-	// Without the module BTF the module kfunc cannot be named, so no call site is hooked.
+	// Without the module BTF the module kfunc cannot be named: its site is
+	// skipped with that reason and the rule keeps its other hooks.
 	req.Modules = nil
-	if _, err := transformLookup(kfuncCallsFixture(t, kernel, module), req); err == nil || !strings.Contains(err.Error(), "m_int") {
-		t.Errorf("without Modules: %v", err)
+	plan, err = transformLookup(kfuncCallsFixture(t, kernel, module), req)
+	if err != nil || len(plan.hooks) != len(req.Calls)-1 || len(plan.skipped) != 1 ||
+		plan.skipped[0].Reason != "call: a kernel-function call that cannot be named" {
+		t.Errorf("without Modules: err %v hooks %+v skipped %+v", err, plan.hooks, plan.skipped)
 	}
 }
 
