@@ -863,7 +863,7 @@ OPTIONS:
    --hooks-json string     write the injected programs' hooks and skipped sites as JSON to this file, rewritten after each injected load
    --stop-every-syscall    stop the target at every syscall, not only at program and BTF loads; the default falls back to this where its seccomp filter cannot be used
    --lookups-json string   write every loaded XDP, tc, cgroup_skb and netfilter program's lookups and maps, with a rule to edit, as JSON to this file; rules become optional
-   --lookups-kinds string  with --lookups-json, the comma-separated kinds to list and name in each rule: lookups, map_calls, helpers, kfuncs, tail_calls, entry (default all); lookups alone writes the rule of version 2
+   --lookups-kinds string  with --lookups-json, the comma-separated kinds to list and name in each rule: lookups, map_calls, helpers, kfuncs, tail_calls, entry (default all); lookups alone writes a hook rule for the maps with lookups
    --help, -h              show help
 
 GLOBAL OPTIONS:

@@ -28,6 +28,7 @@ bpf-ninja -p "$PROG_ID" --func "$HOOK" -c 10 -w hook.pcap
 ```
 
 Each step is explained under [Common tasks](#common-tasks): listing and loading, choosing sites, what happens when the kernel refuses a rewrite, and capturing.
+A ready rule selects its program by the entry function's name, which may not match in the cases [Limits](#limits) names; a rule that matches no load hooks nothing and prints nothing, and the hooks file then lists no program.
 
 ## Common tasks
 
@@ -115,9 +116,9 @@ bpf-ninja -p "$PROG_ID" --func ninja_sessions --arg-filter 'value->action==2' -w
   It needs one `-p` and no `--func`. `--dump-asm` and `--mode xdp` refuse `--site` and `--hooks-json`.
   The `pc` names the site in this load only, so a `--site` capture does not follow the hook to reloaded programs, as with `--no-follow`.
 - `--site` refuses with `--site: FILE has no program with prog_id N`, `--site: FILE lists prog_id N with tag X but the loaded program has tag Y; the file is from another load`, or `--site: no site "L" in program N`.
-  A label without its suffix that names several copies is refused with `--site: "L" names N sites; give one of L#1 L#2 ...`, because the argument filters are ANDed and cannot say `site==A || site==B`.
+  A label without its suffix that names several copies is refused with `--site: "L" names N sites; give one of L#1 L#2 ...`, because the argument filters are ANDed and cannot say `site==A || site==B`; one that names one hooked copy, such as `bpf_fib_lookup@xdp_fwd_main:41` under the rule of [Choose sites from the listing](#choose-sites-from-the-listing), is refused with `--site: "L" names one site; give L#N`.
   A hook without a `site` parameter (no `site_param` in the hooks file) is refused with `--site: hook "H" is a KIND hook, which has no site parameter; capture it with --func H`.
-  A hooks file of version 2 is refused with `--site: FILE is a version 2 hooks file, written by an older build without site_param; write it again with this build's inject-run --hooks-json`.
+  A hooks file of version 2 is refused with `--site: FILE is a version 2 hooks file, written by an older build without site_param; write it again with this build's inject-run --hooks-json`, and one of another version with `--site: FILE: unsupported version N`.
 - `--arg-filter` can select members of the key and value, `site` and `status` where the hook has them, and a call hook's `arg` and `ret`, with the fields behind a typed pointer result (see [Read fields behind a pointer result](#read-fields-behind-a-pointer-result)). `status.ret` and `status.flags` select one half of `status`.
 - At a hook that `inject-run` generated, the capture writes decision state as each packet's pcapng comment. `--record` picks it:
   - `filter` (the default) records the arguments and members that `--arg-filter` and `--set` keys read, and records nothing without them;
@@ -304,7 +305,7 @@ The hook receives the call's result as `ret` and, for a callee with a memory arg
 | `bpf_sk_lookup_tcp`, `bpf_sk_lookup_udp`, `bpf_skc_lookup_tcp` | `(ctx, u32 site, const void *arg, const void *ret)` | the tuple (R2), which the lookup only reads | the socket pointer, typed `struct sock` (`struct sock_common` for `bpf_skc_lookup_tcp`); see [fields behind a pointer result](#read-fields-behind-a-pointer-result) |
 | `bpf_probe_read_kernel` | `(ctx, u32 site, const struct { u8 bytes[N]; } *arg, u64 ret)` | the destination buffer (R1) of the constant size N in R2, as the call left it | the result code |
 | `bpf_fib_lookup` | `(ctx, u32 site, const struct bpf_fib_lookup *arg, u64 ret)` | the lookup parameters (R2), after the lookup has filled them in | the lookup result code |
-| `bpf_xdp_ct_lookup`, `bpf_skb_ct_lookup` | `(ctx, u32 site, const struct bpf_ct_opts *arg, const void *ret)` | the options (R4), with the error the lookup set | the connection pointer, typed `struct nf_conn` |
+| `bpf_xdp_ct_lookup`, `bpf_skb_ct_lookup` | `(ctx, u32 site, const void *arg, const void *ret)` | the options (R4), with the error the lookup set, as `arg_size` untyped bytes (see below) | the connection pointer, typed `struct nf_conn` |
 | any other helper with an integer result, such as `bpf_get_numa_node_id` or `bpf_redirect` | `(ctx, u32 site, u64 ret)` | none | the value |
 | `bpf_sk_fullsock`, `bpf_tcp_sock`, `bpf_ringbuf_reserve`, `bpf_this_cpu_ptr`, `bpf_kptr_xchg`, `bpf_get_listener_sock`, the `bpf_skc_to_*` casts, `bpf_sk_storage_get`, `bpf_cgrp_storage_get`, `bpf_task_storage_get` (tc from kernel 6.18), `bpf_per_cpu_ptr`, `bpf_dynptr_data`, `bpf_get_current_task_btf`, `bpf_task_pt_regs` | `(ctx, u32 site, const void *ret)` | none | the pointer, typed for the socket kinds and the BTF-id kinds (see below) |
 | any other kernel function with an integer or enum result, such as `bpf_dynptr_from_xdp` | `(ctx, u32 site, u64 ret)` | none | the value; a result narrower than 8 bytes fills only the low bytes (see below) |
@@ -336,6 +337,7 @@ The hook receives the call's result as `ret` and, for a callee with a memory arg
 - A program that takes a spin lock keeps its call hooks: with a lock held the kernel accepts only `bpf_spin_unlock` and a few kfuncs, none of which can be hooked, so no hooked call lies inside a locked region.
 - If no call site and no other hook is left, the transformation fails with `no call site is instrumented (N skipped)`.
 - When `arg` cannot be typed, and on every hook whose `ret` is a pointer, `arg` is `const void *` with its size in the `bpf-ninja:arg_size=N` decl tag, as on other untrusted hooks. On kernels without `arg:untrusted`, or with `static_untrusted`, such a hook is static and keeps the typed prototype.
+  A capture reads such an `arg` by its bytes, `arg->bytes[i]`. For the conntrack lookups, `struct bpf_ct_opts` holds `error`, a little-endian `s32`, at bytes 4 to 7, so `--arg-filter 'arg->bytes[4]==254'` selects the lookups that set `error` to -2 (`-ENOENT`, whose low byte is 0xfe), and `--record entry` writes the whole `arg` in hex.
 - `inject-run` reads the running kernel's BTF once, when there are rules or `--lookups-json` is given, to name kfunc calls, label their sites and type their arguments.
   A kernel function from a module, such as conntrack on most distribution kernels, is named through the module's BTF, which the program passes in its fd array.
   If either cannot be read, `inject-run` logs `kernel BTF unavailable: kernel-function calls are not hooked: ERR` or `module BTF at fd_array offset N unavailable: its kernel-function calls are not hooked: ERR`, and each such call is skipped as one that cannot be named.
@@ -343,6 +345,13 @@ The hook receives the call's result as `ret` and, for a callee with a memory arg
 #### XDP receive metadata
 
 `bpf_xdp_metadata_rx_timestamp`, `bpf_xdp_metadata_rx_hash` and `bpf_xdp_metadata_rx_vlan_tag` return a status and write the value through a pointer, so their hooks take `(ctx, u32 site, const T *arg, u64 ret)`: `arg` is a value buffer after the call, typed by the kernel prototype: the timestamp (R2, `u64`), the hash (R2, `u32`), or the VLAN tag control information (R3, `u16`, in host byte order), whose low 12 bits are the VLAN id; `ret` is the `int` status.
+`--arg-filter` compares all 16 bits and has no mask, so `arg[0]==100` matches VLAN 100 only with priority 0 and DEI 0: priority 3 makes the TCI 0x6064 (24676).
+To select a VLAN id at any priority, echo the TCI and mask the id out:
+
+```sh
+sudo bpf-ninja -p <ID> --func obs_bpf_xdp_metadata_rx_vlan_tag --arg-filter 'ret==0' --arg-echo 'arg[0]' 2>&1 |
+  awk 'match($0, /arg\[0\]=[0-9]+/) { tci = substr($0, RSTART + 7, RLENGTH - 7); if (tci % 4096 == 100) print }'
+```
 A capture reads the value as `arg[0]` in `--arg-filter`, `--arg-echo` and `--record`, such as `--arg-filter 'ret==0' --arg-echo 'arg[0]'`; the hash's `rss_type` and the VLAN protocol are not captured.
 These kernel functions write the buffer only when they return 0: after a failed call (`ret` not 0), `arg[0]` holds what the program's buffer held before the call, not a value from the kernel, so read it under `ret==0`.
 The program must be loaded bound to its device (`prog_ifindex` with `BPF_F_XDP_DEV_BOUND_ONLY`, as these kernel functions require); its trial load stays bound to the same device. A program loaded for hardware offload (`prog_ifindex` without that flag) still gets no hooks. A value buffer that is not on the program's own stack makes `arg` the untyped `const void *` described above, read as `arg->bytes[N]`.
@@ -649,31 +658,19 @@ If a rewrite fails, `inject-run` reports it on stderr and keeps running the targ
   "version": 3,
   "programs": [
     {
-      "program": "p",
-      "func": "entry_with_long_name",
+      "program": "entry",
+      "func": "entry",
       "type": "XDP",
-      "prog_id": 2,
+      "prog_id": 8,
+      "build": "sha256:88cc580b465df233df46acce75e98334a89bd256c1deccee048ffd5cb8827d85",
+      "tag": "6865ec94df438983",
       "ctx_type": "xdp_md",
-      "stack": {"source": "verifier", "kernel": "7.0.0", "frame_rounding": 16,
-        "functions": [{"name": "entry_with_long_name", "verified_depth": 8,
-          "text_depth": 4, "text_exact": true, "floor": -8,
-          "slots": {"ctx": -16, "key": -24, "result": -32, "map": -40, "value": -48}}]},
       "hook_form": {"form": "global", "reason": "probe_arg_untrusted_supported"},
       "hooks": [
-        {
-          "name": "lookup_hook_sessions",
-          "kind": "typed",
-          "when": "hit",
-          "map": "sessions",
-          "sites": [{"kind": "lookup", "pc": 6, "map": "sessions", "func": "entry_with_long_name", "ctx_source": "entry", "frame": "entry_with_long_name", "floor": -8}],
-          "untrusted": false,
-          "copied": false,
-          "static": false,
-          "read_only": false
-        },
-        {"name": "lookup_hook_entry", "kind": "entry", "sites": [{"kind": "entry", "pc": 4294967295, "frame": "entry_with_long_name", "floor": -8}], "untrusted": false, "copied": false, "static": false, "read_only": false}
+        {"name": "ninja_seen_peek", "kind": "typed", "when": "error", "map": "seen", "sites": [{"kind": "peek", "pc": 11, "map": "seen", "func": "entry", "file": "prog.c", "line": 33, "label": "seen/peek@entry:33", "ctx_source": "entry", "frame": "entry", "floor": -24}], "untrusted": false, "copied": false, "static": false, "read_only": false}
       ],
-      "skipped": []
+      "skipped": [],
+      "stack": {"source": "verifier", "kernel": "7.0.13", "frame_rounding": 16, "functions": [{"name": "entry", "verified_depth": 24, "text_depth": 24, "text_exact": false, "floor": -24, "source": "verifier", "slots": {"ctx": -32, "key": -40, "result": -48, "map": -56, "value": -64}, "deepest_text_access": {"pc": 6, "file": "prog.c", "line": 30, "offset": -20}}]}
     }
   ]
 }
@@ -697,7 +694,7 @@ If a rewrite fails, `inject-run` reports it on stderr and keeps running the targ
 | `hooks[].when` | The results that call it: `hit`, `miss` or `any` for lookups; `error` or `any` for other map calls; `any` for a call hook. A dispatch hook's `when` is its lookups'; its other map-call sites carry their own. |
 | `hooks[].map` | The map of a `typed` hook. Generic and dispatch hooks give the map on each site. |
 | `hooks[].call` | The callee of a `call` hook, such as `bpf_fib_lookup`. |
-| `hooks[].arg_reg`, `arg_type`, `arg_size` | The `arg` parameter of a `call` hook: the callee's argument register (1 to 5), the struct name of what `arg` points to, and its size in bytes. `arg_type` is absent when `arg` is plain bytes; all three are absent when the hook has no `arg`. |
+| `hooks[].arg_reg`, `arg_type`, `arg_size` | The `arg` parameter of a `call` hook: the callee's argument register (1 to 5), the struct name of what `arg` points to, and its size in bytes. `arg_type` is absent when `arg` is plain bytes; all three are absent when the hook has no `arg`. With `untrusted: true`, `arg_type` names the callee's struct, such as `bpf_ct_opts`, while the hook's `arg` is `const void *`, which a capture reads as bytes. |
 | `hooks[].ret` | `scalar` (`u64 ret`) or `pointer` (`const void *ret`) on a `call` hook. |
 | `hooks[].ret_type` | On a `pointer` call hook, the kernel struct or union `ret` points to, such as `nf_conn`; a capture reads `ret->member` through it. Absent when `ret` is untyped and compared with NULL only. |
 | `hooks[].arg_reason` | On a `call` hook of a callee with a row in the call table that has no `arg` in this program: why, either more than one argument size among its sites or a size that is not a constant set in the call's basic block. Absent otherwise. |
@@ -716,8 +713,8 @@ If a rewrite fails, `inject-run` reports it on stderr and keeps running the targ
 | `skipped` | Map calls that `auto` did not instrument, call sites of `calls` that could not be hooked (reason starting with `call:`), sites a rule's `sites` left out (`not selected by the rule's sites`), and sites the [retry](#refused-rewrites) dropped (reason starting with `load:`), with the site fields and a `reason`. The requested sites of a retried load are those of `hooks` plus those dropped. |
 | `skipped_maps` | The `maps` names of a `hook_prefix` rule that match no call the rule observes, each with `map` and `reason`. Absent when there is none. |
 | `skipped_calls` | The `calls` names of a rule that are neither a helper nor a kernel function of the load, each with `name` and `reason`. A known name the program does not call is not listed. Absent when there is none. |
-| `outside_premise` | `calls NAME, ...`: the calls of the original program that [the equivalence claim's premise](#equivalence-claim) rules out: the helpers it names, the kernel functions on the deny list of [Observe helper and kernel-function calls](#observe-helper-and-kernel-function-calls), and the kernel functions that take a callback. The claim does not hold for this load. Hooks at its other calls work as usual. A kernel-function call that could not be named is listed as `a kernel function that could not be named`, because it may be one of them. Absent when the program calls none. |
-| `not_reviewed` | `calls NAME, ...`: the kernel functions the original program calls whose implementation has not been checked against the premise, in call order; a call that could not be named is listed as `a kernel function that could not be named`. A receive-metadata function is listed as, for example, `bpf_xdp_metadata_rx_hash (the device's driver supplies the implementation)`, and a checked function defined elsewhere than where it was checked as `NAME (in MODULE)`. The claim is stated only for loads without this field. Hooks are placed as for any other load. Absent when every kernel function the program calls has been checked, or it calls none. |
+| `outside_premise` | `calls NAME, ...`: the calls of the original program that [the equivalence claim's premise](#equivalence-claim) rules out: the helpers and kernel functions it names, and the kernel functions that take a callback. The claim does not hold for this load. Hooks at its other calls work as usual. A kernel-function call that could not be named is listed as `a kernel function that could not be named`, because it may be one of them. Absent when the program calls none. |
+| `not_reviewed` | `calls NAME, ...`: the kernel functions the original program calls whose implementation has not been checked against the premise, in call order; a call that could not be named is listed as `a kernel function that could not be named`. A receive-metadata function is listed as, for example, `bpf_xdp_metadata_rx_hash (the device's driver supplies the implementation)`, and a checked function defined elsewhere than where it was checked as `NAME (in MODULE)`. The claim is stated only for loads without this field. Hooks are placed as for any other load. Absent when every kernel function the program calls has been checked, or it calls none. A kernel function can be in both fields, such as `bpf_rcu_read_lock` or a call that could not be named. Neither field can be read before a load: the [lookups file](#lookups-file) does not have them. |
 | `dead_check_error` | Present when one or more hook comparisons failed. Affected hooks, and any site they may report, remain unmarked; independently confirmed absent hooks and sites can still be marked. Consumers must not guess from an unmarked result. |
 
 Treat a marked site as having no live observation point in this load, not as an attach failure.
@@ -782,8 +779,8 @@ Under `inject-run` each program also has a `stack` block, as in the hooks file, 
 | `reason` on a lookup or call | `auto` would skip it, unless it also has `"generic": true`, which means `auto` sends it to the generic hook. A site without a reason passed discovery and has a usable frame floor; whether its slots fit is decided only when `auto` selects (see [Map listing of a running program](#map-listing-of-a-running-program)). |
 | `ctx_source` on a lookup or call | The proven source used to initialize the site's frame: `entry`, `r6` through `r9`, or an aligned slot such as `fp-80`. It is omitted when no source was proven. |
 | `frame`, `floor` on a lookup or call | The function frame that owns the site and the floor used to place its spill slots. |
-| `stack` | The trial load's verifier accounting. A function with `skip_reason` is not instrumented, and when it is the entry function the whole program is not; see [Stack floor](#stack-floor). `dead` means the verifier omitted that function from this load. When `source` is `verifier`, every lookup or call in a function with either mark, or missing from `functions`, has the reason `stack floor unavailable for this function` and no `generic`: `auto` skips it, even where the generic hook could take it. When the trial load failed, `source` is `unavailable` and `error` gives the cause; `inject-run` then loads the program unchanged, and every lookup and call has the reason `stack audit unavailable` and no `generic`. |
-| `rule` | A ready rule written with `hook_prefix`, whose `program` is the entry function name. It names every named map with a call of a listed op, each such op as `op:any`, the callees without a `reason` in `calls`, `entry`, and `tail_calls` when the program calls `bpf_tail_call`. It never sets `dispatch`. Absent when it would name nothing. Delete names to observe less; a missing or empty list hooks nothing of its kind. |
+| `stack` | The trial load's verifier accounting. A function with `skip_reason` is not instrumented, and when it is the entry function the whole program is not; see [Stack floor](#stack-floor). `dead` means the verifier omitted that function from this load. When `source` is `verifier`, every lookup or call in a function with either mark, or missing from `functions`, has the reason `stack floor unavailable for this function` and no `generic`: `auto` skips it, even where the generic hook could take it. When the trial load failed, `source` is `unavailable` and `error` gives the cause, and every lookup and call has the reason `stack audit unavailable` and no `generic`, whatever the cause; the load then ends as [When the kernel refuses a rewrite](#when-the-kernel-refuses-a-rewrite) says, and the hooks file's `refused` gives its `cause` (`stack`, `analysis` or `verifier`). |
+| `rule` | A ready rule written with `hook_prefix`, whose `program` is the entry function name (see [Limits](#limits) for when such a selector does not match; a rule that matches nothing prints nothing). It names every named map with a call of a listed op, each such op as `op:any`, the callees without a `reason` in `calls`, `entry`, and `tail_calls` when the program calls `bpf_tail_call`. It never sets `dispatch`. Absent when it would name nothing. Delete names to observe less; a missing or empty list hooks nothing of its kind. |
 
 `--lookups-kinds` picks the kinds that `callees`, `call_sites`, `tail_calls` and `rule` cover: `lookups` (lookup ops), `map_calls` (the other map ops), `helpers`, `kfuncs`, `tail_calls` and `entry`.
 `maps`, `lookups` and `calls` are always written.
@@ -848,6 +845,10 @@ Diagnostics go to stderr:
 | `program "P": checker not applicable: REASON; load not validated` | The checker cannot pair this stream. The substituted load proceeds unchecked by default; `--fail-closed` returns `EPERM`. |
 | `program "P": injection skipped: checker rejected the transform: ERR; probe was not installed; attempted ...` | The stream could not be read or decoded, or the checker rejected it. The original program is retried by default; `--fail-closed` returns `EPERM`. |
 | `program "P": injected hook "H" (...), tracee fd N` | The rewritten program loaded. The line names each hook with its map and site PCs, then each skipped site, `maps` name and `calls` name and why. After a [jump sequence limit](#jump-sequence-limit) retry it ends with `, lookup branches miss-first`. |
+| `program "P": outside the theorem's premise: calls NAME, ...` | Follows the injected line for a load with `outside_premise` in the [hooks file](#hooks-file). |
+| `program "P": kernel functions without a review record: calls NAME, ...` | Follows the injected line for a load with `not_reviewed`. |
+| `site pc N (map M) is dead in this load: CAUSE` | The verifier removed every hook of this site in the load just listed; see `dead_in_this_load` in the [hooks file](#hooks-file). |
+| `program "P": stack depth unavailable: ERR` | The [stack audit](#stack-floor) failed; the load ends as [When the kernel refuses a rewrite](#when-the-kernel-refuses-a-rewrite) says. |
 | `program "P": hook "H" observes only the result of C: REASON` | Follows the line above for each call hook whose callee has a row with `arg` but gets the result-only hook in this program; REASON is the hook's `arg_reason` in the [hooks file](#hooks-file). |
 | `program "P": ...: verifier jump sequence limit: ...; retrying with lookup misses first` | The verifier refused the rewritten program with `The sequence of N jumps is too complex`; see [Jump sequence limit](#jump-sequence-limit). |
 | `program "P": transformed PROG_LOAD: ERR; retrying with fewer sites` | The kernel refused the rewritten program; see [Refused rewrites](#refused-rewrites). |
@@ -983,11 +984,13 @@ The claim assumes that the original program's behaviour does not depend on its o
 
 - The original calls no helper that returns code addresses, a call stack or branch records to the program (`bpf_get_stack`, `bpf_get_stackid`, `bpf_get_task_stack`, `bpf_get_branch_snapshot`, `bpf_get_func_ip`, `bpf_read_branch_records`), returns a perf counter to it (`bpf_perf_event_read`, `bpf_perf_event_read_value`, `bpf_perf_prog_read_value`), calls back into or registers a subprogram of the same program (`bpf_for_each_map_elem`, `bpf_loop`, `bpf_find_vma`, `bpf_user_ringbuf_drain`, `bpf_timer_set_callback`), or takes or releases a lock the verifier tracks (`bpf_spin_lock`, `bpf_spin_unlock`).
   Helpers that only cause other programs to run, such as `bpf_tail_call`, a sockmap update, `bpf_clone_redirect` or a hash computed through a flow dissector program, and helpers that take and release a lock inside the call are within the premise.
-- The original calls no kernel function on the deny list of [Observe helper and kernel-function calls](#observe-helper-and-kernel-function-calls) and none that takes a callback.
+- The original calls no kernel function that takes a callback (a parameter that points to a function prototype), and none of these: the lock and critical-section functions (`bpf_res_spin_lock*`, `bpf_res_spin_unlock*`, `bpf_preempt_disable`, `bpf_preempt_enable`, `bpf_rcu_read_lock`, `bpf_rcu_read_unlock`, `bpf_local_irq_save`, `bpf_local_irq_restore`), the callback registrations (`bpf_rbtree_add_impl`, `bpf_wq_set_callback`, `bpf_wq_set_callback_impl`, `bpf_task_work_schedule_signal`, `bpf_task_work_schedule_resume` and their `_impl`), `bpf_throw`, the iterators (`bpf_iter_*_new`, `_next`, `_destroy`), the functions the verifier lets run with a lock held (`bpf_list_*`, `bpf_rbtree_*`, `bpf_refcount_acquire_impl`, `bpf_stream_*`, `bpf_arena_*_pages`), allocation (`bpf_obj_new_impl`, `bpf_percpu_obj_new_impl`, `bpf_obj_drop_impl`, `bpf_percpu_obj_drop_impl`), the casts `bpf_cast_to_kern_ctx` and `bpf_rdonly_cast`, and `bpf_session_cookie`, `bpf_session_is_return` and `__bpf_trap`.
+  Kernel functions that return nothing, such as `bpf_ct_release`, are within the premise, although `calls` cannot hook them.
 - Seven helpers depend on the program's code or on counters only in how they are used, which a call does not show, so the premise states their use:
   the program does not hand `bpf_probe_read_kernel`, `bpf_probe_read_kernel_str`, `bpf_snprintf`, `bpf_snprintf_btf`, `bpf_trace_printk` or `bpf_trace_vprintk` an address of its own code or of the kernel stack;
   and the records it sends with `bpf_perf_event_output`, `bpf_trace_printk` and `bpf_trace_vprintk` are compared without the fields the consumer adds to them (stacks, counters, time).
 - The program does not observe its stack or task memory through typed task or per-CPU pointers.
+- The program does not store pointers to its own code or stack into a map, the packet or an output record: the address of a subprogram (`ld_imm64` of a function), or, in a subprogram, the distance from its frame to a caller's frame, which the reserved slots change. Both need `CAP_PERFMON`.
 - The stack slots the tool reserves lie below every access the original program makes; the [stack audit](#stack-floor) checks this before every rewrite.
 - The same inputs and state include concurrent updates by other programs and by user space, and the random number stream. Time is not part of them: the clock helpers stay callable and may return other values.
 - The verifier treats both programs alike where it rewrites calls (fast-call patterns, hidden arguments).
@@ -1000,7 +1003,7 @@ The claim assumes that the original program's behaviour does not depend on its o
 - `outside_premise` names the calls the premise rules out (`program "P": outside the theorem's premise: calls NAME, ...`). The claim does not hold for the load.
 - `not_reviewed` names the kernel functions not checked against the premise (`program "P": kernel functions without a review record: calls NAME, ...`). The claim is not stated for the load.
 
-Neither changes where hooks go. The use of the seven helpers above is not detected.
+Neither changes where hooks go. The use of the seven helpers above and a stored code or stack address are not detected.
 
 ## Limits
 
