@@ -10,6 +10,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"reflect"
+	"slices"
 	"strings"
 
 	"github.com/takehaya/bpf-ninja/pkg/inject"
@@ -168,7 +170,7 @@ func Validate(rules []Rule) error {
 	if len(rules) == 0 {
 		return fmt.Errorf("at least one injection rule is required")
 	}
-	seen := make(map[string]bool)
+	seen := make(map[string]int)
 	for i, r := range rules {
 		if r.Hook != "" && r.HookPrefix != "" && r.Hook != r.HookPrefix {
 			return fmt.Errorf("rule %d: hook and hook_prefix are both given and differ (%q and %q); keep hook_prefix", i, r.Hook, r.HookPrefix)
@@ -200,10 +202,13 @@ func Validate(rules []Rule) error {
 		if err := r.validateSites(); err != nil {
 			return fmt.Errorf("rule %d: %w", i, err)
 		}
-		if seen[r.Program] {
-			return fmt.Errorf("rule %d: only one rule per program is supported", i)
+		if j, ok := seen[r.Program]; ok {
+			if !reflect.DeepEqual(rules[j], r) {
+				return fmt.Errorf("rule %d: rules %d and %d are for program %q and differ; only one rule per program is supported", i, j, i, r.Program)
+			}
+			continue // identical to rule j, which was checked
 		}
-		seen[r.Program] = true
+		seen[r.Program] = i
 		if r.AllMatches && len(r.SitePCs) > 0 {
 			return fmt.Errorf("rule %d: all_matches and site_pcs are mutually exclusive", i)
 		}
@@ -255,7 +260,19 @@ func ParseConfig(r io.Reader) ([]Rule, error) {
 	if err := Validate(rules); err != nil {
 		return nil, err
 	}
-	return rules, nil
+	return uniqueRules(rules), nil
+}
+
+// uniqueRules drops each rule identical to an earlier one; Validate accepts
+// only identical rules for one program.
+func uniqueRules(rules []Rule) []Rule {
+	var out []Rule
+	for _, r := range rules {
+		if !slices.ContainsFunc(out, func(o Rule) bool { return reflect.DeepEqual(o, r) }) {
+			out = append(out, r)
+		}
+	}
+	return out
 }
 
 func (r Rule) validateMapTypes() error {

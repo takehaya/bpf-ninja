@@ -139,7 +139,7 @@ func TestConfig(t *testing.T) {
 	for _, input := range []string{
 		`[]`, `null`, valid + ` {}`, valid + strings.Repeat(" ", 1<<20) + ` {}`, strings.Replace(valid, `"line":42`, `"lines":42`, 1),
 		strings.Replace(valid, `"lookup_hook"`, `"bad-name"`, 1),
-		strings.Replace(valid, `"sessions"`, `""`, 1), `[` + valid[1:len(valid)-1] + `,` + valid[1:len(valid)-1] + `]`,
+		strings.Replace(valid, `"sessions"`, `""`, 1), `[` + valid[1:len(valid)-1] + `,` + strings.Replace(valid[1:len(valid)-1], `"line":42`, `"line":43`, 1) + `]`,
 		strings.Replace(valid, `"line":42`, `"line":42,"all_matches":true,"site_pcs":[3]`, 1),
 		strings.Replace(valid, `"line":42`, `"line":42,"site_pcs":3`, 1),
 		strings.Replace(valid, `"line":42`, `"line":42,"auto":true`, 1),
@@ -314,4 +314,22 @@ func TestFdArrayShortAttr(t *testing.T) {
 
 func testRule() Rule {
 	return Rule{Program: "p", Map: "sessions", Hook: "lookup_hook"}
+}
+
+// The quick start's jq line gives one ready rule per load, so a program
+// loaded twice gives two identical rules: they are one rule. Rules that
+// differ for one program are still refused.
+func TestConfigDuplicateRules(t *testing.T) {
+	ready := `{"program":"p","hook_prefix":"h","auto":true,"maps":["a"],"entry":true}`
+	rules, err := ParseConfig(strings.NewReader("[" + ready + "," + ready + "]"))
+	if err != nil || len(rules) != 1 || rules[0].Program != "p" {
+		t.Fatalf("identical rules: %+v: %v", rules, err)
+	}
+	other := strings.Replace(ready, `"maps":["a"]`, `"maps":["b"]`, 1)
+	if _, err := ParseConfig(strings.NewReader("[" + ready + "," + other + "]")); err == nil || !strings.Contains(err.Error(), "differ") {
+		t.Fatalf("differing rules: %v", err)
+	}
+	if err := Validate([]Rule{{Program: "p", Hook: "h", Auto: true}, {Program: "p", Hook: "h", Auto: true}}); err != nil {
+		t.Fatalf("Validate, identical rules: %v", err)
+	}
 }

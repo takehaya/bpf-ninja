@@ -287,6 +287,7 @@ func run(ctx context.Context, argv []string, opts Options, probeUntrusted, probe
 		if err := Validate(opts.Rules); err != nil {
 			return 0, err
 		}
+		opts.Rules = uniqueRules(opts.Rules)
 	}
 	if opts.Stdin == nil {
 		opts.Stdin = os.Stdin

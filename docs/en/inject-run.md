@@ -444,7 +444,7 @@ A rule whose `program` never loads produces no diagnostic at all.
 
 | Key | Type | Default | Meaning | Constraints |
 |---|---|---|---|---|
-| `program` | string | required | The program to rewrite: its kernel name or its entry function name. | Kernel names have at most 15 characters; a function name can be longer. One rule per program. |
+| `program` | string | required | The program to rewrite: its kernel name or its entry function name. | Kernel names have at most 15 characters; a function name can be longer. One rule per program; identical rules for one program, as the ready rules of a program loaded twice, count as one. |
 | `hook_prefix` | string | `hook_prefix` or `hook` is required | The prefix of the hook names; the lookup hook of a `map` rule and the one hook of a `dispatch` rule carry no suffix. A rule written with `hook_prefix` states every kind: a missing or empty `maps`, `ops` or `calls` hooks nothing of that kind. A `map` rule names its one site itself and observes its lookup without `ops`, as with `hook`. | As `hook`. With `hook`, both must be equal. |
 | `hook` | string | `hook_prefix` or `hook` is required | The hook name. With `auto`, `entry`, `tail_calls`, `calls` or `ops`, the prefix of the hook names. With `dispatch`, the name of the one hook. In a rule written with `hook`, `maps` and `ops` keep the defaults below. | A C identifier. It must leave room for the longest suffix within 127 bytes; see [Hook names](#hook-names). |
 | `map` | string | none | Observe lookups on this map, by exact kernel map name. | Not with `auto`. A rule needs one of `map`, `auto`, `entry`, `tail_calls` or `calls`. |
