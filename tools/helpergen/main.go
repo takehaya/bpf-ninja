@@ -1,13 +1,20 @@
 // Command helpergen generates pkg/inject/helpers_gen.go, the table of BPF
-// helper ids with their names and result kinds, from a Linux kernel tree.
+// helper ids with their names and result kinds, and
+// tools/regionval/core/helperargs_gen.go, the number of argument registers
+// each helper reads, from a Linux kernel tree.
 //
-//	go run ./tools/helpergen -ksrc <kernel tree> [-out pkg/inject/helpers_gen.go] [-check]
+//	go run ./tools/helpergen -ksrc <kernel tree> [-out pkg/inject/helpers_gen.go]
+//		[-args-out tools/regionval/core/helperargs_gen.go] [-check]
 //
 // Ids and names come from ___BPF_FUNC_MAPPER in include/uapi/linux/bpf.h.
 // Result kinds come from the .ret_type of every struct bpf_func_proto
 // initialiser in the tree's .c files, joined to ids through
 // "case BPF_FUNC_x: return &proto;" switch arms. Ids that join no prototype,
 // or prototypes of different kinds, take their kind from overrides.txt.
+// A helper's argument count is the largest N with an .argN_type other than
+// ARG_DONTCARE over all prototypes it joins, the union over its variants.
+// argoverrides.txt gives the count of an id that joins no prototype and
+// raises it where the helper reads registers its prototype does not declare.
 package main
 
 import (
@@ -28,6 +35,9 @@ import (
 //go:embed overrides.txt
 var overridesTxt string
 
+//go:embed argoverrides.txt
+var argOverridesTxt string
+
 // Result kinds, spelled as the CalleeRet constants of pkg/inject.
 const (
 	kindScalar      = "RetScalar"
@@ -40,12 +50,14 @@ type helper struct {
 	ID   int
 	Name string // without the bpf_ prefix
 	Kind string
+	Args int // argument registers read, r1 to rArgs
 }
 
 func main() {
 	ksrc := flag.String("ksrc", "", "kernel source tree")
-	out := flag.String("out", "pkg/inject/helpers_gen.go", "generated file")
-	check := flag.Bool("check", false, "compare with -out instead of writing it")
+	out := flag.String("out", "pkg/inject/helpers_gen.go", "generated kind table")
+	argsOut := flag.String("args-out", "tools/regionval/core/helperargs_gen.go", "generated argument table")
+	check := flag.Bool("check", false, "compare with -out and -args-out instead of writing them")
 	flag.Parse()
 	if *ksrc == "" {
 		fail("-ksrc is required")
@@ -59,14 +71,19 @@ func main() {
 		if err != nil {
 			fail(err.Error())
 		}
-		diffs := compare(helpers, parseTable(string(old)))
+		oldArgs, err := os.ReadFile(*argsOut)
+		if err != nil {
+			fail(err.Error())
+		}
+		diffs := compare(kindsOnly(helpers), parseTable(string(old)))
+		diffs = append(diffs, compare(argsOnly(helpers), parseArgsTable(string(oldArgs)))...)
 		for _, d := range diffs {
 			fmt.Println(d)
 		}
 		if len(diffs) > 0 {
 			os.Exit(1)
 		}
-		fmt.Printf("helpergen: %d helpers, kinds equal\n", len(helpers))
+		fmt.Printf("helpergen: %d helpers, kinds and argument counts equal\n", len(helpers))
 		return
 	}
 	src, err := render(helpers, version)
@@ -76,6 +93,21 @@ func main() {
 	if err := os.WriteFile(*out, src, 0o644); err != nil {
 		fail(err.Error())
 	}
+	src, err = renderArgs(helpers, version)
+	if err != nil {
+		fail(err.Error())
+	}
+	if err := os.WriteFile(*argsOut, src, 0o644); err != nil {
+		fail(err.Error())
+	}
+}
+
+// String names the helper with the column it is compared on.
+func (h helper) String() string {
+	if h.Kind == "" {
+		return fmt.Sprintf("bpf_%s %d args", h.Name, h.Args)
+	}
+	return fmt.Sprintf("bpf_%s %s", h.Name, h.Kind)
 }
 
 func fail(msg string) {
@@ -98,6 +130,7 @@ func load(ksrc string) ([]helper, string, error) {
 		return nil, "", err
 	}
 	protos := map[string]map[string]bool{} // proto name -> kinds
+	protoArgs := map[string]int{}          // proto name -> largest argument count
 	joins := map[string]map[string]bool{}  // helper name -> proto names
 	err = filepath.WalkDir(ksrc, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -124,6 +157,9 @@ func load(ksrc string) ([]helper, string, error) {
 		for name, kind := range parseProtos(src) {
 			add(protos, name, kind)
 		}
+		for name, n := range parseProtoArgs(src) {
+			protoArgs[name] = max(protoArgs[name], n)
+		}
 		for name, ps := range parseJoins(src) {
 			for p := range ps {
 				add(joins, name, p)
@@ -141,6 +177,13 @@ func load(ksrc string) ([]helper, string, error) {
 	if err := resolve(helpers, protos, joins, overrides); err != nil {
 		return nil, "", err
 	}
+	argOverrides, err := parseArgOverrides(argOverridesTxt)
+	if err != nil {
+		return nil, "", err
+	}
+	if err := resolveArgs(helpers, protoArgs, joins, argOverrides); err != nil {
+		return nil, "", err
+	}
 	return helpers, version, nil
 }
 
@@ -156,10 +199,12 @@ var (
 	mapperRE  = regexp.MustCompile(`FN\((\w+), (\d+), ##ctx\)`)
 	protoRE   = regexp.MustCompile(`(?s)struct\s+bpf_func_proto\s+(\w+)\s*=\s*\{(.*?)\};`)
 	retTypeRE = regexp.MustCompile(`\.ret_type\s*=\s*([^,}]+)`)
+	argTypeRE = regexp.MustCompile(`\.arg([1-5])_type\s*=\s*([^,}]+)`)
 	caseRE    = regexp.MustCompile(`(?m)^([ \t]*)case\s+BPF_FUNC_(\w+)\s*:`)
 	returnRE  = regexp.MustCompile(`\breturn\b([^;]*);`)
 	addrRE    = regexp.MustCompile(`&\s*(\w+)`)
 	tableRE   = regexp.MustCompile(`\{"bpf_(\w+)", (Ret\w+)\},\s*// (\d+)`)
+	argsRE    = regexp.MustCompile(`(\d+):\s*(\d),\s*// (\w+)`)
 )
 
 func kernelVersion(ksrc string) (string, error) {
@@ -223,6 +268,22 @@ func parseProtos(src string) map[string]string {
 	return out
 }
 
+// parseProtoArgs returns the argument count of each bpf_func_proto
+// initialiser: the largest N whose .argN_type is not ARG_DONTCARE.
+func parseProtoArgs(src string) map[string]int {
+	out := map[string]int{}
+	for _, m := range protoRE.FindAllStringSubmatch(src, -1) {
+		n := 0
+		for _, a := range argTypeRE.FindAllStringSubmatch(m[2], -1) {
+			if strings.TrimSpace(a[2]) != "ARG_DONTCARE" {
+				n = max(n, int(a[1][0]-'0'))
+			}
+		}
+		out[m[1]] = max(out[m[1]], n)
+	}
+	return out
+}
+
 // parseJoins returns, per helper name, the names whose address a switch arm
 // "case BPF_FUNC_x: ... return &y;" returns. Arms returning anything else
 // (another call, NULL) join nothing. An arm ends at the next line indented
@@ -271,6 +332,28 @@ func parseOverrides(txt string) (map[int]string, error) {
 			return nil, fmt.Errorf("overrides.txt:%d: want \"id scalar|pointer|void # reason\"", i+1)
 		}
 		out[id] = kind
+	}
+	return out, nil
+}
+
+// parseArgOverrides reads "id count # reason" lines.
+func parseArgOverrides(txt string) (map[int]int, error) {
+	out := map[int]int{}
+	for i, line := range strings.Split(txt, "\n") {
+		line, _, _ = strings.Cut(line, "#")
+		f := strings.Fields(line)
+		if len(f) == 0 {
+			continue
+		}
+		id, err := strconv.Atoi(f[0])
+		var n int
+		if err == nil && len(f) == 2 {
+			n, err = strconv.Atoi(f[1])
+		}
+		if len(f) != 2 || err != nil || n < 0 || n > 5 {
+			return nil, fmt.Errorf("argoverrides.txt:%d: want \"id 0-5 # reason\"", i+1)
+		}
+		out[id] = n
 	}
 	return out, nil
 }
@@ -334,6 +417,42 @@ func resolve(hs []helper, protos, joins map[string]map[string]bool, overrides ma
 	return nil
 }
 
+// resolveArgs sets each helper's argument count, the union over the
+// prototypes it joins, or its override. It fails for an id that joins no
+// prototype and has no override, and for an override that reads fewer
+// registers than a prototype declares. Id 0 is not a helper and stays 0.
+func resolveArgs(hs []helper, protoArgs map[string]int, joins map[string]map[string]bool, overrides map[int]int) error {
+	var problems []string
+	for i := range hs {
+		h := &hs[i]
+		if h.ID == 0 {
+			continue
+		}
+		n := -1
+		for p := range joins[h.Name] {
+			if a, ok := protoArgs[p]; ok {
+				n = max(n, a)
+			}
+		}
+		o, haveOverride := overrides[h.ID]
+		switch {
+		case haveOverride && o < n:
+			problems = append(problems, fmt.Sprintf("%d %s: override %d reads fewer registers than its prototypes (%d)", h.ID, h.Name, o, n))
+		case haveOverride:
+			h.Args = o
+		case n < 0:
+			problems = append(problems, fmt.Sprintf("%d %s: no prototype joined", h.ID, h.Name))
+		default:
+			h.Args = n
+		}
+	}
+	if len(problems) > 0 {
+		return fmt.Errorf("%d ids need a count in tools/helpergen/argoverrides.txt:\n\t%s",
+			len(problems), strings.Join(problems, "\n\t"))
+	}
+	return nil
+}
+
 func render(hs []helper, version string) ([]byte, error) {
 	var b bytes.Buffer
 	b.WriteString("// Code generated by tools/helpergen; DO NOT EDIT.\n\n")
@@ -342,6 +461,24 @@ func render(hs []helper, version string) ([]byte, error) {
 	b.WriteString("var helperTable = [...]helperRow{\n")
 	for _, h := range hs {
 		fmt.Fprintf(&b, "{%q, %s}, // %d\n", "bpf_"+h.Name, h.Kind, h.ID)
+	}
+	b.WriteString("}\n")
+	return format.Source(b.Bytes())
+}
+
+func renderArgs(hs []helper, version string) ([]byte, error) {
+	var b bytes.Buffer
+	b.WriteString("// Code generated by tools/helpergen; DO NOT EDIT.\n\n")
+	b.WriteString("package core\n\n")
+	fmt.Fprintf(&b, "// helperArgs is the number of argument registers each helper reads, by id,\n")
+	fmt.Fprintf(&b, "// generated from Linux %s: the largest argN_type over the helper's\n", version)
+	b.WriteString("// prototypes, or the count in tools/helpergen/argoverrides.txt. Id 0 is not\n")
+	b.WriteString("// a helper and is absent, so a call to it reads r1-r5.\n")
+	b.WriteString("var helperArgs = map[int32]int{\n")
+	for _, h := range hs {
+		if h.ID != 0 {
+			fmt.Fprintf(&b, "%d: %d, // %s\n", h.ID, h.Args, h.Name)
+		}
 	}
 	b.WriteString("}\n")
 	return format.Source(b.Bytes())
@@ -357,18 +494,48 @@ func parseTable(src string) []helper {
 	return hs
 }
 
+// parseArgsTable reads the rows of a generated argument table.
+func parseArgsTable(src string) []helper {
+	var hs []helper
+	for _, m := range argsRE.FindAllStringSubmatch(src, -1) {
+		id, _ := strconv.Atoi(m[1])
+		n, _ := strconv.Atoi(m[2])
+		hs = append(hs, helper{ID: id, Name: m[3], Args: n})
+	}
+	return hs
+}
+
+// kindsOnly and argsOnly project the helpers onto the columns of the kind
+// table and of the argument table, which has no row for id 0.
+func kindsOnly(hs []helper) []helper {
+	out := make([]helper, len(hs))
+	for i, h := range hs {
+		out[i] = helper{ID: h.ID, Name: h.Name, Kind: h.Kind}
+	}
+	return out
+}
+
+func argsOnly(hs []helper) []helper {
+	var out []helper
+	for _, h := range hs {
+		if h.ID != 0 {
+			out = append(out, helper{ID: h.ID, Name: h.Name, Args: h.Args})
+		}
+	}
+	return out
+}
+
 // compare lists the differences between the tree's helpers and a table.
 func compare(tree, table []helper) []string {
 	var diffs []string
 	for i := 0; i < max(len(tree), len(table)); i++ {
 		switch {
 		case i >= len(table):
-			diffs = append(diffs, fmt.Sprintf("%d: tree has bpf_%s %s, table has no row", tree[i].ID, tree[i].Name, tree[i].Kind))
+			diffs = append(diffs, fmt.Sprintf("%d: tree has %s, table has no row", tree[i].ID, tree[i]))
 		case i >= len(tree):
-			diffs = append(diffs, fmt.Sprintf("%d: table has bpf_%s %s, tree has no helper", table[i].ID, table[i].Name, table[i].Kind))
+			diffs = append(diffs, fmt.Sprintf("%d: table has %s, tree has no helper", table[i].ID, table[i]))
 		case tree[i] != table[i]:
-			diffs = append(diffs, fmt.Sprintf("%d: tree has bpf_%s %s, table has %d bpf_%s %s",
-				tree[i].ID, tree[i].Name, tree[i].Kind, table[i].ID, table[i].Name, table[i].Kind))
+			diffs = append(diffs, fmt.Sprintf("%d: tree has %s, table has %d %s", tree[i].ID, tree[i], table[i].ID, table[i]))
 		}
 	}
 	return diffs

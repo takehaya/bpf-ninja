@@ -33,14 +33,22 @@ static const struct bpf_func_proto bpf_tail_call_proto = {
 
 struct bpf_func_proto bpf_get_stack_proto = {
 	.ret_type	= RET_INTEGER,
+	.arg1_type	= ARG_PTR_TO_CTX,
 };
 
 static const struct bpf_func_proto bpf_get_stack_proto_raw_tp = {
 	.ret_type	= RET_INTEGER,
+	.arg1_type	= ARG_PTR_TO_CTX,
+	.arg2_type	= ARG_PTR_TO_UNINIT_MEM,
+	.arg3_type	= ARG_CONST_SIZE_OR_ZERO,
+	.arg4_type	= ARG_ANYTHING,
 };
 
 static const struct bpf_func_proto bpf_bind_proto = {
 	.ret_type	= RET_PTR_TO_BTF_ID | PTR_MAYBE_NULL,
+	.arg1_type	= ARG_PTR_TO_CTX,
+	.arg2_type	= ARG_PTR_TO_MEM,
+	.arg3_type	= ARG_DONTCARE,
 };
 
 static const struct bpf_func_proto *
@@ -106,6 +114,67 @@ func TestParseProtos(t *testing.T) {
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("parseProtos = %v, want %v", got, want)
+	}
+}
+
+func TestParseProtoArgs(t *testing.T) {
+	got := parseProtoArgs(testC)
+	want := map[string]int{
+		"bpf_map_lookup_elem_proto":  1,
+		"bpf_tail_call_proto":        0,
+		"bpf_get_stack_proto":        1,
+		"bpf_get_stack_proto_raw_tp": 4,
+		"bpf_bind_proto":             2,
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("parseProtoArgs = %v, want %v", got, want)
+	}
+}
+
+// The argument count is the union over a helper's prototypes; an override
+// gives the count of an unjoined id and may raise but not lower a count.
+func TestResolveArgs(t *testing.T) {
+	hs, err := parseMapper(testUAPI)
+	if err != nil {
+		t.Fatal(err)
+	}
+	protoArgs, joins := parseProtoArgs(testC), parseJoins(testC)
+	if err := resolveArgs(hs, protoArgs, joins, nil); err == nil || !strings.Contains(err.Error(), "5 trace_printk: no prototype joined") {
+		t.Fatalf("resolveArgs without override: %v", err)
+	}
+	overrides, err := parseArgOverrides("5 5 # reads r3-r5\n2 3 # reads past its prototype\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := resolveArgs(hs, protoArgs, joins, overrides); err != nil {
+		t.Fatal(err)
+	}
+	var got []int
+	for _, h := range hs {
+		got = append(got, h.Args)
+	}
+	if want := []int{0, 0, 3, 4, 2, 5}; !reflect.DeepEqual(got, want) {
+		t.Errorf("args %v, want %v", got, want)
+	}
+	src, err := renderArgs(hs, "1.2.3")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d := compare(argsOnly(hs), parseArgsTable(string(src))); len(d) > 0 || len(parseArgsTable(string(src))) != 5 {
+		t.Errorf("rendered argument table differs: %v\n%s", d, src)
+	}
+	if strings.Contains(string(src), "// unspec") {
+		t.Error("id 0 has a row")
+	}
+
+	lower, _ := parseArgOverrides("3 3 # fewer than get_stack_proto_raw_tp\n")
+	if err := resolveArgs(hs, protoArgs, joins, lower); err == nil || !strings.Contains(err.Error(), "reads fewer registers") {
+		t.Errorf("lowering override: %v", err)
+	}
+	for _, bad := range []string{"2 6\n", "2\n", "2 scalar\n"} {
+		if _, err := parseArgOverrides(bad); err == nil {
+			t.Errorf("bad argument override %q accepted", bad)
+		}
 	}
 }
 

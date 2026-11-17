@@ -1,0 +1,9 @@
+# Argument counts, as "id count # reason", for helper ids that join no
+# prototype and for helpers that read more registers than their prototypes
+# declare. A count may only raise the prototypes' count. Each entry was
+# checked by hand in Linux 7.0.13 and 6.12.111.
+6 5 # trace_printk: returned by bpf_get_trace_printk_proto(); bpf_trace_printk_proto declares arg1-arg2, but BPF_CALL_5(bpf_trace_printk) reads arg1-arg3 of the format from r3-r5 (kernel/trace/bpf_trace.c)
+36 3 # probe_write_user: Linux 6.12 returns it through bpf_get_probe_write_proto(); bpf_probe_write_user_proto declares arg1-arg3 (kernel/trace/bpf_trace.c)
+55 4 # perf_event_read_value: returned by bpf_get_perf_event_read_value_proto(); bpf_perf_event_read_value_proto declares arg1-arg4 (kernel/trace/bpf_trace.c)
+176 3 # get_branch_snapshot: bpf_get_branch_snapshot_proto declares arg1-arg2, but BPF_CALL_3 returns -EINVAL for nonzero flags in r3, and the inlined form in do_misc_fixups tests r3 (kernel/trace/bpf_trace.c, kernel/bpf/verifier.c)
+177 4 # trace_vprintk: returned by bpf_get_trace_vprintk_proto(); bpf_trace_vprintk_proto declares arg1-arg4 (kernel/trace/bpf_trace.c)
