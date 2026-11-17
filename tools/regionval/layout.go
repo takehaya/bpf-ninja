@@ -273,7 +273,10 @@ func (l *Layout) extract(wrapped map[int]int) (map[int]int, error) {
 			g := span{lo, k[i]}
 			helperBefore := i > G.Start && l.O[i-1].IsHelperCall()
 			switch {
-			case i == G.Start && l.O[i].IsHelperCall():
+			case i == G.Start && (l.O[i].IsHelperCall() || l.kfuncCentre(G, i)):
+				// Code before a call that starts its function could be the
+				// prologue or the call's prelude; a kfunc centre is no
+				// different from a helper here.
 				return nil, fail("windows", "%q: prologue and prelude of original %d are not separable", F.Name, i)
 			case i == G.Start:
 				l.Windows = append(l.Windows, Window{Kind: "prologue", Func: F.Name, Start: g.start, End: g.end, Center: -1, Orig: i, Callee: -1})

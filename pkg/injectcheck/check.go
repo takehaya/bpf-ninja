@@ -14,6 +14,7 @@ import (
 	"strings"
 
 	"github.com/cilium/ebpf/asm"
+	"github.com/cilium/ebpf/btf"
 	"github.com/takehaya/bpf-ninja/internal/ctxflow"
 )
 
@@ -344,6 +345,7 @@ func Check(in, out asm.Instructions, c Certificate, premises Premises) (Counts, 
 	if err != nil {
 		return counts, err
 	}
+	funcStarts := originalFunctionStarts(in, premises.Frames)
 	for key, b := range targets {
 		if !b.call {
 			continue // the entry target's site is -1
@@ -357,6 +359,12 @@ func Check(in, out asm.Instructions, c Certificate, premises Premises) (Counts, 
 		}
 		if id := helperID(ins); callbackHelper(id) {
 			return counts, inputError(InputTarget, "call target at %d is a call of %v, which runs or registers a callback", key.site, id)
+		}
+		if id := helperID(ins); b.argReg != 0 && id != asm.FnUnspec && helperReads(int64(id))&(1<<b.argReg) == 0 {
+			return counts, inputError(InputTarget, "call target at %d passes r%d, which %v does not read", key.site, b.argReg, id)
+		}
+		if reason := callTargetPosition(in, funcStarts, key.site); reason != "" {
+			return counts, inputError(InputTarget, "call target at %d: %s", key.site, reason)
 		}
 	}
 	for j, owner := range owners {
@@ -808,6 +816,47 @@ func supportedHelper(ins asm.Instruction) bool {
 	}
 	return false
 }
+// originalFunctionStarts are the original indices that start a function:
+// 0, the start of every trusted frame floor, the target of every function
+// reference, and every instruction carrying BTF function info.
+func originalFunctionStarts(in asm.Instructions, frames []FrameFloor) map[int]bool {
+	starts := map[int]bool{0: true}
+	for _, frame := range frames {
+		starts[frame.Start] = true
+	}
+	pcs, index := slots(in)
+	for i := range in {
+		if in[i].IsFunctionReference() {
+			if t, err := target(in, pcs, index, i); err == nil {
+				starts[t] = true
+			}
+		}
+		if btf.FuncMetadata(&in[i]) != nil {
+			starts[i] = true
+		}
+	}
+	return starts
+}
+
+// callTargetPosition gives the reason a call target cannot be at original
+// index site by its position, the transformer's reasons for not planning
+// one there: an original call right before or after it, whose run of
+// inserted code the validators could not tell from its own, or the start of
+// its function, where code inserted before the call cannot be told from the
+// function's prologue.
+func callTargetPosition(in asm.Instructions, starts map[int]bool, site int) string {
+	isCall := func(j int) bool {
+		return j >= 0 && j < len(in) && in[j].OpCode.Class().IsJump() && in[j].OpCode.JumpOp() == asm.Call
+	}
+	switch {
+	case isCall(site-1) || isCall(site+1):
+		return "the instruction before or after the call is a call"
+	case starts[site]:
+		return "the call is the first instruction of its function"
+	}
+	return ""
+}
+
 // callbackHelper reports the helpers that take a callback (ARG_PTR_TO_FUNC
 // in Linux 6.12 and 7.0): a hook after one is outside the proof's premise S0.
 // It covers helpers only. Kernel functions that take a callback, take a lock

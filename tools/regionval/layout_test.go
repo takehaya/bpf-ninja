@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/takehaya/bpf-ninja/tools/regionval/core"
@@ -582,6 +583,70 @@ func TestKfuncCutting(t *testing.T) {
 		}
 		if r := runFile(t, c.p.capture(t)); !r.Validated {
 			t.Errorf("%s: %+v", c.name, r)
+		}
+	}
+}
+
+// A call centre at the first instruction of a function: code inserted
+// before it could be the function's prologue or the call's prelude, so a
+// helper or a kfunc centre there is refused with stage windows. A kfunc
+// that starts its function with nothing inserted before it, or that is
+// next to another call and so centres no site, keeps its cut.
+func TestCallAtFunctionStart(t *testing.T) {
+	post := []a{stx(-16, 0), ldx(1, -8), movw(2, 1), mov(3, 0), call("hook"), ldx(0, -16)}
+	hook := []a{movi(0, 0).begins("hook"), exit()}
+	atMain := func(c a) pair {
+		return pair{
+			o:     []a{c.begins("main"), exit()},
+			t:     slices.Concat([]a{stx(-8, 1).begins("main"), c}, post, []a{exit()}, hook),
+			kappa: []int{1, 8}, floor: 0,
+		}
+	}
+	argStoreAtSub := func(c a) pair {
+		return pair{
+			o: []a{mov(6, 1).begins("main"), call("sub"), exit(), c.begins("sub"), exit()},
+			t: []a{stx(-8, 1).begins("main"), mov(6, 1), call("sub"), exit(),
+				stx(-24, 2).begins("sub"), c, exit()},
+			kappa: []int{1, 2, 3, 5, 6}, floor: -16,
+		}
+	}
+	for _, c := range []struct {
+		name string
+		p    pair
+	}{
+		{"helper at main", atMain(helper(5))},
+		{"kfunc at main", atMain(kfunc(60001, 0))},
+		{"helper at sub after an argument store", argStoreAtSub(helper(5))},
+		{"kfunc at sub after an argument store", argStoreAtSub(kfunc(60001, 0))},
+	} {
+		_, err := Analyze(c.p.capture(t))
+		var se *StructError
+		if !errors.As(err, &se) || se.Stage != "windows" || !strings.Contains(err.Error(), "not separable") {
+			t.Errorf("%s: got %v, want stage windows, not separable", c.name, err)
+		}
+	}
+	for _, c := range []struct {
+		name string
+		p    pair
+		want []win
+	}{
+		{"kfunc starts sub, nothing inserted", pair{
+			o:     []a{mov(6, 1).begins("main"), call("sub"), exit(), kfunc(60001, 0).begins("sub"), exit()},
+			t:     []a{mov(6, 1).begins("main"), call("sub"), exit(), kfunc(60001, 0).begins("sub"), exit()},
+			kappa: []int{0, 1, 2, 3, 4}, floor: 0,
+		}, nil},
+		{"kfunc at main before a helper", pair{
+			o:     []a{kfunc(60001, 0).begins("main"), helper(5), exit()},
+			t:     slices.Concat([]a{stx(-8, 1).begins("main"), kfunc(60001, 0), helper(5)}, post, []a{exit()}, hook),
+			kappa: []int{1, 2, 9}, floor: 0,
+		}, []win{{"prologue", 0, 1, -1}, {"site", 2, 9, 2}, {"hook", 10, 12, -1}}},
+	} {
+		l, err := Analyze(c.p.capture(t))
+		if err != nil {
+			t.Fatalf("%s: %v", c.name, err)
+		}
+		if got := windows(l); !slices.Equal(got, c.want) {
+			t.Errorf("%s: windows %v, want %v", c.name, got, c.want)
 		}
 	}
 }
