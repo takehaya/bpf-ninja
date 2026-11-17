@@ -2194,7 +2194,7 @@ func extractRaw(r *remote, attr []byte, spec *btf.Spec) (inject.RawProgram, erro
 	p := inject.RawProgram{Type: ebpf.ProgramType(u32(attr, 0)), BTF: spec, Maps: make(map[int32]inject.RawMap)}
 	insns, err := readMemory(r.pid, u64(attr, 8), uint64(u32(attr, 4))*8)
 	if err != nil {
-		return p, err
+		return p, traceeError(err)
 	}
 	if fdArray(attr) != 0 {
 		if err := fdArrayMapIndex(insns); err != nil {
@@ -2207,11 +2207,11 @@ func extractRaw(r *remote, attr []byte, spec *btf.Spec) (inject.RawProgram, erro
 	}
 	p.FuncInfo, err = readMemory(r.pid, u64(attr, 80), uint64(u32(attr, 88))*8)
 	if err != nil {
-		return p, err
+		return p, traceeError(err)
 	}
 	p.LineInfo, err = readMemory(r.pid, u64(attr, 96), uint64(u32(attr, 104))*16)
 	if err != nil {
-		return p, err
+		return p, traceeError(err)
 	}
 	for _, ins := range p.Instructions {
 		if !ins.IsLoadFromMap() {

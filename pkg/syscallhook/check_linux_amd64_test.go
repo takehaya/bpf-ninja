@@ -304,6 +304,18 @@ func TestStackErrorClass(t *testing.T) {
 	_, funcInfoCount := loadedFunctions(func(uint32) ([]byte, error) {
 		return nil, errors.New("tracee program fd 3 has invalid func_info count 0")
 	}, 3, nil)
+	// The loader's instructions, func_info and line_info, read from a pid
+	// this process does not trace.
+	extract := func(cntOff, addrOff int) error {
+		attr := make([]byte, progAttrSize)
+		put32(attr, cntOff, 1)
+		put64(attr, addrOff, 0x1000)
+		_, err := extractRaw(&remote{pid: os.Getpid()}, attr, nil)
+		if err == nil {
+			t.Fatalf("extractRaw read %d at an untraced pid", addrOff)
+		}
+		return err
+	}
 	offload := make([]byte, 128)
 	put32(offload, 64, 3)
 	const refusedStats = "verification time 6 usec\nstack depth 0\nprocessed 1 insns (limit 1000000) max_states_per_insn 0 total_states 0 peak_states 0 mark_read 0\n"
@@ -363,6 +375,9 @@ func TestStackErrorClass(t *testing.T) {
 		{"panic", guard("parsing verifier stats", func() error { panic("boom") }), stepOriginal, "analysis"},
 		{"indirect-jump", fmt.Errorf("%w at instruction 3 is unsupported", errIndirectJump), stepOriginal, "analysis"},
 		{"reading-log", traceeError(fmt.Errorf("reading verifier stats: %w", unix.ESRCH)), stepOriginal, "stack"},
+		{"reading-insns", extract(4, 8), stepOriginal, "stack"},
+		{"reading-func-info", extract(88, 80), stepOriginal, "stack"},
+		{"reading-line-info", extract(104, 96), stepOriginal, "stack"},
 	} {
 		step, cause := failedLoad(loadFailure{err: fmt.Errorf("stack depth unavailable: %w", tc.stackErr), stackErr: tc.stackErr}, false, mapRule)
 		if step != tc.step || cause != tc.cause {
