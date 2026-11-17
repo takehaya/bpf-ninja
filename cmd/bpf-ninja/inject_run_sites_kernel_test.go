@@ -337,14 +337,21 @@ func TestBpfSitesCaptureQueue(t *testing.T) {
 	t.Setenv("BPF_NINJA_INJECT_CONFIG", "")
 	dir := t.TempDir()
 	child := []string{"--", os.Args[0], "-test.run=^TestBpfSitesCaptureQueue$"}
+	// The loader must load the program and run it (XDP_PASS): a loader
+	// whose load failed writes its error and captures nothing.
 	run := func(name string, flags ...string) {
 		t.Helper()
 		t.Setenv("BPF_NINJA_SITES_CHILD", filepath.Join(dir, name+".out"))
 		if err := newRootCommand().Run(context.Background(), append(append([]string{"bpf-ninja", "inject-run"}, flags...), child...)); err != nil {
 			t.Fatalf("%s: %v", name, err)
 		}
-		if _, err := os.Stat(filepath.Join(dir, name+".out")); err != nil {
+		data, err := os.ReadFile(filepath.Join(dir, name+".out"))
+		if err != nil {
 			t.Fatalf("%s: the loader did not finish: %v", name, err)
+		}
+		var out sitesResult
+		if err := json.Unmarshal(data, &out); err != nil || out.Error != "" || out.Action != 2 {
+			t.Fatalf("%s: loader result %s: %v", name, data, err)
 		}
 	}
 	sites := filepath.Join(dir, "sites.json")
