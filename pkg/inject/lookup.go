@@ -671,15 +671,25 @@ func discoverSites(insns asm.Instructions, typ ebpf.ProgramType, resolve lookupM
 			op = ""
 		}
 		var row *CallRow
+		// unhooked is the reason a kernel-function call the rule may name
+		// gets no hook: it cannot be named, or the rule names it and its
+		// prototype gives no row. Such a site is listed as skipped.
+		var unhooked, unhookedName string
 		if op == "" && len(req.Calls) != 0 && (ins.IsBuiltinCall() || ins.IsKfuncCall()) {
-			r, name, _ := callee(ins, req.Kernel, req.Modules)
+			r, name, named := callee(ins, req.Kernel, req.Modules)
+			var reason string
 			if r == nil && ins.IsBuiltinCall() {
 				r, _ = helperCall(asm.BuiltinFunc(ins.Constant))
-			} else if r == nil && name != "" {
-				r, _ = kfuncRow(name, kfuncProto(ins, req.Kernel, req.Modules))
+			} else if r == nil && named {
+				r, reason = kfuncRow(name, kfuncProto(ins, req.Kernel, req.Modules))
 			}
-			if r != nil && slices.Contains(req.Calls, r.Name) {
+			switch {
+			case r != nil && slices.Contains(req.Calls, r.Name):
 				op, row = HookCall, r
+			case ins.IsKfuncCall() && !named:
+				op, unhooked, unhookedName = HookCall, "call: "+unnamedKfuncReason, name
+			case ins.IsKfuncCall() && r == nil && slices.Contains(req.Calls, name):
+				op, unhooked, unhookedName = HookCall, "call: "+reason, name
 			}
 		}
 		if op != "" {
@@ -687,6 +697,8 @@ func discoverSites(insns asm.Instructions, typ ebpf.ProgramType, resolve lookupM
 				SitePC: uint32(pc), InstructionIndex: it.Index}
 			if row != nil {
 				site.MapName, site.Call = "", row.Name
+			} else if unhooked != "" {
+				site.MapName, site.Call = "", unhookedName
 			} else if m != nil {
 				site.KeyTypeName, site.ValueTypeName = lookupTypeName(m.Key), lookupTypeName(m.Value)
 			}
@@ -745,6 +757,9 @@ func discoverSites(insns asm.Instructions, typ ebpf.ProgramType, resolve lookupM
 				case row.ArgReg != 0:
 					argOwn, argSize = ownStack[row.ArgReg], uint32(consts[row.SizeReg])
 				}
+			}
+			if unhooked != "" {
+				site.Reason = unhooked
 			}
 			if site.Reason == "" && row == nil {
 				switch {

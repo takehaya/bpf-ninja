@@ -225,10 +225,10 @@ func SupportedCalls() []string {
 }
 
 // callee names the callee of a helper or kfunc call and returns its row, nil when the table has none.
-// A helper is found by id. A kfunc is named by ins.Reference() when set (ELF path), else, when
-// by the FUNC whose BTF id is ins.Constant (raw path) in kernel when ins.Offset == 0, else in
+// A helper is found by id. A kfunc is named by ins.Reference() when set (ELF path), else by the
+// FUNC whose BTF id is ins.Constant (raw path) in kernel when ins.Offset == 0, else in
 // modules[ins.Offset], the module BTF of that fd_array offset.
-// named is false only for a kfunc call that cannot be named.
+// named is false only for a kfunc call that cannot be named; name is then unnamedKfuncName.
 func callee(ins *asm.Instruction, kernel *btf.Spec, modules map[int16]*btf.Spec) (row *CallRow, name string, named bool) {
 	switch {
 	case ins.IsBuiltinCall():
@@ -246,12 +246,12 @@ func callee(ins *asm.Instruction, kernel *btf.Spec, modules map[int16]*btf.Spec)
 				spec = modules[ins.Offset] // a module kfunc: off indexes the load's fd_array of module BTF fds
 			}
 			if spec == nil {
-				return nil, "", false
+				return nil, unnamedKfuncName(ins), false
 			}
 			typ, err := spec.TypeByID(btf.TypeID(ins.Constant))
 			fn, ok := typ.(*btf.Func)
 			if err != nil || !ok {
-				return nil, "", false
+				return nil, unnamedKfuncName(ins), false
 			}
 			name = fn.Name
 		}
@@ -263,6 +263,17 @@ func callee(ins *asm.Instruction, kernel *btf.Spec, modules map[int16]*btf.Spec)
 		return nil, name, true
 	}
 	return nil, "", true
+}
+
+// unnamedKfuncReason is the reason a kernel-function call that cannot be
+// named gets no hook.
+const unnamedKfuncReason = "a kernel-function call that cannot be named"
+
+// unnamedKfuncName stands for the callee of a kernel-function call that
+// cannot be named: kfunc_OFF_ID from the call's fd_array offset and BTF id, so
+// that calls of different kernel functions stay apart in a listing.
+func unnamedKfuncName(ins *asm.Instruction) string {
+	return fmt.Sprintf("kfunc_%d_%d", ins.Offset, ins.Constant)
 }
 
 // callArgType returns the pointee of the hook's arg parameter for a site whose size register holds n,

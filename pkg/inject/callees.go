@@ -157,7 +157,7 @@ func calleeOf(ins *asm.Instruction, kernel *btf.Spec, modules map[int16]*btf.Spe
 	}
 	switch {
 	case !named:
-		c.Reason = "a kernel-function call that cannot be named"
+		c.Reason = unnamedKfuncReason
 	case row == nil:
 		_, c.Reason = kfuncRow(c.Name, kfuncProto(ins, kernel, modules))
 	}

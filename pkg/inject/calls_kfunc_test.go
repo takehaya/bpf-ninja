@@ -220,6 +220,30 @@ func TestDiscoverKfuncCallees(t *testing.T) {
 	}
 }
 
+// Without kernel BTF two different kernel functions are listed apart, each
+// under its stand-in name and with labels of its own.
+func TestDiscoverUnnamedKfuncs(t *testing.T) {
+	insns := asm.Instructions{
+		btf.WithFuncMetadata(asm.Mov.Reg(asm.R6, asm.R1).WithSymbol("p").WithSource(asm.Comment("entry")), xdpFunc("p")),
+		kfuncCall(7), asm.Mov.Imm(asm.R0, 0), kfuncCall(9), asm.Mov.Imm(asm.R0, 0), kfuncCall(7),
+		asm.Mov.Imm(asm.R0, 2), asm.Return(),
+	}
+	d, err := DiscoverCallSitesRaw(rawOf(t, insns), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(d.Callees) != 2 || d.Callees[0].Name != "kfunc_0_7" || d.Callees[1].Name != "kfunc_0_9" || len(d.Callees[0].Sites) != 2 ||
+		d.Callees[0].Reason != "a kernel-function call that cannot be named" {
+		t.Fatalf("callees %+v", d.Callees)
+	}
+	if len(d.Sites) != 3 || d.Sites[0].Call != "kfunc_0_7" || d.Sites[1].Call != "kfunc_0_9" || d.Sites[0].Reason == "" {
+		t.Fatalf("sites %+v", d.Sites)
+	}
+	if got := []string{d.Labels[1], d.Labels[3], d.Labels[5]}; !slices.Equal(got, []string{"kfunc_0_7@p+1", "kfunc_0_9@p+3", "kfunc_0_7@p+5"}) {
+		t.Fatalf("labels %v", got)
+	}
+}
+
 // A load whose original program calls a denied helper or kernel function
 // anywhere names those callees once each; one without names none.
 func TestPremiseCalls(t *testing.T) {

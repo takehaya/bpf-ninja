@@ -214,16 +214,18 @@ func TestCallNotBlockedBySpinLock(t *testing.T) {
 
 // Neither an unnameable kfunc nor bpf_preempt_disable keeps the program's
 // other call sites from their hooks: a site the kernel refuses inside a
-// preemption-disabled region is left to the load retry.
+// preemption-disabled region is left to the load retry. The unnameable call
+// is listed as skipped.
 func TestCallNotBlockedByKfuncs(t *testing.T) {
 	for _, tc := range []struct {
-		name   string
-		call   asm.Instruction
-		kernel *btf.Spec
+		name    string
+		call    asm.Instruction
+		kernel  *btf.Spec
+		skipped int
 	}{
-		{"nil kernel", kfuncCall(1), nil},
-		{"missing module", asm.Instruction{OpCode: asm.OpCode(asm.JumpClass).SetJumpOp(asm.Call), Src: asm.PseudoKfuncCall, Constant: 1, Offset: 1}, testKernelSpec(t)},
-		{"preempt disable", kfuncCall(-1).WithReference("bpf_preempt_disable"), nil},
+		{"nil kernel", kfuncCall(1), nil, 1},
+		{"missing module", asm.Instruction{OpCode: asm.OpCode(asm.JumpClass).SetJumpOp(asm.Call), Src: asm.PseudoKfuncCall, Constant: 1, Offset: 1}, testKernelSpec(t), 1},
+		{"preempt disable", kfuncCall(-1).WithReference("bpf_preempt_disable"), nil, 0},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			spec := scalarFixture()
@@ -235,7 +237,7 @@ func TestCallNotBlockedByKfuncs(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if len(plan.hooks) != 3 || len(plan.skipped) != 0 {
+			if len(plan.hooks) != 3 || len(plan.skipped) != tc.skipped {
 				t.Fatalf("hooks %+v skipped %+v", plan.hooks, plan.skipped)
 			}
 		})
@@ -446,12 +448,48 @@ func TestCallKfuncRaw(t *testing.T) {
 	if !slices.Equal(params, []string{"ctx", "site", "arg", "ret"}) || fn.ParamTags[2][0] != "arg:untrusted" || fn.ParamTags[3][0] != "arg:untrusted" {
 		t.Errorf("params %v tags %v", params, fn.ParamTags)
 	}
-	// Without kernel BTF the kfunc cannot be named, so it is not a site.
+	// Without kernel BTF the kfuncs cannot be named: their sites are skipped
+	// with that reason, each under its own stand-in name.
 	req.Kernel = nil
 	spec = ctFixture(ebpf.XDP, func(name string) asm.Instruction { return testKfunc(t, kernel, name) }, 0, 8101, false)
 	plan, err = transformLookup(spec, req)
-	if err == nil || !strings.Contains(err.Error(), "no call site is instrumented (0 skipped)") {
+	if err == nil || !strings.Contains(err.Error(), "no call site is instrumented (2 skipped)") {
 		t.Fatalf("err %v skipped %+v", err, plan.skipped)
+	}
+	checkUnnamedSkipped(t, plan.skipped, kernel)
+	// With another hook the rule loads, and the skipped sites are still listed.
+	req.Entry = true
+	spec = ctFixture(ebpf.XDP, func(name string) asm.Instruction { return testKfunc(t, kernel, name) }, 0, 8101, false)
+	if plan, err = transformLookup(spec, req); err != nil || len(plan.hooks) != 1 || plan.hooks[0].Kind != HookEntry {
+		t.Fatalf("err %v hooks %+v", err, plan.hooks)
+	}
+	checkUnnamedSkipped(t, plan.skipped, kernel)
+}
+
+// checkUnnamedSkipped checks that skipped lists the two unnamed kfunc calls
+// of ctFixture, the lookup and the release, apart.
+func checkUnnamedSkipped(t *testing.T, skipped []LookupSite, kernel *btf.Spec) {
+	t.Helper()
+	lookup, release := testKfunc(t, kernel, "bpf_xdp_ct_lookup"), testKfunc(t, kernel, "bpf_ct_release")
+	if len(skipped) != 2 || skipped[0].Op != HookCall || skipped[0].Reason != "call: a kernel-function call that cannot be named" ||
+		skipped[0].Call != fmt.Sprintf("kfunc_0_%d", lookup.Constant) || skipped[1].Call != fmt.Sprintf("kfunc_0_%d", release.Constant) ||
+		skipped[1].Reason != skipped[0].Reason {
+		t.Fatalf("skipped %+v", skipped)
+	}
+}
+
+// A kfunc the rule names whose prototype cannot be read (ELF path, no kernel
+// BTF) is listed as skipped with that reason.
+func TestCallKfuncNoProtoSkipped(t *testing.T) {
+	insns := asm.Instructions{asm.Mov.Imm(asm.R6, 1), asm.FnKtimeGetNs.Call(), asm.Mov.Imm(asm.R7, 1), kfuncCall(0).WithReference("bpf_some_kfunc")}
+	insns = append(insns, outStore(0, asm.R0)...)
+	spec := callFixtureSpec(ebpf.XDP, append(insns, asm.Mov.Imm(asm.R0, 2), asm.Return()))
+	plan, err := transformLookup(spec, callReq("bpf_some_kfunc", "bpf_ktime_get_ns"))
+	if err != nil || len(plan.hooks) != 1 || plan.hooks[0].Call != "bpf_ktime_get_ns" {
+		t.Fatalf("err %v hooks %+v", err, plan.hooks)
+	}
+	if len(plan.skipped) != 1 || plan.skipped[0].Call != "bpf_some_kfunc" || plan.skipped[0].Reason != "call: its prototype is not in the kernel BTF at hand" {
+		t.Fatalf("skipped %+v", plan.skipped)
 	}
 }
 
