@@ -271,6 +271,12 @@ func goldenCases() []goldenCase {
 	add("calls/fib-frames", xdp(fibSubprogFixture), callReq(), callsOf("bpf_fib_lookup"), frames(16, map[string]int16{"p": -8, "fib_sub": -64}))
 	add("refused/calls-dispatch", scalarFixture, callReq(), callsOf("bpf_jiffies64"), dispatch)
 	add("calls/fastcall", fastcallFixture, callReq(), callsOf("bpf_get_smp_processor_id"), floor(-8))
+
+	// Result-only hooks of helpers without a row, and a program with a locked region.
+	add("calls/result-only-scalar", scalarAllFixture, callReq(), callsOf("bpf_get_numa_node_id", "bpf_redirect"))
+	add("calls/result-only-pointer", ringbufFixture(true), callReq(), callsOf("bpf_ringbuf_reserve"))
+	add("calls/result-only-pointer-static", ringbufFixture(true), callReq(), callsOf("bpf_ringbuf_reserve"), static)
+	add("calls/spin-lock", spinLockFixture, callReq(), callsOf("bpf_get_numa_node_id", "bpf_ktime_get_ns"))
 	return cases
 }
 
