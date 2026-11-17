@@ -23,6 +23,7 @@ func TestHelperArgsMatchChecker(t *testing.T) {
 		t.Fatal(err)
 	}
 	ids := map[string]int32{} // FnX -> id
+	rows := regexp.MustCompile(`(?m)^\s*\d+:`).FindAllIndex(gen, -1)
 	for _, m := range regexp.MustCompile(`(?m)^\s*(\d+):\s*\d,\s*// (\w+)$`).FindAllStringSubmatch(string(gen), -1) {
 		id, _ := strconv.Atoi(m[1])
 		name := "Fn"
@@ -31,40 +32,60 @@ func TestHelperArgsMatchChecker(t *testing.T) {
 		}
 		ids[name] = int32(id)
 	}
-	if len(ids) != 211 || len(helperArgs) != 211 {
-		t.Fatalf("%d named rows and %d entries in helperArgs, want 211", len(ids), len(helperArgs))
+	if len(rows) != 211 || len(ids) != 211 || len(helperArgs) != 211 {
+		t.Fatalf("%d rows, %d of them parsed, and %d entries in helperArgs, want 211", len(rows), len(ids), len(helperArgs))
 	}
 
 	f, err := parser.ParseFile(token.NewFileSet(), "../../../pkg/injectcheck/helpers.go", nil, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
+	var fn *ast.FuncDecl
+	for _, d := range f.Decls {
+		if d, ok := d.(*ast.FuncDecl); ok && d.Name.Name == "helperReads" {
+			fn = d
+		}
+	}
+	if fn == nil {
+		t.Fatal("pkg/injectcheck/helpers.go has no func helperReads")
+	}
 	reads := map[int32]int{} // id -> registers read, r1 to rN
-	def := -1
-	ast.Inspect(f, func(n ast.Node) bool {
+	def, names := -1, 0
+	ast.Inspect(fn.Body, func(n ast.Node) bool {
 		c, ok := n.(*ast.CaseClause)
 		if !ok {
 			return true
 		}
-		if len(c.Body) != 1 {
-			t.Fatalf("case at %v: want one return", c.Pos())
+		var ret *ast.ReturnStmt
+		if len(c.Body) == 1 {
+			ret, _ = c.Body[0].(*ast.ReturnStmt)
 		}
-		k := countRegs(t, c.Body[0].(*ast.ReturnStmt).Results[0])
+		if ret == nil || len(ret.Results) != 1 {
+			t.Fatalf("case at %v: want one return of one value", c.Pos())
+		}
+		k := countRegs(t, ret.Results[0])
 		if c.List == nil {
 			def = k
 		}
 		for _, e := range c.List {
-			name := e.(*ast.SelectorExpr).Sel.Name
-			id, ok := ids[name]
+			sel, ok := e.(*ast.SelectorExpr)
 			if !ok {
-				t.Fatalf("helperReads names %s, which helperargs_gen.go has no row for", name)
+				t.Fatalf("case at %v: want asm.FnX, got %T", c.Pos(), e)
+			}
+			id, ok := ids[sel.Sel.Name]
+			if !ok {
+				t.Fatalf("helperReads names %s, which helperargs_gen.go has no row for", sel.Sel.Name)
+			}
+			if _, dup := reads[id]; dup {
+				t.Fatalf("helperReads names %s twice", sel.Sel.Name)
 			}
 			reads[id] = k
+			names++
 		}
 		return false
 	})
-	if def != 5 || len(reads) == 0 {
-		t.Fatalf("helperReads: default reads %d registers, %d cases; want 5 and a switch", def, len(reads))
+	if def != 5 || len(reads) == 0 || names != len(reads) {
+		t.Fatalf("helperReads: default reads %d registers, %d case names, %d ids; want 5 and a switch", def, names, len(reads))
 	}
 	for id := int32(0); id <= 211; id++ {
 		got, ok := reads[id]
