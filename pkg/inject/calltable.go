@@ -20,6 +20,7 @@ type CallRow struct {
 	ArgType string          // struct name looked up for the pointee
 	Writes  bool            // the callee's own argument check is a write on every supported kernel
 	RetSize uint32          // byte size of a kernel function's integer result narrower than 8 bytes; 0: 8
+	RetSigned bool          // that narrow result is a signed integer or enum
 }
 
 // callTable lists the callees LookupRequest.Calls may name. A row is never
@@ -115,7 +116,8 @@ func namedCall(name string, kernel *btf.Spec, modules map[int16]*btf.Spec) (*Cal
 
 // kfuncRow returns the row a call of the kernel function name without a row
 // gets when a rule names it: a result-only row, RetPtr for any pointer result
-// (void * included) and RetSize for an integer or enum narrower than 8 bytes.
+// (void * included) and RetSize for an integer or enum narrower than 8 bytes,
+// with RetSigned when it is signed.
 // Otherwise the row is nil and reason says why: the deny list, a parameter
 // that points to a function prototype (the verifier's callback test), no
 // result, or a prototype that cannot be read (proto nil).
@@ -134,13 +136,14 @@ func kfuncRow(name string, proto *btf.FuncProto) (row *CallRow, reason string) {
 		}
 	}
 	var size uint32
+	var signed bool
 	switch ret := btf.UnderlyingType(proto.Return).(type) {
 	case *btf.Pointer:
 		return &CallRow{Name: name, RetPtr: true}, ""
 	case *btf.Int:
-		size = ret.Size
+		size, signed = ret.Size, ret.Encoding == btf.Signed
 	case *btf.Enum:
-		size = ret.Size
+		size, signed = ret.Size, ret.Signed
 	case *btf.Void, nil:
 		return nil, "returns nothing"
 	default:
@@ -148,7 +151,7 @@ func kfuncRow(name string, proto *btf.FuncProto) (row *CallRow, reason string) {
 	}
 	row = &CallRow{Name: name}
 	if size < 8 {
-		row.RetSize = size
+		row.RetSize, row.RetSigned = size, signed
 	}
 	return row, ""
 }

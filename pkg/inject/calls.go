@@ -89,7 +89,7 @@ func selectCalls(sites []discoveredLookup, req LookupRequest, types *btf.Spec) (
 			if group.argReason != "" {
 				// The hook takes one argument size, so every site of the callee
 				// falls back to the result-only hook a callee without a row gets.
-				group.call = &CallRow{Name: row.Name, Helper: row.Helper, RetPtr: row.RetPtr, RetSize: row.RetSize}
+				group.call = &CallRow{Name: row.Name, Helper: row.Helper, RetPtr: row.RetPtr, RetSize: row.RetSize, RetSigned: row.RetSigned}
 				kept = append(kept, group)
 				continue
 			}
@@ -120,6 +120,9 @@ func callHook(group lookupGroup, ctx btf.Type, req LookupRequest) (asm.Instructi
 		if row.RetSize != 0 {
 			fn := btf.FuncMetadata(&hook[0])
 			fn.Tags = append(fn.Tags, hookabi.SizeTag("ret", row.RetSize))
+			if row.RetSigned {
+				fn.Tags = append(fn.Tags, hookabi.RetSignedTag)
+			}
 		}
 		return hook, plan
 	}

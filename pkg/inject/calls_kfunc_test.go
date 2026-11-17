@@ -51,10 +51,11 @@ func TestKfuncRow(t *testing.T) {
 		name    string
 		ptr     bool
 		size    uint32
+		signed  bool
 		reason  string
 		noFound bool
 	}{
-		{name: "k_int", size: 4},
+		{name: "k_int", size: 4, signed: true},
 		{name: "k_u64"},
 		{name: "k_bool", size: 1},
 		{name: "k_enum", size: 4},
@@ -71,7 +72,7 @@ func TestKfuncRow(t *testing.T) {
 			t.Errorf("%s: row %+v reason %q, want neither", tc.name, row, reason)
 		case tc.reason != "" && (row != nil || reason != tc.reason):
 			t.Errorf("%s: row %+v reason %q, want %q", tc.name, row, reason, tc.reason)
-		case tc.reason == "" && !tc.noFound && (row == nil || row.Name != tc.name || row.Helper != 0 || row.ArgReg != 0 || row.RetPtr != tc.ptr || row.RetSize != tc.size):
+		case tc.reason == "" && !tc.noFound && (row == nil || row.Name != tc.name || row.Helper != 0 || row.ArgReg != 0 || row.RetPtr != tc.ptr || row.RetSize != tc.size || row.RetSigned != tc.signed):
 			t.Errorf("%s: row %+v reason %q, want RetPtr %v RetSize %d", tc.name, row, reason, tc.ptr, tc.size)
 		}
 	}
@@ -148,7 +149,8 @@ func TestCallKfuncResultOnly(t *testing.T) {
 		h := byCall[name]
 		fn, params := callHookFn(t, insns, h.Name)
 		if h.RetPtr || h.Untrusted || h.RetSize != size || !slices.Equal(params, []string{"ctx", "site", "ret"}) ||
-			!slices.Contains(fn.Tags, hookabi.SizeTag("ret", size)) || hookabi.SizeTags(fn.Tags)["ret"] != size {
+			!slices.Contains(fn.Tags, hookabi.SizeTag("ret", size)) || hookabi.SizeTags(fn.Tags)["ret"] != size ||
+			slices.Contains(fn.Tags, hookabi.RetSignedTag) != (name == "k_int") {
 			t.Errorf("%s: hook %+v params %v tags %v", name, h, params, fn.Tags)
 		}
 	}

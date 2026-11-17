@@ -147,8 +147,7 @@ The hook receives the call's result as `ret` and, for a callee with a memory arg
 - Such a name is refused with `Calls name "NAME" cannot be hooked: REASON`. An empty name or a name given twice is a configuration error.
 - A name that is neither a helper nor a kernel function can be told apart only with the kernel's BTF, so the configuration check accepts it and the load refuses it: `Calls name "NAME" is not supported: it is neither a helper nor a kernel function of the running kernel or of a module BTF the program passes`. The program then loads without hooks, or is refused with `--fail-closed`.
 - A kernel function's integer result narrower than 8 bytes fills only the low bytes of `ret`; the bytes above it are not part of the result. The hooks file gives the width as `ret_size`, and a capture records only those bytes.
-  A filter compares all 64 bits of `ret`, so write such a result as an unsigned number of its width: a failing `int` result, -22, is `--arg-filter 'ret==0xffffffea'` (or `ret==4294967274`), not `ret==-22`, which compares with 0xffffffffffffffea.
-  On x86-64 the bytes above a 32-bit result reached the hook as zero; for a 1- or 2-byte result they are not guaranteed, so a filter on such a result may not match.
+  A filter compares only those bytes, sign-extended when the result is signed, so a failing `int` result is `--arg-filter 'ret==-22'`; an unsigned result takes an unsigned number of its width. A capture writes a signed result as a signed decimal (`ret=-22`).
   The [lookups file](#lookups-file) lists every callee of a program in `callees`; a callee that cannot be hooked has a `reason`.
 - A name the program never calls adds no hook.
 - `calls` works on its own and with `map`, `auto`, `entry` and `tail_calls`, but not with `dispatch`.

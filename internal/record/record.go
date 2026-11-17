@@ -110,6 +110,7 @@ type Scalar struct {
 	Name       string
 	ParamIndex int // -1 when the hook has no such argument
 	Size       uint32
+	Signed     bool // a ret narrower than 8 bytes is a signed result
 }
 
 // Present reports whether the hook has the argument.

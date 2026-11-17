@@ -155,7 +155,7 @@ func buildEntry(params []attach.FuncParamInfo, maxBytes int) (*record.Layout, er
 			// reach the capture file. A result narrower than 8 bytes
 			// (RetSize) is recorded masked to its width.
 			if p.Kind == "" && p.Size == 8 {
-				l.Status = record.Scalar{Name: "ret", ParamIndex: p.Index, Size: cmp.Or(p.RetSize, 8)}
+				l.Status = record.Scalar{Name: "ret", ParamIndex: p.Index, Size: cmp.Or(p.RetSize, 8), Signed: p.RetSigned}
 			}
 		case "key", "arg":
 			// A call hook's arg takes the key's slot; it never has a key.

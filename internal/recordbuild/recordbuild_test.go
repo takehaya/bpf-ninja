@@ -3,6 +3,7 @@ package recordbuild_test
 import (
 	"bytes"
 	"encoding/binary"
+	"strings"
 	"testing"
 
 	"github.com/cilium/ebpf/btf"
@@ -254,5 +255,32 @@ func TestEntryNarrowRet(t *testing.T) {
 	}
 	if l = entry(t, callHook(t, nil, btf.FuncParam{Name: "ret", Type: u64}), 256); l.Status.Size != 8 {
 		t.Fatalf("status without the tag %+v", l.Status)
+	}
+}
+
+// narrowRetComment renders an entry block of a call hook with tags whose
+// BPF side stored the 4-byte result ret over a zeroed slot.
+func narrowRetComment(t *testing.T, tags []string, ret int32) string {
+	t.Helper()
+	l := entry(t, callHook(t, tags, btf.FuncParam{Name: "ret", Type: u64}), 256)
+	b := make([]byte, l.Size())
+	binary.NativeEndian.PutUint16(b[record.OffLen:], uint16(len(b)))
+	b[record.OffVersion], b[record.OffKind] = record.BlockVersion, l.Kind()
+	binary.NativeEndian.PutUint32(b[record.OffValid:], record.ValidSite|record.ValidStatus)
+	binary.NativeEndian.PutUint32(b[record.EntryOffStatus:], uint32(ret))
+	got, err := l.Comment(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return got
+}
+
+// A narrow signed result is sign-extended (ret=-22), an unsigned one is not.
+func TestEntryNarrowSignedRet(t *testing.T) {
+	if got := narrowRetComment(t, []string{hookabi.SizeTag("ret", 4), hookabi.RetSignedTag}, -22); !strings.Contains(got, "ret=-22") {
+		t.Fatalf("signed: %q", got)
+	}
+	if got := narrowRetComment(t, []string{hookabi.SizeTag("ret", 4)}, -22); !strings.Contains(got, "ret=4294967274") {
+		t.Fatalf("unsigned: %q", got)
 	}
 }

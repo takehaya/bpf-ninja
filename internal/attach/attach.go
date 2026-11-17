@@ -649,6 +649,8 @@ type FuncParamInfo struct {
 	// the callee's integer result is narrower (the ret_size decl tag); its
 	// upper bytes are not part of the result. Zero otherwise.
 	RetSize uint32
+	// RetSigned marks that narrow result as signed (hookabi.RetSignedTag).
+	RetSigned bool
 	// StatusWord marks a generated hook's u64 status argument, which is
 	// (u32)ret | flags << 32 and so has the fields status.ret and status.flags.
 	StatusWord bool
@@ -741,6 +743,7 @@ func GetFuncParamsFromSpec(spec *btf.Spec, funcName string) ([]FuncParamInfo, er
 		}
 		if p.Name == "ret" && intType.Size == 8 && voidSize["ret"] < 8 {
 			info.RetSize = voidSize["ret"]
+			info.RetSigned = info.RetSize != 0 && slices.Contains(fn.Tags, hookabi.RetSignedTag)
 		}
 		params = append(params, info)
 	}

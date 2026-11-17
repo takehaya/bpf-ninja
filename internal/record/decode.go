@@ -125,6 +125,9 @@ func (l *Layout) AppendComment(dst []byte, b []byte) ([]byte, error) {
 		switch {
 		case valid&bit == 0:
 			c.raw(name, "=?")
+		case s.Name == "ret" && s.Signed && s.Size < 8:
+			shift := 64 - 8*s.Size // a narrow signed result, sign-extended
+			c.int(name, int64(v<<shift)>>shift)
 		case s.Name == "ret":
 			c.int(name, int64(v))
 		case word:

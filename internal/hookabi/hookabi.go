@@ -25,6 +25,10 @@ func SizeTag(name string, size uint32) string {
 	return fmt.Sprintf("%s%s_size=%d", sizePrefix, name, size)
 }
 
+// RetSignedTag is the func-level decl tag of a call hook whose narrow
+// integer ret (the ret SizeTag) is signed.
+const RetSignedTag = sizePrefix + "ret_signed"
+
 // SizeTags parses the key, value, arg and ret sizes from a function's decl tags.
 func SizeTags(tags []string) map[string]uint32 {
 	out := map[string]uint32{}
