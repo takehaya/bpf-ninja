@@ -83,13 +83,18 @@ func (r Rule) validateSites() error {
 // and the listing fingerprint of all of them (inject.DiscoverCallSitesRaw).
 // raw.Kernel and raw.Modules name kfunc calls. A listing and the load-time
 // sites check both call it, so they compute the same fingerprint.
-func listing(raw inject.RawProgram) ([]inject.LookupSite, inject.CallDiscovery, error) {
-	calls, err := inject.DiscoverMapCallsRaw(raw)
+func listing(raw inject.RawProgram) (calls []inject.LookupSite, sites inject.CallDiscovery, err error) {
+	err = guard("listing the load", func() (err error) {
+		if calls, err = inject.DiscoverMapCallsRaw(raw); err != nil {
+			return err
+		}
+		sites, err = inject.DiscoverCallSitesRaw(raw, calls)
+		return err
+	})
 	if err != nil {
 		return nil, inject.CallDiscovery{}, err
 	}
-	sites, err := inject.DiscoverCallSitesRaw(raw, calls)
-	return calls, sites, err
+	return calls, sites, nil
 }
 
 // dropReason is the reason a site left out by Sites is skipped with.

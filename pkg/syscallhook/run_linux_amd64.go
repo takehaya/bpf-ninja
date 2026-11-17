@@ -158,6 +158,22 @@ var errTrialVerifier = errors.New("trial load was rejected by the verifier")
 
 var errIndirectJump = errors.New("indirect jump")
 
+// errAnalysisPanic marks a panic in the analysis of one load (see guard).
+var errAnalysisPanic = errors.New("analysis of the load panicked")
+
+// guard runs f, a step of the analysis of one load that issues no ptrace
+// call, and turns a panic in it into an error, so that the load ends on the
+// ordinary fallback path (the original loads, or --fail-closed refuses)
+// instead of ending the supervisor.
+func guard(what string, f func() error) (err error) {
+	defer func() {
+		if p := recover(); p != nil {
+			err = fmt.Errorf("%s: %w: %v", what, errAnalysisPanic, p)
+		}
+	}()
+	return f()
+}
+
 // errJumpLimit marks a rewritten load the verifier refused for too long a
 // sequence of pending jumps.
 var errJumpLimit = errors.New("verifier jump sequence limit")
@@ -1228,6 +1244,15 @@ func withTrialProgram(fd int64, closeFD func(int64) error, work func() error) (e
 	return work()
 }
 
+// frameFloors is inject.FrameFloorsRaw with a panic as an error (see guard).
+func frameFloors(depths []int, names []string, raw inject.RawProgram, kernel inject.KernelInfo) (report inject.StackReport, err error) {
+	err = guard("matching stack depths to functions", func() (err error) {
+		report, err = inject.FrameFloorsRaw(depths, names, raw, kernel)
+		return err
+	})
+	return report, err
+}
+
 func (s *supervisor) preloadDepths(r *remote, attr []byte, rounding int) (report inject.StackReport, err error) {
 	if len(attr) < 68 || u32(attr, 64) != 0 {
 		return report, fmt.Errorf("offloaded programs do not expose local verifier stack accounting")
@@ -1283,8 +1308,11 @@ func (s *supervisor) preloadDepths(r *remote, attr []byte, rounding int) (report
 		if readErr != nil {
 			return readErr
 		}
-		depths, parseErr := inject.ParseStackDepths(log)
-		if parseErr != nil {
+		var depths []int
+		if parseErr := guard("parsing verifier stats", func() (err error) {
+			depths, err = inject.ParseStackDepths(log)
+			return err
+		}); parseErr != nil {
 			return parseErr
 		}
 		records, infoErr := r.progFuncInfo(uint32(fd))
@@ -1295,7 +1323,8 @@ func (s *supervisor) preloadDepths(r *remote, attr []byte, rounding int) (report
 		if namesErr != nil {
 			return namesErr
 		}
-		report, parseErr = inject.FrameFloorsRaw(depths, names, raw, runningKernelInfo())
+		var parseErr error
+		report, parseErr = frameFloors(depths, names, raw, runningKernelInfo())
 		report.FrameRounding = rounding
 		return parseErr
 	})
@@ -1417,6 +1446,21 @@ func (s *supervisor) transform(r *remote, attr []byte, rule Rule, form HookForm,
 	if len(rule.Calls) > 0 {
 		raw.Kernel, raw.Modules = listed.Kernel, listed.Modules // only a rule with calls names kfunc calls and types their arguments
 	}
+	return s.rewrite(raw, listed, entry, rule, form, stack, missFirst, drop)
+}
+
+// rewrite is the part of transform that issues no ptrace call: raw is the
+// load as the transform sees it and listed as a listing sees it. A panic in
+// it is an error (see guard).
+func (s *supervisor) rewrite(raw, listed inject.RawProgram, entry string, rule Rule, form HookForm, stack inject.StackReport, missFirst bool, drop map[uint32]string) (t *transformed, _ string, err error) {
+	err = guard("rewriting the load", func() (err error) {
+		t, entry, err = s.rewriteLoad(raw, listed, entry, rule, form, stack, missFirst, drop)
+		return err
+	})
+	return t, entry, err
+}
+
+func (s *supervisor) rewriteLoad(raw, listed inject.RawProgram, entry string, rule Rule, form HookForm, stack inject.StackReport, missFirst bool, drop map[uint32]string) (t *transformed, _ string, err error) {
 	mapCalls, list, listErr := listing(listed)
 	if listErr != nil && rule.Sites != nil {
 		return nil, entry, sitesRefusal{fmt.Errorf("listing the load for the rule's sites: %w", listErr)}
