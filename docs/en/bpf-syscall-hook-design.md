@@ -81,6 +81,7 @@ The failure rule is to fail open by default for extraction, transform, and kerne
 A transform or BTF error must not silently pass a load the original would have rejected, and must not break a load the target needs.
 On any such error, log it, pass the original load through unchanged, and record for that program that injection did not happen.
 Refusing the load with `EPERM` instead is opt-in through `--fail-closed`.
+The one exception is a rule that names its one site with `map` when the kernel cannot give the stack audit: that load is refused, since the rule asks for that site ([inject-run.md](inject-run.md#when-the-kernel-refuses-a-rewrite)).
 Loss of ptrace control is fatal in either mode: the supervisor terminates the target rather than resuming it with uncertain registers or memory.
 
 ## How the supervisor handles a load
@@ -108,6 +109,8 @@ It never treats a tracee fd number as a supervisor fd.
 A map without BTF, or a side with a zero type ID, keeps its identity and sizes; the transform passes that side as opaque bytes of the map's size.
 The kernel does not report an inner-map template's flags, so the supervisor treats every inner map as read-only.
 
+Before the transform, the supervisor loads the original program once as a trial with verifier statistics, reads each function's stack floor and closes the trial program ([Stack floor](inject-run.md#stack-floor)).
+It also lists the program's calls and computes the listing fingerprint; a rule whose `sites` were listed from another fingerprint leaves the load unrewritten.
 `inject.TransformLookupRaw` produces the new instructions and extended BTF with matching function and line records.
 The supervisor injects `bpf(BPF_BTF_LOAD)` into the tracee and puts the returned tracee-owned fd in a copied program attr.
 The target's credentials and syscall restrictions govern this load.
@@ -118,6 +121,8 @@ Catchable signals are masked during replay; the saved mask and registers are res
 Executable memory and the target's stack are not patched.
 An injected anonymous read/write `mmap` provides a 64 MiB scratch arena for the larger buffers and the copied attr.
 The injected program load points at those buffers; afterwards the supervisor closes the temporary BTF fd and unmaps the arena.
+Right before that load, the supervisor reads the instruction buffer back from the tracee and checks it with `pkg/injectcheck` ([Load-stream check](inject-run.md#load-stream-check)).
+If the kernel refuses the rewrite, the supervisor tries rewrites with fewer sites as trial loads, at most 24 per load, closes each program a trial loads, and then loads the kept rewrite exactly as it was tried ([Refused rewrites](inject-run.md#refused-rewrites)).
 The original instruction and metadata buffers stay intact.
 The caller's verifier log and `log_true_size` output are preserved as syscall outputs.
 
@@ -138,7 +143,8 @@ The wire offsets and stop discriminators follow the Linux [BPF UAPI](https://git
    The transport is described in [internal/follow](../../internal/follow/follow.go).
 5. By load time the CO-RE relocations are already applied in the instructions, so the transform works on a resolved program.
    The raw transformer preserves the original type IDs.
-   Kernel-side CO-RE records and fd arrays are refused, because the transform does not relocate their offsets and references.
+   Kernel-side CO-RE records and map references by fd-array index are refused, because the transform does not relocate their offsets and references.
+   An fd array of module BTF passes through unchanged: the rewrite adds no map or kernel-function call, so every index into it keeps its meaning.
 
 ## Remaining work
 
@@ -149,7 +155,7 @@ These mechanisms would lift the [launcher's limits](inject-run.md#limits):
 - Concurrent threads: use a seize-based launcher with `PTRACE_INTERRUPT` to stop all siblings, drain their stops, snapshot inputs and fd identities, and resume them after the load.
 - Signals and seccomp: hold signals that arrive during syscall replay, and model the target's own seccomp tracing and notification and syscall restarts.
 - Function-name selection: resolve the live BTF ID before preselection, or track fd duplication and inheritance, instead of trusting the numeric fd.
-- Load formats: normalize larger known metadata records, relocate every offset-bearing field, and resolve indexed map references before accepting kernel-side CO-RE records and fd arrays.
+- Load formats: normalize larger known metadata records, relocate every offset-bearing field, and resolve indexed map references before accepting kernel-side CO-RE records and map references by fd-array index.
 
 ## What this reuses
 
