@@ -312,7 +312,7 @@ The hook receives the call's result as `ret` and, for a callee with a memory arg
 - Besides the callees with a row above, `calls` accepts every helper, and every kernel function of the running kernel or of a module whose BTF the program passes in its fd array, by its kernel name, except:
   - callees that run or register a callback (for a kernel function, any parameter that points to a function prototype), take or release a lock or a critical section, do not return, or return nothing;
   - iterator kernel functions (`bpf_iter_*_new`, `_next`, `_destroy`), the kernel functions the verifier lets run with a lock held (`bpf_list_*`, `bpf_rbtree_*` and others), allocation (`bpf_obj_new_impl` and its relatives), the casts `bpf_cast_to_kern_ctx` and `bpf_rdonly_cast`, and the calls the verifier inlines or refuses;
-  - `bpf_get_stack`, `bpf_get_stackid`, `bpf_get_task_stack`, `bpf_get_branch_snapshot` and `bpf_get_func_ip`, which read native code addresses or branch records that the inserted code may change, and `bpf_perf_event_read` and `bpf_perf_event_read_value`, whose counters count the inserted code too;
+  - `bpf_get_stack`, `bpf_get_stackid`, `bpf_get_task_stack`, `bpf_get_branch_snapshot`, `bpf_get_func_ip` and `bpf_read_branch_records`, which read native code addresses or branch records that the inserted code may change, and `bpf_perf_event_read`, `bpf_perf_event_read_value` and `bpf_perf_prog_read_value`, whose counters count the inserted code too;
   - the map helpers and `bpf_tail_call`, which `ops` and `tail_calls` observe;
   - helpers with a pointer result other than those in the table (`bpf_get_local_storage`, `bpf_inode_storage_get` and `bpf_sock_from_file`): each helper's pointer kind is enabled only with a kernel test.
 - Such a name is refused with `Calls name "NAME" cannot be hooked: REASON`. An empty name or a name given twice is a configuration error.
@@ -715,7 +715,8 @@ If a rewrite fails, `inject-run` reports it on stderr and keeps running the targ
 | `skipped` | Map calls that `auto` did not instrument, call sites of `calls` that could not be hooked (reason starting with `call:`), sites a rule's `sites` left out (`not selected by the rule's sites`), and sites the [retry](#refused-rewrites) dropped (reason starting with `load:`), with the site fields and a `reason`. The requested sites of a retried load are those of `hooks` plus those dropped. |
 | `skipped_maps` | The `maps` names of a `hook_prefix` rule that match no call the rule observes, each with `map` and `reason`. Absent when there is none. |
 | `skipped_calls` | The `calls` names of a rule that are neither a helper nor a kernel function of the load, each with `name` and `reason`. A known name the program does not call is not listed. Absent when there is none. |
-| `outside_premise` | `calls NAME, ...`: the callees on the deny list of [Observe helper and kernel-function calls](#observe-helper-and-kernel-function-calls), and the kernel functions that take a callback, that the original program calls. Hooks at its other calls work as usual; see [Limits](#limits). A kernel-function call that could not be named is listed as `a kernel function that could not be named`, because it may be one of them. Absent when the program calls none. |
+| `outside_premise` | `calls NAME, ...`: the calls of the original program that [the equivalence claim's premise](#equivalence-claim) rules out: the helpers it names, the kernel functions on the deny list of [Observe helper and kernel-function calls](#observe-helper-and-kernel-function-calls), and the kernel functions that take a callback. The claim does not hold for this load. Hooks at its other calls work as usual. A kernel-function call that could not be named is listed as `a kernel function that could not be named`, because it may be one of them. Absent when the program calls none. |
+| `not_reviewed` | `calls NAME, ...`: the kernel functions the original program calls whose implementation has not been checked against the premise, in call order; a call that could not be named is listed as `a kernel function that could not be named`. The claim is stated only for loads without this field. Hooks are placed as for any other load. Absent when every kernel function the program calls has been checked, or it calls none. |
 | `dead_check_error` | Present when one or more hook comparisons failed. Affected hooks, and any site they may report, remain unmarked; independently confirmed absent hooks and sites can still be marked. Consumers must not guess from an unmarked result. |
 
 Treat a marked site as having no live observation point in this load, not as an attach failure.
@@ -974,6 +975,31 @@ This is what differs for the target:
 
 In both modes, cancelling or killing `inject-run` kills the target, and with the filter its child processes too, also those still running after the target exited.
 
+## Equivalence claim
+
+A rewritten program that the kernel accepts gives the same return value, packet and map effects as the original program, for the same inputs and state.
+The claim assumes that the original program's behaviour does not depend on its own compiled code, on counters that inserted instructions advance, on program code that a callee runs or registers, or on time. In detail:
+
+- The original calls no helper that returns code addresses, a call stack or branch records to the program (`bpf_get_stack`, `bpf_get_stackid`, `bpf_get_task_stack`, `bpf_get_branch_snapshot`, `bpf_get_func_ip`, `bpf_read_branch_records`), returns a perf counter to it (`bpf_perf_event_read`, `bpf_perf_event_read_value`, `bpf_perf_prog_read_value`), calls back into or registers a subprogram of the same program (`bpf_for_each_map_elem`, `bpf_loop`, `bpf_find_vma`, `bpf_user_ringbuf_drain`, `bpf_timer_set_callback`), or takes or releases a lock the verifier tracks (`bpf_spin_lock`, `bpf_spin_unlock`).
+  Helpers that only cause other programs to run, such as `bpf_tail_call`, a sockmap update, `bpf_clone_redirect` or a hash computed through a flow dissector program, and helpers that take and release a lock inside the call are within the premise.
+- The original calls no kernel function on the deny list of [Observe helper and kernel-function calls](#observe-helper-and-kernel-function-calls) and none that takes a callback.
+- Seven helpers depend on the program's code or on counters only in how they are used, which a call does not show, so the premise states their use:
+  the program does not hand `bpf_probe_read_kernel`, `bpf_probe_read_kernel_str`, `bpf_snprintf`, `bpf_snprintf_btf`, `bpf_trace_printk` or `bpf_trace_vprintk` an address of its own code or of the kernel stack;
+  and the records it sends with `bpf_perf_event_output`, `bpf_trace_printk` and `bpf_trace_vprintk` are compared without the fields the consumer adds to them (stacks, counters, time).
+- The program does not observe its stack or task memory through typed task or per-CPU pointers.
+- The stack slots the tool reserves lie below every access the original program makes; the [stack audit](#stack-floor) checks this before every rewrite.
+- The same inputs and state include concurrent updates by other programs and by user space, and the random number stream. Time is not part of them: the clock helpers stay callable and may return other values.
+- The verifier treats both programs alike where it rewrites calls (fast-call patterns, hidden arguments).
+- Every kernel function the program calls has been checked against the premise. Checked today are `bpf_xdp_ct_lookup`, `bpf_skb_ct_lookup` and `bpf_ct_release`.
+  The XDP receive-metadata functions are not, because the verifier substitutes the driver's own function for them, and a driver's function can run other code.
+
+`inject-run` reports a load outside the premise in two fields of the [hooks file](#hooks-file), and in a log line each:
+
+- `outside_premise` names the calls the premise rules out (`program "P": outside the theorem's premise: calls NAME, ...`). The claim does not hold for the load.
+- `not_reviewed` names the kernel functions not checked against the premise (`program "P": kernel functions without a review record: calls NAME, ...`). The claim is not stated for the load.
+
+Neither changes where hooks go. The use of the seven helpers above is not detected.
+
 ## Limits
 
 - `inject-run` instruments only the launched process and its threads.
@@ -1012,7 +1038,7 @@ In both modes, cancelling or killing `inject-run` kills the target, and with the
   A successful trial load binds the array, so the loads that follow get `EBUSY`; the loader may report a different final error after retrying.
 - A rule's `sites` is bound to one listing fingerprint. A program loaded in several builds under one name is narrowed by names, not by sites. Source calls the compiler merged into one instruction are one site.
 - Calls that are never hooked, each listed with its reason: the callees on the deny list of [Observe helper and kernel-function calls](#observe-helper-and-kernel-function-calls), since inserted code would change what they report or the verifier treats them specially; a call right before or after another call, or at the start of its function, where the validators could not tell inserted code from the original; a kernel-function call that cannot be named through the kernel or module BTF; and a tail call that succeeds, which does not return.
-- The rewrite's equivalence to the original program assumes that the original calls nothing on the deny list. A program that does still gets hooks at its other calls, and the hooks file names those callees in `outside_premise`.
+- The rewrite's equivalence to the original program holds under the premise of [Equivalence claim](#equivalence-claim). A program outside it still gets hooks at its other calls, and the hooks file names the calls in `outside_premise` and `not_reviewed`.
 - A result-only call hook sees no arguments; arguments are captured only for the callees with a row. Its pointer result is seen as NULL or not NULL, unless the hook has a `ret_type`, through which a capture reads the fields its condition names; the pointer itself is never recorded.
 - A kernel function's result narrower than 8 bytes fills only the low `ret_size` bytes of `ret`. An 8-byte result compares unsigned.
 - The region validator treats a kernel-function call as reading r1 to r5, and the load-time checker does not see kernel-function names: the deny list for kernel functions is enforced by the transformer alone.
