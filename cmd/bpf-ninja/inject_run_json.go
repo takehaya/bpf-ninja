@@ -92,6 +92,7 @@ type hookJSON struct {
 	Copied         bool           `json:"copied"`
 	Static         bool           `json:"static"`
 	ReadOnly       bool           `json:"read_only"`
+	SiteParam      bool           `json:"site_param,omitempty"`
 	DeadInThisLoad bool           `json:"dead_in_this_load,omitempty"`
 	DeadCause      string         `json:"dead_cause,omitempty"`
 }
@@ -223,6 +224,19 @@ func hookKind(hook inject.LookupHook) string {
 	return string(hook.Kind)
 }
 
+// siteParam says whether hook takes a u32 site parameter, which capture
+// --site filters on: a call or tail-call hook, and a typed hook of auto. A
+// generic or dispatch hook passes the site in info instead.
+func siteParam(hook inject.LookupHook) bool {
+	switch {
+	case hook.Dispatch, hook.Generic, hook.Kind == inject.HookEntry:
+		return false
+	case hook.Kind == inject.HookCall, hook.Kind == inject.HookTailCall:
+		return true
+	}
+	return hook.SiteArg
+}
+
 func injectionJSON(inj syscallhook.Injection) injectedProgJSON {
 	out := injectedProgJSON{HookForm: inj.HookForm, Program: inj.Program, Func: inj.Func, Type: inj.Type.String(), ProgID: inj.ProgID,
 		Build: inj.Build, Tag: inj.Tag, CtxType: inject.ContextType(inj.Type), Hooks: []hookJSON{}, Skipped: []hookSiteJSON{}}
@@ -275,7 +289,8 @@ func injectionJSON(inj syscallhook.Injection) injectedProgJSON {
 			}
 			continue
 		}
-		h := hookJSON{Name: hook.Name, Kind: hookKind(hook), When: when, Sites: sites, Untrusted: hook.Untrusted, Copied: hook.Copied, Static: hook.Static, ReadOnly: hook.ReadOnly}
+		h := hookJSON{Name: hook.Name, Kind: hookKind(hook), When: when, Sites: sites, Untrusted: hook.Untrusted, Copied: hook.Copied, Static: hook.Static, ReadOnly: hook.ReadOnly,
+			SiteParam: siteParam(hook)}
 		if !hook.Dispatch {
 			h.Map = hook.MapName
 		}

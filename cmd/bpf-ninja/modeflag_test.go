@@ -30,6 +30,10 @@ func TestModeFlagValidation(t *testing.T) {
 		{"emit needs two modes", []string{"--emit", "entry"}, "--emit only applies"},
 		{"emit value", []string{"--mode", "entry", "--mode", "exit", "--emit", "bogus"}, "invalid --emit"},
 		{"dump-asm single mode", []string{"--mode", "entry", "--mode", "exit", "--dump-asm", "full"}, "--dump-asm renders one"},
+		// Paths that never read --site or --hooks-json refuse them.
+		{"dump-asm site", []string{"--dump-asm", "full", "--site", "2", "--hooks-json", "h.json"}, "--dump-asm does not take --site or --hooks-json"},
+		{"dump-asm hooks-json", []string{"--dump-asm", "full", "--hooks-json", "h.json"}, "--dump-asm does not take --site or --hooks-json"},
+		{"xdp site", []string{"--mode", "xdp", "--site", "2", "--hooks-json", "h.json"}, "--site and --hooks-json are only valid with --mode entry/exit"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

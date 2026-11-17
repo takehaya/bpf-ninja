@@ -23,8 +23,10 @@ type siteHooksProg struct {
 	ProgID uint32 `json:"prog_id"`
 	Tag    string `json:"tag"`
 	Hooks  []struct {
-		Name  string `json:"name"`
-		Sites []struct {
+		Name      string `json:"name"`
+		Kind      string `json:"kind"`
+		SiteParam bool   `json:"site_param"`
+		Sites     []struct {
 			PC    uint32 `json:"pc"`
 			Label string `json:"label"`
 			Kind  string `json:"kind"`
@@ -34,7 +36,8 @@ type siteHooksProg struct {
 
 // resolveSite finds site, a label or a pc, of program progID with kernel tag
 // tag in the hooks file data read from path: the hooks that report it and
-// its pc.
+// its pc. A hook that reports it without a site parameter is refused: the
+// capture filters on site.
 func resolveSite(data []byte, path string, progID uint32, tag, site string) ([]string, uint32, error) {
 	var file siteHooksFile
 	if err := json.Unmarshal(data, &file); err != nil {
@@ -58,6 +61,9 @@ func resolveSite(data []byte, path string, progID uint32, tag, site string) ([]s
 	for _, hook := range prog.Hooks {
 		for _, s := range hook.Sites {
 			if s.Kind != "entry" && (byPC && s.PC == pc || !byPC && s.Label == site) {
+				if !hook.SiteParam {
+					return nil, 0, fmt.Errorf("--site: hook %q is a %s hook, which has no site parameter; capture it with --func %s", hook.Name, hook.Kind, hook.Name)
+				}
 				hooks, pc = append(hooks, hook.Name), s.PC
 				break
 			}
