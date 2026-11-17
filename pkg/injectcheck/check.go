@@ -346,6 +346,12 @@ func Check(in, out asm.Instructions, c Certificate, premises Premises) (Counts, 
 		if callee := ins.IsBuiltinCall() && !supportedHelper(ins) || ins.IsKfuncCall(); !callee {
 			return counts, inputError(InputTarget, "call target at %d is not a call of a helper outside the map helpers or of a kernel function", key.site)
 		}
+		if ins.IsBuiltinCall() && helperID(ins) == asm.FnUnspec {
+			return counts, inputError(InputTarget, "call target at %d is a call of helper id 0, which is not a helper", key.site)
+		}
+		if id := helperID(ins); callbackHelper(id) {
+			return counts, inputError(InputTarget, "call target at %d is a call of %v, which runs or registers a callback", key.site, id)
+		}
 	}
 	for j, owner := range owners {
 		if owner < 0 {
@@ -792,6 +798,15 @@ func supportedHelper(ins asm.Instruction) bool {
 	}
 	switch asm.BuiltinFunc(ins.Constant) {
 	case asm.FnMapLookupElem, asm.FnMapLookupPercpuElem, asm.FnMapUpdateElem, asm.FnMapDeleteElem, asm.FnMapPushElem, asm.FnMapPopElem, asm.FnMapPeekElem, asm.FnTailCall:
+		return true
+	}
+	return false
+}
+// callbackHelper reports the helpers that take a callback (ARG_PTR_TO_FUNC
+// in Linux 6.12 and 7.0): a hook after one is outside the proof's premise S0.
+func callbackHelper(id asm.BuiltinFunc) bool {
+	switch id {
+	case asm.FnForEachMapElem, asm.FnTimerSetCallback, asm.FnFindVma, asm.FnLoop, asm.FnUserRingbufDrain:
 		return true
 	}
 	return false
