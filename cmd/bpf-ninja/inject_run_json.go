@@ -80,6 +80,7 @@ type hookSiteJSON struct {
 	Func      string `json:"func,omitempty"`
 	File      string `json:"file,omitempty"`
 	Line      uint32 `json:"line,omitempty"`
+	Label     string `json:"label,omitempty"` // lookups file only: the site's label (inject.SiteLabels)
 	CtxSource string `json:"ctx_source,omitempty"`
 	Frame     string `json:"frame,omitempty"`
 	Floor     *int16 `json:"floor,omitempty"`

@@ -7,17 +7,44 @@ package main
 
 import (
 	"cmp"
+	"fmt"
 	"slices"
+	"strings"
 
 	"github.com/takehaya/bpf-ninja/pkg/inject"
 	"github.com/takehaya/bpf-ninja/pkg/syscallhook"
 )
 
 // lookupsJSONVersion changes only when a field changes meaning or goes away.
-const lookupsJSONVersion = 2
+// Version 3 made rule a hook_prefix rule that names every listed kind.
+const lookupsJSONVersion = 3
 
 // lookupsRuleHook is the hook name the suggested rules use.
 const lookupsRuleHook = "ninja"
+
+// lookupsKinds are the kinds --lookups-kinds takes: lookups and the other map
+// calls, helper and kernel-function calls, tail calls and the entry. They
+// choose the arrays added in version 3 and what rule names; maps, lookups and
+// calls are always written.
+var lookupsKinds = []string{"lookups", "map_calls", "helpers", "kfuncs", "tail_calls", "entry"}
+
+// parseLookupsKinds reads a comma-separated --lookups-kinds value; empty is every kind.
+func parseLookupsKinds(value string) (map[string]bool, error) {
+	kinds := map[string]bool{}
+	if value == "" {
+		for _, k := range lookupsKinds {
+			kinds[k] = true
+		}
+		return kinds, nil
+	}
+	for _, k := range strings.Split(value, ",") {
+		if !slices.Contains(lookupsKinds, k) {
+			return nil, fmt.Errorf("unknown kind %q; kinds are %s", k, strings.Join(lookupsKinds, ", "))
+		}
+		kinds[k] = true
+	}
+	return kinds, nil
+}
 
 type lookupsFileJSON struct {
 	Version  int                  `json:"version"`
@@ -26,19 +53,27 @@ type lookupsFileJSON struct {
 
 // discoveredProgJSON is one program load. Calls lists every map helper call
 // the transform knows, with the op as kind; Reason and Generic are as for a
-// lookup.
-// Rule instruments every named map with lookups. The stack block records the
+// lookup. Build is the listing fingerprint (inject.ListingFingerprint).
+// Callees, CallSites and TailCalls list the helper and kernel-function calls
+// and the tail calls of the listed kinds; every site carries a label.
+// With the kinds lookups alone, Rule instruments every named map with lookups,
+// as a hook rule. Otherwise it is a hook_prefix rule naming everything of the
+// listed kinds it can hook (see readyRule). The stack block records the
 // trial load's verifier-backed per-function floors.
 type discoveredProgJSON struct {
-	Program string              `json:"program"`
-	Func    string              `json:"func"`
-	Type    string              `json:"type"`
-	CtxType string              `json:"ctx_type"`
-	Maps    []discoveredMapJSON `json:"maps"`
-	Lookups []hookSiteJSON      `json:"lookups"`
-	Calls   []hookSiteJSON      `json:"calls"`
-	Rule    syscallhook.Rule    `json:"rule"`
-	Stack   *inject.StackReport `json:"stack,omitempty"`
+	Program   string              `json:"program"`
+	Func      string              `json:"func"`
+	Type      string              `json:"type"`
+	CtxType   string              `json:"ctx_type"`
+	Build     string              `json:"build,omitempty"`
+	Maps      []discoveredMapJSON `json:"maps"`
+	Lookups   []hookSiteJSON      `json:"lookups"`
+	Calls     []hookSiteJSON      `json:"calls"`
+	Callees   []calleeJSON        `json:"callees,omitempty"`
+	CallSites []hookSiteJSON      `json:"call_sites,omitempty"`
+	TailCalls []hookSiteJSON      `json:"tail_calls,omitempty"`
+	Rule      syscallhook.Rule    `json:"rule"`
+	Stack     *inject.StackReport `json:"stack,omitempty"`
 }
 
 // discoveredMapJSON is one map the program references, with the PCs of its
@@ -51,9 +86,22 @@ type discoveredMapJSON struct {
 	Ops   []string `json:"ops"`
 }
 
-func discoveryJSON(d syscallhook.Discovery) discoveredProgJSON {
+// calleeJSON is one helper or kernel function the program calls (see
+// inject.Callee). Typed callees may be named in a rule's calls; Reason says
+// why another gets no hook.
+type calleeJSON struct {
+	Name   string   `json:"name"`
+	Kind   string   `json:"kind"`
+	Module int16    `json:"module,omitempty"`
+	Ret    string   `json:"ret,omitempty"`
+	Typed  bool     `json:"typed"`
+	Sites  []uint32 `json:"sites"`
+	Reason string   `json:"reason,omitempty"`
+}
+
+func discoveryJSON(d syscallhook.Discovery, kinds map[string]bool) discoveredProgJSON {
 	out := discoveredProgJSON{Program: d.Program, Func: d.Func, Type: d.Type.String(), CtxType: inject.ContextType(d.Type),
-		Maps: []discoveredMapJSON{}, Lookups: []hookSiteJSON{}, Calls: []hookSiteJSON{}}
+		Build: d.CallSites.Fingerprint, Maps: []discoveredMapJSON{}, Lookups: []hookSiteJSON{}, Calls: []hookSiteJSON{}}
 	if d.Stack.Source != "" {
 		out.Stack = &d.Stack
 	}
@@ -62,6 +110,7 @@ func discoveryJSON(d syscallhook.Discovery) discoveredProgJSON {
 		floors[frame.Name] = frame.Floor
 	}
 	setFrame := func(site *hookSiteJSON, name string) {
+		site.Label = d.CallSites.Labels[site.PC]
 		floor, ok := floors[name]
 		if out.Stack == nil || name == "" || !ok {
 			return
@@ -123,10 +172,71 @@ func discoveryJSON(d syscallhook.Discovery) discoveredProgJSON {
 			out.Maps[i].Ops = append(out.Maps[i].Ops, string(site.Op))
 		}
 	}
+	calleeKind := map[uint32]string{}
+	for _, c := range d.CallSites.Callees {
+		for _, pc := range c.Sites {
+			calleeKind[pc] = c.Kind
+		}
+		if kinds[c.Kind+"s"] {
+			out.Callees = append(out.Callees, calleeJSON{Name: c.Name, Kind: c.Kind, Module: c.Module, Ret: string(c.Ret),
+				Typed: c.Typed, Sites: c.Sites, Reason: c.Reason})
+		}
+	}
+	for _, site := range mark(d.CallSites.Sites) {
+		if kinds[calleeKind[site.SitePC]+"s"] {
+			s := discoveredSiteJSON(site)
+			setFrame(&s, site.FuncName)
+			out.CallSites = append(out.CallSites, s)
+		}
+	}
+	if kinds["tail_calls"] {
+		for _, site := range mark(d.CallSites.TailCalls) {
+			s := discoveredSiteJSON(site)
+			setFrame(&s, site.FuncName)
+			out.TailCalls = append(out.TailCalls, s)
+		}
+	}
 	out.Rule.Program = cmp.Or(d.Func, d.Program)
 	out.Rule.Auto = true
-	out.Rule.Hook = lookupsRuleHook
+	if len(kinds) == 1 && kinds["lookups"] {
+		out.Rule.Hook = lookupsRuleHook
+		return out
+	}
+	out.Rule = readyRule(out, d, kinds)
 	return out
+}
+
+// readyRule is the hook_prefix rule that names everything of the listed kinds
+// out can hook: each named map with a call of a listed op, and those ops as
+// op:any; the callees with a call-table row; the entry; and the tail calls
+// when the program has one. A key left out hooks nothing of its kind.
+func readyRule(out discoveredProgJSON, d syscallhook.Discovery, kinds map[string]bool) syscallhook.Rule {
+	rule := syscallhook.Rule{Program: cmp.Or(d.Func, d.Program), Auto: true, HookPrefix: lookupsRuleHook,
+		Entry: kinds["entry"], TailCalls: kinds["tail_calls"] && len(d.CallSites.TailCalls) != 0}
+	listed := func(op string) bool { return kinds["lookups"] && op == "lookup" || kinds["map_calls"] && op != "lookup" }
+	var ops []string
+	for _, m := range out.Maps {
+		if m.Name == "" || !slices.ContainsFunc(m.Ops, listed) {
+			continue
+		}
+		rule.Maps = append(rule.Maps, m.Name)
+		for _, op := range m.Ops {
+			if listed(op) && !slices.Contains(ops, op) {
+				ops = append(ops, op)
+			}
+		}
+	}
+	for _, op := range []string{"lookup", "update", "delete", "push", "pop", "peek"} {
+		if slices.Contains(ops, op) {
+			rule.Ops = append(rule.Ops, op+":any")
+		}
+	}
+	for _, c := range out.Callees {
+		if c.Typed {
+			rule.Calls = append(rule.Calls, c.Name)
+		}
+	}
+	return rule
 }
 
 func discoveredSiteJSON(site inject.LookupSite) hookSiteJSON {
@@ -137,16 +247,17 @@ func discoveredSiteJSON(site inject.LookupSite) hookSiteJSON {
 
 // lookupsWriter rewrites path with every discovered load so far.
 type lookupsWriter struct {
-	path string
-	file lookupsFileJSON
+	path  string
+	kinds map[string]bool
+	file  lookupsFileJSON
 }
 
-func newLookupsWriter(path string) (*lookupsWriter, error) {
-	w := &lookupsWriter{path: path, file: lookupsFileJSON{Version: lookupsJSONVersion, Programs: []discoveredProgJSON{}}}
+func newLookupsWriter(path string, kinds map[string]bool) (*lookupsWriter, error) {
+	w := &lookupsWriter{path: path, kinds: kinds, file: lookupsFileJSON{Version: lookupsJSONVersion, Programs: []discoveredProgJSON{}}}
 	return w, writeJSONFile(w.path, w.file)
 }
 
 func (w *lookupsWriter) add(d syscallhook.Discovery) error {
-	w.file.Programs = append(w.file.Programs, discoveryJSON(d))
+	w.file.Programs = append(w.file.Programs, discoveryJSON(d, w.kinds))
 	return writeJSONFile(w.path, w.file)
 }
