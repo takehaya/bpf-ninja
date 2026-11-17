@@ -49,7 +49,7 @@ func TestIntegrationLoader(t *testing.T) {
 	if kernel.Major < 6 || kernel.Major == 6 && kernel.Minor < 8 {
 		inexactExpected = "plain-inexact"
 	}
-	forced := fmt.Errorf("forced trial-load failure")
+	forced := fmt.Errorf("%w: forced trial-load failure", errAuditUnavailable)
 	// The stack analysis refuses a program it cannot take (deadRegisterStackErr).
 	unanalysable := fmt.Errorf("matching stack depths to functions: %w", inject.ErrRefused)
 	for _, tc := range []struct {

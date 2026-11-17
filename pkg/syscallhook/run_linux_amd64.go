@@ -122,8 +122,9 @@ type Injection struct {
 
 // Refusal is a matched load that ended without hooks; Reason is the message.
 // Cause is what ended it: "sites" (the rule's sites refused the load),
-// "stack" (the stack audit was unavailable), "analysis" (the stack analysis
-// cannot take the program: see unanalysable), "verifier" (the verifier
+// "stack" (the kernel cannot give the stack audit: errAuditUnavailable),
+// "analysis" (any other error of the stack analysis: see unanalysable),
+// "verifier" (the verifier
 // refused the trial load of the original program), "checker" (the load-time
 // checker refused the rewrite), "retry" (the kernel refused the rewrite and
 // the retry loaded none), "loader_log" (the rewrite passes with a log of its
@@ -204,6 +205,11 @@ type supervisor struct {
 }
 
 var errTrialVerifier = errors.New("trial load was rejected by the verifier")
+
+// errAuditUnavailable marks a stack audit the kernel cannot give: the program
+// is offloaded, the trial load failed other than in the verifier, or the
+// kernel did not return the loaded program's functions.
+var errAuditUnavailable = errors.New("stack audit unavailable")
 
 var errIndirectJump = errors.New("indirect jump")
 
@@ -366,22 +372,24 @@ func failedLoad(f loadFailure, failClosed bool, rule Rule) (step loadStep, cause
 
 // refuseOriginal says whether a matched load whose rewrite did not load is
 // refused instead of loading the original: always with failClosed, and when
-// the kernel cannot give the stack audit (stackErr) for a rule that names its
-// one site with map, which must be hooked. A rule with calls, entry or
-// tail_calls and no auto loads the original like an auto rule. A program the
-// verifier refuses, or one the analysis cannot take (unanalysable), loads as
-// the original under every rule.
+// the kernel cannot give the stack audit (errAuditUnavailable) for a rule
+// that names its one site with map, which must be hooked. A rule with calls,
+// entry or tail_calls and no auto loads the original like an auto rule. A
+// program the verifier refuses, or one the analysis cannot take
+// (unanalysable), loads as the original under every rule.
 func refuseOriginal(failClosed bool, rule Rule, stackErr error) bool {
-	return failClosed || stackErr != nil && !rule.Auto && rule.Map != "" && !errors.Is(stackErr, errTrialVerifier) && !unanalysable(stackErr)
+	return failClosed || errors.Is(stackErr, errAuditUnavailable) && !rule.Auto && rule.Map != ""
 }
 
-// unanalysable says whether the stack audit failed because the program is
-// one the analysis cannot take: it refused the program (inject.ErrRefused),
-// panicked on it (errAnalysisPanic) or cannot run its trial load
-// (errIndirectJump). No rewrite of such a program is possible at all, unlike
-// an audit the kernel cannot give.
+// unanalysable says whether the stack audit failed in the analysis of the
+// program rather than in the kernel: every error of preloadDepths but an
+// audit the kernel cannot give (errAuditUnavailable) and a trial the
+// verifier refused (errTrialVerifier). Among them are the analysis's own
+// refusals (inject.ErrRefused and the plain errors of the stack-depth and
+// frame-floor steps), a panic in it (errAnalysisPanic) and a trial load it
+// cannot run (errIndirectJump). No rewrite of such a program is possible.
 func unanalysable(stackErr error) bool {
-	return errors.Is(stackErr, inject.ErrRefused) || errors.Is(stackErr, errAnalysisPanic) || errors.Is(stackErr, errIndirectJump)
+	return stackErr != nil && !errors.Is(stackErr, errAuditUnavailable) && !errors.Is(stackErr, errTrialVerifier)
 }
 
 func retryOriginalOrRefuse(failClosed bool, retry func() (int64, error)) (int64, error) {
@@ -1431,9 +1439,31 @@ func stackDepths(log string) (depths []int, err error) {
 	return depths, err
 }
 
-func (s *supervisor) preloadDepths(r *remote, attr []byte, rounding int) (report inject.StackReport, err error) {
+// offloadAudit is the error of a load whose stack the kernel does not
+// account locally: an offload request, or an attr too short to tell.
+func offloadAudit(attr []byte) error {
 	if len(attr) < 68 || offloaded(attr) {
-		return report, fmt.Errorf("offloaded programs do not expose local verifier stack accounting")
+		return fmt.Errorf("%w: offloaded programs do not expose local verifier stack accounting", errAuditUnavailable)
+	}
+	return nil
+}
+
+// trialLoadError is the error of a stack trial the kernel refused with
+// loadErr and log: errTrialVerifier when the verifier refused it (EACCES or
+// EINVAL without the stats line), else errAuditUnavailable.
+func trialLoadError(loadErr error, log string) error {
+	if (errors.Is(loadErr, unix.EACCES) || errors.Is(loadErr, unix.EINVAL)) && !strings.Contains(log, "processed") {
+		return fmt.Errorf("%w: %v: %s", errTrialVerifier, loadErr, strings.TrimSpace(log))
+	}
+	if log != "" {
+		return fmt.Errorf("%w: trial PROG_LOAD: %w: %s", errAuditUnavailable, loadErr, strings.TrimSpace(log))
+	}
+	return fmt.Errorf("%w: trial PROG_LOAD: %w", errAuditUnavailable, loadErr)
+}
+
+func (s *supervisor) preloadDepths(r *remote, attr []byte, rounding int) (report inject.StackReport, err error) {
+	if err := offloadAudit(attr); err != nil {
+		return report, err
 	}
 	spec, err := s.programBTF(r, attr)
 	if err != nil {
@@ -1470,13 +1500,7 @@ func (s *supervisor) preloadDepths(r *remote, attr []byte, rounding int) (report
 		if readErr != nil {
 			return report, readErr
 		}
-		if (errors.Is(loadErr, unix.EACCES) || errors.Is(loadErr, unix.EINVAL)) && !strings.Contains(log, "processed") {
-			return report, fmt.Errorf("%w: %v: %s", errTrialVerifier, loadErr, strings.TrimSpace(log))
-		}
-		if log != "" {
-			return report, fmt.Errorf("trial PROG_LOAD: %w: %s", loadErr, strings.TrimSpace(log))
-		}
-		return report, fmt.Errorf("trial PROG_LOAD: %w", loadErr)
+		return report, trialLoadError(loadErr, log)
 	}
 	err = withTrialProgram(fd, func(fd int64) error {
 		closed, closeErr := r.call(unix.SYS_CLOSE, uint64(fd))
@@ -1492,7 +1516,7 @@ func (s *supervisor) preloadDepths(r *remote, attr []byte, rounding int) (report
 		}
 		records, infoErr := r.progFuncInfo(uint32(fd))
 		if infoErr != nil {
-			return infoErr
+			return fmt.Errorf("%w: %w", errAuditUnavailable, infoErr)
 		}
 		names, namesErr := loadedFunctionNames(records, spec)
 		if namesErr != nil {
