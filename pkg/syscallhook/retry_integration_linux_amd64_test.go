@@ -186,11 +186,19 @@ func TestIntegrationRetry(t *testing.T) {
 		if len(injected) != 0 || !strings.Contains(logs, "no trial load passed") || strings.Contains(out, "h_entry") {
 			t.Fatalf("injections %+v", injected)
 		}
+		if !strings.Contains(logs, `program "p": 2 sites requested, no rewrite loaded after 1 trial loads (budget 24, 0 used before); the original program loads`) ||
+			strings.Contains(logs, "dropped none") {
+			t.Fatal("the retry summary does not say that no rewrite loaded")
+		}
 	})
 	t.Run("nothing-loads-fail-closed", func(t *testing.T) {
-		injected, _, out := runRetryLoader(t, "TestIntegrationRetry", "refused", true, all)
+		injected, logs, out := runRetryLoader(t, "TestIntegrationRetry", "refused", true, all)
 		if len(injected) != 0 || !strings.Contains(out, "load refused") {
 			t.Fatalf("injections %+v", injected)
+		}
+		if !strings.Contains(logs, "no rewrite loaded after 1 trial loads") || !strings.Contains(logs, "; the load is refused (--fail-closed)") ||
+			strings.Contains(logs, "dropped none") {
+			t.Fatal("the retry summary does not say that the load is refused")
 		}
 	})
 }

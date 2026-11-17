@@ -1634,8 +1634,19 @@ func (s *supervisor) retryLoad(r *remote, attr []byte, rule Rule, form HookForm,
 		ret, _, err := s.load(r, attr, rule.Program, form, t, false)
 		return ret, err
 	})
-	s.log("program %q: %d sites requested, %d kept after %d trial loads (budget %d, %d used before); dropped %s",
-		rule.Program, len(sites), len(out.kept), out.trials, trialBudget, s.extra, cmp.Or(droppedSummary(out.dropped), "none"))
+	if !out.loaded || err != nil {
+		// Neither a trial nor the final load of the kept rewrite passed:
+		// the caller loads the original program or refuses the load.
+		fallback := "the original program loads"
+		if s.options.FailClosed {
+			fallback = "the load is refused (--fail-closed)"
+		}
+		s.log("program %q: %d sites requested, no rewrite loaded after %d trial loads (budget %d, %d used before); %s",
+			rule.Program, len(sites), out.trials, trialBudget, s.extra, fallback)
+	} else {
+		s.log("program %q: %d sites requested, %d kept after %d trial loads (budget %d, %d used before); dropped %s",
+			rule.Program, len(sites), len(out.kept), out.trials, trialBudget, s.extra, cmp.Or(droppedSummary(out.dropped), "none"))
+	}
 	if !out.loaded {
 		return 0, failed, fmt.Errorf("%w; %w", cause, err)
 	}
