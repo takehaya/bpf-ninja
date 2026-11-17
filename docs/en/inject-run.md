@@ -33,7 +33,8 @@ bpf-ninja -p "$PROG_ID" --func "$HOOK" -c 10 -w hook.pcap
 - To observe less, delete names from `maps`, `ops` or `calls`, or delete `entry` or `tail_calls`.
   In a rule written with `hook_prefix`, a missing or empty list hooks nothing of its kind, so deleting a name never adds a hook.
 - stderr reports each injection, for example `inject-run: program "xdp_ingress": injected hook "ninja_sessions" (lookup map "sessions", site pc 6), tracee fd 9`.
-  If `inject-run` cannot rewrite a load, it logs `injection skipped` and lets the original program load.
+  If the kernel refuses the rewritten program, `inject-run` drops sites until a rewrite loads; see [Refused rewrites](#refused-rewrites).
+  If `inject-run` cannot rewrite a load at all, it logs `injection skipped` and lets the original program load.
 
 ## Common tasks
 
@@ -145,7 +146,9 @@ The hook receives the call's result as `ret` and, for a callee with a memory arg
 - A name the program never calls adds no hook.
 - `calls` works on its own and with `map`, `auto`, `entry` and `tail_calls`, but not with `dispatch`.
 - `ops`, `maps`, `func`, `line`, `all_matches`, `site_pcs` and `copy_read_only` select map calls and do not apply to `calls`.
-- A call site that cannot be hooked runs unchanged and is listed in `skipped` with a reason, which for the cases below starts with `call:`: a call right before or after another call, a call that is the first instruction of its function, a function without a context or without stack room for the slots, an argument size that is not a constant, or a program that calls `bpf_preempt_disable`.
+- A call site that cannot be hooked runs unchanged and is listed in `skipped` with a reason, which for the cases below starts with `call:`: a call right before or after another call, a call that is the first instruction of its function, a function without a context or without stack room for the slots, an argument size that is not a constant, or a hook that would take the program past the kernel's 256 functions.
+  At that limit the call hooks go one callee at a time, from the end of the order in [Refused rewrites](#refused-rewrites), until the program fits.
+  A call the kernel refuses to hook, such as one inside a `bpf_preempt_disable` region on kernels 6.10 to 6.14, is dropped by the retry in [Refused rewrites](#refused-rewrites) with a reason that starts with `load:`; the program's other sites keep their hooks.
   A program that takes a spin lock keeps its call hooks: with a lock held the kernel accepts only `bpf_spin_unlock` and a few kfuncs, none of which can be hooked, so no hooked call lies inside a locked region.
   If no call site and no other hook is left, the transformation fails with `no call site is instrumented (N skipped)`.
 - When `arg` cannot be typed, and on every hook whose `ret` is a pointer, `arg` is `const void *` with its size in the `bpf-ninja:arg_size=N` decl tag, as on other untrusted hooks. On kernels without `arg:untrusted`, or with `static_untrusted`, such a hook is static and keeps the typed prototype.
@@ -603,7 +606,7 @@ If a rewrite fails, `inject-run` reports it on stderr and keeps running the targ
 | `hooks[].dead_in_this_load` | `true` when this generated hook is absent from the loaded program's `func_info`. Do not try to attach to it in this load. |
 | `hooks[].dead_cause` | Why a dead hook was marked. Currently this says that the verifier removed the generated hook as unreachable in this load. |
 | `hooks[].sites[].dead_in_this_load`, `dead_cause` | A site is dead only when every generated hook that reports that site is absent. For example, an absent miss hook does not make a site dead while its hit hook remains. |
-| `skipped` | Map calls that `auto` did not instrument and call sites of `calls` that could not be hooked, with the site fields and a `reason`. |
+| `skipped` | Map calls that `auto` did not instrument, call sites of `calls` that could not be hooked, and sites the [retry](#refused-rewrites) dropped (reason starting with `load:`), with the site fields and a `reason`. The requested sites of a retried load are those of `hooks` plus those dropped. |
 | `dead_check_error` | Present when one or more hook comparisons failed. Affected hooks, and any site they may report, remain unmarked; independently confirmed absent hooks and sites can still be marked. Consumers must not guess from an unmarked result. |
 
 Treat a marked site as having no live observation point in this load, not as an attach failure.
@@ -761,7 +764,9 @@ Diagnostics go to stderr:
 | `program "P": injection skipped: checker rejected the transform: ERR; probe was not installed; attempted ...` | The stream could not be read or decoded, or the checker rejected it. The original program is retried by default; `--fail-closed` returns `EPERM`. |
 | `program "P": injected hook "H" (...), tracee fd N` | The rewritten program loaded. The line names each hook with its map and site PCs, then each site `auto` skipped and why. After a [jump sequence limit](#jump-sequence-limit) retry it ends with `, lookup branches miss-first`. |
 | `program "P": ...: verifier jump sequence limit: ...; retrying with lookup misses first` | The verifier refused the rewritten program with `The sequence of N jumps is too complex`; see [Jump sequence limit](#jump-sequence-limit). |
-| `program "P": injection skipped: ERR[; attempted ...]` | A read, metadata, transform or BTF-load error, or the kernel rejected the rewritten program. After a rejection the line names the hooks it attempted. |
+| `program "P": transformed PROG_LOAD: ERR; retrying with fewer sites` | The kernel refused the rewritten program; see [Refused rewrites](#refused-rewrites). |
+| `program "P": N sites requested, K kept after T trial loads (budget 24, U used before); dropped pc A: REASON; ...` | The retry's result: the sites the first rewrite hooked, the sites the loaded rewrite hooks, and each dropped site with its reason. |
+| `program "P": injection skipped: ERR[; attempted ...]` | A read, metadata, transform or BTF-load error, or no rewrite loaded, not even after the retry. After a rejection the line names the hooks it attempted. |
 | `bpf command N: injection skipped: ERR` | `inject-run` could not read or accept the arguments of a `BPF_BTF_LOAD` or `BPF_PROG_LOAD` call, for example a matched load without BTF, or two rules match the same load (`ambiguous program selectors`). |
 | `global arg:untrusted probe inconclusive: ERR` | The probe failed for a reason other than the tag. The global form is kept. |
 | `program "P": lookup discovery skipped: ERR` or `failed: ERR` | `--lookups-json` could not list this program. |
@@ -773,9 +778,9 @@ Diagnostics go to stderr:
 | `captures cannot follow this run's loads: ERR` | All 32 sockets are taken by other `inject-run` processes in this network namespace. Captures then find this run's programs by polling. |
 | `program "P": map "M" types from ELF sha256 ...: key "K", value "V"` | `map_btf` supplied these types. |
 
-When the rewritten load fails, `inject-run` retries the original syscall with its original arguments.
+When no rewrite loads, `inject-run` retries the original syscall with its original arguments.
 It also retries the original syscall after a checker read, decode, or validation failure.
-It does not retry with another hook form; the only other rewrite it tries is the one in [Jump sequence limit](#jump-sequence-limit).
+It does not retry with another hook form; the only other rewrites it tries are the one in [Jump sequence limit](#jump-sequence-limit) and those with fewer sites in [Refused rewrites](#refused-rewrites).
 The loader's verifier log buffer can still hold the log of the attempted load.
 After an inconclusive probe, a rejection with `EINVAL`, `EOPNOTSUPP` or `EACCES` of a program with untrusted hooks adds a hint.
 The hint always suggests `"static_untrusted": true`; for a read-only map's lookup hook it also offers `"copy_read_only": true` as an alternative.
@@ -792,7 +797,24 @@ When the rewritten load of a program with hit or `any` lookup hooks fails, `inje
 If the reason is this limit, it rewrites the program with every lookup's miss following the test and the hit waiting, and loads that; the loader's log buffer then holds that load's log.
 The miss-first layout has the opposite cost, so it is only the fallback.
 A refused load binds no map, so the earlier attempts leave nothing behind.
-If the second layout fails as well, the load continues as any failed rewrite does: the original program, or `EPERM` with `--fail-closed`.
+If the second layout fails as well, the load continues as any refused rewrite does; see [Refused rewrites](#refused-rewrites).
+
+### Refused rewrites
+
+When the kernel refuses the rewritten program, `inject-run` looks for a smaller rewrite that loads, with trial loads that carry a verifier log of their own and close the program they loaded.
+It is a bounded heuristic, not a search for the one site at fault: a kernel may refuse two sites together and accept each alone.
+
+1. The sites it may drop are those the refused rewrite hooked, except a lookup the rule selects explicitly with `map`: lookups first, then the other map calls, tail calls, callees with a typed row, result-only hooks of helpers (scalar, then pointer) and of kernel functions (scalar, then pointer), by pc within each kind.
+   The entry hook is never dropped.
+2. The base, the rewrite without any of those sites, is loaded first. If the kernel refuses it, the original program loads, or with `--fail-closed` the load fails with `EPERM`.
+3. Otherwise it keeps the longest prefix of the sites that loads with the sites kept so far (by bisection), drops the next site, tries the other sites of that site's hook together and then each alone, and then tries the kept sites plus the rest, until no site is left.
+4. A site is dropped only after a trial in which it was the one site added to sites that loaded. Its reason is `load: refused in this combination (the kept sites plus this one): MESSAGE`, with the verifier's last message, or the errno where no log was read. It says nothing about the site on its own.
+5. At most 24 extra verifications run per program load: every trial, and the repeated load of [Jump sequence limit](#jump-sequence-limit). When they are used up, the sites not kept by then are dropped with `load: not kept: the budget of 24 trial loads was used up`.
+6. The last rewrite a trial accepted is loaded exactly as it was tried: the same sites, instructions and metadata, never a combination no trial loaded. If the kernel still refuses it, the original program loads, or the load fails with `EPERM` under `--fail-closed`.
+
+`--fail-closed` refuses the load only when no rewrite loads; dropped sites are accepted as skipped sites are.
+stderr names the requested and the kept sites and each dropped site with its reason, and the hooks file lists the dropped sites in `skipped`.
+Each trial costs one verification of the rewritten program, so a refused load of a large program can take up to 24 more verifications than before.
 
 With `--fail-closed`:
 
