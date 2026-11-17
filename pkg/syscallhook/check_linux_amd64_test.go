@@ -319,7 +319,18 @@ func TestStackErrorClass(t *testing.T) {
 		{"trial-einval-no-log", trialLoadError(unix.EINVAL, ""), stepOriginal, "verifier"},
 		// The check passed and the load failed later.
 		{"trial-einval-stats-only", trialLoadError(unix.EINVAL, refusedStats), stepRefuse, "stack"},
-		{"trial-eperm-log", trialLoadError(unix.EPERM, refusedLog), stepRefuse, "stack"},
+		// The verifier's reason with an errno other than EACCES or EINVAL
+		// (kernel/bpf/verifier.c, 6.12 and 7.0).
+		{"trial-e2big-complexity", trialLoadError(unix.E2BIG, "BPF program is too large. Processed 1000001 insn\n"+refusedStats), stepOriginal, "verifier"},
+		{"trial-e2big-frames", trialLoadError(unix.E2BIG, "the call stack of 9 frames is too deep !\n"+refusedStats), stepOriginal, "verifier"},
+		{"trial-eperm-log", trialLoadError(unix.EPERM, "loading/calling other bpf or kernel functions are allowed for CAP_BPF and CAP_SYS_ADMIN\n"+refusedStats), stepOriginal, "verifier"},
+		// No verdict on the program: the log's finalisation replaced it, or
+		// the kernel was short of a resource.
+		{"trial-enospc-log", trialLoadError(unix.ENOSPC, refusedLog), stepRefuse, "stack"},
+		{"trial-efault-log", trialLoadError(unix.EFAULT, refusedLog), stepRefuse, "stack"},
+		{"trial-enomem-log", trialLoadError(unix.ENOMEM, refusedLog), stepRefuse, "stack"},
+		{"trial-e2big-no-log", trialLoadError(unix.E2BIG, ""), stepRefuse, "stack"},
+		{"trial-e2big-stats-only", trialLoadError(unix.E2BIG, refusedStats), stepRefuse, "stack"},
 		{"no-depth-line", analysisErr(noDepth), stepOriginal, "analysis"},
 		{"depth-count", analysisErr(depthCount), stepOriginal, "analysis"},
 		{"ambiguous-name", analysisErr(ambiguous), stepOriginal, "analysis"},

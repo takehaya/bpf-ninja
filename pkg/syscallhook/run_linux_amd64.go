@@ -1468,20 +1468,41 @@ func offloadAudit(attr []byte) error {
 }
 
 // trialLoadError is the error of a stack trial the kernel refused with
-// loadErr and log: errTrialVerifier for EACCES or EINVAL when the log has a
-// line other than the statistics the kernel prints after every check,
-// refused or not (the verifier's reason), or no line at all (the kernel
-// refused the program before the verifier ran, as for a device that is
-// gone); the original then gets the kernel's own error. Else
-// errAuditUnavailable.
+// loadErr and log. It is errTrialVerifier, and the original then gets the
+// kernel's own error and log, when the log has a line other than the
+// statistics the kernel prints after every check, refused or not (the
+// verifier's reason), whatever the errno (E2BIG for the complexity and frame
+// limits, EPERM for a capability the program needs), or for EACCES or EINVAL
+// when the log has no line at all (the kernel refused the program before the
+// verifier ran, as for a device that is gone). It is errAuditUnavailable when
+// the kernel gave no verdict on the program: an errno of the log's
+// finalisation (noVerdict), which replaces the verifier's own, or a
+// statistics-only log.
 func trialLoadError(loadErr error, log string) error {
-	if (errors.Is(loadErr, unix.EACCES) || errors.Is(loadErr, unix.EINVAL)) && (strings.TrimSpace(log) == "" || !statsOnly(log)) {
+	verdict := !noVerdict(loadErr) && !statsOnly(log)
+	if strings.TrimSpace(log) == "" {
+		verdict = errors.Is(loadErr, unix.EACCES) || errors.Is(loadErr, unix.EINVAL)
+	}
+	if verdict {
 		return fmt.Errorf("%w: %v: %s", errTrialVerifier, loadErr, strings.TrimSpace(log))
 	}
 	if log != "" {
 		return fmt.Errorf("%w: trial PROG_LOAD: %w: %s", errAuditUnavailable, loadErr, strings.TrimSpace(log))
 	}
 	return fmt.Errorf("%w: trial PROG_LOAD: %w", errAuditUnavailable, loadErr)
+}
+
+// noVerdict says whether a trial's errno says nothing of the program: ENOSPC
+// and EFAULT, which the log's finalisation returns in place of the verifier's
+// verdict, passed or not (bpf_check, bpf_vlog_finalize), and ENOMEM, EAGAIN
+// and EBUSY, which a later load need not meet.
+func noVerdict(err error) bool {
+	for _, errno := range []unix.Errno{unix.ENOSPC, unix.EFAULT, unix.ENOMEM, unix.EAGAIN, unix.EBUSY} {
+		if errors.Is(err, errno) {
+			return true
+		}
+	}
+	return false
 }
 
 // statsOnly says whether every line of a verifier log is one of the
