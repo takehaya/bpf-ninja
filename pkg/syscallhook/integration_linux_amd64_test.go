@@ -668,8 +668,12 @@ func TestIntegrationJumpLimit(t *testing.T) {
 		{"retry-any", "continue-on-hit", "hook", true, []string{"lookup:any"},
 			[]string{"retrying with lookup misses first", "lookup branches miss-first"}, nil},
 		{"default-kept", "continue-on-miss", "hook", true, nil, []string{"injected"}, []string{"retrying", "lookup branches"}},
-		{"both-fail-open", "both", "plain", false, nil, []string{"retrying with lookup misses first", "injection skipped"}, []string{"injected"}},
-		{"both-fail-closed", "both", "refused", true, nil, []string{"retrying with lookup misses first", "injection skipped"}, []string{"injected"}},
+		// Neither layout fits both sites; the retry, whose base without sites
+		// stands for the original, keeps one, also with --fail-closed.
+		{"both-fail-open", "both", "hook", false, nil, []string{"retrying with lookup misses first", "retrying with fewer sites",
+			"2 sites requested, 1 kept after 1 trial loads", "lookup branches miss-first"}, []string{"injection skipped"}},
+		{"both-fail-closed", "both", "hook", true, nil, []string{"retrying with lookup misses first", "retrying with fewer sites",
+			"2 sites requested, 1 kept after 1 trial loads", "lookup branches miss-first"}, []string{"injection skipped"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Setenv("SYSCALLHOOK_JUMP_CHILD", tc.shape+":"+tc.expected)
