@@ -126,7 +126,8 @@ type Injection struct {
 
 // Refusal is a matched load that ended without hooks; Reason is the message.
 // Cause is what ended it: "sites" (the rule's sites refused the load),
-// "stack" (the kernel cannot give the stack audit: errAuditUnavailable),
+// "stack" (the kernel cannot give the stack audit: errAuditUnavailable, or
+// the tracee failed a request of the audit: errTracee),
 // "analysis" (any other error of the stack analysis: see unanalysable),
 // "verifier" (the verifier
 // refused the trial load of the original program), "checker" (the load-time
@@ -211,11 +212,26 @@ type supervisor struct {
 var errTrialVerifier = errors.New("trial load was rejected by the verifier")
 
 // errAuditUnavailable marks a stack audit the kernel cannot give: the program
-// is offloaded, the trial load failed other than in the verifier, or the
-// kernel did not return the loaded program's functions.
+// is offloaded, or the trial load failed with no verdict on the program.
 var errAuditUnavailable = errors.New("stack audit unavailable")
 
 var errIndirectJump = errors.New("indirect jump")
+
+// errTracee marks a failure on the traced process's side, in whatever step:
+// its memory could not be allocated, read or written, or a query on one of
+// its descriptors failed. As for a trial that fails other than by the
+// kernel's refusal in the retry, the original then loads under every rule,
+// and only FailClosed refuses it (see refuseOriginal).
+var errTracee = errors.New("tracee")
+
+// traceeError marks err as a failure on the traced process's side
+// (errTracee); nil stays nil.
+func traceeError(err error) error {
+	if err == nil || errors.Is(err, errTracee) {
+		return err
+	}
+	return fmt.Errorf("%w: %w", errTracee, err)
+}
 
 // errAnalysisPanic marks a panic in the analysis of one load (see guard).
 var errAnalysisPanic = errors.New("analysis of the load panicked")
@@ -387,13 +403,14 @@ func refuseOriginal(failClosed bool, rule Rule, stackErr error) bool {
 
 // unanalysable says whether the stack audit failed in the analysis of the
 // program rather than in the kernel: every error of preloadDepths but an
-// audit the kernel cannot give (errAuditUnavailable) and a trial the
-// verifier refused (errTrialVerifier). Among them are the analysis's own
+// audit the kernel cannot give (errAuditUnavailable), a trial the
+// verifier refused (errTrialVerifier) and a failure of the tracee
+// (errTracee). Among them are the analysis's own
 // refusals (inject.ErrRefused and the plain errors of the stack-depth and
 // frame-floor steps), a panic in it (errAnalysisPanic) and a trial load it
 // cannot run (errIndirectJump). No rewrite of such a program is possible.
 func unanalysable(stackErr error) bool {
-	return stackErr != nil && !errors.Is(stackErr, errAuditUnavailable) && !errors.Is(stackErr, errTrialVerifier)
+	return stackErr != nil && !errors.Is(stackErr, errAuditUnavailable) && !errors.Is(stackErr, errTrialVerifier) && !errors.Is(stackErr, errTracee)
 }
 
 func retryOriginalOrRefuse(failClosed bool, retry func() (int64, error)) (int64, error) {
@@ -1401,6 +1418,16 @@ func runningKernelInfo() inject.KernelInfo {
 	return info
 }
 
+// loadedFunctions names the functions of the loaded program fd from the
+// func_info query returns; a failed query is the tracee's (traceeError).
+func loadedFunctions(query func(fd uint32) ([]byte, error), fd uint32, spec *btf.Spec) ([]string, error) {
+	records, err := query(fd)
+	if err != nil {
+		return nil, traceeError(err)
+	}
+	return loadedFunctionNames(records, spec)
+}
+
 func loadedFunctionNames(records []byte, spec *btf.Spec) ([]string, error) {
 	if len(records)%8 != 0 {
 		return nil, fmt.Errorf("loaded func_info has %d bytes, not 8-byte records", len(records))
@@ -1479,6 +1506,9 @@ func offloadAudit(attr []byte) error {
 // finalisation (noVerdict), which replaces the verifier's own, or a
 // statistics-only log.
 func trialLoadError(loadErr error, log string) error {
+	if errors.Is(loadErr, errTracee) {
+		return loadErr
+	}
 	verdict := !noVerdict(loadErr) && !statsOnly(log)
 	if strings.TrimSpace(log) == "" {
 		verdict = errors.Is(loadErr, unix.EACCES) || errors.Is(loadErr, unix.EINVAL)
@@ -1544,7 +1574,7 @@ func (s *supervisor) preloadDepths(r *remote, attr []byte, rounding int) (report
 	readLog := func() (string, error) {
 		logBytes, readErr := readMemory(r.pid, logAddr, logSize)
 		if readErr != nil {
-			return "", fmt.Errorf("reading verifier stats: %w", readErr)
+			return "", traceeError(fmt.Errorf("reading verifier stats: %w", readErr))
 		}
 		return cstring(logBytes), nil
 	}
@@ -1567,11 +1597,7 @@ func (s *supervisor) preloadDepths(r *remote, attr []byte, rounding int) (report
 		if parseErr != nil {
 			return parseErr
 		}
-		records, infoErr := r.progFuncInfo(uint32(fd))
-		if infoErr != nil {
-			return fmt.Errorf("%w: %w", errAuditUnavailable, infoErr)
-		}
-		names, namesErr := loadedFunctionNames(records, spec)
+		names, namesErr := loadedFunctions(r.progFuncInfo, uint32(fd), spec)
 		if namesErr != nil {
 			return namesErr
 		}

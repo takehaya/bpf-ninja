@@ -296,6 +296,8 @@ func TestStackErrorClass(t *testing.T) {
 	_, ambiguous := frameFloors([]int{8, 8}, []string{"p", "p"}, raw, inject.KernelInfo{Major: 7})
 	_, badDepth := frameFloors([]int{600}, []string{"p"}, raw, inject.KernelInfo{Major: 7})
 	_, absent := frameFloors([]int{8}, []string{"q"}, raw, inject.KernelInfo{Major: 7})
+	_, funcInfoErr := loadedFunctions(func(uint32) ([]byte, error) { return nil, unix.EBADF }, 3, nil)
+	_, funcInfoCount := loadedFunctions(func(uint32) ([]byte, error) { return nil, errors.New("tracee program fd 3 has invalid func_info count 0") }, 3, nil)
 	offload := make([]byte, 128)
 	put32(offload, 64, 3)
 	const refusedStats = "verification time 6 usec\nstack depth 0\nprocessed 1 insns (limit 1000000) max_states_per_insn 0 total_states 0 peak_states 0 mark_read 0\n"
@@ -310,7 +312,10 @@ func TestStackErrorClass(t *testing.T) {
 		{"offload", offloadAudit(offload), stepRefuse, "stack"},
 		{"short-attr", offloadAudit(make([]byte, 64)), stepRefuse, "stack"},
 		{"trial-enomem", trialLoadError(unix.ENOMEM, ""), stepRefuse, "stack"},
-		{"func-info", fmt.Errorf("%w: %w", errAuditUnavailable, unix.EFAULT), stepRefuse, "stack"},
+		// A failure on the tracee's side loads the original in every step.
+		{"func-info", funcInfoErr, stepOriginal, "stack"},
+		{"func-info-count", funcInfoCount, stepOriginal, "stack"},
+		{"trial-tracee", trialLoadError(traceeError(fmt.Errorf("tracee mmap: %w", unix.ENOMEM)), ""), stepOriginal, "stack"},
 		{"trial-verifier", trialLoadError(unix.EACCES, "R0 !read_ok"), stepOriginal, "verifier"},
 		// The kernel prints the statistics after a refused check as well.
 		{"trial-verifier-stats", trialLoadError(unix.EACCES, refusedLog), stepOriginal, "verifier"},
@@ -339,7 +344,7 @@ func TestStackErrorClass(t *testing.T) {
 		{"refused", deadRegisterStackErr(t), stepOriginal, "analysis"},
 		{"panic", guard("parsing verifier stats", func() error { panic("boom") }), stepOriginal, "analysis"},
 		{"indirect-jump", fmt.Errorf("%w at instruction 3 is unsupported", errIndirectJump), stepOriginal, "analysis"},
-		{"reading-log", fmt.Errorf("reading verifier stats: %w", unix.ESRCH), stepOriginal, "analysis"},
+		{"reading-log", traceeError(fmt.Errorf("reading verifier stats: %w", unix.ESRCH)), stepOriginal, "stack"},
 	} {
 		step, cause := failedLoad(loadFailure{err: fmt.Errorf("stack depth unavailable: %w", tc.stackErr), stackErr: tc.stackErr}, false, mapRule)
 		if step != tc.step || cause != tc.cause {
