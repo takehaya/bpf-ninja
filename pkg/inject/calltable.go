@@ -16,7 +16,7 @@ type CallRow struct {
 	Helper  asm.BuiltinFunc // helper id; 0 for a kernel function (kfunc)
 	RetPtr  bool            // the result is a pointer; the hook takes const void *ret
 	ArgReg  asm.Register    // R1..R5: the memory argument the hook also takes; 0: none
-	SizeReg asm.Register    // register holding the argument's size in bytes at the call
+	SizeReg asm.Register    // register holding the argument's size in bytes at the call; 0 for a kernel function whose prototype gives the pointee (kfuncArg)
 	ArgType string          // struct name looked up for the pointee
 	Writes  bool            // the callee's own argument check is a write on every supported kernel
 	RetSize uint32          // byte size of a kernel function's integer result narrower than 8 bytes; 0: 8
@@ -45,6 +45,11 @@ var callTable = []CallRow{
 	{Name: "bpf_fib_lookup", Helper: asm.FnFibLookup, ArgReg: asm.R2, SizeReg: asm.R3, ArgType: "bpf_fib_lookup", Writes: true},
 	{Name: "bpf_xdp_ct_lookup", RetPtr: true, ArgReg: asm.R4, SizeReg: asm.R5, ArgType: "bpf_ct_opts", Writes: true},
 	{Name: "bpf_skb_ct_lookup", RetPtr: true, ArgReg: asm.R4, SizeReg: asm.R5, ArgType: "bpf_ct_opts", Writes: true},
+	// The XDP receive-metadata kfuncs return a status and write the value
+	// through their first pointer argument; the hook takes that value.
+	{Name: "bpf_xdp_metadata_rx_timestamp", ArgReg: asm.R2, Writes: true, RetSize: 4, RetSigned: true},
+	{Name: "bpf_xdp_metadata_rx_hash", ArgReg: asm.R2, Writes: true, RetSize: 4, RetSigned: true},
+	{Name: "bpf_xdp_metadata_rx_vlan_tag", ArgReg: asm.R2, Writes: true, RetSize: 4, RetSigned: true},
 }
 
 // pointerResults are the helpers with a pointer result and no row that get
@@ -319,6 +324,26 @@ const unnamedKfuncReason = "a kernel-function call that cannot be named"
 // that calls of different kernel functions stay apart in a listing.
 func unnamedKfuncName(ins *asm.Instruction) string {
 	return fmt.Sprintf("kfunc_%d_%d", ins.Offset, ins.Constant)
+}
+
+// kfuncArg is the pointee of parameter R<row.ArgReg> in the prototype of
+// the kernel function of row, a row without SizeReg, found in kernel
+// (kfuncByName), and its byte size; nil when the prototype cannot be read,
+// the parameter is not a pointer, or its pointee has no size from 1 to 512.
+func kfuncArg(row *CallRow, kernel *btf.Spec) (btf.Type, uint32) {
+	proto := kfuncByName(row.Name, kernel, nil)
+	if proto == nil || len(proto.Params) < int(row.ArgReg) {
+		return nil, 0
+	}
+	ptr, ok := btf.UnderlyingType(proto.Params[row.ArgReg-1].Type).(*btf.Pointer)
+	if !ok {
+		return nil, 0
+	}
+	size, err := btf.Sizeof(ptr.Target)
+	if err != nil || size <= 0 || size > 512 {
+		return nil, 0
+	}
+	return ptr.Target, uint32(size)
 }
 
 // callArgType returns the pointee of the hook's arg parameter for a site whose size register holds n,

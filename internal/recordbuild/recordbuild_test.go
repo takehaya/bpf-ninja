@@ -324,3 +324,31 @@ func TestTypedRetMember(t *testing.T) {
 		t.Fatalf("entry layout records ret: %+v", l)
 	}
 }
+
+// TestScalarPointeeCallHookArg: the hook of an XDP receive-metadata kfunc
+// takes const T *arg, T the value the kfunc wrote (u64 timestamp, u32 hash,
+// __be16 vlan_proto). --arg-filter and --arg-echo read it as arg[0], and
+// --record entry shows it.
+func TestScalarPointeeCallHookArg(t *testing.T) {
+	for _, c := range []struct {
+		typ    btf.Type
+		size   uint32
+		record string
+	}{
+		{&btf.Typedef{Name: "u64", Type: u64}, 8, "site=3 ret=-22 arg[0]=30064771074"},
+		{&btf.Typedef{Name: "u32", Type: u32}, 4, "site=3 ret=-22 arg[0]=2"},
+		// Network order is read as a host integer: bytes 02 00 show as 2.
+		{&btf.Typedef{Name: "__be16", Type: &btf.Int{Name: "__u16", Size: 2}}, 2, "site=3 ret=-22 arg[0]=2"},
+	} {
+		params := callHook(t, []string{hookabi.SizeTag("ret", 4), hookabi.RetSignedTag},
+			btf.FuncParam{Name: "arg", Type: &btf.Pointer{Target: &btf.Const{Type: c.typ}}}, btf.FuncParam{Name: "ret", Type: u64})
+		got, err := filter.ParseAndValidateFilters([]string{"arg[0]=5"}, params)
+		want := filter.ArgFilter{ParamName: "arg[0]", ParamIndex: 2, ParamSize: c.size, Deref: true, Value: 5}
+		if err != nil || len(got) != 1 || got[0] != want {
+			t.Fatalf("%s: %+v %v, want %+v", c.typ.TypeName(), got, err, want)
+		}
+		if got := comment(t, entry(t, params, 256)); got != c.record {
+			t.Fatalf("%s: record entry %q, want %q", c.typ.TypeName(), got, c.record)
+		}
+	}
+}

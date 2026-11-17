@@ -94,6 +94,12 @@ func selectCalls(sites []discoveredLookup, req LookupRequest, types *btf.Spec) (
 				}
 				typed = typed && site.argOwn
 			}
+			var protoArg btf.Type
+			if row.SizeReg == 0 && group.argReason == "" {
+				if protoArg, sizes[0] = kfuncArg(row, kernel); protoArg == nil {
+					group.argReason = "the argument's pointee size is not in the kernel BTF at hand"
+				}
+			}
 			if group.argReason == "" && len(sizes) > 1 {
 				group.argReason = fmt.Sprintf("%s is called with more than one argument size in this program (%d and %d)", row.Name, sizes[0], sizes[1])
 			}
@@ -106,6 +112,9 @@ func selectCalls(sites []discoveredLookup, req LookupRequest, types *btf.Spec) (
 			}
 			group.argSize, group.typed = sizes[0], typed
 			group.argType, group.argName = callArgType(row, sizes[0], types, kernel)
+			if protoArg != nil {
+				group.argType, group.argName = btf.Copy(protoArg), protoArg.TypeName()
+			}
 		}
 		kept = append(kept, group)
 	}

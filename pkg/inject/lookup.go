@@ -413,7 +413,7 @@ type LookupHook struct {
 	FuncInfo  []byte
 	Call      string `json:",omitempty"` // callee name; set iff Kind == HookCall
 	ArgReg    int    `json:",omitempty"` // 1..5: the callee register the hook's arg parameter carries; 0: no arg
-	ArgType   string `json:",omitempty"` // BTF struct name of arg's pointee; "" with ArgReg != 0: struct { u8 bytes[ArgSize]; }
+	ArgType   string `json:",omitempty"` // BTF type name of arg's pointee (a struct, or a kernel function's scalar); "" with ArgReg != 0: struct { u8 bytes[ArgSize]; }
 	ArgSize   uint32 `json:",omitempty"` // size of arg's pointee in bytes
 	RetPtr    bool   `json:",omitempty"` // ret is const void *; false: u64 ret
 	RetSize   uint32 `json:",omitempty"` // byte size of the callee's integer result when narrower than 8: only its low bytes are the result
@@ -785,6 +785,8 @@ func discoverSites(insns asm.Instructions, typ ebpf.ProgramType, resolve lookupM
 				switch {
 				case callReason(insns, it.Index) != "":
 					site.Reason = callReason(insns, it.Index)
+				case row.ArgReg != 0 && row.SizeReg == 0:
+					argOwn = ownStack[row.ArgReg] // the prototype gives the size (kfuncArg)
 				case row.ArgReg != 0 && !isConst[row.SizeReg]:
 					argReason = fmt.Sprintf("the argument size in %s at pc %d is not a constant set in its basic block", regName(row.SizeReg), pc)
 				case row.ArgReg != 0 && (consts[row.SizeReg] <= 0 || consts[row.SizeReg] > 512):

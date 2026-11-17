@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/cilium/ebpf/asm"
@@ -70,7 +71,8 @@ func callRow(t testing.TB, name string) *CallRow {
 }
 
 func TestCallTable(t *testing.T) {
-	want := []string{"bpf_ktime_get_ns", "bpf_jiffies64", "bpf_get_prandom_u32", "bpf_get_smp_processor_id", "bpf_get_hash_recalc", "bpf_get_socket_cookie", "bpf_xdp_get_buff_len", "bpf_skb_load_bytes", "bpf_xdp_load_bytes", "bpf_sk_lookup_tcp", "bpf_sk_lookup_udp", "bpf_skc_lookup_tcp", "bpf_probe_read_kernel", "bpf_fib_lookup", "bpf_xdp_ct_lookup", "bpf_skb_ct_lookup"}
+	want := []string{"bpf_ktime_get_ns", "bpf_jiffies64", "bpf_get_prandom_u32", "bpf_get_smp_processor_id", "bpf_get_hash_recalc", "bpf_get_socket_cookie", "bpf_xdp_get_buff_len", "bpf_skb_load_bytes", "bpf_xdp_load_bytes", "bpf_sk_lookup_tcp", "bpf_sk_lookup_udp", "bpf_skc_lookup_tcp", "bpf_probe_read_kernel", "bpf_fib_lookup", "bpf_xdp_ct_lookup", "bpf_skb_ct_lookup",
+		"bpf_xdp_metadata_rx_timestamp", "bpf_xdp_metadata_rx_hash", "bpf_xdp_metadata_rx_vlan_tag"}
 	if got := SupportedCalls(); !slices.Equal(got, want) {
 		t.Fatalf("SupportedCalls() = %v, want %v", got, want)
 	}
@@ -220,4 +222,110 @@ func typesOf(spec *btf.Spec) []btf.Type {
 		}
 	}
 	return types
+}
+
+// metadataKernelSpec is a kernel BTF with the prototypes of the XDP
+// receive-metadata kfuncs.
+func metadataKernelSpec(t testing.TB) *btf.Spec {
+	t.Helper()
+	ret := &btf.Int{Name: "int", Size: 4, Encoding: btf.Signed}
+	ctx := &btf.Pointer{Target: &btf.Const{Type: &btf.Struct{Name: "xdp_md", Size: 24}}}
+	u16 := &btf.Typedef{Name: "u16", Type: &btf.Int{Name: "unsigned short", Size: 2}}
+	be16 := &btf.Typedef{Name: "__be16", Type: &btf.Typedef{Name: "__u16", Type: &btf.Int{Name: "unsigned short", Size: 2}}}
+	fn := func(name string, params ...btf.FuncParam) *btf.Func {
+		return &btf.Func{Name: name, Linkage: btf.GlobalFunc, Type: &btf.FuncProto{Return: ret, Params: append([]btf.FuncParam{{Name: "ctx", Type: ctx}}, params...)}}
+	}
+	return specOf(t,
+		fn("bpf_xdp_metadata_rx_timestamp", btf.FuncParam{Name: "timestamp", Type: &btf.Pointer{Target: &btf.Typedef{Name: "u64", Type: &btf.Int{Name: "unsigned long long", Size: 8}}}}),
+		fn("bpf_xdp_metadata_rx_hash", btf.FuncParam{Name: "hash", Type: &btf.Pointer{Target: &btf.Typedef{Name: "u32", Type: &btf.Int{Name: "unsigned int", Size: 4}}}},
+			btf.FuncParam{Name: "rss_type", Type: &btf.Pointer{Target: &btf.Enum{Name: "xdp_rss_hash_type", Size: 4}}}),
+		fn("bpf_xdp_metadata_rx_vlan_tag", btf.FuncParam{Name: "vlan_proto", Type: &btf.Pointer{Target: be16}},
+			btf.FuncParam{Name: "vlan_tci", Type: &btf.Pointer{Target: u16}}),
+		fn("bpf_not_a_pointer", btf.FuncParam{Name: "x", Type: ret}),
+	)
+}
+
+// The receive-metadata rows take their first value argument, whose size the
+// prototype gives.
+func TestKfuncArg(t *testing.T) {
+	kernel := metadataKernelSpec(t)
+	for _, tc := range []struct {
+		name, typ string
+		size      uint32
+	}{
+		{"bpf_xdp_metadata_rx_timestamp", "u64", 8},
+		{"bpf_xdp_metadata_rx_hash", "u32", 4},
+		{"bpf_xdp_metadata_rx_vlan_tag", "__be16", 2},
+	} {
+		row := callRow(t, tc.name)
+		if row.ArgReg != asm.R2 || row.SizeReg != 0 || !row.Writes || row.RetSize != 4 || !row.RetSigned || row.RetPtr {
+			t.Errorf("%s row %+v", tc.name, row)
+		}
+		typ, size := kfuncArg(row, kernel)
+		if typ == nil || typ.TypeName() != tc.typ || size != tc.size {
+			t.Errorf("%s: arg %v size %d, want %s and %d", tc.name, typ, size, tc.typ, tc.size)
+		}
+		if typ, _ := kfuncArg(row, nil); typ != nil {
+			t.Errorf("%s without kernel BTF: arg %v", tc.name, typ)
+		}
+	}
+	if typ, _ := kfuncArg(&CallRow{Name: "bpf_not_a_pointer", ArgReg: asm.R2}, kernel); typ != nil {
+		t.Errorf("a scalar parameter gave arg %v", typ)
+	}
+}
+
+// A metadata kfunc's hook takes const T *arg, T the prototype's pointee, for
+// a buffer on the program's own stack; without the prototype at hand the
+// call keeps the result-only hook and says why.
+func TestCallHookMetadataArg(t *testing.T) {
+	for _, tc := range []struct {
+		name, typ string
+		size      uint32
+		third     bool
+	}{
+		{"bpf_xdp_metadata_rx_timestamp", "u64", 8, false},
+		{"bpf_xdp_metadata_rx_hash", "u32", 4, true},
+		{"bpf_xdp_metadata_rx_vlan_tag", "__be16", 2, true},
+	} {
+		for _, withKernel := range []bool{true, false} {
+			spec := xdpMetadataFixture(kfuncCall(-1).WithReference(tc.name), tc.third)
+			req := callReq(tc.name)
+			if withKernel {
+				req.Kernel = metadataKernelSpec(t)
+			}
+			plan, err := transformLookup(spec, req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(plan.hooks) != 1 {
+				t.Fatalf("%s: hooks %+v skipped %+v", tc.name, plan.hooks, plan.skipped)
+			}
+			h := plan.hooks[0]
+			fn, params := callHookFn(t, spec.Programs["p"].Instructions, h.Name)
+			if !withKernel {
+				if h.ArgReg != 0 || !strings.Contains(h.ArgReason, "not in the kernel BTF") || slices.Contains(params, "arg") || h.RetSize != 4 {
+					t.Errorf("%s without kernel BTF: hook %+v params %v", tc.name, h, params)
+				}
+				continue
+			}
+			if h.ArgReg != 2 || h.ArgSize != tc.size || h.ArgType != tc.typ || h.Untrusted || h.Static || h.ArgReason != "" || h.RetSize != 4 || !h.RetSigned {
+				t.Fatalf("%s: hook %+v", tc.name, h)
+			}
+			if !slices.Equal(params, []string{"ctx", "site", "arg", "ret"}) {
+				t.Fatalf("%s: params %v", tc.name, params)
+			}
+			arg := fn.Type.(*btf.FuncProto).Params[2].Type
+			ptr, ok := arg.(*btf.Pointer)
+			if !ok {
+				t.Fatalf("%s: arg is %v", tc.name, arg)
+			}
+			target := ptr.Target
+			if c, ok := target.(*btf.Const); ok {
+				target = c.Type
+			}
+			if target.TypeName() != tc.typ {
+				t.Fatalf("%s: arg points to %v", tc.name, ptr.Target)
+			}
+		}
+	}
 }
