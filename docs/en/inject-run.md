@@ -29,7 +29,7 @@ bpf-ninja -p "$PROG_ID" --func "$HOOK" -c 10 -w hook.pcap
 
 - `inject-run` obtains each function's stack floor from a trial verifier load; see [Stack floor](#stack-floor).
 - The ready rule uses `auto` with the hook prefix `ninja`, so a lookup on the map `sessions` gets the hook `ninja_sessions`.
-  It names every map with a call, each op the program calls as `op:any`, the entry, every callee with a hook form and, when the program has one, the tail calls; see [Lookups file](#lookups-file).
+  It names every map with a call, each op the program calls as `op:any`, the entry, every callee that can be hooked and, when the program has one, the tail calls; see [Lookups file](#lookups-file).
 - To observe less, delete names from `maps`, `ops` or `calls`, or delete `entry` or `tail_calls`.
   In a rule written with `hook_prefix`, a missing or empty list hooks nothing of its kind, so deleting a name never adds a hook.
 - stderr reports each injection, for example `inject-run: program "xdp_ingress": injected hook "ninja_sessions" (lookup map "sessions", site pc 6), tracee fd 9`.
@@ -132,13 +132,21 @@ The hook receives the call's result as `ret` and, for a callee with a memory arg
 | `bpf_probe_read_kernel` | `(ctx, u32 site, const struct { u8 bytes[N]; } *arg, u64 ret)` | the destination buffer (R1) of the constant size N in R2, as the call left it | the result code |
 | `bpf_fib_lookup` | `(ctx, u32 site, const struct bpf_fib_lookup *arg, u64 ret)` | the lookup parameters (R2), after the lookup has filled them in | the lookup result code |
 | `bpf_xdp_ct_lookup`, `bpf_skb_ct_lookup` | `(ctx, u32 site, const struct bpf_ct_opts *arg, const void *ret)` | the options (R4), with the error the lookup set | the connection pointer; test it for NULL, it cannot be read through |
+| any other helper with an integer result, such as `bpf_get_numa_node_id` or `bpf_redirect` | `(ctx, u32 site, u64 ret)` | none | the value |
+| `bpf_sk_fullsock`, `bpf_tcp_sock`, `bpf_ringbuf_reserve`, `bpf_this_cpu_ptr`, `bpf_kptr_xchg` | `(ctx, u32 site, const void *ret)` | none | the pointer; test it for NULL, it cannot be read through |
 
-- Only the names above are accepted; any other name, an empty name or a name given twice is a configuration error.
-  The [lookups file](#lookups-file) lists every callee of a program in `callees`; a callee without a hook form has a `reason`.
+- Besides the callees with a row above, `calls` accepts every helper by its kernel name, except:
+  - helpers that run or register a callback, take or release a lock, do not return, or return nothing;
+  - `bpf_get_stack`, `bpf_get_stackid`, `bpf_get_task_stack`, `bpf_get_branch_snapshot` and `bpf_get_func_ip`, which read native code addresses or branch records that the inserted code may change;
+  - the map helpers and `bpf_tail_call`, which `ops` and `tail_calls` observe;
+  - helpers with a pointer result other than the five in the table: each pointer kind is enabled only with a kernel test.
+- Such a name is refused with `Calls name "NAME" cannot be hooked: REASON`. A kernel function needs a row; any other name, an empty name or a name given twice is a configuration error.
+  The [lookups file](#lookups-file) lists every callee of a program in `callees`; a callee that cannot be hooked has a `reason`.
 - A name the program never calls adds no hook.
 - `calls` works on its own and with `map`, `auto`, `entry` and `tail_calls`, but not with `dispatch`.
 - `ops`, `maps`, `func`, `line`, `all_matches`, `site_pcs` and `copy_read_only` select map calls and do not apply to `calls`.
-- A call site that cannot be hooked runs unchanged and is listed in `skipped` with a reason, which for the cases below starts with `call:`: a call right before or after another call, a call that is the first instruction of its function, a function without a context or without stack room for the slots, an argument size that is not a constant, or a program that calls `bpf_spin_lock`, `bpf_preempt_disable` or `bpf_res_spin_lock*`.
+- A call site that cannot be hooked runs unchanged and is listed in `skipped` with a reason, which for the cases below starts with `call:`: a call right before or after another call, a call that is the first instruction of its function, a function without a context or without stack room for the slots, an argument size that is not a constant, or a program that calls `bpf_preempt_disable`.
+  A program that takes a spin lock keeps its call hooks: with a lock held the kernel accepts only `bpf_spin_unlock` and a few kfuncs, none of which can be hooked, so no hooked call lies inside a locked region.
   If no call site and no other hook is left, the transformation fails with `no call site is instrumented (N skipped)`.
 - When `arg` cannot be typed, and on every hook whose `ret` is a pointer, `arg` is `const void *` with its size in the `bpf-ninja:arg_size=N` decl tag, as on other untrusted hooks. On kernels without `arg:untrusted`, or with `static_untrusted`, such a hook is static and keeps the typed prototype.
 - `inject-run` reads the running kernel's BTF once, when a rule has `calls` or `--lookups-json` is given, to name kfunc calls and type their arguments.
@@ -392,7 +400,7 @@ A rule whose `program` never loads produces no diagnostic at all.
 | Key | Type | Default | Meaning | Constraints |
 |---|---|---|---|---|
 | `program` | string | required | The program to rewrite: its kernel name or its entry function name. | Kernel names have at most 15 characters; a function name can be longer. One rule per program. |
-| `hook_prefix` | string | `hook_prefix` or `hook` is required | The prefix of the hook names; the lookup hook of a `map` rule and the one hook of a `dispatch` rule carry no suffix. A rule written with `hook_prefix` states every kind: a missing or empty `maps`, `ops` or `calls` hooks nothing of that kind, and a `map` rule needs `ops`. | As `hook`. With `hook`, both must be equal. |
+| `hook_prefix` | string | `hook_prefix` or `hook` is required | The prefix of the hook names; the lookup hook of a `map` rule and the one hook of a `dispatch` rule carry no suffix. A rule written with `hook_prefix` states every kind: a missing or empty `maps`, `ops` or `calls` hooks nothing of that kind. A `map` rule names its one site itself and observes its lookup without `ops`, as with `hook`. | As `hook`. With `hook`, both must be equal. |
 | `hook` | string | `hook_prefix` or `hook` is required | The hook name. With `auto`, `entry`, `tail_calls`, `calls` or `ops`, the prefix of the hook names. With `dispatch`, the name of the one hook. In a rule written with `hook`, `maps` and `ops` keep the defaults below. | A C identifier. It must leave room for the longest suffix within 127 bytes; see [Hook names](#hook-names). |
 | `map` | string | none | Observe lookups on this map, by exact kernel map name. | Not with `auto`. A rule needs one of `map`, `auto`, `entry`, `tail_calls` or `calls`. |
 | `func` | string | none | With `map`: only lookups in this BTF function. | Needs `map`. |
@@ -400,7 +408,7 @@ A rule whose `program` never loads produces no diagnostic at all.
 | `all_matches` | bool | false | With `map`: take every matching lookup instead of requiring exactly one. | Needs `map`. Not with `site_pcs`. |
 | `site_pcs` | integer array | none | With `map`: take the lookups at these load-time instruction indexes. | Needs `map`. Not with `all_matches`. Each PC must be a lookup that matches the other filters, and must appear once. |
 | `auto` | bool | false | Instrument every supported call of the observed ops (lookups by default, or the ops that `ops` lists), with one hook per map and op. | Not with `map`, `func`, `line`, `all_matches` or `site_pcs`. |
-| `maps` | string array | every map; none with `hook_prefix` | With `auto`: only calls on these maps, by exact kernel name. Calls on other maps run unchanged. | Needs `auto`. Names must be unique, and each must match a call the rule observes. |
+| `maps` | string array | every map; none with `hook_prefix` | With `auto`: only calls on these maps, by exact kernel name. Calls on other maps run unchanged. | Needs `auto`. Names must be unique. With `hook`, each must match a call the rule observes; with `hook_prefix`, a name without such a call gets no hook and is listed in `skipped` with the reason. |
 | `ops` | string array | `["lookup"]`; none with `hook_prefix` | The calls and results that call a hook; see the [ops table](#choose-the-maps-and-operations-to-observe). | Needs `map` or `auto`. Ops other than `lookup` need `auto`. Each op appears once, so `lookup:hit` and `lookup:miss` together are refused; use `lookup:any`. |
 | `entry` | bool | false | Add `HOOK_entry(ctx)` at program start. | |
 | `tail_calls` | bool | false | Add `HOOK_tail_call(ctx, site, index)` after each failed tail call. | The program must call `bpf_tail_call`. |
@@ -640,22 +648,20 @@ It writes the file like the hooks file: the file exists before the target starts
       ],
       "callees": [
         {"name": "bpf_ktime_get_ns", "kind": "helper", "ret": "scalar", "typed": true, "sites": [10]},
-        {"name": "bpf_get_numa_node_id", "kind": "helper", "ret": "scalar", "typed": false, "sites": [12],
-         "reason": "no hook form yet"}
+        {"name": "bpf_get_numa_node_id", "kind": "helper", "ret": "scalar", "typed": false, "sites": [12]}
       ],
       "call_sites": [
         {"kind": "call", "pc": 10, "call": "bpf_ktime_get_ns", "func": "entry_with_long_name", "file": "p.c", "line": 44,
          "label": "bpf_ktime_get_ns@entry_with_long_name:44", "ctx_source": "entry", "frame": "entry_with_long_name", "floor": -8},
         {"kind": "call", "pc": 12, "call": "bpf_get_numa_node_id", "func": "entry_with_long_name", "file": "p.c", "line": 45,
-         "label": "bpf_get_numa_node_id@entry_with_long_name:45", "frame": "entry_with_long_name", "floor": -8,
-         "reason": "no hook form yet"}
+         "label": "bpf_get_numa_node_id@entry_with_long_name:45", "ctx_source": "entry", "frame": "entry_with_long_name", "floor": -8}
       ],
       "rule": {
         "program": "entry_with_long_name",
         "auto": true,
         "maps": ["sessions"],
         "entry": true,
-        "calls": ["bpf_ktime_get_ns"],
+        "calls": ["bpf_ktime_get_ns", "bpf_get_numa_node_id"],
         "ops": ["lookup:any"],
         "hook_prefix": "ninja"
       },
@@ -681,15 +687,15 @@ It writes the file like the hooks file: the file exists before the target starts
 | `maps` | Every map the program references. Maps with lookups come first, in the order of their first lookup, with each lookup's `pc` in `sites`. The others follow by name. `ops` lists the ops called on each map. |
 | `lookups` | The lookup calls, with the fields of a hooks-file site. |
 | `calls` | Every lookup, per-CPU lookup, update, delete, push, pop and peek call, with the op as `kind`. |
-| `callees` | Every helper and kernel function the program calls, other than the map helpers and `bpf_tail_call`: `kind` is `helper` or `kfunc`, `module` the fd-array offset of a module's kernel function, `ret` the result (`scalar`, `pointer` or `void`), and `sites` the `pc` of each call. `typed` callees have a hook form and may be named in `calls`. Any other callee has a `reason`: `no hook form yet`, or why it is never hooked, such as a callback, a lock, a call that does not return or a call the verifier rewrites. |
-| `call_sites` | The calls of `callees`, with `kind` `call` and the callee in `call`. A site of a `typed` callee has the `reason` a rule naming it would see. |
+| `callees` | Every helper and kernel function the program calls, other than the map helpers and `bpf_tail_call`: `kind` is `helper` or `kfunc`, `module` the fd-array offset of a module's kernel function, `ret` the result (`scalar`, `pointer` or `void`), and `sites` the `pc` of each call. A callee without a `reason` may be named in `calls`; `typed` ones have a row and a typed hook, the other helpers the result-only hook. Any other callee has a `reason`: `no hook form yet` for a kernel function without a row, or why it is never hooked, such as a callback, a lock, a call that does not return, a call the verifier rewrites or a pointer kind without a kernel test. |
+| `call_sites` | The calls of `callees`, with `kind` `call` and the callee in `call`. A site of a callee that may be named has the `reason` a rule naming it would see. |
 | `tail_calls` | The `bpf_tail_call` sites. |
 | `label` on every site | A name for the site: `NAME@FUNC:LINE`, or `NAME@FUNC+SLOT` without line info, where SLOT counts instruction slots from the function's first instruction. NAME is the map of a lookup (`any` for a map known only at run time), `MAP.OP` for another map call, the callee of a call, or `tail_call`. Sites with the same label get `#2`, `#3` in `pc` order. |
 | `reason` on a lookup or call | `auto` would skip it, unless it also has `"generic": true`, which means `auto` sends it to the generic hook. A site without a reason passed discovery and has a usable frame floor; whether its slots fit is decided only when `auto` selects (see [Map listing of a running program](#map-listing-of-a-running-program)). |
 | `ctx_source` on a lookup or call | The proven source used to initialize the site's frame: `entry`, `r6` through `r9`, or an aligned slot such as `fp-80`. It is omitted when no source was proven. |
 | `frame`, `floor` on a lookup or call | The function frame that owns the site and the floor used to place its spill slots. |
 | `stack` | The trial load's verifier accounting. A function with `skip_reason` is not instrumented, and when it is the entry function the whole program is not; see [Stack floor](#stack-floor). `dead` means the verifier omitted that function from this load. When `source` is `verifier`, every lookup or call in a function with either mark, or missing from `functions`, has the reason `stack floor unavailable for this function` and no `generic`: `auto` skips it, even where the generic hook could take it. When the trial load failed, `source` is `unavailable` and `error` gives the cause; `inject-run` then loads the program unchanged, and every lookup and call has the reason `stack audit unavailable` and no `generic`. |
-| `rule` | A ready rule written with `hook_prefix`, whose `program` is the entry function name. It names every named map with a call of a listed op, each such op as `op:any`, the `typed` callees in `calls`, `entry`, and `tail_calls` when the program calls `bpf_tail_call`. It never sets `dispatch`. Delete names to observe less; a missing or empty list hooks nothing of its kind. |
+| `rule` | A ready rule written with `hook_prefix`, whose `program` is the entry function name. It names every named map with a call of a listed op, each such op as `op:any`, the callees without a `reason` in `calls`, `entry`, and `tail_calls` when the program calls `bpf_tail_call`. It never sets `dispatch`. Delete names to observe less; a missing or empty list hooks nothing of its kind. |
 
 `--lookups-kinds` picks the kinds that `callees`, `call_sites`, `tail_calls` and `rule` cover: `lookups` (lookup ops), `map_calls` (the other map ops), `helpers`, `kfuncs`, `tail_calls` and `entry`.
 `maps`, `lookups` and `calls` are always written.
