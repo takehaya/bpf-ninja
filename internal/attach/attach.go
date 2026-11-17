@@ -725,6 +725,9 @@ func GetFuncParamsFromSpec(spec *btf.Spec, funcName string) ([]FuncParamInfo, er
 			info := FuncParamInfo{Name: p.Name, Index: i, Size: 8, Kind: kind, TypeName: typeName, Type: p.Type}
 			if _, isVoid := target.(*btf.Void); isVoid {
 				info.VoidSize = voidSize[p.Name]
+				if p.Name == "ret" && voidSize != nil {
+					typeRet(&info, hookabi.RetType(fn.Tags))
+				}
 			}
 			params = append(params, info)
 			continue
@@ -749,6 +752,24 @@ func GetFuncParamsFromSpec(spec *btf.Spec, funcName string) ([]FuncParamInfo, er
 	}
 
 	return params, nil
+}
+
+// typeRet gives a generated call hook's const void *ret the kernel type
+// its ret_type decl tag names (RetPointee), so that its members resolve as
+// an argument's do. Without the tag, or when the kernel BTF lacks the type,
+// ret stays untyped: a null test only.
+func typeRet(info *FuncParamInfo, name string) {
+	if name == "" {
+		return
+	}
+	typ := RetPointee(name)
+	if typ == nil {
+		return
+	}
+	info.Type, info.TypeName, info.Kind = &btf.Pointer{Target: typ}, name, "ptr-struct"
+	if _, ok := typ.(*btf.Union); ok {
+		info.Kind = "ptr-union"
+	}
 }
 
 // BTFSpec opens the BTF handle for a loaded program and returns its spec.

@@ -284,3 +284,26 @@ func TestEntryNarrowSignedRet(t *testing.T) {
 		t.Fatalf("unsigned: %q", got)
 	}
 }
+
+// A ret typed by the hook's ret_type tag (attach.RetPointee): --record
+// filter records the member a condition reads, as for an argument, and
+// --record entry never records ret or the object behind it.
+func TestTypedRetMember(t *testing.T) {
+	conn := &btf.Struct{Name: "nf_conn", Size: 16, Members: []btf.Member{{Name: "mark", Type: u32}, {Name: "status", Type: u64, Offset: 64}}}
+	params := []attach.FuncParamInfo{
+		{Name: "site", Index: 1, Size: 4},
+		{Name: "ret", Index: 2, Size: 8, Kind: "ptr-struct", TypeName: "nf_conn", Type: &btf.Pointer{Target: conn}},
+	}
+	args, err := filter.ParseAndValidateFilters([]string{"ret->status=8"}, params)
+	want := filter.ArgFilter{ParamName: "ret->status", ParamIndex: 2, ParamSize: 8, Deref: true, Offset: 8, Value: 8}
+	if err != nil || len(args) != 1 || args[0] != want {
+		t.Fatalf("filter %+v %v", args, err)
+	}
+	l, err := recordbuild.Build(attach.Target{Generated: true, Params: params}, filter.TargetFilters{Args: args}, recordbuild.Options{Mode: record.ModeFilter, Explicit: true})
+	if err != nil || l == nil || len(l.Fields) != 1 || !l.Fields[0].Deref || l.Fields[0].Offset != 8 || l.Fields[0].ParamIndex != 2 {
+		t.Fatalf("filter layout %+v %v", l, err)
+	}
+	if l := entry(t, params, 256); l.Status.Present() || l.Key.Present() || l.Value.Present() {
+		t.Fatalf("entry layout records ret: %+v", l)
+	}
+}
