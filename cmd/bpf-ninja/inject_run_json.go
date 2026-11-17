@@ -33,16 +33,19 @@ type hooksFileJSON struct {
 // whose original program calls a denied callee: the theorem is not claimed
 // for it.
 type injectedProgJSON struct {
-	Program        string               `json:"program"`
-	Func           string               `json:"func"`
-	Type           string               `json:"type"`
-	ProgID         uint32               `json:"prog_id"`
-	CtxType        string               `json:"ctx_type"`
-	HookForm       syscallhook.HookForm `json:"hook_form"`
-	Hooks          []hookJSON           `json:"hooks"`
-	Skipped        []hookSiteJSON       `json:"skipped"`
-	OutsidePremise string               `json:"outside_premise,omitempty"`
-	Stack          *inject.StackReport  `json:"stack,omitempty"`
+	Program  string               `json:"program"`
+	Func     string               `json:"func"`
+	Type     string               `json:"type"`
+	ProgID   uint32               `json:"prog_id"`
+	CtxType  string               `json:"ctx_type"`
+	HookForm syscallhook.HookForm `json:"hook_form"`
+	Hooks    []hookJSON           `json:"hooks"`
+	Skipped  []hookSiteJSON       `json:"skipped"`
+	// SkippedMaps lists the maps names of a hook_prefix rule that match no
+	// site: they have no pc, so they are not in Skipped.
+	SkippedMaps    []skippedMapJSON    `json:"skipped_maps,omitempty"`
+	OutsidePremise string              `json:"outside_premise,omitempty"`
+	Stack          *inject.StackReport `json:"stack,omitempty"`
 	// DeadCheckError names hook comparisons that failed. Those hooks and any
 	// site they may report stay unmarked; independent known results remain.
 	DeadCheckError string `json:"dead_check_error,omitempty"`
@@ -76,6 +79,12 @@ type hookJSON struct {
 	ReadOnly       bool           `json:"read_only"`
 	DeadInThisLoad bool           `json:"dead_in_this_load,omitempty"`
 	DeadCause      string         `json:"dead_cause,omitempty"`
+}
+
+// skippedMapJSON is a maps name that matches no site, and why.
+type skippedMapJSON struct {
+	Map    string `json:"map"`
+	Reason string `json:"reason"`
 }
 
 // hookSiteJSON is one instrumented (or, with Reason, skipped) helper call.
@@ -280,6 +289,10 @@ func injectionJSON(inj syscallhook.Injection) injectedProgJSON {
 		slices.SortStableFunc(out.Hooks[dispatch].Sites, func(a, b hookSiteJSON) int { return cmp.Compare(rank(a), rank(b)) })
 	}
 	for _, site := range inj.Skipped {
+		if site.Op == "" && site.SitePC == 0 && site.MapName != "" { // see syscallhook's unmatchedMapsName
+			out.SkippedMaps = append(out.SkippedMaps, skippedMapJSON{Map: site.MapName, Reason: site.Reason})
+			continue
+		}
 		kind := site.Op
 		if kind == "" {
 			kind = inject.HookLookup

@@ -211,3 +211,13 @@ func TestInjectionJSONOutsidePremise(t *testing.T) {
 		t.Errorf("unmarked: %s", plain)
 	}
 }
+
+// A maps name that matches no site has no pc: it is listed in skipped_maps,
+// not as a site at instruction 0.
+func TestInjectionJSONSkippedMaps(t *testing.T) {
+	out, err := json.Marshal(injectionJSON(syscallhook.Injection{Program: "p", Type: ebpf.XDP,
+		Skipped: []inject.LookupSite{{MapName: "b", Reason: "no lookup"}}}))
+	if err != nil || !strings.Contains(string(out), `"skipped":[],"skipped_maps":[{"map":"b","reason":"no lookup"}]`) {
+		t.Errorf("%s %v", out, err)
+	}
+}

@@ -418,7 +418,7 @@ A rule whose `program` never loads produces no diagnostic at all.
 | `all_matches` | bool | false | With `map`: take every matching lookup instead of requiring exactly one. | Needs `map`. Not with `site_pcs`. |
 | `site_pcs` | integer array | none | With `map`: take the lookups at these load-time instruction indexes. | Needs `map`. Not with `all_matches`. Each PC must be a lookup that matches the other filters, and must appear once. |
 | `auto` | bool | false | Instrument every supported call of the observed ops (lookups by default, or the ops that `ops` lists), with one hook per map and op. | Not with `map`, `func`, `line`, `all_matches` or `site_pcs`. |
-| `maps` | string array | every map; none with `hook_prefix` | With `auto`: only calls on these maps, by exact kernel name. Calls on other maps run unchanged. | Needs `auto`. Names must be unique. With `hook`, each must match a call the rule observes; with `hook_prefix`, a name without such a call gets no hook and is listed in `skipped` with the reason. |
+| `maps` | string array | every map; none with `hook_prefix` | With `auto`: only calls on these maps, by exact kernel name. Calls on other maps run unchanged. | Needs `auto`. Names must be unique. With `hook`, each must match a call the rule observes; with `hook_prefix`, a name without such a call gets no hook and is listed in `skipped_maps` with the reason. |
 | `ops` | string array | `["lookup"]`; none with `hook_prefix` | The calls and results that call a hook; see the [ops table](#choose-the-maps-and-operations-to-observe). | Needs `map` or `auto`. Ops other than `lookup` need `auto`. Each op appears once, so `lookup:hit` and `lookup:miss` together are refused; use `lookup:any`. |
 | `entry` | bool | false | Add `HOOK_entry(ctx)` at program start. | |
 | `tail_calls` | bool | false | Add `HOOK_tail_call(ctx, site, index)` after each failed tail call. | The program must call `bpf_tail_call`. |
@@ -615,6 +615,8 @@ If a rewrite fails, `inject-run` reports it on stderr and keeps running the targ
 | `hooks[].dead_cause` | Why a dead hook was marked. Currently this says that the verifier removed the generated hook as unreachable in this load. |
 | `hooks[].sites[].dead_in_this_load`, `dead_cause` | A site is dead only when every generated hook that reports that site is absent. For example, an absent miss hook does not make a site dead while its hit hook remains. |
 | `skipped` | Map calls that `auto` did not instrument, call sites of `calls` that could not be hooked, and sites the [retry](#refused-rewrites) dropped (reason starting with `load:`), with the site fields and a `reason`. The requested sites of a retried load are those of `hooks` plus those dropped. |
+| `skipped_maps` | The `maps` names of a `hook_prefix` rule that match no call the rule observes, each with `map` and `reason`. Absent when there is none. |
+| `outside_premise` | `calls NAME, ...`: the callbacks, lock and critical-section calls and native-address helpers the original program calls. Hooks at its other calls work as usual; the equivalence proof does not cover such a program. Absent when the program calls none. |
 | `dead_check_error` | Present when one or more hook comparisons failed. Affected hooks, and any site they may report, remain unmarked; independently confirmed absent hooks and sites can still be marked. Consumers must not guess from an unmarked result. |
 
 Treat a marked site as having no live observation point in this load, not as an attach failure.
