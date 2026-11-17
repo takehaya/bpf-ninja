@@ -241,23 +241,34 @@ func RetryRank(h LookupHook) int {
 // dropLastCalls removes the last n call groups in RetryRank order (by first
 // site within a rank), listing their sites as skipped with reason.
 func dropLastCalls(groups []lookupGroup, skipped []LookupSite, n int, reason string) ([]lookupGroup, []LookupSite, bool) {
-	var calls []int
+	return dropLast(groups, skipped, n, reason, func(group lookupGroup) bool { return group.op == HookCall })
+}
+
+// dropLast removes the last n of the groups candidate selects in RetryRank
+// order (by first site within a rank), listing their sites as skipped with
+// reason.
+func dropLast(groups []lookupGroup, skipped []LookupSite, n int, reason string, candidate func(lookupGroup) bool) ([]lookupGroup, []LookupSite, bool) {
+	var picked []int
 	for i, group := range groups {
-		if group.op == HookCall {
-			calls = append(calls, i)
+		if candidate(group) {
+			picked = append(picked, i)
 		}
 	}
 	rank := func(i int) int {
-		return RetryRank(LookupHook{Kind: HookCall, Call: groups[i].call.Name, RetPtr: groups[i].call.RetPtr, ArgReason: groups[i].argReason})
+		h := LookupHook{Kind: groups[i].op, ArgReason: groups[i].argReason}
+		if groups[i].call != nil {
+			h.Call, h.RetPtr = groups[i].call.Name, groups[i].call.RetPtr
+		}
+		return RetryRank(h)
 	}
-	slices.SortStableFunc(calls, func(a, b int) int {
+	slices.SortStableFunc(picked, func(a, b int) int {
 		if ra, rb := rank(a), rank(b); ra != rb {
 			return ra - rb
 		}
 		return int(groups[a].sites[0].SitePC) - int(groups[b].sites[0].SitePC)
 	})
 	drop := map[int]bool{}
-	for _, i := range calls[max(len(calls)-n, 0):] {
+	for _, i := range picked[max(len(picked)-n, 0):] {
 		drop[i] = true
 	}
 	var kept []lookupGroup

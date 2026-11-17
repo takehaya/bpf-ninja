@@ -2011,7 +2011,25 @@ func transformLookupProgramGuarded(insns asm.Instructions, typ ebpf.ProgramType,
 	if broken != "" {
 		return nil, plan, refuse("%s", broken)
 	}
-	// With no call group left to drop, the hooks that remain still count.
+	// With no call group left to drop, auto drops map groups from the end of
+	// RetryRank's order until the program fits, as for the stack limits.
+	for n := funcCount(spliced); n > maxFuncs && req.Auto; n = funcCount(spliced) {
+		reason := fmt.Sprintf("the program would have %d functions, more than the kernel's %d", n, maxFuncs)
+		var dropped bool
+		if groups, plan.skipped, dropped = dropLast(groups, plan.skipped, n-maxFuncs, reason, func(group lookupGroup) bool { return group.op != HookCall }); !dropped {
+			break
+		}
+		if spliced, hooks, err = emit.splice(groups); err != nil {
+			return nil, plan, err
+		}
+		if broken, err = stackLimitsBroken(insns, spliced, req.Stack); err != nil {
+			return nil, plan, err
+		}
+		if broken != "" {
+			return nil, plan, refuse("%s", broken)
+		}
+	}
+	// The hooks that remain, which may not be dropped, still count.
 	if n := funcCount(spliced); n > maxFuncs {
 		return nil, plan, refuse("the program would have %d functions, more than the kernel's %d", n, maxFuncs)
 	}

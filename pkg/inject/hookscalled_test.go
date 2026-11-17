@@ -167,6 +167,61 @@ func TestFunctionLimitWithoutCallGroups(t *testing.T) {
 	}
 }
 
+// mapsManyFuncsFixture makes lookups on maps "sessions" and "other" in its
+// entry, then calls n static functions.
+func mapsManyFuncsFixture(n int) *ebpf.CollectionSpec {
+	insns := asm.Instructions{asm.Mov.Reg(asm.R6, asm.R1)}
+	for i, m := range []string{"sessions", "other"} {
+		insns = append(insns, asm.StoreImm(asm.RFP, int16(-4*(i+1)), 0, asm.Word), asm.Mov.Reg(asm.R2, asm.RFP), asm.Add.Imm(asm.R2, int32(-4*(i+1))),
+			asm.LoadMapPtr(asm.R1, 0).WithReference(m), asm.FnMapLookupElem.Call(), asm.Mov.Imm(asm.R0, 0))
+	}
+	for i := range n {
+		insns = append(insns, asm.Call.Label(fmt.Sprintf("f%d", i)), asm.Mov.Imm(asm.R0, 2))
+	}
+	insns = append(insns, asm.Return())
+	for i := range n {
+		name := fmt.Sprintf("f%d", i)
+		insns = append(insns, btf.WithFuncMetadata(asm.Mov.Imm(asm.R0, 0).WithSymbol(name).WithSource(asm.Comment(name)), staticFunc(name)), asm.Return())
+	}
+	spec := callFixtureSpec(ebpf.XDP, insns)
+	for _, m := range []string{"sessions", "other"} {
+		spec.Maps[m] = &ebpf.MapSpec{Name: m, Type: ebpf.Hash, KeySize: 4, ValueSize: 8, MaxEntries: 1}
+	}
+	return spec
+}
+
+// Past the kernel's 256 functions with no call group, auto drops map groups
+// from the end of RetryRank's order until the program fits; a rule that
+// names its one site with map has nothing that may be dropped and is refused.
+func TestFunctionLimitDropsMapGroups(t *testing.T) {
+	auto := LookupRequest{ProgramName: "p", HookName: "obs", Auto: true, Stack: StackAudit{LowestOffset: -64}}
+	spec := mapsManyFuncsFixture(254)
+	plan, err := transformLookup(spec, auto)
+	if err != nil || len(plan.hooks) != 1 || plan.hooks[0].MapName != "sessions" || len(plan.skipped) != 1 || plan.skipped[0].MapName != "other" ||
+		plan.skipped[0].Reason != "the program would have 257 functions, more than the kernel's 256" {
+		t.Fatalf("err %v hooks %+v skipped %+v", err, plan.hooks, plan.skipped)
+	}
+	if n := funcCount(spec.Programs["p"].Instructions); n != 256 {
+		t.Fatalf("%d functions", n)
+	}
+	if left := uncalled(spec.Programs["p"].Instructions); len(left) != 0 {
+		t.Fatalf("functions nothing calls: %v", left)
+	}
+	// Both fit one function earlier.
+	if plan, err := transformLookup(mapsManyFuncsFixture(253), auto); err != nil || len(plan.hooks) != 2 || len(plan.skipped) != 0 {
+		t.Fatalf("err %v hooks %+v skipped %+v", err, plan.hooks, plan.skipped)
+	}
+	// Not one map hook fits: nothing is left to hook.
+	if _, err := transformLookup(mapsManyFuncsFixture(255), auto); !errors.Is(err, ErrRefused) || !strings.Contains(err.Error(), "no hook is left") {
+		t.Fatalf("err %v", err)
+	}
+	explicit := LookupRequest{ProgramName: "p", HookName: "obs", Site: LookupSelector{MapName: "sessions"}, Stack: StackAudit{LowestOffset: -64}}
+	if _, err := transformLookup(mapsManyFuncsFixture(255), explicit); !errors.Is(err, ErrRefused) ||
+		!strings.Contains(err.Error(), "the program would have 257 functions, more than the kernel's 256") {
+		t.Fatalf("err %v", err)
+	}
+}
+
 // A drop list that removes every map site of a rule with nothing else to
 // hook is refused with that cause.
 func TestDropEveryMapSite(t *testing.T) {
