@@ -99,3 +99,15 @@ func TestHookableHelpers(t *testing.T) {
 		}
 	}
 }
+
+// The helpers that read native code addresses or branch records are denied by name.
+func TestDenyNativeAddressHelpers(t *testing.T) {
+	for _, name := range []string{"bpf_get_stack", "bpf_get_stackid", "bpf_get_task_stack", "bpf_get_branch_snapshot", "bpf_get_func_ip"} {
+		if row, reason := namedCall(name); row != nil || reason != "reads native code addresses or branch records, which inserted code may change" {
+			t.Errorf("%s: row %v reason %q", name, row, reason)
+		}
+	}
+	if row, _ := namedCall("bpf_get_attach_cookie"); row == nil {
+		t.Error("bpf_get_attach_cookie is denied; it reads the attachment's cookie only")
+	}
+}

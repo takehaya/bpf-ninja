@@ -212,6 +212,8 @@ func denyReason(name string) string {
 		return "runs or registers a callback"
 	case name == "bpf_throw":
 		return "does not return"
+	case slices.Contains([]string{"bpf_get_stack", "bpf_get_stackid", "bpf_get_task_stack", "bpf_get_branch_snapshot", "bpf_get_func_ip"}, name):
+		return "reads native code addresses or branch records, which inserted code may change"
 	case has("bpf_iter_") && (strings.HasSuffix(name, "_new") || strings.HasSuffix(name, "_next") || strings.HasSuffix(name, "_destroy")):
 		return "an iterator: the verifier forks and prunes loop states at its next"
 	case has("bpf_list_") || has("bpf_rbtree_") || name == "bpf_refcount_acquire_impl" || has("bpf_stream_") ||
