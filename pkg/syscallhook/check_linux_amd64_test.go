@@ -8,9 +8,11 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 
+	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/asm"
 	"github.com/takehaya/bpf-ninja/pkg/inject"
 	"github.com/takehaya/bpf-ninja/pkg/injectcheck"
@@ -297,7 +299,9 @@ func TestStackErrorClass(t *testing.T) {
 	_, badDepth := frameFloors([]int{600}, []string{"p"}, raw, inject.KernelInfo{Major: 7})
 	_, absent := frameFloors([]int{8}, []string{"q"}, raw, inject.KernelInfo{Major: 7})
 	_, funcInfoErr := loadedFunctions(func(uint32) ([]byte, error) { return nil, unix.EBADF }, 3, nil)
-	_, funcInfoCount := loadedFunctions(func(uint32) ([]byte, error) { return nil, errors.New("tracee program fd 3 has invalid func_info count 0") }, 3, nil)
+	_, funcInfoCount := loadedFunctions(func(uint32) ([]byte, error) {
+		return nil, errors.New("tracee program fd 3 has invalid func_info count 0")
+	}, 3, nil)
 	offload := make([]byte, 128)
 	put32(offload, 64, 3)
 	const refusedStats = "verification time 6 usec\nstack depth 0\nprocessed 1 insns (limit 1000000) max_states_per_insn 0 total_states 0 peak_states 0 mark_read 0\n"
@@ -310,6 +314,7 @@ func TestStackErrorClass(t *testing.T) {
 		cause    string
 	}{
 		{"offload", offloadAudit(offload), stepRefuse, "stack"},
+		// Not reachable for a matched load, which parseProgAttr needs whole.
 		{"short-attr", offloadAudit(make([]byte, 64)), stepRefuse, "stack"},
 		{"trial-enomem", trialLoadError(unix.ENOMEM, ""), stepRefuse, "stack"},
 		// A failure on the tracee's side loads the original in every step.
@@ -375,5 +380,26 @@ func TestTrialKeepsDevice(t *testing.T) {
 	}
 	if err := offloadAudit(attr); err != nil {
 		t.Fatalf("device-bound load: %v", err)
+	}
+}
+
+// The supervisor hands the marks of the original program to the report of
+// an injected load and logs them: outside the premise and not reviewed.
+func TestInjectionMarks(t *testing.T) {
+	var logs bytes.Buffer
+	s := &supervisor{options: Options{Log: &logs}}
+	rewrite := &transformed{result: &inject.LookupResultRaw{}, premise: []string{"bpf_loop"}, unread: []string{"k_int"}}
+	inj := s.injection("p", "entry", ebpf.XDP, HookForm{}, inject.StackReport{}, rewrite)
+	if !slices.Equal(inj.OutsidePremise, []string{"bpf_loop"}) || !slices.Equal(inj.NotReviewed, []string{"k_int"}) || inj.Program != "p" || inj.Func != "entry" {
+		t.Fatalf("injection %+v", inj)
+	}
+	for _, want := range []string{`program "p": outside the theorem's premise: calls bpf_loop`, `program "p": kernel functions without a review record: calls k_int`} {
+		if !strings.Contains(logs.String(), want) {
+			t.Errorf("log %q lacks %q", logs.String(), want)
+		}
+	}
+	logs.Reset()
+	if inj := s.injection("p", "entry", ebpf.XDP, HookForm{}, inject.StackReport{}, &transformed{result: &inject.LookupResultRaw{}}); inj.OutsidePremise != nil || inj.NotReviewed != nil || logs.Len() != 0 {
+		t.Fatalf("unmarked load: %+v, log %q", inj, logs.String())
 	}
 }

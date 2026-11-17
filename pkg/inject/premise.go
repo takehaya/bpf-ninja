@@ -8,7 +8,9 @@ import (
 	"github.com/cilium/ebpf/btf"
 )
 
-// The reasons helperPremise gives, one per clause of its rule.
+// The reasons helperPremise gives, one per clause of its rule. The deny list
+// of kernel functions (denyReason) shares premiseLockReason, so it names a
+// critical section too.
 const (
 	premiseCodeReason    = "reads native code addresses or branch records, which inserted code may change"
 	premiseCounterReason = "reads a perf event counter, which counts inserted code too"

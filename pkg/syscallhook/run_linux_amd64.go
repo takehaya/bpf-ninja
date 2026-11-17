@@ -129,12 +129,11 @@ type Injection struct {
 // "stack" (the kernel cannot give the stack audit: errAuditUnavailable, or
 // the tracee failed a request of the audit: errTracee),
 // "analysis" (any other error of the stack analysis: see unanalysable),
-// "verifier" (the verifier
-// refused the trial load of the original program), "checker" (the load-time
-// checker refused the rewrite), "retry" (the kernel refused the rewrite and
-// the retry loaded none), "loader_log" (the rewrite passes with a log of its
-// own, but not with the loader's log buffer: see failedLoad), "selector"
-// (more than one rule matches the load) or
+// "verifier" (the verifier refused the trial load of the original program),
+// "checker" (the load-time checker refused the rewrite), "retry" (the kernel
+// refused the rewrite and the retry loaded none), "loader_log" (the rewrite
+// passes with a log of its own, but not with the loader's log buffer: see
+// failedLoad), "selector" (more than one rule matches the load) or
 // "transform" (the load could not be rewritten). Outcome is what happened:
 // "original_loaded", "original_refused" (the kernel refused the original
 // program as well) or "load_refused" (the supervisor refused the load: with
@@ -1266,16 +1265,8 @@ func (s *supervisor) entry(pid int, t *thread, regs unix.PtraceRegs) error {
 				s.log("program %q: hook %q observes only the result of %s: %s", name, hook.Name, hook.Call, hook.ArgReason)
 			}
 		}
-		premise := rewrite.premise
-		if len(premise) != 0 {
-			s.log("program %q: outside the theorem's premise: calls %s", name, strings.Join(premise, ", "))
-		}
-		if len(rewrite.unread) != 0 {
-			s.log("program %q: kernel functions without a review record: calls %s", name, strings.Join(rewrite.unread, ", "))
-		}
+		inj := s.injection(name, entry, ebpf.ProgramType(u32(attr, 0)), form, stack, rewrite)
 		if s.options.OnInject != nil {
-			inj := Injection{HookForm: form, Program: name, Func: entry, Type: ebpf.ProgramType(u32(attr, 0)), Hooks: result.Hooks, Skipped: result.Skipped, Stack: stack,
-				Build: rewrite.build, Labels: rewrite.labels, OutsidePremise: premise, NotReviewed: rewrite.unread}
 			// bpf_prog_info starts with type, id and the 8-byte tag.
 			if info, err := r.info(uint32(ret), 16); err != nil {
 				s.log("program %q: cannot query program ID: %v", name, err)
@@ -1289,6 +1280,20 @@ func (s *supervisor) entry(pid int, t *thread, regs unix.PtraceRegs) error {
 		}
 	}
 	return r.finish(ret)
+}
+
+// injection is the report of the rewrite that loaded for program name, with
+// the marks of the original program (outside the premise, not reviewed),
+// which it also logs.
+func (s *supervisor) injection(name, entry string, typ ebpf.ProgramType, form HookForm, stack inject.StackReport, rewrite *transformed) Injection {
+	if len(rewrite.premise) != 0 {
+		s.log("program %q: outside the theorem's premise: calls %s", name, strings.Join(rewrite.premise, ", "))
+	}
+	if len(rewrite.unread) != 0 {
+		s.log("program %q: kernel functions without a review record: calls %s", name, strings.Join(rewrite.unread, ", "))
+	}
+	return Injection{HookForm: form, Program: name, Func: entry, Type: typ, Hooks: rewrite.result.Hooks, Skipped: rewrite.result.Skipped, Stack: stack,
+		Build: rewrite.build, Labels: rewrite.labels, OutsidePremise: rewrite.premise, NotReviewed: rewrite.unread}
 }
 
 // skipMatched ends a matched load that is not rewritten (skipEntry) and

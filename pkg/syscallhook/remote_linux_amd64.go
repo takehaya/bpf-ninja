@@ -179,6 +179,7 @@ func syscallError(ret int64, err error) error {
 	}
 	return nil
 }
+
 // alloc copies b into the tracee's scratch memory; an error is the tracee's
 // (traceeError).
 func (r *remote) alloc(b []byte) (uint64, error) {
@@ -205,6 +206,7 @@ func (r *remote) bpf(command uint64, attr []byte) (int64, error) {
 	ret, err := r.call(unix.SYS_BPF, command, addr, uint64(len(attr)))
 	return ret, syscallError(ret, err)
 }
+
 // info queries the object behind the tracee's descriptor fd; an error is the
 // tracee's (traceeError).
 func (r *remote) info(fd uint32, size int) ([]byte, error) {
