@@ -35,7 +35,7 @@
  "mutation": {
   "set": "callsite",
   "id": "clean-kfunc-arg",
-  "fixture": "spike-notes/mkcaptures.py",
+  "fixture": "tools/regionval/testdata/mkcaptures.py",
   "expect": "validated"
  }
 }

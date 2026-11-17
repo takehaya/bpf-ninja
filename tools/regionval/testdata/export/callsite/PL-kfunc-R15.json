@@ -35,7 +35,7 @@
  "mutation": {
   "set": "callsite",
   "id": "PL-kfunc-R15",
-  "fixture": "spike-notes/mkcaptures.py",
+  "fixture": "tools/regionval/testdata/mkcaptures.py",
   "expect": "R15"
  }
 }

@@ -226,7 +226,8 @@ func TestExportPlantedSTX(t *testing.T) {
 	}
 }
 
-// testdata/export/callsite holds hand-built pairs (spike-notes/mkcaptures.py)
+// testdata/export/callsite holds hand-built pairs, written by
+// testdata/mkcaptures.py from raw instruction bytes and a minimal BTF,
 // with the result-only and the argument-and-result sequences around calls
 // that are not map lookups. The clean ones are validated with these window
 // kinds; each planted one is rejected by exactly the rule given.
