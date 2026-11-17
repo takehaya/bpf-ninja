@@ -1149,6 +1149,7 @@ type targetBindings map[targetKey]*targetBinding
 
 func newTargetBindings(targets []SiteTarget, sites int, hooks map[int]bool) (targetBindings, error) {
 	b := make(targetBindings, len(targets))
+	whenBySite := map[int][]string{} // conditions in input order
 	ctxBySite := map[int]CtxSource{}
 	ctxSet := map[int]bool{}
 	for _, target := range targets {
@@ -1201,12 +1202,11 @@ func newTargetBindings(targets []SiteTarget, sites int, hooks map[int]bool) (tar
 			return nil, inputError(InputTarget, "duplicate site target site=%d when=%s", target.Site, target.When)
 		}
 		b[key] = &targetBinding{hook: target.Hook, ctx: target.Ctx, args: target.Args, sitePC: target.SitePC, argReg: target.ArgReg, call: call}
+		whenBySite[target.Site] = append(whenBySite[target.Site], string(target.When))
 	}
-	for key, target := range b {
-		for other := range b {
-			if target.call && other.site == key.site && other != key {
-				return nil, inputError(InputTarget, "call site %d has a second target on condition %s", key.site, other.when)
-			}
+	for _, target := range targets {
+		if when := whenBySite[target.Site]; b[targetKey{target.Site, target.When}].call && len(when) > 1 {
+			return nil, inputError(InputTarget, "call site %d has a second target: conditions %s", target.Site, strings.Join(when, ", "))
 		}
 	}
 	return b, nil

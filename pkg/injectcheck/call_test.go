@@ -5,6 +5,7 @@ package injectcheck
 // source, and the mutations the checker must reject.
 
 import (
+	"fmt"
 	"slices"
 	"strings"
 	"testing"
@@ -267,6 +268,26 @@ func TestCallSiteTargetInputs(t *testing.T) {
 	_, err := f.check()
 	assertInputKind(t, err, InputTarget)
 	t.Logf("second target: %v", err)
+
+	// With two more targets the error names every condition at the site
+	// in input order, the same on every run.
+	f = callCase{"pass", asm.FnKtimeGetNs.Call(), 0}.build(nil)
+	call := f.premises.Targets[0]
+	f.premises.Targets = nil
+	for _, when := range []TargetWhen{TargetHit, TargetAny, TargetError, TargetMiss} {
+		target := SiteTarget{Site: call.Site, When: when, Hook: call.Hook, Ctx: call.Ctx}
+		if when == TargetAny {
+			target = call
+		}
+		f.premises.Targets = append(f.premises.Targets, target)
+	}
+	for range 50 {
+		_, err = f.check()
+		assertInputKind(t, err, InputTarget)
+		if want := fmt.Sprintf("call site %d has a second target: conditions hit, any, error, miss", call.Site); err.Error() != want {
+			t.Fatalf("got %q, want %q", err, want)
+		}
+	}
 
 	f = callCase{"pass", asm.FnKtimeGetNs.Call(), 0}.build(nil)
 	f.premises.Targets[0].Site = 2 // call sub
