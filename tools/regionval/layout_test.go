@@ -589,9 +589,11 @@ func TestKfuncCutting(t *testing.T) {
 
 // A call centre at the first instruction of a function: code inserted
 // before it could be the function's prologue or the call's prelude, so a
-// helper or a kfunc centre there is refused with stage windows. A kfunc
-// that starts its function with nothing inserted before it, or that is
-// next to another call and so centres no site, keeps its cut.
+// helper or a hooked kfunc centre (a run follows it) there is refused with
+// stage windows. A kfunc that starts its function with nothing inserted
+// before it, that is next to another call and so centres no site, or that
+// no run follows (unhooked) keeps its cut: the code before it is the
+// prologue.
 func TestCallAtFunctionStart(t *testing.T) {
 	post := []a{stx(-16, 0), ldx(1, -8), movw(2, 1), mov(3, 0), call("hook"), ldx(0, -16)}
 	hook := []a{movi(0, 0).begins("hook"), exit()}
@@ -617,7 +619,6 @@ func TestCallAtFunctionStart(t *testing.T) {
 		{"helper at main", atMain(helper(5))},
 		{"kfunc at main", atMain(kfunc(60001, 0))},
 		{"helper at sub after an argument store", argStoreAtSub(helper(5))},
-		{"kfunc at sub after an argument store", argStoreAtSub(kfunc(60001, 0))},
 	} {
 		_, err := Analyze(c.p.capture(t))
 		var se *StructError
@@ -640,6 +641,15 @@ func TestCallAtFunctionStart(t *testing.T) {
 			t:     slices.Concat([]a{stx(-8, 1).begins("main"), kfunc(60001, 0), helper(5)}, post, []a{exit()}, hook),
 			kappa: []int{1, 2, 9}, floor: 0,
 		}, []win{{"prologue", 0, 1, -1}, {"site", 2, 9, 2}, {"hook", 10, 12, -1}}},
+		{"unhooked kfunc at sub after an argument store", argStoreAtSub(kfunc(60001, 0)), []win{{"prologue", 0, 1, -1}, {"prologue", 4, 5, -1}}},
+		// The transformer spills ctx before the entry's first instruction, an
+		// unhooked kfunc here, and hooks a helper later.
+		{"unhooked kfunc at main, hooked helper later", pair{
+			o: []a{kfunc(60001, 0).begins("main"), mov(6, 0), helper(7), exit()},
+			t: slices.Concat([]a{stx(-8, 1).begins("main"), kfunc(60001, 0), mov(6, 0), helper(7)},
+				[]a{stx(-16, 0), ldx(1, -8), movw(2, 3), mov(3, 0), call("hook"), ldx(0, -16)}, []a{exit()}, hook),
+			kappa: []int{1, 2, 3, 10}, floor: 0,
+		}, []win{{"prologue", 0, 1, -1}, {"site", 3, 10, 3}, {"hook", 11, 13, -1}}},
 	} {
 		l, err := Analyze(c.p.capture(t))
 		if err != nil {
@@ -647,6 +657,11 @@ func TestCallAtFunctionStart(t *testing.T) {
 		}
 		if got := windows(l); !slices.Equal(got, c.want) {
 			t.Errorf("%s: windows %v, want %v", c.name, got, c.want)
+		}
+		if strings.HasPrefix(c.name, "unhooked kfunc at main") {
+			if r := runFile(t, c.p.capture(t)); !r.Validated {
+				t.Errorf("%s: not validated, rejected by %v", c.name, rejectedBy(r))
+			}
 		}
 	}
 }
