@@ -17,6 +17,8 @@ SYSCALLHOOK = "github.com/takehaya/bpf-ninja/pkg/syscallhook"
 
 
 def allowed_skip(package, test, output, kernel):
+    if package == SYSCALLHOOK:
+        return test == "TestIntegrationIndirectJump" and "kernel lacks BPF_MAP_TYPE_INSN_ARRAY" in output
     if package == INJECT:
         # These tests require conntrack kfuncs in vmlinux BTF. The test checks
         # module BTF before emitting this reason.
