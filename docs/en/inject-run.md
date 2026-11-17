@@ -319,7 +319,7 @@ The hook receives the call's result as `ret` and, for a callee with a memory arg
 - A name that is neither a helper nor a kernel function of the load has no site and is listed in `skipped_calls`; see [List the calls and load the ready rule](#list-the-calls-and-load-the-ready-rule).
 - A kernel function's integer result narrower than 8 bytes fills only the low bytes of `ret`; the bytes above it are not part of the result. The hooks file gives the width as `ret_size`, and a capture records only those bytes.
   A filter compares only those bytes, sign-extended when the result is signed, so a failing `int` result is `--arg-filter 'ret==-22'`; an unsigned result takes an unsigned number of its width.
-  An 8-byte result, a helper's or a `long` kernel function's, compares unsigned: `ret<=-1` matches every call. A capture writes a signed result as a signed decimal (`ret=-22`).
+  An 8-byte result, a helper's or a `long` kernel function's, compares unsigned: `ret<=-1` matches every call. A capture writes a narrow signed result as a signed decimal (`ret=-22`), and every 8-byte result as a signed 64-bit decimal too (`ret=-1`), although a filter compares it unsigned.
 - A name the program never calls adds no hook. The [lookups file](#lookups-file) lists every callee of a program in `callees`; a callee that cannot be hooked has a `reason`.
 - `calls` works on its own and with `map`, `auto`, `entry` and `tail_calls`, but not with `dispatch`.
 - `ops`, `maps`, `func`, `line`, `all_matches`, `site_pcs` and `copy_read_only` select map calls and do not apply to `calls`.
@@ -343,6 +343,7 @@ The hook receives the call's result as `ret` and, for a callee with a memory arg
 
 `bpf_xdp_metadata_rx_timestamp`, `bpf_xdp_metadata_rx_hash` and `bpf_xdp_metadata_rx_vlan_tag` return a status and write the value through a pointer, so their hooks take `(ctx, u32 site, const T *arg, u64 ret)`: `arg` is a value buffer after the call, typed by the kernel prototype: the timestamp (R2, `u64`), the hash (R2, `u32`), or the VLAN tag control information (R3, `u16`, in host byte order), whose low 12 bits are the VLAN id; `ret` is the `int` status.
 A capture reads the value as `arg[0]` in `--arg-filter`, `--arg-echo` and `--record`, such as `--arg-filter 'ret==0' --arg-echo 'arg[0]'`; the hash's `rss_type` and the VLAN protocol are not captured.
+These kernel functions write the buffer only when they return 0: after a failed call (`ret` not 0), `arg[0]` holds what the program's buffer held before the call, not a value from the kernel, so read it under `ret==0`.
 The program must be loaded bound to its device (`prog_ifindex` with `BPF_F_XDP_DEV_BOUND_ONLY`, as these kernel functions require); its trial load stays bound to the same device. A program loaded for hardware offload (`prog_ifindex` without that flag) still gets no hooks. A value buffer that is not on the program's own stack makes `arg` the untyped `const void *` described above, read as `arg->bytes[N]`.
 
 #### Read fields behind a pointer result

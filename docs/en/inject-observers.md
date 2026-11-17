@@ -153,7 +153,7 @@ The hook has one of three prototypes:
 
 | Hook | Prototype | Callees |
 | --- | --- | --- |
-| Typed argument | `ctx, u32 site, const T *arg, u64 ret` | `bpf_fib_lookup` (`T` is `struct bpf_fib_lookup`), and `bpf_skb_load_bytes`, `bpf_xdp_load_bytes` and `bpf_probe_read_kernel`, whose `arg` is `struct { u8 bytes[N]; }` |
+| Typed argument | `ctx, u32 site, const T *arg, u64 ret` | `bpf_fib_lookup` (`T` is `struct bpf_fib_lookup`); `bpf_skb_load_bytes`, `bpf_xdp_load_bytes` and `bpf_probe_read_kernel`, whose `arg` is `struct { u8 bytes[N]; }`; and the XDP receive-metadata kernel functions `bpf_xdp_metadata_rx_timestamp`, `bpf_xdp_metadata_rx_hash` and `bpf_xdp_metadata_rx_vlan_tag` (`T` is `u64`, `u32` or `u16`, from the kernel prototype) |
 | Result-only scalar | `ctx, u32 site, u64 ret` | every other helper or kernel function with an integer result, such as `bpf_ktime_get_ns` |
 | Result-only pointer | `ctx, u32 site, const void *ret` | helpers and kernel functions with a pointer result |
 
@@ -177,8 +177,9 @@ bpf-ninja -p "$PROG_ID" --func ninja_bpf_xdp_ct_lookup --arg-filter 'ret=null' -
 An integer `ret` compares as a number at the width of the callee's result, sign-extended when the result is signed, so `ret=-22` matches a failing `int` result; a pointer `ret` compares with `null`, and a typed one also through `ret->FIELD`.
 An 8-byte `ret` (every helper, and a `long` kernel function) compares unsigned: `ret<=-1` matches every call.
 `arg->member` selects a member of a typed `arg`, and `arg->bytes[i]` a byte of a sized `const void *arg`.
-`--record entry` writes `site`, `ret` as a decimal, signed for a signed result, and the members of `arg`, for example `site=560 ret=0 arg->family=2 ... arg->ifindex=4`; a sized `const void *arg` is written as hex (`arg=0200...`) and one without a size tag is left out.
-`--record filter` also writes an integer `ret` as a decimal, signed for a signed result.
+`--record entry` writes `site`, `ret` as a decimal, and the members of `arg`, for example `site=560 ret=0 arg->family=2 ... arg->ifindex=4`; a sized `const void *arg` is written as hex (`arg=0200...`) and one without a size tag is left out.
+`--record filter` also writes an integer `ret` as a decimal.
+A result narrower than 8 bytes is written at its width, signed for a signed result; an 8-byte result is written as a signed 64-bit decimal (`ret=-1`), although a filter compares it unsigned.
 The address in a pointer `ret` is never recorded: `entry` leaves it out, and `filter` writes `ret=null` or `ret!=null` and the fields its condition names.
 
 ## VM verification
