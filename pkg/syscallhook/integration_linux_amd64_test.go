@@ -49,36 +49,51 @@ func TestIntegrationLoader(t *testing.T) {
 	if kernel.Major < 6 || kernel.Major == 6 && kernel.Minor < 8 {
 		inexactExpected = "plain-inexact"
 	}
+	forced := fmt.Errorf("forced trial-load failure")
+	// The stack analysis refuses a program it cannot take (deadRegisterStackErr).
+	unanalysable := fmt.Errorf("matching stack depths to functions: %w", inject.ErrRefused)
 	for _, tc := range []struct {
 		name, expected string
 		closed         bool
-		preloadError   bool
+		preloadError   error
 		change         func(*Rule)
 	}{
-		{"kernel-name", "hook", false, false, func(r *Rule) {}},
-		{"func-info-name", "hook", false, false, func(r *Rule) { r.Program = "entry_with_long_name" }},
-		{"fail-open", "plain", false, false, func(r *Rule) { r.Map = "missing" }},
-		{"fail-closed", "refused", true, false, func(r *Rule) { r.Map = "missing" }},
-		{"unmatched", "plain", true, false, func(r *Rule) { r.Program = "unmatched" }},
-		{"auto", "hook", true, false, func(r *Rule) { r.Auto, r.Map = true, "" }},
-		{"entry-only", "hook", true, false, func(r *Rule) { r.Entry, r.Map = true, "" }},
-		{"pre68-inexact", inexactExpected, false, false, func(r *Rule) {}},
-		{"preload-auto", "plain", false, true, func(r *Rule) { r.Auto, r.Map = true, "" }},
-		{"preload-explicit", "refused", false, true, func(r *Rule) {}},
-		{"preload-closed", "refused", true, true, func(r *Rule) { r.Auto, r.Map = true, "" }},
+		{"kernel-name", "hook", false, nil, func(r *Rule) {}},
+		{"func-info-name", "hook", false, nil, func(r *Rule) { r.Program = "entry_with_long_name" }},
+		{"fail-open", "plain", false, nil, func(r *Rule) { r.Map = "missing" }},
+		{"fail-closed", "refused", true, nil, func(r *Rule) { r.Map = "missing" }},
+		{"unmatched", "plain", true, nil, func(r *Rule) { r.Program = "unmatched" }},
+		{"auto", "hook", true, nil, func(r *Rule) { r.Auto, r.Map = true, "" }},
+		{"entry-only", "hook", true, nil, func(r *Rule) { r.Entry, r.Map = true, "" }},
+		{"pre68-inexact", inexactExpected, false, nil, func(r *Rule) {}},
+		{"preload-auto", "plain", false, forced, func(r *Rule) { r.Auto, r.Map = true, "" }},
+		{"preload-explicit", "refused", false, forced, func(r *Rule) {}},
+		// A rule without auto that names no site with map loads the original.
+		{"preload-entry", "plain", false, forced, func(r *Rule) { r.Entry, r.Map = true, "" }},
+		{"preload-closed", "refused", true, forced, func(r *Rule) { r.Auto, r.Map = true, "" }},
+		// A program the analysis cannot take loads as the original also under a map rule.
+		{"preload-analysis", "plain", false, unanalysable, func(r *Rule) {}},
+		{"preload-analysis-closed", "refused", true, unanalysable, func(r *Rule) {}},
+		// The verifier refuses the trial load of the original: it loads unchanged under every rule.
+		{"preload-verifier", "plain", false, fmt.Errorf("%w: forced", errTrialVerifier), func(r *Rule) {}},
+		// A library caller's identical rules are one rule.
+		{"duplicate", "hook", true, nil, func(r *Rule) {}},
+		// A second rule selects the same load by its BTF entry name.
+		{"ambiguous", "plain", false, nil, func(r *Rule) {}},
+		{"ambiguous-closed", "refused", true, nil, func(r *Rule) {}},
 		// The loader's map is BPF_F_RDONLY_PROG, whose hook becomes static.
-		{"static-untrusted", "hook-rdonly", true, false, func(r *Rule) { r.Auto, r.Map, r.StaticUntrusted = true, "", true }},
+		{"static-untrusted", "hook-rdonly", true, nil, func(r *Rule) { r.Auto, r.Map, r.StaticUntrusted = true, "", true }},
 		// Static, so the dispatch hook loads on kernels without arg:untrusted
 		// too; TestBpfDispatch covers the untrusted form across the matrix.
-		{"dispatch", "hook", true, false, func(r *Rule) { r.Auto, r.Map, r.Entry, r.Dispatch, r.StaticUntrusted = true, "", true, true, true }},
-		{"maps", "hook", true, false, func(r *Rule) { r.Auto, r.Map, r.Maps = true, "", []string{"sessions"} }},
-		{"maps-missing", "refused", true, false, func(r *Rule) { r.Auto, r.Map, r.Maps = true, "", []string{"missing"} }},
+		{"dispatch", "hook", true, nil, func(r *Rule) { r.Auto, r.Map, r.Entry, r.Dispatch, r.StaticUntrusted = true, "", true, true, true }},
+		{"maps", "hook", true, nil, func(r *Rule) { r.Auto, r.Map, r.Maps = true, "", []string{"sessions"} }},
+		{"maps-missing", "refused", true, nil, func(r *Rule) { r.Auto, r.Map, r.Maps = true, "", []string{"missing"} }},
 		// The loader first inserts the present key with BPF_NOEXIST, which
 		// fails; ops instruments only that update.
-		{"ops-update", "hook-update", true, false, func(r *Rule) { r.Auto, r.Map, r.Ops = true, "", []string{"update"} }},
+		{"ops-update", "hook-update", true, nil, func(r *Rule) { r.Auto, r.Map, r.Ops = true, "", []string{"update"} }},
 		// The discover cases also set OnDiscover; discover-only has no rule.
-		{"discover-auto", "hook", true, false, func(r *Rule) { r.Auto, r.Map = true, "" }},
-		{"discover-only", "plain", true, false, func(r *Rule) {}},
+		{"discover-auto", "hook", true, nil, func(r *Rule) { r.Auto, r.Map = true, "" }},
+		{"discover-only", "plain", true, nil, func(r *Rule) {}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Setenv("SYSCALLHOOK_INTEGRATION_CHILD", tc.expected)
@@ -94,11 +109,20 @@ func TestIntegrationLoader(t *testing.T) {
 			defer cancel()
 			var injected []Injection
 			var discovered []Discovery
-			opts := Options{Rules: []Rule{rule}, FailClosed: tc.closed, Stdout: out, Stderr: out, Log: &logs,
-				OnInject: func(inj Injection) { injected = append(injected, inj) }}
-			if tc.preloadError {
-				opts.preloadError = fmt.Errorf("forced trial-load failure")
+			var refusals []Refusal
+			rules := []Rule{rule}
+			if tc.name == "duplicate" {
+				rules = append(rules, rule)
 			}
+			if strings.HasPrefix(tc.name, "ambiguous") {
+				other := rule
+				other.Program = "entry_with_long_name"
+				rules = append(rules, other)
+			}
+			opts := Options{Rules: rules, FailClosed: tc.closed, Stdout: out, Stderr: out, Log: &logs,
+				OnInject: func(inj Injection) { injected = append(injected, inj) },
+				OnRefuse: func(r Refusal) { refusals = append(refusals, r) }}
+			opts.preloadError = tc.preloadError
 			discover := strings.HasPrefix(tc.name, "discover")
 			if discover {
 				opts.OnDiscover = func(d Discovery) { discovered = append(discovered, d) }
@@ -143,6 +167,19 @@ func TestIntegrationLoader(t *testing.T) {
 				if d.Stack.Source != "verifier" || len(d.Stack.Functions) != 1 || d.Stack.Functions[0].VerifiedDepth == 0 {
 					t.Fatalf("discovery has no verifier stack accounting: %+v", d.Stack)
 				}
+			}
+			// A matched load that ends without hooks is reported, with how it
+			// ended, once per BPF_PROG_LOAD: the loader repeats a refused load.
+			matched := tc.name != "unmatched" && tc.name != "discover-only"
+			want := map[bool]string{true: "load_refused", false: "original_loaded"}[tc.expected == "refused"]
+			if hooked := strings.HasPrefix(tc.expected, "hook"); hooked || !matched {
+				if len(refusals) != 0 {
+					t.Fatalf("refusals %+v", refusals)
+				}
+			} else if len(refusals) == 0 || tc.expected != "refused" && len(refusals) != 1 || slices.ContainsFunc(refusals, func(r Refusal) bool {
+				return r.Outcome != want || r.Program != "p" || r.Reason == "" || r.Cause != integrationCause(tc.name)
+			}) {
+				t.Fatalf("refusals %+v, want them with outcome %s", refusals, want)
 			}
 			if tc.name == "pre68-inexact" && strings.HasPrefix(tc.expected, "plain") &&
 				!strings.Contains(logs.String(), "kernel before 6.8 does not count variable-offset stack accesses") {
@@ -631,8 +668,12 @@ func TestIntegrationJumpLimit(t *testing.T) {
 		{"retry-any", "continue-on-hit", "hook", true, []string{"lookup:any"},
 			[]string{"retrying with lookup misses first", "lookup branches miss-first"}, nil},
 		{"default-kept", "continue-on-miss", "hook", true, nil, []string{"injected"}, []string{"retrying", "lookup branches"}},
-		{"both-fail-open", "both", "plain", false, nil, []string{"retrying with lookup misses first", "injection skipped"}, []string{"injected"}},
-		{"both-fail-closed", "both", "refused", true, nil, []string{"retrying with lookup misses first", "injection skipped"}, []string{"injected"}},
+		// Neither layout fits both sites; the retry, whose base without sites
+		// stands for the original, keeps one, also with --fail-closed.
+		{"both-fail-open", "both", "hook", false, nil, []string{"retrying with lookup misses first", "retrying with fewer sites",
+			"2 sites requested, 1 kept after 1 trial loads", "lookup branches miss-first"}, []string{"injection skipped"}},
+		{"both-fail-closed", "both", "hook", true, nil, []string{"retrying with lookup misses first", "retrying with fewer sites",
+			"2 sites requested, 1 kept after 1 trial loads", "lookup branches miss-first"}, []string{"injection skipped"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Setenv("SYSCALLHOOK_JUMP_CHILD", tc.shape+":"+tc.expected)
@@ -773,4 +814,20 @@ func openFiles(t *testing.T) map[string]string {
 		}
 	}
 	return files
+}
+
+// integrationCause is the Refusal.Cause of a TestIntegrationLoader case that
+// ends without hooks.
+func integrationCause(name string) string {
+	switch {
+	case strings.HasPrefix(name, "preload-analysis"):
+		return "analysis"
+	case name == "preload-verifier":
+		return "verifier"
+	case strings.HasPrefix(name, "ambiguous"):
+		return "selector"
+	case strings.HasPrefix(name, "preload"):
+		return "stack"
+	}
+	return "transform"
 }

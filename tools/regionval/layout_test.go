@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/takehaya/bpf-ninja/tools/regionval/core"
@@ -513,8 +514,11 @@ func TestCallSequences(t *testing.T) {
 }
 
 // Planted faults at kfunc centres. A kfunc whose BTF id is 12, the helper
-// id of bpf_tail_call, stays a site: as site-P4 its r0 would be free and
-// the missing reload would be accepted.
+// id of bpf_tail_call, reaches the cores as call 12 and is never validated:
+// rule site refuses a site window whose centre is the tail call before any
+// obligation is checked, so the fault is never looked at. Were the window
+// made site-P4 instead, its r0 would be free and the missing reload would be
+// accepted.
 func TestCallSequencesPlanted(t *testing.T) {
 	noR0 := callB(kfunc(1, 1))
 	noR0.t = slices.Clone(noR0.t)
@@ -528,7 +532,8 @@ func TestCallSequencesPlanted(t *testing.T) {
 	for _, c := range []struct {
 		name, rule string
 		p          pair
-	}{{"no R0 restore", "R0", noR0}, {"argument register clobbered", "R15", clobbered}, {"kfunc centre with immediate 12", "site", tail}} {
+	}{{"no R0 restore", "R0", noR0}, {"argument register clobbered", "R15", clobbered}, {"kfunc centre with immediate 12", "site", tail},
+		{"correct sequence at a kfunc with immediate 12", "site", callA(kfunc(12, 0))}} {
 		r := runFile(t, c.p.capture(t))
 		if got := rejectedBy(r); r.Validated || !slices.Equal(got, []string{c.rule}) {
 			t.Errorf("%s: rejected by %v, want [%s]: %+v", c.name, got, c.rule, r.Windows)
@@ -578,6 +583,85 @@ func TestKfuncCutting(t *testing.T) {
 		}
 		if r := runFile(t, c.p.capture(t)); !r.Validated {
 			t.Errorf("%s: %+v", c.name, r)
+		}
+	}
+}
+
+// A call centre at the first instruction of a function: code inserted
+// before it could be the function's prologue or the call's prelude, so a
+// helper or a hooked kfunc centre (a run follows it) there is refused with
+// stage windows. A kfunc that starts its function with nothing inserted
+// before it, that is next to another call and so centres no site, or that
+// no run follows (unhooked) keeps its cut: the code before it is the
+// prologue.
+func TestCallAtFunctionStart(t *testing.T) {
+	post := []a{stx(-16, 0), ldx(1, -8), movw(2, 1), mov(3, 0), call("hook"), ldx(0, -16)}
+	hook := []a{movi(0, 0).begins("hook"), exit()}
+	atMain := func(c a) pair {
+		return pair{
+			o:     []a{c.begins("main"), exit()},
+			t:     slices.Concat([]a{stx(-8, 1).begins("main"), c}, post, []a{exit()}, hook),
+			kappa: []int{1, 8}, floor: 0,
+		}
+	}
+	argStoreAtSub := func(c a) pair {
+		return pair{
+			o: []a{mov(6, 1).begins("main"), call("sub"), exit(), c.begins("sub"), exit()},
+			t: []a{stx(-8, 1).begins("main"), mov(6, 1), call("sub"), exit(),
+				stx(-24, 2).begins("sub"), c, exit()},
+			kappa: []int{1, 2, 3, 5, 6}, floor: -16,
+		}
+	}
+	for _, c := range []struct {
+		name string
+		p    pair
+	}{
+		{"helper at main", atMain(helper(5))},
+		{"kfunc at main", atMain(kfunc(60001, 0))},
+		{"helper at sub after an argument store", argStoreAtSub(helper(5))},
+	} {
+		_, err := Analyze(c.p.capture(t))
+		var se *StructError
+		if !errors.As(err, &se) || se.Stage != "windows" || !strings.Contains(err.Error(), "not separable") {
+			t.Errorf("%s: got %v, want stage windows, not separable", c.name, err)
+		}
+	}
+	for _, c := range []struct {
+		name string
+		p    pair
+		want []win
+	}{
+		{"kfunc starts sub, nothing inserted", pair{
+			o:     []a{mov(6, 1).begins("main"), call("sub"), exit(), kfunc(60001, 0).begins("sub"), exit()},
+			t:     []a{mov(6, 1).begins("main"), call("sub"), exit(), kfunc(60001, 0).begins("sub"), exit()},
+			kappa: []int{0, 1, 2, 3, 4}, floor: 0,
+		}, nil},
+		{"kfunc at main before a helper", pair{
+			o:     []a{kfunc(60001, 0).begins("main"), helper(5), exit()},
+			t:     slices.Concat([]a{stx(-8, 1).begins("main"), kfunc(60001, 0), helper(5)}, post, []a{exit()}, hook),
+			kappa: []int{1, 2, 9}, floor: 0,
+		}, []win{{"prologue", 0, 1, -1}, {"site", 2, 9, 2}, {"hook", 10, 12, -1}}},
+		{"unhooked kfunc at sub after an argument store", argStoreAtSub(kfunc(60001, 0)), []win{{"prologue", 0, 1, -1}, {"prologue", 4, 5, -1}}},
+		// The transformer spills ctx before the entry's first instruction, an
+		// unhooked kfunc here, and hooks a helper later.
+		{"unhooked kfunc at main, hooked helper later", pair{
+			o: []a{kfunc(60001, 0).begins("main"), mov(6, 0), helper(7), exit()},
+			t: slices.Concat([]a{stx(-8, 1).begins("main"), kfunc(60001, 0), mov(6, 0), helper(7)},
+				[]a{stx(-16, 0), ldx(1, -8), movw(2, 3), mov(3, 0), call("hook"), ldx(0, -16)}, []a{exit()}, hook),
+			kappa: []int{1, 2, 3, 10}, floor: 0,
+		}, []win{{"prologue", 0, 1, -1}, {"site", 3, 10, 3}, {"hook", 11, 13, -1}}},
+	} {
+		l, err := Analyze(c.p.capture(t))
+		if err != nil {
+			t.Fatalf("%s: %v", c.name, err)
+		}
+		if got := windows(l); !slices.Equal(got, c.want) {
+			t.Errorf("%s: windows %v, want %v", c.name, got, c.want)
+		}
+		if strings.HasPrefix(c.name, "unhooked kfunc at main") {
+			if r := runFile(t, c.p.capture(t)); !r.Validated {
+				t.Errorf("%s: not validated, rejected by %v", c.name, rejectedBy(r))
+			}
 		}
 	}
 }

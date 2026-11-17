@@ -26,6 +26,12 @@ func TestConfigHookPrefix(t *testing.T) {
 		// An empty hook_prefix beside a hook would read as a hook rule and select every map.
 		`[{"program":"p","auto":true,"entry":true,"hook":"h","hook_prefix":"","maps":[],"ops":[]}]`:   "rule 0: hook_prefix is empty; give the prefix or remove the key",
 		`[{"program":"p","auto":true,"entry":true,"hook":"h","hook_prefix":null,"maps":[],"ops":[]}]`: "rule 0: hook_prefix is empty; give the prefix or remove the key",
+		// encoding/json matches keys without regard to case, so a case variant
+		// of the key is the key, and the key given twice is refused.
+		`[{"program":"p","auto":true,"entry":true,"hook":"h","Hook_Prefix":""}]`:         "rule 0: hook_prefix is empty; give the prefix or remove the key",
+		`[{"program":"p","auto":true,"entry":true,"hook":"h","HOOK_PREFIX":null}]`:       "rule 0: hook_prefix is empty; give the prefix or remove the key",
+		`[{"program":"p","auto":true,"entry":true,"hook_prefix":"h","Hook_Prefix":"h"}]`: "rule 0: hook_prefix is given more than once",
+		`[{"program":"p","auto":true,"entry":true,"hook_prefix":"h","hook_prefix":"h"}]`: "rule 0: hook_prefix is given more than once",
 		// A map rule names its one site itself: without ops it observes that lookup.
 		`[{"program":"p","map":"m","hook_prefix":"h"}]`: "",
 	} {

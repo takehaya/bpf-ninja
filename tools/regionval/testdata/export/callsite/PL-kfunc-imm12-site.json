@@ -29,8 +29,8 @@
  },
  "mutation": {
   "set": "callsite",
-  "id": "PL-kfunc-imm12-noR0",
-  "fixture": "spike-notes/mkcaptures.py",
+  "id": "PL-kfunc-imm12-site",
+  "fixture": "tools/regionval/testdata/mkcaptures.py",
   "expect": "site"
  }
 }

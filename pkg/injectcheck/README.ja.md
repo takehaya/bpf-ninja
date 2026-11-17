@@ -136,6 +136,10 @@ nil metadata key はロード時の意味を持たないため checker と命令
 map 関連付け前に、両命令列で共有する変化のない外部 symbol/FD 対応表の下で検査する。
 数値 FD はその名前空間の識別子であり、プロセスをまたぐ実 map の保存形式ではない。
 
+call target (`Args` が call hook の引数列である target) を受理するのは、map helper、tail call、callback を実行または登録する helper (id 164, 170, 180, 181, 209) 以外の helper の直後か、kernel function 呼び出しの直後に限る。
+kernel function について callback を取らない、lock を取らない、一度だけ戻るという前提は transformer の deny-list が保証する。checker は BTF id を見るが kernel function の名前を見ないためである。
+受理した call hook の安全性は kernel がロードを拒否することに依らない。hook 本体の検査 (P7、本体はロードだけを行う) と、R0 を戻し R6-R9 と床より上の stack を保つことを確かめる postlude の検査に依る。
+
 受理は元プログラムと変換後プログラムの BPF validity、呼び出し規約、信頼済みの関数別 stack の床、plan 由来の信頼済み Targets を前提とする。
 kernel の受理、BTF/CO-RE の意味、JIT の正しさ、observer noninterference、明記した検査以外の観測引数、並行実行、時刻、乱数は証明しない。
 検査で BPF のロード、attach、pin は行わない。
@@ -178,7 +182,7 @@ API エラーは `errors.As` で次のように区別でき、どちらも安定
 | 結果 | 型 | CLI 終了コード | 例 |
 | --- | --- | --- | --- |
 | 受理 | nil | 0 | 検査規則をすべて満たす |
-| 入力エラー | `*InputError` | 2 | JSON 不正、必須フィールドの欠落・null、元命令列・対応表の空値、対応表の長さ・順序不正、hook 範囲の不正・重なり、target plan の欠落・不正・重複、[-512,0] 外の床、不正な元 register・CFG、未対応 format |
+| 入力エラー | `*InputError` | 2 | JSON 不正、必須フィールドの欠落・null、元命令列・対応表の空値、対応表の長さ・順序不正、hook 範囲の不正・重なり、target plan の欠落・不正・重複、変換器が計画しない位置の call target (callback または context を渡される関数の先頭命令、別の call の直前・直後)、callback を実行・登録する helper の call target、callee が読まない register を渡す call target、[-512,0] 外の床、不正な元 register・CFG、未対応 format |
 | 変換の拒否 | `*Rejection` | 1 | 命令・reference・辺の変更、計画外の call または計画済み call の欠落、挿入 store・分岐・register effect・hook の違反、metadata の変更、関連付け済み map |
 
 decode・file・usage エラーは stderr に出し、validation が見つけた構造上の入力エラーは JSON verdict も返す。

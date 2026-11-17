@@ -10,6 +10,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"reflect"
+	"slices"
 	"strings"
 
 	"github.com/takehaya/bpf-ninja/pkg/inject"
@@ -168,7 +170,7 @@ func Validate(rules []Rule) error {
 	if len(rules) == 0 {
 		return fmt.Errorf("at least one injection rule is required")
 	}
-	seen := make(map[string]bool)
+	seen := make(map[string]int)
 	for i, r := range rules {
 		if r.Hook != "" && r.HookPrefix != "" && r.Hook != r.HookPrefix {
 			return fmt.Errorf("rule %d: hook and hook_prefix are both given and differ (%q and %q); keep hook_prefix", i, r.Hook, r.HookPrefix)
@@ -200,10 +202,13 @@ func Validate(rules []Rule) error {
 		if err := r.validateSites(); err != nil {
 			return fmt.Errorf("rule %d: %w", i, err)
 		}
-		if seen[r.Program] {
-			return fmt.Errorf("rule %d: only one rule per program is supported", i)
+		if j, ok := seen[r.Program]; ok {
+			if !reflect.DeepEqual(rules[j], r) {
+				return fmt.Errorf("rule %d: rules %d and %d are for program %q and differ; only one rule per program is supported", i, j, i, r.Program)
+			}
+			continue // identical to rule j, which was checked
 		}
-		seen[r.Program] = true
+		seen[r.Program] = i
 		if r.AllMatches && len(r.SitePCs) > 0 {
 			return fmt.Errorf("rule %d: all_matches and site_pcs are mutually exclusive", i)
 		}
@@ -245,17 +250,68 @@ func ParseConfig(r io.Reader) ([]Rule, error) {
 	}
 	// The key hook_prefix marks a rule that states every kind; empty, it would
 	// read as a hook rule, whose empty maps and ops select everything.
-	var keys []map[string]json.RawMessage
-	_ = json.Unmarshal(data, &keys) // decoded above
-	for i, rule := range keys {
-		if v, ok := rule["hook_prefix"]; ok && (string(v) == `""` || string(v) == "null") {
-			return nil, fmt.Errorf("rule %d: hook_prefix is empty; give the prefix or remove the key", i)
-		}
+	// encoding/json matches it in any case, and the last of repeated keys wins.
+	if err := checkHookPrefixKeys(data); err != nil {
+		return nil, err
 	}
 	if err := Validate(rules); err != nil {
 		return nil, err
 	}
-	return rules, nil
+	return uniqueRules(rules), nil
+}
+
+// checkHookPrefixKeys refuses a rule of data, a JSON array that decoded
+// into rules, whose hook_prefix key, in any case, is empty or null or is
+// given more than once.
+func checkHookPrefixKeys(data []byte) error {
+	d := json.NewDecoder(bytes.NewReader(data))
+	if _, err := d.Token(); err != nil { // [
+		return fmt.Errorf("injection config: %w", err)
+	}
+	for i := 0; d.More(); i++ {
+		if tok, err := d.Token(); err != nil || tok == nil { // { or null
+			if err != nil {
+				return fmt.Errorf("injection config: %w", err)
+			}
+			continue
+		}
+		given := 0
+		for d.More() {
+			key, err := d.Token()
+			if err != nil {
+				return fmt.Errorf("injection config: %w", err)
+			}
+			var v json.RawMessage
+			if err := d.Decode(&v); err != nil {
+				return fmt.Errorf("injection config: %w", err)
+			}
+			if name, _ := key.(string); !strings.EqualFold(name, "hook_prefix") {
+				continue
+			}
+			if given++; given > 1 {
+				return fmt.Errorf("rule %d: hook_prefix is given more than once (keys match in any case)", i)
+			}
+			if string(v) == `""` || string(v) == "null" {
+				return fmt.Errorf("rule %d: hook_prefix is empty; give the prefix or remove the key", i)
+			}
+		}
+		if _, err := d.Token(); err != nil { // }
+			return fmt.Errorf("injection config: %w", err)
+		}
+	}
+	return nil
+}
+
+// uniqueRules drops each rule identical to an earlier one; Validate accepts
+// only identical rules for one program.
+func uniqueRules(rules []Rule) []Rule {
+	var out []Rule
+	for _, r := range rules {
+		if !slices.ContainsFunc(out, func(o Rule) bool { return reflect.DeepEqual(o, r) }) {
+			out = append(out, r)
+		}
+	}
+	return out
 }
 
 func (r Rule) validateMapTypes() error {

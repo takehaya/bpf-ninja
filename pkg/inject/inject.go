@@ -568,7 +568,7 @@ func splice(input asm.Instructions, req Request) (asm.Instructions, error) {
 			return nil, err
 		}
 		if relative {
-			if err := relocateOffset(&ins, mapped(pc), mapped(target), function); err != nil {
+			if err := relocateOffset(&ins, pc, mapped(pc), mapped(target), function); err != nil {
 				return nil, err
 			}
 		}
@@ -663,21 +663,33 @@ func relocTarget(ins *asm.Instruction, pc int, indices map[int]int, input asm.In
 
 // relocateOffset uses the first raw slot plus one even for two-slot LDIMM64
 // callback loads, matching the kernel and the loader's function references.
-func relocateOffset(ins *asm.Instruction, pc, target int, function bool) error {
+// pc and target are slots of the rewritten program; orig, the instruction's
+// slot in the original program, is the one a refusal names.
+func relocateOffset(ins *asm.Instruction, orig, pc, target int, function bool) error {
 	delta := int64(target) - int64(pc) - 1
 	if function {
 		if delta < math.MinInt32 || delta > math.MaxInt32 {
-			return refuse("function reference at %d overflows int32 after insertion", pc)
+			return refuse("function reference at %d overflows int32 after insertion", orig)
 		}
 		ins.Constant = delta
 	} else {
 		if delta < math.MinInt16 || delta > math.MaxInt16 {
-			return refuse("branch at %d overflows int16 after insertion", pc)
+			return branchRangeError{orig}
 		}
 		ins.Offset = int16(delta)
 	}
 	return nil
 }
+
+// branchRangeError is the refusal of a branch at original slot pc whose
+// offset no longer fits int16 after insertion.
+type branchRangeError struct{ pc int }
+
+func (e branchRangeError) reason() string {
+	return fmt.Sprintf("branch at %d overflows int16 after insertion", e.pc)
+}
+func (e branchRangeError) Error() string { return fmt.Sprintf("%v: %s", ErrRefused, e.reason()) }
+func (e branchRangeError) Unwrap() error { return ErrRefused }
 
 // checkShape enforces the audited load shape and site-register redefinition.
 func checkShape(load, next asm.Instruction, shape LoadShape) error {

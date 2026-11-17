@@ -125,8 +125,8 @@ func (r LookupRequestRaw) Request() LookupRequest {
 // "_tail_call" with TailCalls, "_entry" with Entry, "_0" with Auto, whose
 // per-map names that would pass MaxHookName fall back to HOOKNAME_<index> (a
 // group whose name still does not fit is skipped), "_miss", "_update" or
-// "_delete" after a map's name for the ops r observes, and "_" plus each
-// Calls name.
+// "_delete" after a map's name for the ops r observes. Calls names do not
+// count: a callee whose hook name does not fit is skipped with that reason.
 func hookSuffix(r LookupRequest) string {
 	if r.Dispatch {
 		return ""
@@ -150,9 +150,6 @@ func hookSuffix(r LookupRequest) string {
 	}
 	if r.Entry {
 		suffixes = append(suffixes, "_entry")
-	}
-	for _, name := range r.Calls {
-		suffixes = append(suffixes, "_"+name)
 	}
 	return slices.MaxFunc(suffixes, func(a, b string) int { return len(a) - len(b) })
 }
@@ -332,6 +329,11 @@ func prepareRawLookup(p RawProgram) (asm.Instructions, *btf.Spec, lookupMapResol
 	indices := make(map[uint32]int)
 	it := insns.Iterate()
 	for it.Next() {
+		// The analyses index per-register state by these fields; the kernel
+		// checks them only on the paths it visits.
+		if it.Ins.Dst > asm.R10 || it.Ins.Src > asm.R10 {
+			return nil, nil, nil, refuse("instruction at %d has register field dst %d src %d past r10", it.Offset, it.Ins.Dst, it.Ins.Src)
+		}
 		indices[uint32(it.Offset)] = it.Index
 		*it.Ins = btf.WithFuncMetadata(it.Ins.WithSource(nil), nil)
 	}

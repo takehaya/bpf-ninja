@@ -153,7 +153,7 @@ prog 464334  entry
          "ops": ["lookup:any", "push:any", "pop:any", "peek:any"], "hook_prefix": "ninja"}
 ```
 
-The ready rule names every map with a call, each op as `op:any`, and the entry.
+The ready rule names every named map with a call, each op as `op:any`, and the entry.
 Loaded as it is, it hooks all of them; deleting a name or `entry` hooks less, never more.
 
 ## 2. Write the rule

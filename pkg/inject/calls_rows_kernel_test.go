@@ -238,10 +238,11 @@ var skRows = []struct {
 	name    string
 	fn      asm.BuiltinFunc
 	network string
+	retType string
 }{
-	{"bpf_sk_lookup_tcp", asm.FnSkLookupTcp, "tcp4"},
-	{"bpf_sk_lookup_udp", asm.FnSkLookupUdp, "udp4"},
-	{"bpf_skc_lookup_tcp", asm.FnSkcLookupTcp, "tcp4"},
+	{"bpf_sk_lookup_tcp", asm.FnSkLookupTcp, "tcp4", "sock"},
+	{"bpf_sk_lookup_udp", asm.FnSkLookupUdp, "udp4", "sock"},
+	{"bpf_skc_lookup_tcp", asm.FnSkcLookupTcp, "tcp4", "sock_common"},
 }
 
 // testCallHookRowSk hooks each socket lookup on a socket bound to
@@ -275,9 +276,10 @@ func testCallHookRowSk(t *testing.T, typ ebpf.ProgramType, static bool) {
 			plain := loadCallFixture(t, skFixture(typ, r.fn, port, true))
 			coll, plan, obs := callHooked(t, skFixture(typ, r.fn, port, true), req)
 			h := plan.hooks[0]
-			if !h.RetPtr || h.ArgReg != 2 || h.ArgSize != 12 || h.Static != static || h.Untrusted == static {
+			if !h.RetPtr || h.ArgReg != 2 || h.ArgSize != 12 || h.Static != static || h.Untrusted == static || h.RetType != r.retType {
 				t.Fatalf("hook %+v", h)
 			}
+			checkRewrite(t, skFixture(typ, r.fn, port, true), req)
 			for run, action := range []int32{pass, drop} {
 				if run == 1 {
 					if err := closer.Close(); err != nil {

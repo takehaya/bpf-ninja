@@ -20,6 +20,7 @@ type CallRow struct {
 	ArgType string          // struct name looked up for the pointee
 	Writes  bool            // the callee's own argument check is a write on every supported kernel
 	RetSize uint32          // byte size of a kernel function's integer result narrower than 8 bytes; 0: 8
+	RetSigned bool          // that narrow result is a signed integer or enum
 }
 
 // callTable lists the callees LookupRequest.Calls may name. A row is never
@@ -52,7 +53,14 @@ var callTable = []CallRow{
 // 6.12, 6.18 and 7.0 where the helper exists and XDP or tc may call it
 // (bpf_task_storage_get: tc from 6.18). Off: bpf_get_local_storage,
 // bpf_inode_storage_get and bpf_sock_from_file, which neither XDP nor tc may
-// call.
+// call. The pointer rows of callTable get the same hook when their sites do
+// not agree on one argument size (calls_fallback_kernel_test.go).
+//
+// Kernel functions have no such list: kfuncRow gives every pointer result
+// the result-only hook. That hook is static with an empty body or takes a
+// global arg:untrusted parameter, so the worst a new kind can do is a
+// verifier refusal, which the load retry turns into a dropped site; and the
+// set of kernel functions is open, so a list could never be complete.
 var pointerResults = []string{"bpf_sk_fullsock", "bpf_tcp_sock", "bpf_ringbuf_reserve", "bpf_this_cpu_ptr", "bpf_kptr_xchg",
 	"bpf_get_listener_sock", "bpf_skc_to_tcp6_sock", "bpf_skc_to_tcp_sock", "bpf_skc_to_tcp_timewait_sock", "bpf_skc_to_tcp_request_sock",
 	"bpf_skc_to_udp6_sock", "bpf_skc_to_unix_sock", "bpf_skc_to_mptcp_sock", "bpf_sk_storage_get", "bpf_per_cpu_ptr", "bpf_dynptr_data",
@@ -115,7 +123,8 @@ func namedCall(name string, kernel *btf.Spec, modules map[int16]*btf.Spec) (*Cal
 
 // kfuncRow returns the row a call of the kernel function name without a row
 // gets when a rule names it: a result-only row, RetPtr for any pointer result
-// (void * included) and RetSize for an integer or enum narrower than 8 bytes.
+// (void * included) and RetSize for an integer or enum narrower than 8 bytes,
+// with RetSigned when it is signed.
 // Otherwise the row is nil and reason says why: the deny list, a parameter
 // that points to a function prototype (the verifier's callback test), no
 // result, or a prototype that cannot be read (proto nil).
@@ -126,21 +135,18 @@ func kfuncRow(name string, proto *btf.FuncProto) (row *CallRow, reason string) {
 	if proto == nil {
 		return nil, "its prototype is not in the kernel BTF at hand"
 	}
-	for _, p := range proto.Params {
-		if ptr, ok := btf.UnderlyingType(p.Type).(*btf.Pointer); ok {
-			if _, ok := btf.UnderlyingType(ptr.Target).(*btf.FuncProto); ok {
-				return nil, "runs or registers a callback"
-			}
-		}
+	if protoTakesCallback(proto) {
+		return nil, callbackReason
 	}
 	var size uint32
+	var signed bool
 	switch ret := btf.UnderlyingType(proto.Return).(type) {
 	case *btf.Pointer:
 		return &CallRow{Name: name, RetPtr: true}, ""
 	case *btf.Int:
-		size = ret.Size
+		size, signed = ret.Size, ret.Encoding == btf.Signed
 	case *btf.Enum:
-		size = ret.Size
+		size, signed = ret.Size, ret.Signed
 	case *btf.Void, nil:
 		return nil, "returns nothing"
 	default:
@@ -148,9 +154,26 @@ func kfuncRow(name string, proto *btf.FuncProto) (row *CallRow, reason string) {
 	}
 	row = &CallRow{Name: name}
 	if size < 8 {
-		row.RetSize = size
+		row.RetSize, row.RetSigned = size, signed
 	}
 	return row, ""
+}
+
+// callbackReason is the reason a callee that runs or registers a callback
+// gets no hook.
+const callbackReason = "runs or registers a callback"
+
+// protoTakesCallback reports a prototype with a parameter that points to a
+// function prototype, the verifier's callback test for a kernel function.
+func protoTakesCallback(proto *btf.FuncProto) bool {
+	for _, p := range proto.Params {
+		if ptr, ok := btf.UnderlyingType(p.Type).(*btf.Pointer); ok {
+			if _, ok := btf.UnderlyingType(ptr.Target).(*btf.FuncProto); ok {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // kfuncProto is the BTF prototype of a kernel-function call: by the BTF id
@@ -201,6 +224,31 @@ func kfuncByName(name string, kernel *btf.Spec, modules map[int16]*btf.Spec) *bt
 	return nil
 }
 
+// retTypeOf names the kernel struct or union behind a callee's pointer
+// result: for helper id (non-zero) the generated RetType column, for a
+// kernel function the pointee of its prototype proto (modifiers and typedefs
+// skipped). "" when the result is untyped: void *, a scalar pointee, an
+// anonymous type, or a prototype that cannot be read. It is the one place
+// where a result's type is decided.
+func retTypeOf(helper asm.BuiltinFunc, proto *btf.FuncProto) string {
+	if helper != 0 {
+		h, _ := helperByID(int64(helper))
+		return h.RetType
+	}
+	if proto == nil {
+		return ""
+	}
+	ptr, ok := btf.UnderlyingType(proto.Return).(*btf.Pointer)
+	if !ok {
+		return ""
+	}
+	switch t := btf.UnderlyingType(ptr.Target).(type) {
+	case *btf.Struct, *btf.Union:
+		return t.TypeName()
+	}
+	return ""
+}
+
 // hookableHelpers returns the names of the helpers a rule's Calls may name, in id order.
 func hookableHelpers() []string {
 	var names []string
@@ -222,10 +270,10 @@ func SupportedCalls() []string {
 }
 
 // callee names the callee of a helper or kfunc call and returns its row, nil when the table has none.
-// A helper is found by id. A kfunc is named by ins.Reference() when set (ELF path), else, when
-// by the FUNC whose BTF id is ins.Constant (raw path) in kernel when ins.Offset == 0, else in
+// A helper is found by id. A kfunc is named by ins.Reference() when set (ELF path), else by the
+// FUNC whose BTF id is ins.Constant (raw path) in kernel when ins.Offset == 0, else in
 // modules[ins.Offset], the module BTF of that fd_array offset.
-// named is false only for a kfunc call that cannot be named.
+// named is false only for a kfunc call that cannot be named; name is then unnamedKfuncName.
 func callee(ins *asm.Instruction, kernel *btf.Spec, modules map[int16]*btf.Spec) (row *CallRow, name string, named bool) {
 	switch {
 	case ins.IsBuiltinCall():
@@ -243,12 +291,12 @@ func callee(ins *asm.Instruction, kernel *btf.Spec, modules map[int16]*btf.Spec)
 				spec = modules[ins.Offset] // a module kfunc: off indexes the load's fd_array of module BTF fds
 			}
 			if spec == nil {
-				return nil, "", false
+				return nil, unnamedKfuncName(ins), false
 			}
 			typ, err := spec.TypeByID(btf.TypeID(ins.Constant))
 			fn, ok := typ.(*btf.Func)
 			if err != nil || !ok {
-				return nil, "", false
+				return nil, unnamedKfuncName(ins), false
 			}
 			name = fn.Name
 		}
@@ -260,6 +308,17 @@ func callee(ins *asm.Instruction, kernel *btf.Spec, modules map[int16]*btf.Spec)
 		return nil, name, true
 	}
 	return nil, "", true
+}
+
+// unnamedKfuncReason is the reason a kernel-function call that cannot be
+// named gets no hook.
+const unnamedKfuncReason = "a kernel-function call that cannot be named"
+
+// unnamedKfuncName stands for the callee of a kernel-function call that
+// cannot be named: kfunc_OFF_ID from the call's fd_array offset and BTF id, so
+// that calls of different kernel functions stay apart in a listing.
+func unnamedKfuncName(ins *asm.Instruction) string {
+	return fmt.Sprintf("kfunc_%d_%d", ins.Offset, ins.Constant)
 }
 
 // callArgType returns the pointee of the hook's arg parameter for a site whose size register holds n,

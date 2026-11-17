@@ -585,6 +585,9 @@ func run(ctx context.Context, cmd *cli.Command) error {
 		if err := rec.unsupported("--dump-asm"); err != nil {
 			return err
 		}
+		if cmd.String("site") != "" || cmd.String("hooks-json") != "" {
+			return fmt.Errorf("--dump-asm does not take --site or --hooks-json: they select a site of a running program")
+		}
 		if len(modes) > 1 {
 			return fmt.Errorf("--dump-asm renders one capture point; pass a single --mode")
 		}
@@ -2040,6 +2043,9 @@ func validateXDPNativeFlags(cmd *cli.Command) error {
 	}
 	if len(cmd.StringSlice("arg-filter")) > 0 {
 		return fmt.Errorf("--arg-filter is only valid with --mode entry/exit (no tracing args in xdp-native)")
+	}
+	if cmd.String("site") != "" || cmd.String("hooks-json") != "" {
+		return fmt.Errorf("--site and --hooks-json are only valid with --mode entry/exit (they select a hook of a running program)")
 	}
 	// --set is valid on xdp-native for DSL `layer[field in @NAME]` (packet
 	// extraction). arg-filter @NAME (which needs tracing args) is already

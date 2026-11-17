@@ -647,8 +647,11 @@ type FuncParamInfo struct {
 	VoidSize uint32
 	// RetSize is the width in bytes of a generated call hook's u64 ret when
 	// the callee's integer result is narrower (the ret_size decl tag); its
-	// upper bytes are not part of the result. Zero otherwise.
+	// upper bytes are not part of the result, so Size and Signed already
+	// describe the result (RetSize and RetSigned). Zero otherwise.
 	RetSize uint32
+	// RetSigned marks that narrow result as signed (hookabi.RetSignedTag).
+	RetSigned bool
 	// StatusWord marks a generated hook's u64 status argument, which is
 	// (u32)ret | flags << 32 and so has the fields status.ret and status.flags.
 	StatusWord bool
@@ -723,6 +726,9 @@ func GetFuncParamsFromSpec(spec *btf.Spec, funcName string) ([]FuncParamInfo, er
 			info := FuncParamInfo{Name: p.Name, Index: i, Size: 8, Kind: kind, TypeName: typeName, Type: p.Type}
 			if _, isVoid := target.(*btf.Void); isVoid {
 				info.VoidSize = voidSize[p.Name]
+				if p.Name == "ret" && voidSize != nil {
+					typeRet(&info, hookabi.RetType(fn.Tags))
+				}
 			}
 			params = append(params, info)
 			continue
@@ -741,11 +747,35 @@ func GetFuncParamsFromSpec(spec *btf.Spec, funcName string) ([]FuncParamInfo, er
 		}
 		if p.Name == "ret" && intType.Size == 8 && voidSize["ret"] < 8 {
 			info.RetSize = voidSize["ret"]
+			info.RetSigned = info.RetSize != 0 && slices.Contains(fn.Tags, hookabi.RetSignedTag)
+			if info.RetSize != 0 {
+				// The parameter is the result: every reader (listing, echo,
+				// filter, record) sees its width and signedness.
+				info.Size, info.Signed = info.RetSize, info.RetSigned
+			}
 		}
 		params = append(params, info)
 	}
 
 	return params, nil
+}
+
+// typeRet gives a generated call hook's const void *ret the kernel type
+// its ret_type decl tag names (RetPointee), so that its members resolve as
+// an argument's do. Without the tag, or when the kernel BTF lacks the type,
+// ret stays untyped: a null test only.
+func typeRet(info *FuncParamInfo, name string) {
+	if name == "" {
+		return
+	}
+	typ := RetPointee(name)
+	if typ == nil {
+		return
+	}
+	info.Type, info.TypeName, info.Kind = &btf.Pointer{Target: typ}, name, "ptr-struct"
+	if _, ok := typ.(*btf.Union); ok {
+		info.Kind = "ptr-union"
+	}
 }
 
 // BTFSpec opens the BTF handle for a loaded program and returns its spec.

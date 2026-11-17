@@ -259,3 +259,26 @@ func TestArgFilterString(t *testing.T) {
 		})
 	}
 }
+
+// A filter on a call hook's narrow ret compares the result at its width,
+// sign-extended when it is signed, so ret==-22 selects a failing int result.
+func TestArgFilterNarrowRet(t *testing.T) {
+	// As attach builds it: Size and Signed are the result's.
+	ret := attach.FuncParamInfo{Name: "ret", Index: 1, Size: 4, RetSize: 4}
+	for _, signed := range []bool{true, false} {
+		ret.Signed, ret.RetSigned = signed, signed
+		filters, err := ParseAndValidateFilters([]string{"ret==-22"}, []attach.FuncParamInfo{ret})
+		if !signed {
+			if err == nil {
+				t.Fatalf("unsigned narrow ret accepted -22: %+v", filters)
+			}
+			continue
+		}
+		if err != nil || len(filters) != 1 || filters[0].ParamSize != 4 || !filters[0].Signed || int64(filters[0].Value) != -22 {
+			t.Fatalf("signed: %+v %v", filters, err)
+		}
+	}
+	if filters, err := ParseAndValidateFilters([]string{"ret==4294967274"}, []attach.FuncParamInfo{ret}); err != nil || filters[0].ParamSize != 4 || filters[0].Signed {
+		t.Fatalf("unsigned: %+v %v", filters, err)
+	}
+}

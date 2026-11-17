@@ -1,7 +1,9 @@
 package inject
 
 import (
+	"errors"
 	"fmt"
+	"math"
 	"slices"
 	"strings"
 	"testing"
@@ -168,7 +170,7 @@ func TestCallRefusals(t *testing.T) {
 	}{
 		{"dispatch", func(r *LookupRequest) { r.Dispatch = true }, "Calls does not combine with Dispatch"},
 		{"unknown", func(r *LookupRequest) { r.Calls, r.Kernel = []string{"bpf_dynptr_from_xdp"}, testKernelSpec(t) },
-			`Calls name "bpf_dynptr_from_xdp" is not supported: it is neither a helper nor a kernel function of the running kernel or of a module BTF the program passes`},
+			`no call site is instrumented (1 skipped); Calls names that are neither a helper nor a kernel function of this load: "bpf_dynptr_from_xdp"`},
 		{"lock", func(r *LookupRequest) { r.Calls = []string{"bpf_spin_lock"} }, `Calls name "bpf_spin_lock" cannot be hooked: takes or releases a lock or a critical section`},
 		{"callback", func(r *LookupRequest) { r.Calls = []string{"bpf_loop"} }, `Calls name "bpf_loop" cannot be hooked: runs or registers a callback`},
 		{"void", func(r *LookupRequest) { r.Calls = []string{"bpf_ringbuf_submit"} }, `Calls name "bpf_ringbuf_submit" cannot be hooked: returns nothing`},
@@ -214,16 +216,18 @@ func TestCallNotBlockedBySpinLock(t *testing.T) {
 
 // Neither an unnameable kfunc nor bpf_preempt_disable keeps the program's
 // other call sites from their hooks: a site the kernel refuses inside a
-// preemption-disabled region is left to the load retry.
+// preemption-disabled region is left to the load retry. The unnameable call
+// is listed as skipped.
 func TestCallNotBlockedByKfuncs(t *testing.T) {
 	for _, tc := range []struct {
-		name   string
-		call   asm.Instruction
-		kernel *btf.Spec
+		name    string
+		call    asm.Instruction
+		kernel  *btf.Spec
+		skipped int
 	}{
-		{"nil kernel", kfuncCall(1), nil},
-		{"missing module", asm.Instruction{OpCode: asm.OpCode(asm.JumpClass).SetJumpOp(asm.Call), Src: asm.PseudoKfuncCall, Constant: 1, Offset: 1}, testKernelSpec(t)},
-		{"preempt disable", kfuncCall(-1).WithReference("bpf_preempt_disable"), nil},
+		{"nil kernel", kfuncCall(1), nil, 1},
+		{"missing module", asm.Instruction{OpCode: asm.OpCode(asm.JumpClass).SetJumpOp(asm.Call), Src: asm.PseudoKfuncCall, Constant: 1, Offset: 1}, testKernelSpec(t), 1},
+		{"preempt disable", kfuncCall(-1).WithReference("bpf_preempt_disable"), nil, 0},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			spec := scalarFixture()
@@ -235,7 +239,7 @@ func TestCallNotBlockedByKfuncs(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if len(plan.hooks) != 3 || len(plan.skipped) != 0 {
+			if len(plan.hooks) != 3 || len(plan.skipped) != tc.skipped {
 				t.Fatalf("hooks %+v skipped %+v", plan.hooks, plan.skipped)
 			}
 		})
@@ -254,11 +258,52 @@ func TestCallWithAutoAndNames(t *testing.T) {
 	if len(plan.hooks) != 1 || plan.hooks[0].Name != "obs_bpf_jiffies64" {
 		t.Fatalf("hooks %+v", plan.hooks)
 	}
-	if got := hookSuffix(callReq("bpf_ktime_get_ns", "bpf_get_prandom_u32")); got != "_bpf_get_prandom_u32" {
+	if got := hookSuffix(callReq("bpf_ktime_get_ns", "bpf_get_prandom_u32")); got != "" {
 		t.Errorf("hookSuffix = %q", got)
 	}
 	if got := LookupStackReserve(LookupRequest{Calls: []string{"bpf_jiffies64"}, Entry: true}); got < 24 {
 		t.Errorf("LookupStackReserve = %d", got)
+	}
+}
+
+// A Calls name the program does not call, or that the kernel does not have,
+// is no refusal: the rule hooks the callees it does call. A known name the
+// program does not call is silent; a name that is neither a helper nor a
+// kernel function of the load is listed once, without a site, and named
+// when the rule ends with nothing to hook.
+func TestCallUnknownNameNoSite(t *testing.T) {
+	// The test kernel has no bpf_dynptr_from_xdp; bpf_get_numa_node_id is a
+	// helper the fixture does not call.
+	req := callReq("bpf_jiffies64", "bpf_dynptr_from_xdp", "bpf_get_numa_node_id", "bpf_get_prandom_u23")
+	req.Kernel = testKernelSpec(t)
+	plan, err := transformLookup(scalarFixture(), req)
+	want := LookupSite{Call: "bpf_get_prandom_u23", Reason: `Calls name "bpf_get_prandom_u23" is neither a helper nor a kernel function of this load`}
+	if err != nil || len(plan.hooks) != 1 || plan.hooks[0].Call != "bpf_jiffies64" || len(plan.skipped) != 2 || plan.skipped[1] != want ||
+		plan.skipped[0].Call != "bpf_dynptr_from_xdp" || !UnknownCallsName(plan.skipped[0]) || !UnknownCallsName(plan.skipped[1]) {
+		t.Fatalf("err %v hooks %+v skipped %+v", err, plan.hooks, plan.skipped)
+	}
+	_, err = transformLookup(scalarFixture(), callReq("bpf_get_prandom_u23", "bpf_dynptr_from_xdp"))
+	if !errors.Is(err, ErrRefused) || !strings.Contains(err.Error(),
+		`no call site is instrumented (2 skipped); Calls names that are neither a helper nor a kernel function of this load: "bpf_get_prandom_u23", "bpf_dynptr_from_xdp"`) {
+		t.Fatalf("err %v", err)
+	}
+}
+
+// A Calls name too long for its hook name passes the configuration check;
+// the transform skips that callee and hooks the others.
+func TestCallNameTooLong(t *testing.T) {
+	req := callReq("bpf_get_prandom_u32", "bpf_jiffies64")
+	req.HookName = strings.Repeat("h", MaxHookName-len("_bpf_jiffies64"))
+	if err := ValidateRaw(LookupRequestRaw{HookName: req.HookName, Calls: req.Calls, Stack: req.Stack}); err != nil {
+		t.Fatal(err)
+	}
+	plan, err := transformLookup(scalarFixture(), req)
+	if err != nil || len(plan.hooks) != 1 || plan.hooks[0].Call != "bpf_jiffies64" {
+		t.Fatalf("err %v hooks %+v", err, plan.hooks)
+	}
+	if len(plan.skipped) != 1 || plan.skipped[0].Call != "bpf_get_prandom_u32" ||
+		plan.skipped[0].Reason != fmt.Sprintf("hook name %q is longer than %d bytes", req.HookName+"_bpf_get_prandom_u32", MaxHookName) {
+		t.Fatalf("skipped %+v", plan.skipped)
 	}
 }
 
@@ -446,12 +491,48 @@ func TestCallKfuncRaw(t *testing.T) {
 	if !slices.Equal(params, []string{"ctx", "site", "arg", "ret"}) || fn.ParamTags[2][0] != "arg:untrusted" || fn.ParamTags[3][0] != "arg:untrusted" {
 		t.Errorf("params %v tags %v", params, fn.ParamTags)
 	}
-	// Without kernel BTF the kfunc cannot be named, so it is not a site.
+	// Without kernel BTF the kfuncs cannot be named: their sites are skipped
+	// with that reason, each under its own stand-in name.
 	req.Kernel = nil
 	spec = ctFixture(ebpf.XDP, func(name string) asm.Instruction { return testKfunc(t, kernel, name) }, 0, 8101, false)
 	plan, err = transformLookup(spec, req)
-	if err == nil || !strings.Contains(err.Error(), "no call site is instrumented (0 skipped)") {
+	if err == nil || !strings.Contains(err.Error(), "no call site is instrumented (2 skipped)") {
 		t.Fatalf("err %v skipped %+v", err, plan.skipped)
+	}
+	checkUnnamedSkipped(t, plan.skipped, kernel)
+	// With another hook the rule loads, and the skipped sites are still listed.
+	req.Entry = true
+	spec = ctFixture(ebpf.XDP, func(name string) asm.Instruction { return testKfunc(t, kernel, name) }, 0, 8101, false)
+	if plan, err = transformLookup(spec, req); err != nil || len(plan.hooks) != 1 || plan.hooks[0].Kind != HookEntry {
+		t.Fatalf("err %v hooks %+v", err, plan.hooks)
+	}
+	checkUnnamedSkipped(t, plan.skipped, kernel)
+}
+
+// checkUnnamedSkipped checks that skipped lists the two unnamed kfunc calls
+// of ctFixture, the lookup and the release, apart.
+func checkUnnamedSkipped(t *testing.T, skipped []LookupSite, kernel *btf.Spec) {
+	t.Helper()
+	lookup, release := testKfunc(t, kernel, "bpf_xdp_ct_lookup"), testKfunc(t, kernel, "bpf_ct_release")
+	if len(skipped) != 2 || skipped[0].Op != HookCall || skipped[0].Reason != "call: a kernel-function call that cannot be named" ||
+		skipped[0].Call != fmt.Sprintf("kfunc_0_%d", lookup.Constant) || skipped[1].Call != fmt.Sprintf("kfunc_0_%d", release.Constant) ||
+		skipped[1].Reason != skipped[0].Reason {
+		t.Fatalf("skipped %+v", skipped)
+	}
+}
+
+// A kfunc the rule names whose prototype cannot be read (ELF path, no kernel
+// BTF) is listed as skipped with that reason.
+func TestCallKfuncNoProtoSkipped(t *testing.T) {
+	insns := asm.Instructions{asm.Mov.Imm(asm.R6, 1), asm.FnKtimeGetNs.Call(), asm.Mov.Imm(asm.R7, 1), kfuncCall(0).WithReference("bpf_some_kfunc")}
+	insns = append(insns, outStore(0, asm.R0)...)
+	spec := callFixtureSpec(ebpf.XDP, append(insns, asm.Mov.Imm(asm.R0, 2), asm.Return()))
+	plan, err := transformLookup(spec, callReq("bpf_some_kfunc", "bpf_ktime_get_ns"))
+	if err != nil || len(plan.hooks) != 1 || plan.hooks[0].Call != "bpf_ktime_get_ns" {
+		t.Fatalf("err %v hooks %+v", err, plan.hooks)
+	}
+	if len(plan.skipped) != 1 || plan.skipped[0].Call != "bpf_some_kfunc" || plan.skipped[0].Reason != "call: its prototype is not in the kernel BTF at hand" {
+		t.Fatalf("skipped %+v", plan.skipped)
 	}
 }
 
@@ -607,6 +688,35 @@ func TestRetryRank(t *testing.T) {
 	}
 }
 
+// A row callee that fell back to the result-only hook ranks by that form:
+// a helper with a scalar or pointer result, a kernel function with a pointer
+// result. The function limit then drops it like a helper without a row,
+// by first site within the rank.
+func TestRetryRankFallback(t *testing.T) {
+	for _, tc := range []struct {
+		h    LookupHook
+		rank int
+	}{
+		{LookupHook{Kind: HookCall, Call: "bpf_fib_lookup"}, 3},
+		{LookupHook{Kind: HookCall, Call: "bpf_fib_lookup", ArgReason: "two sizes"}, 4},
+		{LookupHook{Kind: HookCall, Call: "bpf_sk_lookup_tcp", RetPtr: true, ArgReason: "two sizes"}, 5},
+		{LookupHook{Kind: HookCall, Call: "bpf_xdp_ct_lookup", RetPtr: true, ArgReason: "two sizes"}, 7},
+	} {
+		if got := RetryRank(tc.h); got != tc.rank {
+			t.Errorf("RetryRank(%+v) = %d, want %d", tc.h, got, tc.rank)
+		}
+	}
+	group := func(name string, id asm.BuiltinFunc, pc uint32, argReason string) lookupGroup {
+		return lookupGroup{name: "obs_" + name, op: HookCall, call: &CallRow{Name: name, Helper: id}, argReason: argReason,
+			sites: []discoveredLookup{{LookupSite: LookupSite{Op: HookCall, Call: name, SitePC: pc}}}}
+	}
+	groups := []lookupGroup{group("bpf_get_numa_node_id", asm.FnGetNumaNodeId, 3, ""), group("bpf_fib_lookup", asm.FnFibLookup, 9, "two sizes")}
+	kept, skipped, dropped := dropLastCalls(groups, nil, 1, "limit")
+	if !dropped || len(kept) != 1 || kept[0].call.Name != "bpf_get_numa_node_id" || len(skipped) != 1 || skipped[0].Call != "bpf_fib_lookup" {
+		t.Fatalf("kept %+v skipped %+v", kept, skipped)
+	}
+}
+
 // spliceLookupCalls gives a call site with nothing to keep no prelude, also
 // at the start of a function: the function's symbol stays on the call.
 func TestCallEmptyPreludeAtFunctionStart(t *testing.T) {
@@ -628,15 +738,15 @@ func TestCallEmptyPreludeAtFunctionStart(t *testing.T) {
 	}
 }
 
-// ValidateRaw leaves room for "_" plus the longest Calls name, and Calls
-// reserves the three base slots with Entry or TailCalls alone.
+// ValidateRaw leaves no room for Calls names: a name too long for its hook
+// skips that callee (TestCallNameTooLong). Calls reserves the three base
+// slots with Entry or TailCalls alone.
 func TestCallNameRoomAndReserve(t *testing.T) {
 	long := strings.Repeat("h", MaxHookName-len("_bpf_jiffies64"))
-	if err := ValidateRaw(LookupRequestRaw{HookName: long, Calls: []string{"bpf_jiffies64"}}); err != nil {
-		t.Fatalf("fitting name: %v", err)
-	}
-	if err := ValidateRaw(LookupRequestRaw{HookName: long + "h", Calls: []string{"bpf_jiffies64"}}); err == nil {
-		t.Fatal("ValidateRaw accepts a hook name with no room for the call suffix")
+	for _, name := range []string{long, long + "h"} {
+		if err := ValidateRaw(LookupRequestRaw{HookName: name, Calls: []string{"bpf_jiffies64"}}); err != nil {
+			t.Fatalf("%d bytes: %v", len(name), err)
+		}
 	}
 	for _, req := range []LookupRequest{{Calls: []string{"bpf_jiffies64"}, Entry: true}, {Calls: []string{"bpf_jiffies64"}, TailCalls: true}} {
 		if got := LookupStackReserve(req); got != 24 {
@@ -646,10 +756,16 @@ func TestCallNameRoomAndReserve(t *testing.T) {
 }
 
 // Drop takes the sites it names out of the request, whatever their kind,
-// and lists them as skipped with the given reason; the other sites keep
-// their hooks. An explicitly selected lookup is refused instead.
+// and lists them as skipped with the given reason, "dropped" for an empty
+// one; the other sites keep their hooks. An explicitly selected lookup is
+// refused instead.
 func TestDrop(t *testing.T) {
-	const reason = "load: dropped by the caller"
+	for _, tc := range []struct{ reason, want string }{{"load: dropped by the caller", "load: dropped by the caller"}, {"", "dropped"}} {
+		testDrop(t, tc.reason, tc.want)
+	}
+}
+
+func testDrop(t *testing.T, reason, want string) {
 	sitePCs := func(plan lookupPlan) []uint32 {
 		var pcs []uint32
 		for _, h := range plan.hooks {
@@ -669,7 +785,7 @@ func TestDrop(t *testing.T) {
 		{"generic lookup", mapInMapFixture, LookupRequest{ProgramName: "p", HookName: "obs", Auto: true, Entry: true, Stack: StackAudit{LowestOffset: -16}}},
 		{"tail calls", tailCallerFixture, LookupRequest{ProgramName: "caller", HookName: "h", TailCalls: true, Entry: true, Stack: StackAudit{LowestOffset: -8}}},
 	} {
-		t.Run(tc.name, func(t *testing.T) {
+		t.Run(fmt.Sprintf("%s reason %q", tc.name, reason), func(t *testing.T) {
 			full, err := transformLookup(tc.spec(), tc.req)
 			if err != nil {
 				t.Fatal(err)
@@ -688,7 +804,7 @@ func TestDrop(t *testing.T) {
 				t.Fatalf("hooked sites %v, want %v", got, all[1:])
 			}
 			i := slices.IndexFunc(plan.skipped, func(s LookupSite) bool { return s.SitePC == all[0] })
-			if i < 0 || plan.skipped[i].Reason != reason || len(plan.skipped) != len(full.skipped)+1 {
+			if i < 0 || plan.skipped[i].Reason != want || len(plan.skipped) != len(full.skipped)+1 {
 				t.Fatalf("skipped %+v", plan.skipped)
 			}
 		})
@@ -699,7 +815,55 @@ func TestDrop(t *testing.T) {
 		t.Fatal(err)
 	}
 	req.Drop = map[uint32]string{full.hooks[0].Sites[0].SitePC: reason}
-	if _, err := transformLookup(lookupFixture(), req); err == nil || !strings.Contains(err.Error(), reason) {
+	if _, err := transformLookup(lookupFixture(), req); err == nil || !strings.Contains(err.Error(), want) {
 		t.Fatalf("explicit site dropped: err = %v", err)
+	}
+}
+
+// branchFixture branches from slot 1 over a bpf_ktime_get_ns site at slot 3
+// to the verdict pad instructions later.
+func branchFixture(pad int) *ebpf.CollectionSpec {
+	insns := asm.Instructions{asm.Mov.Imm(asm.R0, 0), asm.JNE.Imm(asm.R0, 0, ""), asm.Mov.Imm(asm.R6, 1), asm.FnKtimeGetNs.Call()}
+	insns = append(insns, outStore(0, asm.R0)...)
+	for range pad {
+		insns = append(insns, asm.Mov.Imm(asm.R7, 0))
+	}
+	insns = append(insns, asm.Mov.Imm(asm.R0, 2), asm.Return())
+	insns[1].Offset = int16(7 + pad - 2) // slots: 0, 1 jne, 2, 3 call, 4-5 ldimm64, 6 store, then the pad
+	return callFixtureSpec(ebpf.XDP, insns)
+}
+
+// A branch that the call site's code pushes out of int16 range drops the
+// call sites, and the rule's other hooks stay; with nothing else to hook the
+// rule is refused as having no call site. The reason names the branch's
+// slot in the original program.
+func TestCallBranchRangeDropsCalls(t *testing.T) {
+	const pad = math.MaxInt16 - 5 // the branch offset is exactly MaxInt16
+	if off := branchFixture(pad).Programs["p"].Instructions[1].Offset; off != math.MaxInt16 {
+		t.Fatalf("offset %d", off)
+	}
+	req := callReq("bpf_ktime_get_ns")
+	req.Entry = true
+	plan, err := transformLookup(branchFixture(pad), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.hooks) != 1 || plan.hooks[0].Kind != HookEntry || len(plan.skipped) != 1 || plan.skipped[0].Call != "bpf_ktime_get_ns" ||
+		plan.skipped[0].Reason != "branch at 1 overflows int16 after insertion" {
+		t.Fatalf("hooks %+v skipped %+v", plan.hooks, plan.skipped)
+	}
+	req.Entry = false
+	if _, err := transformLookup(branchFixture(pad), req); !errors.Is(err, ErrRefused) || !strings.Contains(err.Error(), "no call site is instrumented (1 skipped)") {
+		t.Fatalf("err %v", err)
+	}
+	// A shorter branch keeps the call hook.
+	req.Entry = true
+	if plan, err := transformLookup(branchFixture(10), req); err != nil || len(plan.hooks) != 2 || len(plan.skipped) != 0 {
+		t.Fatalf("err %v hooks %+v skipped %+v", err, plan.hooks, plan.skipped)
+	}
+	// The refusal itself keeps its text and stays a refusal.
+	var ins asm.Instruction
+	if err := relocateOffset(&ins, 7, 0, math.MaxInt16+2, false); !errors.Is(err, ErrRefused) || err.Error() != "inject: refused: branch at 7 overflows int16 after insertion" {
+		t.Fatalf("err %v", err)
 	}
 }

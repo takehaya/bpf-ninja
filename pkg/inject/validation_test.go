@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -20,6 +21,25 @@ import (
 
 // Layout extraction is deliberately separate from the checker decision. Labels
 // only propose a correspondence; the checker compares the actual instructions.
+// checkRewrite transforms spec for req, which must hook every name of
+// req.Calls, and checks the rewrite with injectcheck.Check. It returns the
+// hooks.
+func checkRewrite(t *testing.T, spec *ebpf.CollectionSpec, req LookupRequest) []LookupHook {
+	t.Helper()
+	in := slices.Clone(spec.Programs["p"].Instructions)
+	injectcheck.Label(spec.Programs["p"].Instructions)
+	plan, err := transformLookup(spec, req)
+	if err != nil || len(plan.hooks) != len(req.Calls) {
+		t.Fatalf("transform: %v, hooks %+v skipped %+v", err, plan.hooks, plan.skipped)
+	}
+	out := spec.Programs["p"].Instructions
+	cert, premises := validationCertificate(t, in, out, plan.hooks, req.Stack.LowestOffset)
+	if _, err := injectcheck.Check(in, out, cert, premises); err != nil {
+		t.Fatalf("checker: %v", err)
+	}
+	return plan.hooks
+}
+
 func validationCertificate(t *testing.T, in, out asm.Instructions, hooks []LookupHook, floor int16) (injectcheck.Certificate, injectcheck.Premises) {
 	t.Helper()
 	names := map[string]bool{}
@@ -1188,5 +1208,57 @@ func TestIndirectJumpRefused(t *testing.T) {
 	}
 	if pc, ok := IndirectJump(raw.Instructions); !ok || pc != 17 {
 		t.Fatalf("IndirectJump = %d, %v", pc, ok)
+	}
+}
+
+// The checker accepts transformer output as inject-run gives it: the
+// original decoded from the loader's bytes carries no BTF func info, and
+// the stack premises have a frame at every function start. The cases are a
+// helper hook in the entry, a call hook in a function the context is passed
+// to, and a call hook in a callback.
+func TestCheckerAsInjectRun(t *testing.T) {
+	cbReq := callReq("bpf_jiffies64")
+	cbReq.Stack.LowestOffset = -16
+	for _, tc := range []struct {
+		name string
+		spec *ebpf.CollectionSpec
+		req  LookupRequest
+	}{
+		{"helpers", scalarFixture(), callReq("bpf_ktime_get_ns", "bpf_get_smp_processor_id", "bpf_get_prandom_u32", "bpf_jiffies64")},
+		{"pass function", fibSubprogFixture(ebpf.SchedCLS), fibReq(t)},
+		{"callback", callbackCallFixture(), cbReq},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			in := slices.Clone(tc.spec.Programs["p"].Instructions)
+			injectcheck.Label(tc.spec.Programs["p"].Instructions)
+			plan, err := transformLookup(tc.spec, tc.req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := map[string]string{"pass function": "pass:", "callback": "callback:"}[tc.name]
+			calls := 0
+			for _, h := range plan.hooks {
+				for _, site := range h.Sites {
+					if h.Kind == HookCall && strings.HasPrefix(site.CtxSource, want) {
+						calls++
+					}
+				}
+			}
+			if calls == 0 {
+				t.Fatalf("no call hook with context %q: %+v", want, plan.hooks)
+			}
+			out := tc.spec.Programs["p"].Instructions
+			cert, premises := validationCertificate(t, in, out, plan.hooks, tc.req.Stack.LowestOffset)
+			bare := make(asm.Instructions, len(in))
+			for i := range in {
+				if i == 0 || btf.FuncMetadata(&in[i]) != nil {
+					premises.Frames = append(premises.Frames, injectcheck.FrameFloor{Start: i, LowestOffset: tc.req.Stack.LowestOffset})
+				}
+				bare[i] = btf.WithFuncMetadata(in[i], nil)
+			}
+			if _, err := injectcheck.Check(bare, out, cert, premises); err != nil {
+				t.Fatalf("checker rejected: %v", err)
+			}
+		})
 	}
 }

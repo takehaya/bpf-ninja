@@ -14,6 +14,10 @@ const (
 type helperRow struct {
 	Name string // kernel name with the bpf_ prefix, e.g. bpf_map_lookup_elem
 	Ret  CalleeRet
+	// RetType is the kernel struct behind a pointer result, from the
+	// helper's struct bpf_func_proto (tools/helpergen); "" when the result
+	// is untyped: a map value, memory, dynptr data or a kptr.
+	RetType string
 }
 
 // helperByID returns the row of helper id, false past the table.

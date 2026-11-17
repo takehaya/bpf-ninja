@@ -169,10 +169,11 @@ bpf-ninja -p "$PROG_ID" --func ninja_bpf_fib_lookup --arg-filter 'arg->ifindex=4
 bpf-ninja -p "$PROG_ID" --func ninja_bpf_xdp_ct_lookup --arg-filter 'ret=null' -w miss.pcapng
 ```
 
-An integer `ret` compares as a number, and `ret=-22` matches the 64-bit value of `-22`; a pointer `ret` compares only with `null`.
+An integer `ret` compares as a number at the width of the callee's result, sign-extended when the result is signed, so `ret=-22` matches a failing `int` result as well as a 64-bit `-22`; a pointer `ret` compares only with `null`.
+An 8-byte `ret` (every helper, and a `long` kernel function) compares unsigned: `ret<=-1` matches every call.
 `arg->member` selects a member of a typed `arg`, and `arg->bytes[i]` a byte of a sized `const void *arg`.
-`--record entry` writes `site`, `ret` as a signed decimal and the members of `arg`, for example `site=560 ret=0 arg->family=2 ... arg->ifindex=4`; a sized `const void *arg` is written as hex (`arg=0200...`) and one without a size tag is left out.
-`--record filter` also writes an integer `ret` as a signed decimal.
+`--record entry` writes `site`, `ret` as a decimal, signed for a signed result, and the members of `arg`, for example `site=560 ret=0 arg->family=2 ... arg->ifindex=4`; a sized `const void *arg` is written as hex (`arg=0200...`) and one without a size tag is left out.
+`--record filter` also writes an integer `ret` as a decimal, signed for a signed result.
 A pointer `ret` is never recorded: `entry` leaves it out and `filter` writes only `ret=null` or `ret!=null`, so the address does not reach the file.
 
 ## VM verification

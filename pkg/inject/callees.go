@@ -14,18 +14,23 @@ import (
 )
 
 // Callee is one helper or kernel function a program calls, outside the map
-// helpers and bpf_tail_call, which have their own kinds. Typed means the call
-// table has a row for it, so its hook is typed; a rule's Calls may name every
-// callee without a Reason, which says why the callee gets no hook. Module is the fd_array offset of a module
-// kernel function, zero for vmlinux. Sites are its call sites' raw PCs.
+// helpers and bpf_tail_call, which have their own kinds. Typed means a rule
+// naming it gets a typed hook in this program (const T *arg, as the
+// transform groups its sites); a rule's Calls may name every callee without
+// a Reason, which says why the callee gets no hook. Module is the fd_array
+// offset of a module kernel function, zero for vmlinux. Sites are its call
+// sites' raw PCs.
 type Callee struct {
 	Name   string
 	Kind   string // "helper" or "kfunc"
 	Module int16
 	Ret    CalleeRet // "" when unknown
-	Typed  bool
-	Sites  []uint32
-	Reason string
+	// RetType is the kernel struct or union behind a pointer result
+	// (retTypeOf), "" when untyped or unknown.
+	RetType string
+	Typed   bool
+	Sites   []uint32
+	Reason  string
 }
 
 // FuncRange is a BTF function and its raw instruction slots [Start, End).
@@ -56,7 +61,7 @@ type CallDiscovery struct {
 // is listed unnamed. It performs no syscalls and changes nothing the
 // transform does.
 func DiscoverCallSitesRaw(p RawProgram, mapCalls []LookupSite) (CallDiscovery, error) {
-	insns, _, resolve, err := prepareRawLookup(p)
+	insns, types, resolve, err := prepareRawLookup(p)
 	if err != nil {
 		return CallDiscovery{}, err
 	}
@@ -76,10 +81,18 @@ func DiscoverCallSitesRaw(p RawProgram, mapCalls []LookupSite) (CallDiscovery, e
 		return CallDiscovery{}, err
 	}
 	rows := map[uint32]LookupSite{}
+	var callSites []discoveredLookup
 	for _, site := range known {
 		if site.Op == HookCall {
 			rows[site.SitePC] = site.LookupSite
+			callSites = append(callSites, site)
 		}
+	}
+	// A callee is typed as the transform's grouping makes its hook.
+	typed := map[string]bool{}
+	groups, _ := selectCalls(callSites, LookupRequest{Kernel: p.Kernel, Modules: p.Modules}, types)
+	for _, group := range groups {
+		typed[group.call.Name] = group.typed
 	}
 	var d CallDiscovery
 	callees := map[string]int{}
@@ -123,6 +136,7 @@ func DiscoverCallSitesRaw(p RawProgram, mapCalls []LookupSite) (CallDiscovery, e
 		if !ok {
 			i = len(d.Callees)
 			callees[c.Kind+"\x00"+c.Name] = i
+			c.Typed = typed[c.Name]
 			d.Callees = append(d.Callees, c)
 		}
 		d.Callees[i].Sites = append(d.Callees[i].Sites, pc)
@@ -140,7 +154,7 @@ func DiscoverCallSitesRaw(p RawProgram, mapCalls []LookupSite) (CallDiscovery, e
 // calleeOf describes the callee of a helper or kernel-function call, without sites.
 func calleeOf(ins *asm.Instruction, kernel *btf.Spec, modules map[int16]*btf.Spec) Callee {
 	row, name, named := callee(ins, kernel, modules)
-	c := Callee{Kind: "kfunc", Name: name, Module: kfuncModule(ins), Typed: row != nil}
+	c := Callee{Kind: "kfunc", Name: name, Module: kfuncModule(ins)}
 	if ins.IsBuiltinCall() {
 		c.Kind = "helper"
 		h, ok := helperByID(ins.Constant)
@@ -149,15 +163,16 @@ func calleeOf(ins *asm.Instruction, kernel *btf.Spec, modules map[int16]*btf.Spe
 			c.Reason = fmt.Sprintf("helper id %d is past the helper table", ins.Constant)
 			return c
 		}
-		c.Name, c.Ret = h.Name, h.Ret
+		c.Name, c.Ret, c.RetType = h.Name, h.Ret, h.RetType
 		_, c.Reason = helperCall(asm.BuiltinFunc(ins.Constant))
 		return c
 	} else if named {
 		c.Ret = kfuncRet(ins, kernel, modules)
+		c.RetType = retTypeOf(0, kfuncProto(ins, kernel, modules))
 	}
 	switch {
 	case !named:
-		c.Reason = "a kernel-function call that cannot be named"
+		c.Reason = unnamedKfuncReason
 	case row == nil:
 		_, c.Reason = kfuncRow(c.Name, kfuncProto(ins, kernel, modules))
 	}
@@ -188,7 +203,8 @@ func kfuncRet(ins *asm.Instruction, kernel *btf.Spec, modules map[int16]*btf.Spe
 const UnnamedKfunc = "a kernel function that could not be named"
 
 // PremiseCalls returns the names of the helpers and kernel functions on the
-// deny list (denyReason) that insns call anywhere, in call order without
+// deny list (denyReason), and of the kernel functions whose prototype takes a
+// callback (protoTakesCallback), that insns call anywhere, in call order without
 // repeats. The equivalence theorem assumes the original program calls none of
 // them. The transform adds no helper or kernel-function call, so a rewritten
 // program gives the same names as its original. A kernel-function call that
@@ -201,16 +217,18 @@ func PremiseCalls(insns asm.Instructions, kernel *btf.Spec, modules map[int16]*b
 		if !ins.IsBuiltinCall() && !ins.IsKfuncCall() {
 			continue
 		}
-		name := ""
+		name, callback := "", false
 		if h, ok := helperByID(ins.Constant); ins.IsBuiltinCall() && ok {
 			name = h.Name
 		} else if ins.IsKfuncCall() {
 			var named bool
 			if _, name, named = callee(ins, kernel, modules); !named {
 				name = UnnamedKfunc
+			} else if proto := kfuncProto(ins, kernel, modules); proto != nil {
+				callback = protoTakesCallback(proto)
 			}
 		}
-		if name != "" && (name == UnnamedKfunc || denyReason(name) != "") && !slices.Contains(names, name) {
+		if name != "" && (name == UnnamedKfunc || callback || denyReason(name) != "") && !slices.Contains(names, name) {
 			names = append(names, name)
 		}
 	}
@@ -228,11 +246,15 @@ func denyReason(name string) string {
 	case slices.Contains([]string{"bpf_for_each_map_elem", "bpf_loop", "bpf_find_vma", "bpf_user_ringbuf_drain", "bpf_timer_set_callback",
 		"bpf_rbtree_add_impl", "bpf_wq_set_callback", "bpf_wq_set_callback_impl", "bpf_task_work_schedule_signal",
 		"bpf_task_work_schedule_signal_impl", "bpf_task_work_schedule_resume", "bpf_task_work_schedule_resume_impl"}, name):
-		return "runs or registers a callback"
+		return callbackReason
 	case name == "bpf_throw":
 		return "does not return"
 	case slices.Contains([]string{"bpf_get_stack", "bpf_get_stackid", "bpf_get_task_stack", "bpf_get_branch_snapshot", "bpf_get_func_ip"}, name):
 		return "reads native code addresses or branch records, which inserted code may change"
+	case name == "bpf_perf_event_read" || name == "bpf_perf_event_read_value":
+		// XDP and tc reach both through bpf_base_func_proto with CAP_PERFMON
+		// (7.0); the event counts on the current CPU, inserted code included.
+		return "reads a perf event counter, which counts inserted code too"
 	case has("bpf_iter_") && (strings.HasSuffix(name, "_new") || strings.HasSuffix(name, "_next") || strings.HasSuffix(name, "_destroy")):
 		return "an iterator: the verifier forks and prunes loop states at its next"
 	case has("bpf_list_") || has("bpf_rbtree_") || name == "bpf_refcount_acquire_impl" || has("bpf_stream_") ||
@@ -250,25 +272,26 @@ func denyReason(name string) string {
 
 // SiteLabels names every site by PC: NAME@FUNC:LINE, or NAME@FUNC+SLOT
 // without line info, where SLOT is the site's slot offset from its function's
-// first instruction. NAME is the map of a lookup (any when known only at run
-// time), MAP.OP for another map call, the callee of a call and tail_call for
-// a tail call. When several sites share a label, every one of them gets #1,
-// #2, ... in PC order, so the label without a suffix names them all. Labels
-// are computed over the full discovery, so a listing and a later selection
-// agree.
+// first instruction. NAME is the map of a lookup ((any) when known only at
+// run time), MAP/OP for another map call, the callee of a call and tail_call
+// for a tail call. A kernel map name holds only letters, digits, _ and ., so
+// neither the / nor (any) can be part of one. When several sites share a
+// label, every one of them gets #1, #2, ... in PC order, so the label
+// without a suffix names them all. Labels are computed over the full
+// discovery, so a listing and a later selection agree.
 func SiteLabels(funcs []FuncRange, sites []LookupSite) map[uint32]string {
 	sites = slices.SortedFunc(slices.Values(sites), func(a, b LookupSite) int { return cmp.Compare(a.SitePC, b.SitePC) })
 	labels := make(map[uint32]string, len(sites))
 	count := map[string]int{}
 	for _, site := range sites {
-		name := cmp.Or(site.MapName, "any")
+		name := cmp.Or(site.MapName, "(any)")
 		switch {
 		case site.Op == HookCall:
 			name = site.Call
 		case site.Op == HookTailCall:
 			name = "tail_call"
 		case site.Op != HookLookup:
-			name += "." + string(site.Op)
+			name += "/" + string(site.Op)
 		}
 		label := fmt.Sprintf("%s@%s:%d", name, site.FuncName, site.Line)
 		if site.Line == 0 {
@@ -300,6 +323,8 @@ func SiteLabels(funcs []FuncRange, sites []LookupSite) map[uint32]string {
 // and BPF_PSEUDO_MAP_VALUE) zeroed and the value offset kept; the name and
 // type of each map reference; the label, PC, kind, name, function, file and
 // line of every site; and the BTF function names with their slot ranges.
+// Each section starts with its name and record count, so no section's bytes
+// can stand for another's.
 // Loader-side relocations that differ per load (kfunc BTF ids, ksym
 // addresses, CO-RE) change it.
 func ListingFingerprint(p RawProgram, funcs []FuncRange, labels map[uint32]string, sites []LookupSite) (string, error) {
@@ -315,15 +340,19 @@ func ListingFingerprint(p RawProgram, funcs []FuncRange, labels map[uint32]strin
 		fmt.Fprintf(&refs, "map %q %d\n", m.Name, m.Type)
 		ins.Constant &^= 0xffffffff
 	}
+	_, _ = fmt.Fprintf(h, "insns %d\n", len(insns))
 	if err := insns.Marshal(h, rawByteOrder()); err != nil {
 		return "", err
 	}
+	_, _ = fmt.Fprintf(h, "\nmaps %d\n", bytes.Count(refs.Bytes(), []byte("\n")))
 	h.Write(refs.Bytes())
 	sites = slices.SortedFunc(slices.Values(sites), func(a, b LookupSite) int { return cmp.Compare(a.SitePC, b.SitePC) })
+	_, _ = fmt.Fprintf(h, "sites %d\n", len(sites))
 	for _, site := range sites {
 		_, _ = fmt.Fprintf(h, "site %q %d %s %q %q %q %d\n", labels[site.SitePC], site.SitePC, site.Op,
 			cmp.Or(site.Call, site.MapName), site.FuncName, site.File, site.Line)
 	}
+	_, _ = fmt.Fprintf(h, "funcs %d\n", len(funcs))
 	for _, f := range funcs {
 		_, _ = fmt.Fprintf(h, "func %q %d %d\n", f.Name, f.Start, f.End)
 	}

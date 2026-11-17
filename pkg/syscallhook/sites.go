@@ -16,8 +16,9 @@ import (
 // for each hook unit that has a selected site, just the selected sites, and
 // leaves every other unit's sites as the rule selects them; a unit is what
 // gets its own hook: a callee, one op of one map, or tail_call. Except
-// removes the sites it names. Exactly one of the two is given.
-// Removing sites never adds a hook.
+// removes the sites it names. Exactly one of the two is given, not empty.
+// Removing sites from except never adds a hook; removing the last entry of a
+// unit from only restores every site of that unit.
 type Sites struct {
 	Build  string    `json:"build"`
 	Only   []SiteRef `json:"only,omitempty"`
@@ -75,6 +76,14 @@ func (r Rule) validateSites() error {
 	case r.Sites.Build == "":
 		return fmt.Errorf("sites.build is required: copy the program's build from the listing")
 	}
+	for name, refs := range map[string][]SiteRef{"only": r.Sites.Only, "except": r.Sites.Except} {
+		if refs != nil && len(refs) == 0 {
+			return fmt.Errorf("sites.%s is empty; name at least one site, or remove sites", name)
+		}
+		if slices.ContainsFunc(refs, func(ref SiteRef) bool { return ref.PC == nil && ref.Label == "" }) {
+			return fmt.Errorf("sites.%s has an empty label", name)
+		}
+	}
 	return nil
 }
 
@@ -83,13 +92,18 @@ func (r Rule) validateSites() error {
 // and the listing fingerprint of all of them (inject.DiscoverCallSitesRaw).
 // raw.Kernel and raw.Modules name kfunc calls. A listing and the load-time
 // sites check both call it, so they compute the same fingerprint.
-func listing(raw inject.RawProgram) ([]inject.LookupSite, inject.CallDiscovery, error) {
-	calls, err := inject.DiscoverMapCallsRaw(raw)
+func listing(raw inject.RawProgram) (calls []inject.LookupSite, sites inject.CallDiscovery, err error) {
+	err = guard("listing the load", func() (err error) {
+		if calls, err = discoverMapCallsRaw(raw); err != nil {
+			return err
+		}
+		sites, err = inject.DiscoverCallSitesRaw(raw, calls)
+		return err
+	})
 	if err != nil {
 		return nil, inject.CallDiscovery{}, err
 	}
-	sites, err := inject.DiscoverCallSitesRaw(raw, calls)
-	return calls, sites, err
+	return calls, sites, nil
 }
 
 // dropReason is the reason a site left out by Sites is skipped with.

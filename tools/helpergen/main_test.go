@@ -105,14 +105,38 @@ func TestParseMapper(t *testing.T) {
 
 func TestParseProtos(t *testing.T) {
 	got := parseProtos(testC)
-	want := map[string]string{
-		"bpf_map_lookup_elem_proto":  kindPointer,
-		"bpf_tail_call_proto":        kindVoid,
-		"bpf_get_stack_proto":        kindScalar,
-		"bpf_get_stack_proto_raw_tp": kindScalar,
-		"bpf_bind_proto":             kindPointer,
+	want := map[string]map[string]bool{
+		"bpf_map_lookup_elem_proto":  {kindPointer: true},
+		"bpf_tail_call_proto":        {kindVoid: true},
+		"bpf_get_stack_proto":        {kindScalar: true},
+		"bpf_get_stack_proto_raw_tp": {kindScalar: true},
+		"bpf_bind_proto":             {kindPointer: true},
 	}
 	if !reflect.DeepEqual(got, want) {
+		t.Errorf("parseProtos = %v, want %v", got, want)
+	}
+}
+
+// Every variant of a prototype name in one file counts, as under #ifdef,
+// and a prototype without .ret_type returns RET_INTEGER.
+func TestParseProtosVariants(t *testing.T) {
+	src := `
+#ifdef CONFIG_X
+const struct bpf_func_proto bpf_x_proto = {
+	.ret_type	= RET_PTR_TO_MEM_OR_NULL,
+};
+#else
+const struct bpf_func_proto bpf_x_proto = {
+	.ret_type	= RET_INTEGER,
+};
+#endif
+static const struct bpf_func_proto bpf_y_proto = {
+	.func		= bpf_y,
+	.arg1_type	= ARG_ANYTHING,
+};
+`
+	want := map[string]map[string]bool{"bpf_x_proto": {kindPointer: true, kindScalar: true}, "bpf_y_proto": {kindScalar: true}}
+	if got := parseProtos(src); !reflect.DeepEqual(got, want) {
 		t.Errorf("parseProtos = %v, want %v", got, want)
 	}
 }
@@ -196,10 +220,7 @@ func TestParseResolve(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	protos := map[string]map[string]bool{}
-	for p, k := range parseProtos(testC) {
-		add(protos, p, k)
-	}
+	protos := parseProtos(testC)
 	joins := parseJoins(testC)
 	if err := resolve(hs, protos, joins, nil); err == nil || !strings.Contains(err.Error(), "5 trace_printk: no prototype joined") {
 		t.Fatalf("resolve without override: %v", err)
@@ -236,5 +257,161 @@ func TestParseResolve(t *testing.T) {
 	}
 	if _, err := parseOverrides("2 maybe\n"); err == nil {
 		t.Error("bad override kind accepted")
+	}
+
+	// Prototypes of different kinds need an override, which must be one of them.
+	add(protos, "bpf_get_stack_proto_raw_tp", kindPointer)
+	if err := resolve(hs, protos, joins, overrides); err == nil || !strings.Contains(err.Error(), "3 get_stack: prototypes disagree") {
+		t.Errorf("disagreeing prototypes: %v", err)
+	}
+	for _, tc := range []struct{ txt, want string }{
+		{"5 scalar #\n3 void # neither kind\n", "3 get_stack: override RetVoid is none of the joined kinds"},
+	} {
+		o, err := parseOverrides(tc.txt)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := resolve(hs, protos, joins, o); err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%q: %v", tc.txt, err)
+		}
+	}
+	o, _ := parseOverrides("5 scalar #\n3 pointer # one of them\n")
+	if err := resolve(hs, protos, joins, o); err != nil || hs[3].Kind != kindPointer {
+		t.Errorf("joined-kind override: %v, kind %s", err, hs[3].Kind)
+	}
+}
+
+// A second override of an id, and an override of an id the tree does not
+// have, are errors.
+func TestOverrideIDs(t *testing.T) {
+	if _, err := parseOverrides("5 scalar # a\n5 scalar # b\n"); err == nil || !strings.Contains(err.Error(), "a second override of id 5") {
+		t.Errorf("duplicate override: %v", err)
+	}
+	if _, err := parseArgOverrides("5 5 # a\n5 4 # b\n"); err == nil || !strings.Contains(err.Error(), "a second count of id 5") {
+		t.Errorf("duplicate argument override: %v", err)
+	}
+	for _, ids := range [][]int{{0}, {6}, {2, 9}} {
+		if err := checkOverrideIDs("overrides.txt", 6, ids); err == nil || !strings.Contains(err.Error(), "is not a helper of this tree") {
+			t.Errorf("ids %v: %v", ids, err)
+		}
+	}
+	if err := checkOverrideIDs("overrides.txt", 6, []int{1, 5}); err != nil {
+		t.Error(err)
+	}
+}
+
+const testRetC = `
+BTF_ID_LIST(task_ids)
+BTF_ID(struct, pt_regs)
+BTF_ID(struct, file)
+
+BTF_ID_LIST_SINGLE(single_ids, struct, socket)
+
+static const struct bpf_func_proto sk_lookup_proto = {
+	.ret_type	= RET_PTR_TO_SOCKET_OR_NULL,
+};
+static const struct bpf_func_proto skc_lookup_proto = {
+	.ret_type	= RET_PTR_TO_SOCK_COMMON_OR_NULL,
+};
+static const struct bpf_func_proto tcp_sock_proto = {
+	.ret_type	= RET_PTR_TO_TCP_SOCK_OR_NULL,
+};
+static const struct bpf_func_proto task_proto = {
+	.ret_type	= RET_PTR_TO_BTF_ID_TRUSTED,
+	.ret_btf_id	= &btf_tracing_ids[BTF_TRACING_TYPE_TASK],
+};
+static const struct bpf_func_proto regs_proto = {
+	.ret_type	= RET_PTR_TO_BTF_ID,
+	.ret_btf_id	= &task_ids[1],
+};
+static const struct bpf_func_proto from_file_proto = {
+	.ret_type	= RET_PTR_TO_BTF_ID_OR_NULL,
+	.ret_btf_id	= &single_ids[0],
+};
+static const struct bpf_func_proto kptr_proto = {
+	.ret_type	= RET_PTR_TO_BTF_ID_OR_NULL,
+	.ret_btf_id	= BPF_PTR_POISON,
+};
+static const struct bpf_func_proto lookup_proto = {
+	.ret_type	= RET_PTR_TO_MAP_VALUE_OR_NULL,
+};
+static const struct bpf_func_proto percpu_proto = {
+	.ret_type	= RET_PTR_TO_MEM_OR_BTF_ID | MEM_RDONLY,
+};
+`
+
+const testBTFIDs = `
+#define BTF_TRACING_TYPE_xxx	\
+	BTF_TRACING_TYPE(BTF_TRACING_TYPE_TASK, task_struct)	\
+	BTF_TRACING_TYPE(BTF_TRACING_TYPE_FILE, file)
+`
+
+// Each pointer kind maps to its kernel struct; a BTF-id kind takes the
+// struct its id list names, and every other kind stays untyped.
+func TestRetTypes(t *testing.T) {
+	lists := parseIDLists(testRetC)
+	if got := lists["task_ids"]; !reflect.DeepEqual(got, []string{"pt_regs", "file"}) {
+		t.Errorf("task_ids = %v", got)
+	}
+	for name, typ := range parseIDTables(testBTFIDs) {
+		lists[name] = []string{typ}
+	}
+	rets := parseProtoRets(testRetC)
+	want := map[string]string{
+		"sk_lookup_proto": "sock", "skc_lookup_proto": "sock_common", "tcp_sock_proto": "tcp_sock",
+		"task_proto": "task_struct", "regs_proto": "file", "from_file_proto": "socket",
+		"kptr_proto": "", "lookup_proto": "", "percpu_proto": "",
+	}
+	for proto, typ := range want {
+		if len(rets[proto]) != 1 {
+			t.Fatalf("%s: %d declarations", proto, len(rets[proto]))
+		}
+		if got, err := retType(rets[proto][0], lists); err != nil || got != typ {
+			t.Errorf("%s: %q, %v; want %q", proto, got, err, typ)
+		}
+	}
+	if _, err := retType(retDecl{Kind: "RET_PTR_TO_BTF_ID", BTFID: "&task_ids[2]"}, lists); err == nil {
+		t.Error("an index past the list resolved")
+	}
+	if _, err := retType(retDecl{Kind: "RET_PTR_TO_BTF_ID", BTFID: "some_call()"}, lists); err == nil {
+		t.Error("an unreadable .ret_btf_id resolved")
+	}
+}
+
+// A helper is typed when every prototype it joins gives one struct, and the
+// uapi prototype of a typed helper must name that struct.
+func TestResolveRetTypes(t *testing.T) {
+	rets := parseProtoRets(testRetC)
+	lists := parseIDLists(testRetC)
+	for name, typ := range parseIDTables(testBTFIDs) {
+		lists[name] = []string{typ}
+	}
+	hs := []helper{{ID: 1, Name: "a", Kind: kindPointer}, {ID: 2, Name: "b", Kind: kindPointer}, {ID: 3, Name: "c", Kind: kindPointer},
+		{ID: 4, Name: "d", Kind: kindScalar}, {ID: 5, Name: "e", Kind: kindPointer}}
+	joins := map[string]map[string]bool{
+		"a": {"sk_lookup_proto": true},
+		"b": {"sk_lookup_proto": true, "skc_lookup_proto": true}, // variants disagree
+		"c": {"task_proto": true},
+		"d": {"sk_lookup_proto": true},
+		"e": {"task_proto": true}, // kind from an override
+	}
+	uapi := parseUAPIRetTypes(" * struct bpf_sock *bpf_a(void *ctx)\n * struct task_struct *bpf_c(void)\n")
+	if err := resolveRetTypes(hs, rets, joins, lists, uapi, map[int]string{5: kindPointer}); err != nil {
+		t.Fatal(err)
+	}
+	got := []string{hs[0].RetType, hs[1].RetType, hs[2].RetType, hs[3].RetType, hs[4].RetType}
+	if want := []string{"sock", "", "task_struct", "", ""}; !reflect.DeepEqual(got, want) {
+		t.Errorf("types %q, want %q", got, want)
+	}
+	uapi["c"] = "file"
+	if err := resolveRetTypes(hs, rets, joins, lists, uapi, nil); err == nil || !strings.Contains(err.Error(), "uapi prototype returns struct file") {
+		t.Errorf("uapi mismatch: %v", err)
+	}
+	src, err := render(hs, "1.2.3")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d := compare(kindsOnly(hs), parseTable(string(src))); len(d) > 0 {
+		t.Errorf("rendered table differs: %v", d)
 	}
 }

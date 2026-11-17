@@ -2,6 +2,7 @@ package attach
 
 import (
 	"bytes"
+	"cmp"
 	"reflect"
 	"strings"
 	"testing"
@@ -517,10 +518,13 @@ func TestRetSizeTag(t *testing.T) {
 	u64 := &btf.Int{Name: "u64", Size: 8}
 	proto := &btf.FuncProto{Return: &btf.Int{Name: "int", Size: 4, Encoding: btf.Signed}, Params: []btf.FuncParam{
 		{Name: "ctx", Type: &btf.Pointer{Target: &btf.Struct{Name: "xdp_md", Size: 4}}}, {Name: "ret", Type: u64}}}
-	for tags, want := range map[string]uint32{"tagged": 4, "untagged": 0} {
+	for tags, want := range map[string]uint32{"tagged": 4, "signed": 4, "untagged": 0} {
 		fn := &btf.Func{Name: "rec_hook", Linkage: btf.GlobalFunc, Type: proto, Tags: []string{hookabi.HookTag}}
-		if tags == "tagged" {
+		if tags != "untagged" {
 			fn.Tags = append(fn.Tags, hookabi.SizeTag("ret", 4))
+		}
+		if tags == "signed" {
+			fn.Tags = append(fn.Tags, hookabi.RetSignedTag)
 		}
 		b, err := btf.NewBuilder([]btf.Type{fn}, nil)
 		if err != nil {
@@ -535,8 +539,19 @@ func TestRetSizeTag(t *testing.T) {
 			t.Fatal(err)
 		}
 		params, err := GetFuncParamsFromSpec(spec, "rec_hook")
-		if err != nil || len(params) != 1 || params[0].RetSize != want {
+		if err != nil || len(params) != 1 || params[0].RetSize != want || params[0].RetSigned != (tags == "signed") ||
+			params[0].Size != cmp.Or(want, 8) || params[0].Signed != (tags == "signed") {
 			t.Errorf("%s: params %+v %v", tags, params, err)
+			continue
+		}
+		// Every reader sees the result's width: the listing, a bare echo and
+		// an explicit expression.
+		echo, err := ResolveEchoArgs(nil, params)
+		if err != nil || len(echo) != 1 || echo[0].Size != params[0].Size || echo[0].Signed != params[0].Signed {
+			t.Errorf("%s: bare echo %+v %v", tags, echo, err)
+		}
+		if p, err := ResolveArg("ret", params); err != nil || p.Size != params[0].Size || p.Signed != params[0].Signed {
+			t.Errorf("%s: ResolveArg %+v %v", tags, p, err)
 		}
 	}
 }

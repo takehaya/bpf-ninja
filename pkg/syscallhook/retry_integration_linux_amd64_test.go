@@ -100,9 +100,10 @@ func retryKfunc(t *testing.T, name string) asm.Instruction {
 }
 
 // runRetryLoader runs the loader of test under the supervisor with a rule that
-// hooks the entry and both calls, and returns the injections, the
-// supervisor's log and the loader's output.
-func runRetryLoader(t *testing.T, test, mode string, failClosed bool, fault func([]inject.LookupHook) error) ([]Injection, string, string) {
+// hooks both calls, and the entry when entry is set, and returns the injections, the
+// supervisor's log and the loader's output. The refused loads go to *refusals
+// when refusals is not nil.
+func runRetryLoader(t *testing.T, test, mode string, entry, failClosed bool, fault func([]inject.LookupHook) error, refusals ...*[]Refusal) ([]Injection, string, string) {
 	t.Helper()
 	t.Setenv("SYSCALLHOOK_RETRY_CHILD", mode)
 	out, err := os.CreateTemp(t.TempDir(), "loader.out")
@@ -110,13 +111,16 @@ func runRetryLoader(t *testing.T, test, mode string, failClosed bool, fault func
 		t.Fatal(err)
 	}
 	defer func() { _ = out.Close() }()
-	rule := Rule{Program: "p", Hook: "h", Entry: true, Calls: []string{"bpf_ktime_get_ns", "bpf_get_prandom_u32"}}
+	rule := Rule{Program: "p", Hook: "h", Entry: entry, Calls: []string{"bpf_ktime_get_ns", "bpf_get_prandom_u32"}}
 	var logs bytes.Buffer
 	var injected []Injection
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	opts := Options{Rules: []Rule{rule}, FailClosed: failClosed, Stdout: out, Stderr: out, Log: &logs, loadFault: fault,
 		OnInject: func(inj Injection) { injected = append(injected, inj) }}
+	if len(refusals) != 0 {
+		opts.OnRefuse = func(r Refusal) { *refusals[0] = append(*refusals[0], r) }
+	}
 	code, err := Run(ctx, []string{os.Args[0], "-test.run=^" + test + "$"}, opts)
 	data, _ := os.ReadFile(out.Name())
 	t.Logf("supervisor:\n%sloader:\n%s", &logs, data)
@@ -166,7 +170,7 @@ func TestIntegrationRetry(t *testing.T) {
 		}
 	}
 	t.Run("one-site", func(t *testing.T) {
-		injected, logs, out := runRetryLoader(t, "TestIntegrationRetry", "hook", false, withSite(5))
+		injected, logs, out := runRetryLoader(t, "TestIntegrationRetry", "hook", true, false, withSite(5))
 		if len(injected) != 1 || !slices.Equal(hookedSites(injected[0]), []uint32{1}) || len(injected[0].Hooks) != 2 {
 			t.Fatalf("injections %+v", injected)
 		}
@@ -180,11 +184,29 @@ func TestIntegrationRetry(t *testing.T) {
 			t.Fatal("retry not reported or hooks missing")
 		}
 	})
+	// Without entry the base hooks nothing: it stands for the original, and
+	// the retry still keeps site 1. With --fail-closed that rewrite loads.
+	for _, failClosed := range []bool{false, true} {
+		t.Run(fmt.Sprintf("no-entry-fail-closed=%v", failClosed), func(t *testing.T) {
+			injected, logs, out := runRetryLoader(t, "TestIntegrationRetry", "hook", false, failClosed, withSite(5))
+			if len(injected) != 1 || !slices.Equal(hookedSites(injected[0]), []uint32{1}) || len(injected[0].Hooks) != 1 {
+				t.Fatalf("injections %+v", injected)
+			}
+			if !strings.Contains(logs, `program "p": 2 sites requested, 1 kept after `) || strings.Contains(out, "h_entry") ||
+				!strings.Contains(out, "h_bpf_ktime_get_ns") || strings.Contains(out, "h_bpf_get_prandom_u32") {
+				t.Fatal("retry not reported or hooks wrong")
+			}
+		})
+	}
 	all := func([]inject.LookupHook) error { return planted }
 	t.Run("nothing-loads", func(t *testing.T) {
-		injected, logs, out := runRetryLoader(t, "TestIntegrationRetry", "plain", false, all)
+		var refusals []Refusal
+		injected, logs, out := runRetryLoader(t, "TestIntegrationRetry", "plain", true, false, all, &refusals)
 		if len(injected) != 0 || !strings.Contains(logs, "no trial load passed") || strings.Contains(out, "h_entry") {
 			t.Fatalf("injections %+v", injected)
+		}
+		if len(refusals) != 1 || refusals[0].Cause != "retry" || refusals[0].Outcome != "original_loaded" {
+			t.Fatalf("refusals %+v", refusals)
 		}
 		if !strings.Contains(logs, `program "p": 2 sites requested, no rewrite loaded after 1 trial loads (budget 24, 0 used before); the original program loads`) ||
 			strings.Contains(logs, "dropped none") {
@@ -192,9 +214,14 @@ func TestIntegrationRetry(t *testing.T) {
 		}
 	})
 	t.Run("nothing-loads-fail-closed", func(t *testing.T) {
-		injected, logs, out := runRetryLoader(t, "TestIntegrationRetry", "refused", true, all)
+		var refusals []Refusal
+		injected, logs, out := runRetryLoader(t, "TestIntegrationRetry", "refused", true, true, all, &refusals)
 		if len(injected) != 0 || !strings.Contains(out, "load refused") {
 			t.Fatalf("injections %+v", injected)
+		}
+		// cilium/ebpf repeats a refused load once with a verifier log.
+		if len(refusals) == 0 || slices.ContainsFunc(refusals, func(r Refusal) bool { return r.Cause != "retry" || r.Outcome != "load_refused" }) {
+			t.Fatalf("refusals %+v", refusals)
 		}
 		if !strings.Contains(logs, "no rewrite loaded after 1 trial loads") || !strings.Contains(logs, "; the load is refused (--fail-closed)") ||
 			strings.Contains(logs, "dropped none") {
@@ -215,7 +242,7 @@ func TestIntegrationRetryPreempt(t *testing.T) {
 		return
 	}
 	retryKfunc(t, "bpf_preempt_disable")
-	injected, logs, _ := runRetryLoader(t, "TestIntegrationRetryPreempt", "hook", false, nil)
+	injected, logs, _ := runRetryLoader(t, "TestIntegrationRetryPreempt", "hook", true, false, nil)
 	if len(injected) != 1 || !strings.Contains(logs, "checker accepted") {
 		t.Fatalf("injections %+v", injected)
 	}

@@ -70,7 +70,7 @@ func TestDiscoverCallSitesRaw(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := []Callee{
-		{Name: "bpf_ktime_get_ns", Kind: "helper", Ret: RetScalar, Typed: true, Sites: []uint32{8, 12}},
+		{Name: "bpf_ktime_get_ns", Kind: "helper", Ret: RetScalar, Sites: []uint32{8, 12}},
 		{Name: "bpf_get_numa_node_id", Kind: "helper", Ret: RetScalar, Sites: []uint32{10}},
 		{Name: "bpf_spin_lock", Kind: "helper", Ret: RetVoid, Sites: []uint32{14}, Reason: "takes or releases a lock or a critical section"},
 	}
@@ -120,8 +120,58 @@ func TestSiteLabels(t *testing.T) {
 		{Op: HookTailCall, FuncName: "g", SitePC: 20},
 	}
 	want := map[uint32]string{3: "bpf_fib_lookup@f:88#1", 7: "bpf_fib_lookup@f:88#2", 9: "bpf_fib_lookup@f:88#3",
-		12: "sessions.update@g:5", 15: "any@g+5", 20: "tail_call@g+10"}
+		12: "sessions/update@g:5", 15: "(any)@g+5", 20: "tail_call@g+10"}
 	if got := SiteLabels(funcs, sites); !maps.Equal(got, want) {
 		t.Errorf("%v, want %v", got, want)
+	}
+	// A lookup in a map named m.update and an update of m, or a lookup in a
+	// map named any and in a map known only at run time, never share a label.
+	sites = []LookupSite{
+		{Op: HookLookup, MapName: "m.update", FuncName: "f", Line: 1, SitePC: 1},
+		{Op: HookUpdate, MapName: "m", FuncName: "f", Line: 1, SitePC: 2},
+		{Op: HookLookup, MapName: "any", FuncName: "f", Line: 2, SitePC: 3},
+		{Op: HookLookup, FuncName: "f", Line: 2, SitePC: 4},
+	}
+	want = map[uint32]string{1: "m.update@f:1", 2: "m/update@f:1", 3: "any@f:2", 4: "(any)@f:2"}
+	if got := SiteLabels(funcs, sites); !maps.Equal(got, want) {
+		t.Errorf("%v, want %v", got, want)
+	}
+}
+
+// The listing calls a callee typed exactly when the transform gives it a
+// typed hook: a fib lookup on its own stack with one size, not one with two
+// sizes, a socket lookup (pointer result) or a callee without an argument.
+func TestCalleeTyped(t *testing.T) {
+	second := fibCall(ebpf.XDP)
+	i := slices.IndexFunc(second, func(ins asm.Instruction) bool { return ins.Dst == asm.R3 && ins.Constant == 64 })
+	second[i] = asm.Mov.Imm(asm.R3, 48)
+	twoSizes := append(asm.Instructions{asm.Mov.Reg(asm.R6, asm.R1)}, fibCall(ebpf.XDP)...)
+	twoSizes = append(append(twoSizes, second...), fibVerdict(ebpf.XDP)...)
+	for _, tc := range []struct {
+		name   string
+		spec   *ebpf.CollectionSpec
+		callee string
+		typed  bool
+	}{
+		{"fib", fibFixture(ebpf.XDP), "bpf_fib_lookup", true},
+		{"fib with two sizes", callFixtureSpec(ebpf.XDP, twoSizes), "bpf_fib_lookup", false},
+		{"socket lookup", skLookupFixture(ebpf.XDP, 1), "bpf_sk_lookup_tcp", false},
+		{"no argument", scalarFixture(), "bpf_jiffies64", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			raw, _ := rawLookupFixtureBTF(t, tc.spec, "p", true)
+			mapCalls, err := DiscoverMapCallsRaw(raw)
+			if err != nil {
+				t.Fatal(err)
+			}
+			d, err := DiscoverCallSitesRaw(raw, mapCalls)
+			if err != nil {
+				t.Fatal(err)
+			}
+			i := slices.IndexFunc(d.Callees, func(c Callee) bool { return c.Name == tc.callee })
+			if i < 0 || d.Callees[i].Typed != tc.typed || d.Callees[i].Reason != "" {
+				t.Fatalf("callees %+v", d.Callees)
+			}
+		})
 	}
 }

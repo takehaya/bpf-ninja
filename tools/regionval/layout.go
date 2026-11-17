@@ -243,7 +243,7 @@ type span struct{ start, end int }
 // kind. Next to a call, the runs keep the cut they had before kfunc centres.
 func (l *Layout) kfuncCentre(G Func, j int) bool {
 	call := func(k int) bool {
-		return G.Start <= k && k < G.End && l.O[k].Class() == core.ClassJMP && l.O[k].Op&0xf0 == 0x80
+		return G.Start <= k && k < G.End && l.O[k].IsCall()
 	}
 	return G.Start <= j && j < G.End && l.O[j].IsKfuncCall() && !call(j-1) && !call(j+1)
 }
@@ -273,7 +273,11 @@ func (l *Layout) extract(wrapped map[int]int) (map[int]int, error) {
 			g := span{lo, k[i]}
 			helperBefore := i > G.Start && l.O[i-1].IsHelperCall()
 			switch {
-			case i == G.Start && l.O[i].IsHelperCall():
+			case i == G.Start && (l.O[i].IsHelperCall() || l.kfuncCentre(G, i) && i+1 < G.End && k[i+1] > k[i]+1):
+				// Code before a call that starts its function could be the
+				// prologue or the call's prelude; a hooked kfunc centre, one
+				// a run follows, is no different from a helper here. Before
+				// an unhooked kfunc it is the prologue.
 				return nil, fail("windows", "%q: prologue and prelude of original %d are not separable", F.Name, i)
 			case i == G.Start:
 				l.Windows = append(l.Windows, Window{Kind: "prologue", Func: F.Name, Start: g.start, End: g.end, Center: -1, Orig: i, Callee: -1})

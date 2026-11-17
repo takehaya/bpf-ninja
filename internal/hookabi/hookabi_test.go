@@ -58,3 +58,16 @@ func TestPlain(t *testing.T) {
 		}
 	}
 }
+
+func TestRetTypeTag(t *testing.T) {
+	tags := []string{HookTag, SizeTag("arg", 16), RetTypeTag("nf_conn")}
+	if got := RetType(tags); got != "nf_conn" {
+		t.Errorf("RetType = %q", got)
+	}
+	if got := RetType(tags[:2]); got != "" {
+		t.Errorf("RetType without the tag = %q", got)
+	}
+	if got := SizeTags(tags); len(got) != 1 || got["arg"] != 16 {
+		t.Errorf("SizeTags = %v", got)
+	}
+}

@@ -1,6 +1,6 @@
 .PHONY: build build-libpcap clean test test-unit test-bpf test-integration test-all vet goreleaser
 .PHONY: install-lint-tools lint lint-ci p4c-check lean-build lean-gen lean-vocab golden-update golden-diff
-.PHONY: regionval-test regionval-check
+.PHONY: regionval-test regionval-check helpergen-check
 
 BINARY = bpf-ninja
 DIFF_FROM_BRANCH_NAME ?= main
@@ -70,6 +70,13 @@ regionval-test: ## Run the region validator's Go tests (tools/regionval, no Dafn
 
 regionval-check: ## Run the region validator's CI steps (needs dafny and goimports; see tools/regionval/README.md)
 	$(MAKE) -C tools/regionval ci
+
+helpergen-check: ## Compare the generated helper tables with a Linux tree: make helpergen-check KSRC=<linux source tree>
+	@if [ -z "$(KSRC)" ]; then \
+		echo "helpergen-check: KSRC is not set; give the Linux source tree the tables come from, e.g. make helpergen-check KSRC=\$$HOME/src/linux-7.0.13" >&2; \
+		exit 2; \
+	fi
+	go run ./tools/helpergen -ksrc "$(KSRC)" -check
 
 p4c-check: ## Validate bundled .p4 vocab with the official p4c parser (docker required)
 	./scripts/p4c-check.sh

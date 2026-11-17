@@ -2,6 +2,7 @@ package inject
 
 import (
 	"bytes"
+	"fmt"
 	"slices"
 	"testing"
 
@@ -110,10 +111,10 @@ func TestCallee(t *testing.T) {
 		{"referenced kfunc outside table", kfuncCall(-1).WithReference("bpf_ct_release"), nil, "", "bpf_ct_release", true},
 		{"kfunc by id", byID, kernel, "bpf_skb_ct_lookup", "bpf_skb_ct_lookup", true},
 		{"kfunc by id outside table", testKfunc(t, kernel, "bpf_ct_release"), kernel, "", "bpf_ct_release", true},
-		{"kfunc id of a struct", kfuncCall(int64(optsID)), kernel, "", "", false},
-		{"kfunc id not in kernel", kfuncCall(1 << 20), kernel, "", "", false},
-		{"module offset", module, kernel, "", "", false},
-		{"nil kernel", byID, nil, "", "", false},
+		{"kfunc id of a struct", kfuncCall(int64(optsID)), kernel, "", fmt.Sprintf("kfunc_0_%d", optsID), false},
+		{"kfunc id not in kernel", kfuncCall(1 << 20), kernel, "", "kfunc_0_1048576", false},
+		{"module offset", module, kernel, "", fmt.Sprintf("kfunc_%d_%d", module.Offset, module.Constant), false},
+		{"nil kernel", byID, nil, "", fmt.Sprintf("kfunc_0_%d", byID.Constant), false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			row, name, named := callee(&tc.ins, tc.kernel, nil)

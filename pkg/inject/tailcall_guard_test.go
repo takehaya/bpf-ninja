@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/asm"
 	"github.com/cilium/ebpf/btf"
 )
@@ -124,4 +125,47 @@ func TestTailCallReachabilityGuard(t *testing.T) {
 			t.Fatalf("result=%+v err=%v", result, err)
 		}
 	})
+}
+
+// staleTailFixture is subTailCallerFixture whose entry first looks up a hash
+// map, then calls the tail-calling subprogram.
+func staleTailFixture() *ebpf.CollectionSpec {
+	spec := subTailCallerFixture()
+	entry := asm.Instructions{
+		asm.Mov.Reg(asm.R6, asm.R1),
+		asm.StoreImm(asm.RFP, -4, 0, asm.Word),
+		asm.Mov.Reg(asm.R2, asm.RFP),
+		asm.Add.Imm(asm.R2, -4),
+		asm.LoadMapPtr(asm.R1, 0).WithReference("m"),
+		asm.FnMapLookupElem.Call(),
+		asm.Mov.Reg(asm.R1, asm.R6),
+		asm.Call.Label("sub"),
+		asm.Return(),
+	}
+	entry[0] = btf.WithFuncMetadata(entry[0].WithSymbol("caller").WithSource(asm.Comment("entry")), xdpFunc("caller"))
+	spec.Programs["caller"].Instructions = append(entry, spec.Programs["caller"].Instructions[2:]...)
+	spec.Maps["m"] = &ebpf.MapSpec{Name: "m", Type: ebpf.Hash, KeySize: 4, ValueSize: 8, MaxEntries: 1}
+	return spec
+}
+
+// A failed probe that costs the tail hook, followed by a stack limit that
+// costs the lookup, leaves nothing to hook: the transform refuses, on both
+// paths, instead of returning a program without hooks.
+func TestTailCallGuardThenStackLimit(t *testing.T) {
+	probeErr := errors.New("native test_run fell through")
+	probe := func() error { return probeErr }
+	req := LookupRequest{ProgramName: "caller", Auto: true, TailCalls: true, HookName: "obs", Stack: StackAudit{LowestOffset: -208}}
+	plan, err := transformLookupGuarded(staleTailFixture(), req, probe)
+	if !errors.Is(err, ErrRefused) || !strings.Contains(err.Error(), "no lookup site fits the audited stack (2 skipped)") || len(plan.hooks) != 0 {
+		t.Fatalf("err %v hooks %+v skipped %+v", err, plan.hooks, plan.skipped)
+	}
+	raw, _ := rawLookupFixtureBTF(t, staleTailFixture(), "caller", true)
+	if _, err := TransformLookupRawGuarded(raw, LookupRequestRaw{Auto: true, TailCalls: true, HookName: "obs", Stack: req.Stack}, probe); !errors.Is(err, ErrRefused) {
+		t.Fatalf("raw: %v", err)
+	}
+	// With room for the lookup it keeps its hook.
+	req.Stack.LowestOffset = -200
+	if plan, err := transformLookupGuarded(staleTailFixture(), req, probe); err != nil || len(plan.hooks) != 1 || plan.hooks[0].Kind != HookLookup {
+		t.Fatalf("err %v hooks %+v", err, plan.hooks)
+	}
 }

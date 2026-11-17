@@ -3,6 +3,8 @@ package recordbuild_test
 import (
 	"bytes"
 	"encoding/binary"
+	"math"
+	"strings"
 	"testing"
 
 	"github.com/cilium/ebpf/btf"
@@ -254,5 +256,71 @@ func TestEntryNarrowRet(t *testing.T) {
 	}
 	if l = entry(t, callHook(t, nil, btf.FuncParam{Name: "ret", Type: u64}), 256); l.Status.Size != 8 {
 		t.Fatalf("status without the tag %+v", l.Status)
+	}
+}
+
+// narrowRetComment renders an entry block of a call hook with tags whose
+// BPF side stored the low size bytes of the result ret over a zeroed slot.
+func narrowRetComment(t *testing.T, tags []string, size int, ret int64) string {
+	t.Helper()
+	l := entry(t, callHook(t, tags, btf.FuncParam{Name: "ret", Type: u64}), 256)
+	b := make([]byte, l.Size())
+	binary.NativeEndian.PutUint16(b[record.OffLen:], uint16(len(b)))
+	b[record.OffVersion], b[record.OffKind] = record.BlockVersion, l.Kind()
+	binary.NativeEndian.PutUint32(b[record.OffValid:], record.ValidSite|record.ValidStatus)
+	var full [8]byte
+	binary.NativeEndian.PutUint64(full[:], uint64(ret))
+	copy(b[record.EntryOffStatus:record.EntryOffStatus+size], full[:size])
+	got, err := l.Comment(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return got
+}
+
+// A narrow signed result is sign-extended at its width, an unsigned one is
+// not.
+func TestEntryNarrowSignedRet(t *testing.T) {
+	for _, tc := range []struct {
+		size          int
+		ret           int64
+		signed, plain string
+	}{
+		{4, -22, "ret=-22", "ret=4294967274"},
+		{4, -100000, "ret=-100000", "ret=4294867296"},
+		{4, math.MinInt32, "ret=-2147483648", "ret=2147483648"},
+		{2, -300, "ret=-300", "ret=65236"},
+		{1, -5, "ret=-5", "ret=251"},
+	} {
+		size := hookabi.SizeTag("ret", uint32(tc.size))
+		if got := narrowRetComment(t, []string{size, hookabi.RetSignedTag}, tc.size, tc.ret); !strings.Contains(got, tc.signed+" ") && !strings.HasSuffix(got, tc.signed) {
+			t.Errorf("size %d signed %d: %q, want %s", tc.size, tc.ret, got, tc.signed)
+		}
+		if got := narrowRetComment(t, []string{size}, tc.size, tc.ret); !strings.Contains(got, tc.plain+" ") && !strings.HasSuffix(got, tc.plain) {
+			t.Errorf("size %d unsigned %d: %q, want %s", tc.size, tc.ret, got, tc.plain)
+		}
+	}
+}
+
+// A ret typed by the hook's ret_type tag (attach.RetPointee): --record
+// filter records the member a condition reads, as for an argument, and
+// --record entry never records ret or the object behind it.
+func TestTypedRetMember(t *testing.T) {
+	conn := &btf.Struct{Name: "nf_conn", Size: 16, Members: []btf.Member{{Name: "mark", Type: u32}, {Name: "status", Type: u64, Offset: 64}}}
+	params := []attach.FuncParamInfo{
+		{Name: "site", Index: 1, Size: 4},
+		{Name: "ret", Index: 2, Size: 8, Kind: "ptr-struct", TypeName: "nf_conn", Type: &btf.Pointer{Target: conn}},
+	}
+	args, err := filter.ParseAndValidateFilters([]string{"ret->status=8"}, params)
+	want := filter.ArgFilter{ParamName: "ret->status", ParamIndex: 2, ParamSize: 8, Deref: true, Offset: 8, Value: 8}
+	if err != nil || len(args) != 1 || args[0] != want {
+		t.Fatalf("filter %+v %v", args, err)
+	}
+	l, err := recordbuild.Build(attach.Target{Generated: true, Params: params}, filter.TargetFilters{Args: args}, recordbuild.Options{Mode: record.ModeFilter, Explicit: true})
+	if err != nil || l == nil || len(l.Fields) != 1 || !l.Fields[0].Deref || l.Fields[0].Offset != 8 || l.Fields[0].ParamIndex != 2 {
+		t.Fatalf("filter layout %+v %v", l, err)
+	}
+	if l := entry(t, params, 256); l.Status.Present() || l.Key.Present() || l.Value.Present() {
+		t.Fatalf("entry layout records ret: %+v", l)
 	}
 }

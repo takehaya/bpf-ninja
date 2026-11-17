@@ -46,7 +46,32 @@ interrupt_child() {
 }
 
 send_packets() {
-    ip netns exec xdptest ping -c "$1" -W 1 10.0.0.1 >/dev/null 2>&1
+    local out
+    if ! out=$(ip netns exec xdptest ping -c "$1" -W 1 10.0.0.1 2>&1); then
+        echo "$out" >&2
+        return 1
+    fi
+}
+
+capture_failure_diagnostics() {
+    echo "--- network diagnostics: host ---" >&2
+    ip -s link >&2
+    ip addr >&2
+    ip route show table all >&2
+    ip rule >&2
+    bpftool net >&2
+    bpftool prog show >&2
+    command -v nft >/dev/null && nft list ruleset >&2
+    command -v iptables-save >/dev/null && iptables-save >&2
+    sysctl net.ipv4.icmp_echo_ignore_all net.ipv4.conf.all.rp_filter net.ipv4.ip_forward >&2
+    echo "--- network diagnostics: xdptest ---" >&2
+    ip netns exec xdptest ip -s link >&2
+    ip netns exec xdptest ip addr >&2
+    ip netns exec xdptest ip route show table all >&2
+    ip netns exec xdptest ip rule >&2
+    ip netns exec xdptest sysctl net.ipv4.icmp_echo_ignore_all net.ipv4.conf.all.rp_filter net.ipv4.ip_forward >&2
+    echo "--- network diagnostics: kernel tail ---" >&2
+    dmesg | tail -50 >&2
 }
 
 require_bpftool() {
@@ -689,6 +714,12 @@ test_multipoint_pairs() {
 
 "$SCRIPT_DIR/cleanup.sh" 2>/dev/null || true
 "$SCRIPT_DIR/setup.sh" || { red "Setup failed"; exit 1; }
+if ! send_packets 3; then
+    red "Control ping failed before the first capture"
+    capture_failure_diagnostics
+    "$SCRIPT_DIR/cleanup.sh" 2>/dev/null || true
+    exit 1
+fi
 
 echo ""
 echo "Running integration tests:"

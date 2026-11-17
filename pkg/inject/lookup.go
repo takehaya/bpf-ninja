@@ -1,6 +1,8 @@
 package inject
 
 import (
+	"cmp"
+	"errors"
 	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
@@ -192,10 +194,14 @@ type LookupRequest struct {
 
 	SkipUnmatchedMaps bool // a Maps name matching no site is skipped, not refused; see Maps
 	// Drop maps a site's SitePC to the reason it gets no hook: the site is
-	// listed as skipped with that reason. An explicitly selected lookup
-	// (Site) is refused instead. Tail-call sites are dropped the same way.
+	// listed as skipped with that reason, "dropped" when it is empty. An
+	// explicitly selected lookup (Site) is refused instead. Tail-call sites
+	// are dropped the same way.
 	Drop map[uint32]string
 }
+
+// dropped is the reason of a site LookupRequest.Drop names with an empty one.
+const dropped = "dropped"
 
 // LookupWhen is a set of lookup results; see LookupRequest.Lookups.
 type LookupWhen string
@@ -274,14 +280,39 @@ func checkOps(req LookupRequest) error {
 		if name == "" || slices.Contains(req.Calls[:i], name) {
 			return refuse("Calls names must be non-empty and unique; got %q", name)
 		}
-		// Without kernel BTF (a configuration check) a name that is not a helper may still be a kernel function.
+		// A name that is neither a helper nor a kernel function the load
+		// passes has no site in this program; a configuration check without
+		// kernel BTF cannot tell it from a kernel function either.
 		if row, reason := namedCall(name, req.Kernel, req.Modules); row == nil && reason != "" {
 			return refuse("Calls name %q cannot be hooked: %s", name, reason)
-		} else if row == nil && req.Kernel != nil {
-			return refuse("Calls name %q is not supported: it is neither a helper nor a kernel function of the running kernel or of a module BTF the program passes", name)
 		}
 	}
 	return nil
+}
+
+// unknownCalls lists, without a site, each Calls name that is neither a
+// helper nor a kernel function of this load (namedCall gives no row and no
+// reason) and names none of the call sites the rule hooks or skips: it has
+// no site in this program, but a misspelt name must not pass unseen. A known
+// name the program does not call is not listed.
+func unknownCalls(req LookupRequest, groups []lookupGroup, skipped []LookupSite) []LookupSite {
+	var out []LookupSite
+	for _, name := range req.Calls {
+		if slices.ContainsFunc(groups, func(g lookupGroup) bool { return g.call != nil && g.call.Name == name }) ||
+			slices.ContainsFunc(skipped, func(site LookupSite) bool { return site.Call == name }) {
+			continue
+		}
+		if row, reason := namedCall(name, req.Kernel, req.Modules); row == nil && reason == "" {
+			out = append(out, LookupSite{Call: name, Reason: fmt.Sprintf("Calls name %q is neither a helper nor a kernel function of this load", name)})
+		}
+	}
+	return out
+}
+
+// UnknownCallsName reports a skipped entry of unknownCalls: no op, no pc
+// and a callee name.
+func UnknownCallsName(site LookupSite) bool {
+	return site.Op == "" && site.SitePC == 0 && site.Call != ""
 }
 
 // normal is w with the empty set spelled LookupHit.
@@ -386,6 +417,8 @@ type LookupHook struct {
 	ArgSize   uint32 `json:",omitempty"` // size of arg's pointee in bytes
 	RetPtr    bool   `json:",omitempty"` // ret is const void *; false: u64 ret
 	RetSize   uint32 `json:",omitempty"` // byte size of the callee's integer result when narrower than 8: only its low bytes are the result
+	RetSigned bool   `json:",omitempty"` // that narrow result is a signed integer or enum
+	RetType   string `json:",omitempty"` // with RetPtr, the kernel struct or union ret points to (the ret_type decl tag); "": untyped
 	ArgReason string `json:",omitempty"` // why the hook of a callee whose row has an argument takes none (selectCalls); "" otherwise
 }
 
@@ -671,15 +704,25 @@ func discoverSites(insns asm.Instructions, typ ebpf.ProgramType, resolve lookupM
 			op = ""
 		}
 		var row *CallRow
+		// unhooked is the reason a kernel-function call the rule may name
+		// gets no hook: it cannot be named, or the rule names it and its
+		// prototype gives no row. Such a site is listed as skipped.
+		var unhooked, unhookedName string
 		if op == "" && len(req.Calls) != 0 && (ins.IsBuiltinCall() || ins.IsKfuncCall()) {
-			r, name, _ := callee(ins, req.Kernel, req.Modules)
+			r, name, named := callee(ins, req.Kernel, req.Modules)
+			var reason string
 			if r == nil && ins.IsBuiltinCall() {
 				r, _ = helperCall(asm.BuiltinFunc(ins.Constant))
-			} else if r == nil && name != "" {
-				r, _ = kfuncRow(name, kfuncProto(ins, req.Kernel, req.Modules))
+			} else if r == nil && named {
+				r, reason = kfuncRow(name, kfuncProto(ins, req.Kernel, req.Modules))
 			}
-			if r != nil && slices.Contains(req.Calls, r.Name) {
+			switch {
+			case r != nil && slices.Contains(req.Calls, r.Name):
 				op, row = HookCall, r
+			case ins.IsKfuncCall() && !named:
+				op, unhooked, unhookedName = HookCall, "call: "+unnamedKfuncReason, name
+			case ins.IsKfuncCall() && r == nil && slices.Contains(req.Calls, name):
+				op, unhooked, unhookedName = HookCall, "call: "+reason, name
 			}
 		}
 		if op != "" {
@@ -687,6 +730,8 @@ func discoverSites(insns asm.Instructions, typ ebpf.ProgramType, resolve lookupM
 				SitePC: uint32(pc), InstructionIndex: it.Index}
 			if row != nil {
 				site.MapName, site.Call = "", row.Name
+			} else if unhooked != "" {
+				site.MapName, site.Call = "", unhookedName
 			} else if m != nil {
 				site.KeyTypeName, site.ValueTypeName = lookupTypeName(m.Key), lookupTypeName(m.Value)
 			}
@@ -740,11 +785,16 @@ func discoverSites(insns asm.Instructions, typ ebpf.ProgramType, resolve lookupM
 				switch {
 				case callReason(insns, it.Index) != "":
 					site.Reason = callReason(insns, it.Index)
-				case row.ArgReg != 0 && (!isConst[row.SizeReg] || consts[row.SizeReg] <= 0 || consts[row.SizeReg] > 512):
+				case row.ArgReg != 0 && !isConst[row.SizeReg]:
 					argReason = fmt.Sprintf("the argument size in %s at pc %d is not a constant set in its basic block", regName(row.SizeReg), pc)
+				case row.ArgReg != 0 && (consts[row.SizeReg] <= 0 || consts[row.SizeReg] > 512):
+					argReason = fmt.Sprintf("the argument size in %s at pc %d is %d, outside 1 to 512", regName(row.SizeReg), pc, consts[row.SizeReg])
 				case row.ArgReg != 0:
 					argOwn, argSize = ownStack[row.ArgReg], uint32(consts[row.SizeReg])
 				}
+			}
+			if unhooked != "" {
+				site.Reason = unhooked
 			}
 			if site.Reason == "" && row == nil {
 				switch {
@@ -1320,6 +1370,7 @@ type lookupGroup struct {
 	argSize   uint32
 	typed     bool
 	argReason string
+	retType   string // the kernel struct or union behind a pointer result (retTypeOf); "" untyped
 }
 
 // readOnlyArg reports whether a site of group may pass a pointer into a
@@ -1480,6 +1531,9 @@ func selectLookups(sites []discoveredLookup, req LookupRequest, reserved []strin
 			named = append(named, group)
 		}
 		if len(named) == 0 && !req.Entry && !req.TailCalls && len(req.Calls) == 0 {
+			if n := len(skipped); n != 0 && !slices.ContainsFunc(skipped, func(s LookupSite) bool { _, ok := req.Drop[s.SitePC]; return !ok }) {
+				return nil, skipped, refuse("no supported lookup sites: Drop removes all %d", n)
+			}
 			return nil, skipped, refuse("no supported lookup sites (%d skipped)", len(skipped))
 		}
 		return named, skipped, nil
@@ -1608,7 +1662,7 @@ func transformLookupProgramGuarded(insns asm.Instructions, typ ebpf.ProgramType,
 	}
 	for i, site := range sites {
 		if reason, ok := req.Drop[site.SitePC]; ok {
-			sites[i].Reason = reason
+			sites[i].Reason = cmp.Or(reason, dropped)
 			sites[i].generic, sites[i].typedOnly, sites[i].Generic = false, false, false // not for the generic hook either
 		}
 	}
@@ -1652,6 +1706,8 @@ func transformLookupProgramGuarded(insns asm.Instructions, typ ebpf.ProgramType,
 	}
 	callGroups, callSkipped := selectCalls(callSites, req, types)
 	plan.skipped = append(plan.skipped, callSkipped...)
+	unknown := unknownCalls(req, callGroups, callSkipped)
+	plan.skipped = append(plan.skipped, unknown...)
 	if err := CheckLookupStack(req); err != nil {
 		return nil, plan, err
 	}
@@ -1694,7 +1750,14 @@ func transformLookupProgramGuarded(insns asm.Instructions, typ ebpf.ProgramType,
 	groups = append(kept, callGroups...)
 	noCalls := func() error {
 		if len(req.Calls) != 0 && len(groups) == 0 && !req.Entry && !req.TailCalls {
-			return refuse("no call site is instrumented (%d skipped)", len(plan.skipped))
+			names := ""
+			for _, site := range unknown {
+				names += fmt.Sprintf(", %q", site.Call)
+			}
+			if names != "" {
+				names = "; Calls names that are neither a helper nor a kernel function of this load: " + names[2:]
+			}
+			return refuse("no call site is instrumented (%d skipped)%s", len(plan.skipped), names)
 		}
 		return nil
 	}
@@ -1710,7 +1773,7 @@ func transformLookupProgramGuarded(insns asm.Instructions, typ ebpf.ProgramType,
 		for _, tail := range allTails {
 			if reason, ok := req.Drop[tail.SitePC]; ok {
 				site := tail.LookupSite
-				site.Reason = reason
+				site.Reason = cmp.Or(reason, dropped)
 				plan.skipped = append(plan.skipped, site)
 				continue
 			}
@@ -1817,6 +1880,18 @@ func transformLookupProgramGuarded(insns asm.Instructions, typ ebpf.ProgramType,
 	}
 	emit := lookupEmitter{insns: insns, req: req, ctxType: proto.Params[0].Type, tails: tails, entryName: entryName, tailName: tailName}
 	spliced, hooks, err := emit.splice(groups)
+	// A branch the inserted code pushes out of range drops the call sites
+	// first, as a broken stack limit does; fewer insertions never lengthen a
+	// branch, so later splices cannot break it again.
+	if overflow := (branchRangeError{}); errors.As(err, &overflow) {
+		var dropped bool
+		if groups, plan.skipped, dropped = dropCalls(groups, plan.skipped, overflow.reason()); dropped {
+			if err := noCalls(); err != nil {
+				return nil, plan, err
+			}
+			spliced, hooks, err = emit.splice(groups)
+		}
+	}
 	if err != nil {
 		return nil, plan, err
 	}
@@ -1874,7 +1949,9 @@ func transformLookupProgramGuarded(insns asm.Instructions, typ ebpf.ProgramType,
 					guardedEmit = trialEmit
 				}
 			}
-			emit = guardedEmit
+			// Every later check reads req: without a tail hook its TailCalls
+			// must say so, as when no tail call fits.
+			emit, req.TailCalls = guardedEmit, guardedEmit.req.TailCalls
 			if len(groups) == 0 && !emit.req.Entry && !emit.req.TailCalls {
 				return nil, plan, refuse("no hook site is safe on this kernel (%d skipped): %s", len(plan.skipped), reason)
 			}
@@ -1968,6 +2045,31 @@ func transformLookupProgramGuarded(insns asm.Instructions, typ ebpf.ProgramType,
 	}
 	if broken != "" {
 		return nil, plan, refuse("%s", broken)
+	}
+	// With no call group left to drop, auto drops map groups from the end of
+	// RetryRank's order until the program fits, as for the stack limits.
+	for n := funcCount(spliced); n > maxFuncs && req.Auto; n = funcCount(spliced) {
+		reason := fmt.Sprintf("the program would have %d functions, more than the kernel's %d", n, maxFuncs)
+		var dropped bool
+		if groups, plan.skipped, dropped = dropLast(groups, plan.skipped, n-maxFuncs, reason, func(group lookupGroup) bool { return group.op != HookCall }); !dropped {
+			break
+		}
+		if spliced, hooks, err = emit.splice(groups); err != nil {
+			return nil, plan, err
+		}
+		if broken, err = stackLimitsBroken(insns, spliced, req.Stack); err != nil {
+			return nil, plan, err
+		}
+		if broken != "" {
+			return nil, plan, refuse("%s", broken)
+		}
+	}
+	// The hooks that remain, which may not be dropped, still count.
+	if n := funcCount(spliced); n > maxFuncs {
+		return nil, plan, refuse("the program would have %d functions, more than the kernel's %d", n, maxFuncs)
+	}
+	if len(hooks) == 0 {
+		return nil, plan, refuse("no hook is left to generate (%d skipped)", len(plan.skipped))
 	}
 	var selected []discoveredLookup
 	for _, group := range groups {
@@ -2565,7 +2667,7 @@ func spliceLookupCalls(input asm.Instructions, calls map[uint32]siteCall, stack 
 			if function {
 				to -= len(callbackPrologue[target]) // a callback is entered through its prologue
 			}
-			if err := relocateOffset(&ins, newPC, to, function); err != nil {
+			if err := relocateOffset(&ins, old, newPC, to, function); err != nil {
 				return nil, err
 			}
 		}

@@ -50,10 +50,9 @@ type Options struct {
 	// thread. Other target threads keep running until the supervisor handles
 	// their next stop, then wait behind this callback. It must not wait on the target.
 	OnInject func(Injection)
-	// OnRefuse, if set, is called on the tracing thread for each load a
-	// rule's sites refused (see Sites): the listing was of another build, an
-	// entry names no site of the program, or the load could not be listed. The original program then
-	// loads, or the load is refused with FailClosed.
+	// OnRefuse, if set, is called on the tracing thread for each load a rule
+	// matched that ended without hooks (see Refusal), once the original program
+	// was loaded in its place or, with FailClosed, the load was refused.
 	OnRefuse func(Refusal)
 	// OnDiscover, if set, is called on the tracing thread for every XDP, tc or
 	// cgroup_skb program load whose attr carries BTF, whether or not a rule selects it,
@@ -121,9 +120,56 @@ type Injection struct {
 	OutsidePremise []string
 }
 
-// Refusal is a load a rule's sites refused; Reason is the message.
+// Refusal is a matched load that ended without hooks; Reason is the message.
+// Cause is what ended it: "sites" (the rule's sites refused the load),
+// "stack" (the stack audit was unavailable), "analysis" (the stack analysis
+// cannot take the program: see unanalysable), "verifier" (the verifier
+// refused the trial load of the original program), "checker" (the load-time
+// checker refused the rewrite), "retry" (the kernel refused the rewrite and
+// the retry loaded none), "loader_log" (the rewrite passes with a log of its
+// own, but not with the loader's log buffer: see failedLoad), "selector"
+// (more than one rule matches the load) or
+// "transform" (the load could not be rewritten). Outcome is what happened:
+// "original_loaded", "original_refused" (the kernel refused the original
+// program as well) or "load_refused" (the supervisor refused the load: with
+// FailClosed, or for a map rule whose stack audit the kernel cannot give).
 type Refusal struct {
 	Program, Func, Reason string
+	Cause, Outcome        string
+}
+
+// refusalCause is the Refusal.Cause of a matched load whose rewrite failed
+// with err; stackErr is the stack audit's error and retried says whether the
+// retry ran.
+func refusalCause(err, stackErr error, retried bool) string {
+	switch {
+	case errors.As(err, &sitesRefusal{}):
+		return "sites"
+	case stackErr != nil && unanalysable(stackErr):
+		return "analysis"
+	case errors.Is(stackErr, errTrialVerifier):
+		return "verifier"
+	case stackErr != nil:
+		return "stack"
+	case errors.As(err, &checkerRejection{}) || errors.Is(err, inject.ErrCheckerNotApplicable):
+		return "checker"
+	case retried:
+		return "retry"
+	}
+	return "transform"
+}
+
+// refusalOutcome is the Refusal.Outcome of a matched load that ended without
+// hooks: refused says the supervisor refused it, ret is the kernel's return
+// value for the original program otherwise.
+func refusalOutcome(refused bool, ret int64) string {
+	switch {
+	case refused:
+		return "load_refused"
+	case ret < 0:
+		return "original_refused"
+	}
+	return "original_loaded"
 }
 
 type rememberedBTF struct {
@@ -137,6 +183,9 @@ type thread struct {
 	foreign bool
 	// traceExit asks for the exit stop of the bpf call stopped at seccomp.
 	traceExit bool
+	// refusal is a matched load left to run unchanged at its entry stop; it
+	// is reported at the exit stop, with the outcome the kernel gave.
+	refusal *Refusal
 }
 type supervisor struct {
 	probeUntrusted            func() error
@@ -157,6 +206,31 @@ type supervisor struct {
 var errTrialVerifier = errors.New("trial load was rejected by the verifier")
 
 var errIndirectJump = errors.New("indirect jump")
+
+// errAnalysisPanic marks a panic in the analysis of one load (see guard).
+var errAnalysisPanic = errors.New("analysis of the load panicked")
+
+// guard runs f, a step of the analysis of one load that issues no ptrace
+// call, and turns a panic in it into an error, so that the load ends on the
+// ordinary fallback path (the original loads, or --fail-closed refuses)
+// instead of ending the supervisor.
+func guard(what string, f func() error) (err error) {
+	defer func() {
+		if p := recover(); p != nil {
+			err = fmt.Errorf("%s: %w: %v", what, errAnalysisPanic, p)
+		}
+	}()
+	return f()
+}
+
+// The analyses the guarded steps run; a test replaces each with a panic to
+// pin its guard.
+var (
+	parseStackDepths    = inject.ParseStackDepths
+	frameFloorsRaw      = inject.FrameFloorsRaw
+	discoverMapCallsRaw = inject.DiscoverMapCallsRaw
+	transformLookupRaw  = inject.TransformLookupRawGuarded
+)
 
 // errJumpLimit marks a rewritten load the verifier refused for too long a
 // sequence of pending jumps.
@@ -237,6 +311,79 @@ func loadModuleBTF(id btf.ID, base *btf.Spec) (*btf.Spec, error) {
 	return h.Spec(base)
 }
 
+// loaderLog says whether the loader asked for a verifier log (log_level 1
+// or 2) in attr. A real load then fails with ENOSPC when the log does not fit
+// its buffer, whatever the verifier decided.
+func loaderLog(attr []byte) bool {
+	return len(attr) >= 28 && u32(attr, 24)&3 != 0
+}
+
+// loadStep is what happens next to a matched load whose rewrite did not load.
+type loadStep int
+
+const (
+	stepOriginal loadStep = iota // the original program loads
+	stepRefuse                   // the load is refused with EPERM
+	stepRetry                    // the retry looks for a rewrite with fewer sites (retryLoad)
+	stepLogTrial                 // the rewrite is tried once with a log of the supervisor's own
+)
+
+// loadFailure is a matched load whose rewrite did not load: err is why,
+// stackErr the stack audit's error, loaderLog says that the loader asked for
+// a verifier log (loaderLog) and retried that the retry ran. logTried says
+// that the rewrite was tried with a log of the supervisor's own
+// (stepLogTrial) and logPassed that this trial passed.
+type loadFailure struct {
+	err, stackErr                           error
+	loaderLog, retried, logTried, logPassed bool
+}
+
+// failedLoad decides what happens to the load f describes: the retry, once,
+// for a rewrite the kernel refused, else the original or, by refuseOriginal,
+// a refusal. cause is the Refusal.Cause (refusalCause) of a load that ends
+// without hooks. The kernel returns ENOSPC whenever the loader's log does
+// not fit its buffer, also in place of the verifier's own refusal, so a
+// rewrite refused with ENOSPC on the loader's log is first tried with a log
+// of the supervisor's own: the retry runs on that trial's refusal, and when
+// the trial passes the loader's log buffer is the problem (cause
+// "loader_log"), for which no site is dropped.
+func failedLoad(f loadFailure, failClosed bool, rule Rule) (step loadStep, cause string) {
+	if f.stackErr == nil && !f.retried && !f.logPassed && errors.As(f.err, &refusedLoad{}) {
+		if f.loaderLog && !f.logTried && errors.Is(f.err, unix.ENOSPC) {
+			return stepLogTrial, ""
+		}
+		return stepRetry, ""
+	}
+	cause = refusalCause(f.err, f.stackErr, f.retried)
+	if f.logPassed {
+		cause = "loader_log"
+	}
+	if refuseOriginal(failClosed, rule, f.stackErr) {
+		return stepRefuse, cause
+	}
+	return stepOriginal, cause
+}
+
+// refuseOriginal says whether a matched load whose rewrite did not load is
+// refused instead of loading the original: always with failClosed, and when
+// the kernel cannot give the stack audit (stackErr) for a rule that names its
+// one site with map, which must be hooked. A rule with calls, entry or
+// tail_calls and no auto loads the original like an auto rule. A program the
+// verifier refuses, or one the analysis cannot take (unanalysable), loads as
+// the original under every rule.
+func refuseOriginal(failClosed bool, rule Rule, stackErr error) bool {
+	return failClosed || stackErr != nil && !rule.Auto && rule.Map != "" && !errors.Is(stackErr, errTrialVerifier) && !unanalysable(stackErr)
+}
+
+// unanalysable says whether the stack audit failed because the program is
+// one the analysis cannot take: it refused the program (inject.ErrRefused),
+// panicked on it (errAnalysisPanic) or cannot run its trial load
+// (errIndirectJump). No rewrite of such a program is possible at all, unlike
+// an audit the kernel cannot give.
+func unanalysable(stackErr error) bool {
+	return errors.Is(stackErr, inject.ErrRefused) || errors.Is(stackErr, errAnalysisPanic) || errors.Is(stackErr, errIndirectJump)
+}
+
 func retryOriginalOrRefuse(failClosed bool, retry func() (int64, error)) (int64, error) {
 	if failClosed {
 		return -int64(unix.EPERM), nil
@@ -262,6 +409,7 @@ func run(ctx context.Context, argv []string, opts Options, probeUntrusted, probe
 		if err := Validate(opts.Rules); err != nil {
 			return 0, err
 		}
+		opts.Rules = uniqueRules(opts.Rules)
 	}
 	if opts.Stdin == nil {
 		opts.Stdin = os.Stdin
@@ -536,7 +684,7 @@ func run(ctx context.Context, argv []string, opts Options, probeUntrusted, probe
 			if !ok {
 				continue
 			}
-			t.traceExit = t.btf != nil && !t.foreign && regs.Orig_rax == unix.SYS_BPF
+			t.traceExit = (t.btf != nil || t.refusal != nil) && !t.foreign && regs.Orig_rax == unix.SYS_BPF
 		case t.newborn && stopEvent:
 			t.newborn = false
 			// A new process: on the every-syscall path, only a clone without
@@ -898,7 +1046,7 @@ func (s *supervisor) entry(pid int, t *thread, regs unix.PtraceRegs) error {
 	if command != unix.BPF_BTF_LOAD && command != unix.BPF_PROG_LOAD {
 		return nil
 	}
-	t.btf = nil
+	t.btf, t.refusal = nil, nil
 	if regs.Rdx > maxAttr {
 		return s.skipEntry(pid, regs, fmt.Errorf("attr exceeds %d bytes", maxAttr))
 	}
@@ -934,7 +1082,7 @@ func (s *supervisor) entry(pid int, t *thread, regs unix.PtraceRegs) error {
 	}
 	rule, err := s.selectRule(name, entryName)
 	if err != nil {
-		return s.skipEntry(pid, regs, err)
+		return s.skipMatched(pid, t, regs, Refusal{Program: name, Func: entryName, Reason: err.Error(), Cause: "selector"})
 	}
 	discover := s.options.OnDiscover != nil && len(attr) >= 4 && inject.ContextType(ebpf.ProgramType(u32(attr, 0))) != ""
 	if rule == nil && !discover {
@@ -952,7 +1100,7 @@ func (s *supervisor) entry(pid int, t *thread, regs unix.PtraceRegs) error {
 			s.log("program %q: lookup discovery skipped: %v", name, err)
 			return nil
 		}
-		return s.skipEntry(pid, regs, err)
+		return s.skipMatched(pid, t, regs, Refusal{Program: name, Func: entryName, Reason: err.Error(), Cause: "transform"})
 	}
 	r, err := beginRemote(pid, regs, true)
 	if err != nil {
@@ -1016,9 +1164,30 @@ func (s *supervisor) entry(pid int, t *thread, regs unix.PtraceRegs) error {
 			branches = ", lookup branches miss-first"
 			ret, rewrite, entry, injectErr = s.transformLoad(r, attr, *rule, form, stack, true)
 		}
-		if errors.As(injectErr, &refusedLoad{}) && r.broken == nil {
+	}
+	step, cause := stepOriginal, ""
+	if injectErr != nil && r.broken == nil {
+		failure := loadFailure{err: injectErr, stackErr: stackErr, loaderLog: loaderLog(attr)}
+		if step, cause = failedLoad(failure, s.options.FailClosed, *rule); step == stepLogTrial {
+			s.log("program %q: %v with the loader's verifier log; trying the rewrite with a log of its own", name, injectErr)
+			s.extra++
+			trialErr := s.logTrial(r, attr, rule.Program, form, rewrite)
+			failure.logTried = true
+			if trialErr == nil {
+				failure.logPassed = true
+				injectErr = fmt.Errorf("%w; the rewrite passes with a log of its own: the loader's verifier log buffer is too small", injectErr)
+			} else {
+				injectErr = trialErr
+			}
+			failure.err = injectErr
+			step, cause = failedLoad(failure, s.options.FailClosed, *rule)
+		}
+		if step == stepRetry && r.broken == nil {
 			s.log("program %q: %v; retrying with fewer sites", name, injectErr)
 			ret, rewrite, injectErr = s.retryLoad(r, attr, *rule, form, stack, rewrite, injectErr)
+			if failure.err, failure.retried = injectErr, true; injectErr != nil {
+				step, cause = failedLoad(failure, s.options.FailClosed, *rule)
+			}
 		}
 	}
 	if r.broken != nil {
@@ -1038,10 +1207,7 @@ func (s *supervisor) entry(pid int, t *thread, regs unix.PtraceRegs) error {
 				s.log("program %q: injection skipped: %v", name, injectErr)
 			}
 		}
-		if errors.As(injectErr, &sitesRefusal{}) && s.options.OnRefuse != nil {
-			s.options.OnRefuse(Refusal{Program: name, Func: entry, Reason: injectErr.Error()})
-		}
-		refuse := s.options.FailClosed || stackErr != nil && !rule.Auto && !errors.Is(stackErr, errTrialVerifier) && !errors.Is(stackErr, errIndirectJump)
+		refuse := step == stepRefuse
 		ret, err = retryOriginalOrRefuse(refuse, func() (int64, error) {
 			// Substituted attrs and buffers live in scratch memory, so the original
 			// registers, attr and input buffers still describe the unchanged load.
@@ -1050,6 +1216,10 @@ func (s *supervisor) entry(pid int, t *thread, regs unix.PtraceRegs) error {
 		})
 		if err != nil {
 			return err
+		}
+		if s.options.OnRefuse != nil {
+			s.options.OnRefuse(Refusal{Program: name, Func: cmp.Or(entry, entryName), Reason: injectErr.Error(),
+				Cause: cause, Outcome: refusalOutcome(refuse, ret)})
 		}
 	} else {
 		s.log("program %q: injected %s, tracee fd %d%s", name, summary, ret, branches)
@@ -1078,6 +1248,22 @@ func (s *supervisor) entry(pid int, t *thread, regs unix.PtraceRegs) error {
 		}
 	}
 	return r.finish(ret)
+}
+
+// skipMatched ends a matched load that is not rewritten (skipEntry) and
+// reports it (OnRefuse): refused at once with FailClosed, else at its exit
+// stop, with the outcome of the unchanged load.
+func (s *supervisor) skipMatched(pid int, t *thread, regs unix.PtraceRegs, refusal Refusal) error {
+	if err := s.skipEntry(pid, regs, errors.New(refusal.Reason)); err != nil || s.options.OnRefuse == nil {
+		return err
+	}
+	if s.options.FailClosed {
+		refusal.Outcome = refusalOutcome(true, 0)
+		s.options.OnRefuse(refusal)
+		return nil
+	}
+	t.refusal = &refusal
+	return nil
 }
 
 func (s *supervisor) skipEntry(pid int, regs unix.PtraceRegs, cause error) error {
@@ -1128,6 +1314,12 @@ func readEntryName(pid int, attr []byte, spec *btf.Spec) (string, error) {
 }
 
 func (s *supervisor) exit(pid int, t *thread, regs unix.PtraceRegs) error {
+	if t.refusal != nil {
+		refusal := *t.refusal
+		t.refusal = nil
+		refusal.Outcome = refusalOutcome(false, int64(regs.Rax))
+		s.options.OnRefuse(refusal)
+	}
 	blob := t.btf
 	t.btf = nil
 	if uint32(regs.Rdi)&^bpfCommonAttrs != unix.BPF_BTF_LOAD || int64(regs.Rax) < 0 || len(blob) == 0 {
@@ -1220,6 +1412,25 @@ func withTrialProgram(fd int64, closeFD func(int64) error, work func() error) (e
 	return work()
 }
 
+// frameFloors is inject.FrameFloorsRaw with a panic as an error (see guard).
+func frameFloors(depths []int, names []string, raw inject.RawProgram, kernel inject.KernelInfo) (report inject.StackReport, err error) {
+	err = guard("matching stack depths to functions", func() (err error) {
+		report, err = frameFloorsRaw(depths, names, raw, kernel)
+		return err
+	})
+	return report, err
+}
+
+// stackDepths parses the stack depths of a verifier stats log
+// (inject.ParseStackDepths); a panic in it is an error (see guard).
+func stackDepths(log string) (depths []int, err error) {
+	err = guard("parsing verifier stats", func() (err error) {
+		depths, err = parseStackDepths(log)
+		return err
+	})
+	return depths, err
+}
+
 func (s *supervisor) preloadDepths(r *remote, attr []byte, rounding int) (report inject.StackReport, err error) {
 	if len(attr) < 68 || u32(attr, 64) != 0 {
 		return report, fmt.Errorf("offloaded programs do not expose local verifier stack accounting")
@@ -1275,7 +1486,7 @@ func (s *supervisor) preloadDepths(r *remote, attr []byte, rounding int) (report
 		if readErr != nil {
 			return readErr
 		}
-		depths, parseErr := inject.ParseStackDepths(log)
+		depths, parseErr := stackDepths(log)
 		if parseErr != nil {
 			return parseErr
 		}
@@ -1287,7 +1498,7 @@ func (s *supervisor) preloadDepths(r *remote, attr []byte, rounding int) (report
 		if namesErr != nil {
 			return namesErr
 		}
-		report, parseErr = inject.FrameFloorsRaw(depths, names, raw, runningKernelInfo())
+		report, parseErr = frameFloors(depths, names, raw, runningKernelInfo())
 		report.FrameRounding = rounding
 		return parseErr
 	})
@@ -1409,6 +1620,21 @@ func (s *supervisor) transform(r *remote, attr []byte, rule Rule, form HookForm,
 	if len(rule.Calls) > 0 {
 		raw.Kernel, raw.Modules = listed.Kernel, listed.Modules // only a rule with calls names kfunc calls and types their arguments
 	}
+	return s.rewrite(raw, listed, entry, rule, form, stack, missFirst, drop)
+}
+
+// rewrite is the part of transform that issues no ptrace call: raw is the
+// load as the transform sees it and listed as a listing sees it. A panic in
+// it is an error (see guard).
+func (s *supervisor) rewrite(raw, listed inject.RawProgram, entry string, rule Rule, form HookForm, stack inject.StackReport, missFirst bool, drop map[uint32]string) (t *transformed, _ string, err error) {
+	err = guard("rewriting the load", func() (err error) {
+		t, entry, err = s.rewriteLoad(raw, listed, entry, rule, form, stack, missFirst, drop)
+		return err
+	})
+	return t, entry, err
+}
+
+func (s *supervisor) rewriteLoad(raw, listed inject.RawProgram, entry string, rule Rule, form HookForm, stack inject.StackReport, missFirst bool, drop map[uint32]string) (t *transformed, _ string, err error) {
 	mapCalls, list, listErr := listing(listed)
 	if listErr != nil && rule.Sites != nil {
 		return nil, entry, sitesRefusal{fmt.Errorf("listing the load for the rule's sites: %w", listErr)}
@@ -1440,7 +1666,7 @@ func (s *supervisor) transform(r *remote, attr []byte, rule Rule, form HookForm,
 	request.MissFirst = missFirst
 	request.Stack = inject.StackAudit{Frames: stack.Frames(), Source: stack.Source, FrameRounding: stack.FrameRounding}
 	injectcheck.Label(raw.Instructions)
-	result, err := inject.TransformLookupRawGuarded(raw, request, s.probeTailCallReachability)
+	result, err := transformLookupRaw(raw, request, s.probeTailCallReachability)
 	if err != nil {
 		return nil, "", err
 	}
@@ -1531,11 +1757,11 @@ func (s *supervisor) load(r *remote, attr []byte, name string, form HookForm, t 
 	if t.check {
 		encoded, err := readMemory(r.pid, u64(patched, 8), uint64(u32(patched, 4))*8)
 		if err != nil {
-			return 0, "", fmt.Errorf("checker rejected the transform: read substituted load stream: %w; probe was not installed", err)
+			return 0, "", checkerRejection{fmt.Errorf("checker rejected the transform: read substituted load stream: %w; probe was not installed", err)}
 		}
 		verdict, err = checkLoad(t.original, encoded, t.cert, t.premises)
 		if err != nil {
-			return 0, "", fmt.Errorf("checker rejected the transform: %w; probe was not installed", err)
+			return 0, "", checkerRejection{fmt.Errorf("checker rejected the transform: %w; probe was not installed", err)}
 		}
 	}
 	if trial {
@@ -1635,7 +1861,8 @@ func (s *supervisor) retryLoad(r *remote, attr []byte, rule Rule, form HookForm,
 	if refused := (refusedLoad{}); errors.As(cause, &refused) && refused.why != "" {
 		why = refused.why
 	}
-	out, ret, err := degrade(sites, why, trialBudget-s.extra, trial, func(t *transformed) (int64, error) {
+	bare := baseHooksNothing(failed.result.Hooks, sites, failed.request.Entry)
+	out, ret, err := degrade(sites, why, trialBudget-s.extra, bare, trial, func(t *transformed) (int64, error) {
 		ret, _, err := s.load(r, attr, rule.Program, form, t, false)
 		return ret, err
 	})
@@ -1659,11 +1886,19 @@ func (s *supervisor) retryLoad(r *remote, attr []byte, rule Rule, form HookForm,
 		return 0, out.art, err
 	}
 	for i, site := range out.art.result.Skipped {
-		if reason, ok := out.dropped[site.SitePC]; ok && !unmatchedMapsName(site) {
+		if reason, ok := out.dropped[site.SitePC]; ok && !unmatchedMapsName(site) && !inject.UnknownCallsName(site) {
 			out.art.result.Skipped[i].Reason = reason
 		}
 	}
 	return ret, out.art, nil
+}
+
+// logTrial loads t once as a trial (load), with a log of the supervisor's
+// own; the scratch memory it used is free again.
+func (s *supervisor) logTrial(r *remote, attr []byte, name string, form HookForm, t *transformed) error {
+	defer func(used uint64) { r.used = used }(r.used)
+	_, _, err := s.load(r, attr, name, form, t, true)
+	return err
 }
 
 // missFirstDiffers reports whether MissFirst would change the rewrite: some
@@ -1805,6 +2040,10 @@ func hookSummary(result *inject.LookupResultRaw) string {
 	for _, site := range result.Skipped {
 		if unmatchedMapsName(site) {
 			fmt.Fprintf(&b, "; skipped map %q (%s)", site.MapName, site.Reason)
+			continue
+		}
+		if inject.UnknownCallsName(site) {
+			fmt.Fprintf(&b, "; skipped call %q (%s)", site.Call, site.Reason)
 			continue
 		}
 		fmt.Fprintf(&b, "; skipped pc %d (%s)", site.SitePC, site.Reason)

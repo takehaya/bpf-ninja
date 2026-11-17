@@ -177,6 +177,30 @@ The probe does the shift and sign extension before comparing.
 `--list-params` lists the two fields under `status`.
 They exist only on a hook `inject-run` generated; `status.ret` on another function's argument is refused, whatever its name.
 
+## Read fields behind a call hook's pointer result
+
+A [call hook](inject-run.md#read-fields-behind-a-pointer-result) whose callee returns a pointer of a known type names that type in its `ret_type` decl tag.
+The capture then gives `ret` the kernel's struct or union, from vmlinux BTF or from the module that defines it, and `ret->member` works as a pointer argument's member does: integers and enums, nested members and constant array indexes, no bitfields, one `->`.
+The tool reads the fields the condition names and does not interpret them; the object is never copied, and `--record entry` does not record `ret`.
+The read is fault-handled; a NULL `ret`, such as a missed lookup, fails every member condition and writes no value.
+
+A conntrack entry's status selects the packets of the connections that have it:
+
+```sh
+sudo bpf-ninja -p <ID> --func obs_bpf_xdp_ct_lookup --list-params --members
+sudo bpf-ninja -p <ID> --func obs_bpf_xdp_ct_lookup --arg-filter 'ret->status==14' --record filter -w ct.pcapng
+```
+
+The family in a socket's common part selects the IPv4 hits of a socket lookup:
+
+```sh
+sudo bpf-ninja -p <ID> --func obs_bpf_skc_lookup_tcp --arg-filter 'ret->skc_family==2' --arg-echo 'ret->skc_num'
+```
+
+Typed are kernel functions returning a pointer to a struct or union (`bpf_xdp_ct_lookup` and `bpf_skb_ct_lookup` give `nf_conn`), the socket helpers by the kernel struct behind them (`sock`, `sock_common` for `bpf_skc_lookup_tcp`, `tcp_sock` for `bpf_tcp_sock`), and the helpers whose prototype names a BTF type (the `bpf_skc_to_*` casts, `bpf_get_current_task_btf`, `bpf_task_pt_regs`, `bpf_sock_from_file`).
+Map values, memory, dynptr data, kptrs and `void *` results stay untyped: `ret` takes only `ret==null` and `ret!=null`.
+Socket results are the kernel's `struct sock` family, not the `struct bpf_sock` view a program reads.
+
 ## Compare network-order values
 
 Use `be16(...)`, `be32(...)`, or `be64(...)` when the argument or member holds bytes in network order:

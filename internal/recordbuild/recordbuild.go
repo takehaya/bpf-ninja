@@ -5,7 +5,6 @@
 package recordbuild
 
 import (
-	"cmp"
 	"fmt"
 
 	"github.com/cilium/ebpf/btf"
@@ -153,9 +152,10 @@ func buildEntry(params []attach.FuncParamInfo, maxBytes int) (*record.Layout, er
 		case "ret":
 			// Only an integer result: a pointer result's address must not
 			// reach the capture file. A result narrower than 8 bytes
-			// (RetSize) is recorded masked to its width.
-			if p.Kind == "" && p.Size == 8 {
-				l.Status = record.Scalar{Name: "ret", ParamIndex: p.Index, Size: cmp.Or(p.RetSize, 8)}
+			// (RetSize, with Size and Signed set from it) is recorded masked
+			// to its width.
+			if p.Kind == "" && (p.Size == 8 || p.RetSize != 0) {
+				l.Status = record.Scalar{Name: "ret", ParamIndex: p.Index, Size: p.Size, Signed: p.Signed}
 			}
 		case "key", "arg":
 			// A call hook's arg takes the key's slot; it never has a key.

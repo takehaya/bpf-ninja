@@ -10,6 +10,12 @@ import (
 // the same fields found elsewhere decode alike; a renamed, re-signed,
 // resized or retyped field does not.
 func TestSameComment(t *testing.T) {
+	// A call hook's 4-byte result, signed or not.
+	narrowRet := func(signed bool) *Layout {
+		return &Layout{Mode: ModeEntry, Site: Scalar{Name: "site", ParamIndex: 1, Size: 4},
+			Status: Scalar{Name: "ret", ParamIndex: 2, Size: 4, Signed: signed},
+			Key:    Bytes{Name: "key", ParamIndex: -1}, Value: Bytes{Name: "value", ParamIndex: -1}}
+	}
 	u32 := &btf.Int{Name: "u32", Size: 4}
 	u16 := &btf.Int{Name: "u16", Size: 2}
 	boolean := &btf.Int{Name: "_Bool", Size: 1, Encoding: btf.Bool}
@@ -50,6 +56,8 @@ func TestSameComment(t *testing.T) {
 		{"entry member renamed", entry(pol("port", u16), 8), entry(pol("dport", u16), 8), false},
 		{"entry member resized", entry(pol("port", u16), 8), entry(pol("port", u32), 8), false},
 		{"entry capped differently", entry(pol("port", u16), 8), entry(pol("port", u16), 4), false},
+		{"entry ret re-signed", narrowRet(true), narrowRet(false), false},
+		{"entry ret same", narrowRet(true), narrowRet(true), true},
 		{"entry bool moved", entry(&btf.Struct{Name: "pol", Size: 8, Members: []btf.Member{{Name: "allow", Type: boolean}}}, 8), entry(&btf.Struct{Name: "pol", Size: 8, Members: []btf.Member{{Name: "allow", Type: boolean, Offset: 8}}}, 8), false},
 	}
 	for _, c := range cases {

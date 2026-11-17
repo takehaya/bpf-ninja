@@ -17,7 +17,7 @@ import (
 
 // lookupsJSONVersion changes only when a field changes meaning or goes away.
 // Version 3 made rule a hook_prefix rule that names every listed kind.
-const lookupsJSONVersion = 3
+const lookupsJSONVersion = 4
 
 // lookupsRuleHook is the hook name the suggested rules use.
 const lookupsRuleHook = "ninja"
@@ -58,7 +58,8 @@ type lookupsFileJSON struct {
 // and the tail calls of the listed kinds; every site carries a label.
 // With the kinds lookups alone, Rule instruments every named map with lookups,
 // as a hook rule. Otherwise it is a hook_prefix rule naming everything of the
-// listed kinds it can hook (see readyRule). The stack block records the
+// listed kinds it can hook (see readyRule), absent when that would name
+// nothing. The stack block records the
 // trial load's verifier-backed per-function floors.
 type discoveredProgJSON struct {
 	Program   string              `json:"program"`
@@ -72,7 +73,7 @@ type discoveredProgJSON struct {
 	Callees   []calleeJSON        `json:"callees,omitempty"`
 	CallSites []hookSiteJSON      `json:"call_sites,omitempty"`
 	TailCalls []hookSiteJSON      `json:"tail_calls,omitempty"`
-	Rule      syscallhook.Rule    `json:"rule"`
+	Rule      syscallhook.Rule    `json:"rule,omitzero"`
 	Stack     *inject.StackReport `json:"stack,omitempty"`
 }
 
@@ -90,13 +91,15 @@ type discoveredMapJSON struct {
 // inject.Callee). Callees without a Reason may be named in a rule's calls,
 // Typed ones with their typed hook; Reason says why another gets no hook.
 type calleeJSON struct {
-	Name   string   `json:"name"`
-	Kind   string   `json:"kind"`
-	Module int16    `json:"module,omitempty"`
-	Ret    string   `json:"ret,omitempty"`
-	Typed  bool     `json:"typed"`
-	Sites  []uint32 `json:"sites"`
-	Reason string   `json:"reason,omitempty"`
+	Name   string `json:"name"`
+	Kind   string `json:"kind"`
+	Module int16  `json:"module,omitempty"`
+	Ret    string `json:"ret,omitempty"`
+	// RetType names the kernel struct or union a pointer result points to.
+	RetType string   `json:"ret_type,omitempty"`
+	Typed   bool     `json:"typed"`
+	Sites   []uint32 `json:"sites"`
+	Reason  string   `json:"reason,omitempty"`
 }
 
 func discoveryJSON(d syscallhook.Discovery, kinds map[string]bool) discoveredProgJSON {
@@ -178,7 +181,7 @@ func discoveryJSON(d syscallhook.Discovery, kinds map[string]bool) discoveredPro
 			calleeKind[pc] = c.Kind
 		}
 		if kinds[c.Kind+"s"] {
-			out.Callees = append(out.Callees, calleeJSON{Name: c.Name, Kind: c.Kind, Module: c.Module, Ret: string(c.Ret),
+			out.Callees = append(out.Callees, calleeJSON{Name: c.Name, Kind: c.Kind, Module: c.Module, Ret: string(c.Ret), RetType: c.RetType,
 				Typed: c.Typed, Sites: c.Sites, Reason: c.Reason})
 		}
 	}
@@ -200,9 +203,15 @@ func discoveryJSON(d syscallhook.Discovery, kinds map[string]bool) discoveredPro
 	out.Rule.Auto = true
 	if len(kinds) == 1 && kinds["lookups"] {
 		out.Rule.Hook = lookupsRuleHook
+		if len(d.Lookups) == 0 {
+			out.Rule = syscallhook.Rule{} // it would hook nothing: every load would refuse it
+		}
 		return out
 	}
 	out.Rule = readyRule(out, d, kinds)
+	if r := out.Rule; len(r.Maps) == 0 && len(r.Calls) == 0 && !r.Entry && !r.TailCalls {
+		out.Rule = syscallhook.Rule{} // it would hook nothing: every load would refuse it
+	}
 	return out
 }
 
@@ -214,7 +223,9 @@ func discoveryJSON(d syscallhook.Discovery, kinds map[string]bool) discoveredPro
 func readyRule(out discoveredProgJSON, d syscallhook.Discovery, kinds map[string]bool) syscallhook.Rule {
 	rule := syscallhook.Rule{Program: cmp.Or(d.Func, d.Program), Auto: true, HookPrefix: lookupsRuleHook,
 		Entry: kinds["entry"], TailCalls: kinds["tail_calls"] && len(d.CallSites.TailCalls) != 0}
-	listed := func(op string) bool { return kinds["lookups"] && op == "lookup" || kinds["map_calls"] && op != "lookup" }
+	listed := func(op string) bool {
+		return kinds["lookups"] && op == "lookup" || kinds["map_calls"] && op != "lookup"
+	}
 	var ops []string
 	for _, m := range out.Maps {
 		if m.Name == "" || !slices.ContainsFunc(m.Ops, listed) {

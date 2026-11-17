@@ -59,6 +59,10 @@ func TestHookSummary(t *testing.T) {
 			Hooks:   []inject.LookupHook{{Name: "obs_a", Kind: inject.HookLookup, MapName: "a", Sites: pcs(4)}},
 			Skipped: []inject.LookupSite{{MapName: "b", Reason: `Maps name "b" matches no lookup`}},
 		}, `hook "obs_a" (lookup map "a", site pc 4); skipped map "b" (Maps name "b" matches no lookup)`},
+		{"unknown-calls-name", inject.LookupResultRaw{
+			Hooks:   []inject.LookupHook{{Name: "obs_bpf_jiffies64", Kind: inject.HookCall, Call: "bpf_jiffies64", Sites: pcs(4)}},
+			Skipped: []inject.LookupSite{{Call: "bpf_jifies64", Reason: `Calls name "bpf_jifies64" is neither a helper nor a kernel function of this load`}},
+		}, `hook "obs_bpf_jiffies64" (call, site pc 4); skipped call "bpf_jifies64" (Calls name "bpf_jifies64" is neither a helper nor a kernel function of this load)`},
 		{"dispatch-static", inject.LookupResultRaw{Hooks: []inject.LookupHook{
 			{Name: "d", Kind: inject.HookLookup, MapName: "sessions", Static: true, Dispatch: true, Sites: pcs(13)},
 			{Name: "d", Kind: inject.HookEntry, Static: true, Dispatch: true},

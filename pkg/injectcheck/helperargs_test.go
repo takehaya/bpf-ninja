@@ -19,19 +19,23 @@ func TestHelperReadsMatchValidator(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// lastHelper is the largest helper id of Linux 7.0.13, the tree the
+	// table is generated from.
+	const lastHelper = 211
 	args := map[int64]int{}
-	for _, m := range regexp.MustCompile(`(?m)^\s*(\d+):\s*(\d),`).FindAllStringSubmatch(string(src), -1) {
+	rows := regexp.MustCompile(`(?m)^\s*\d+:`).FindAllIndex(src, -1)
+	for _, m := range regexp.MustCompile(`(?m)^\s*(\d+):\s*([0-5]),\s*// \w+$`).FindAllStringSubmatch(string(src), -1) {
 		id, _ := strconv.ParseInt(m[1], 10, 64)
 		n, _ := strconv.Atoi(m[2])
+		if _, dup := args[id]; dup {
+			t.Fatalf("helperArgs has two rows for id %d", id)
+		}
 		args[id] = n
 	}
-	for id := int64(0); ; id++ {
-		if asm.BuiltinFunc(id).String() == "BuiltinFunc("+strconv.FormatInt(id, 10)+")" {
-			if id != 212 {
-				t.Fatalf("cilium/ebpf names helper ids 0 to %d, want 0 to 211", id-1)
-			}
-			break
-		}
+	if len(args) != len(rows) {
+		t.Fatalf("parsed %d of the %d rows of helperArgs", len(args), len(rows))
+	}
+	for id := int64(0); id <= lastHelper; id++ {
 		n, ok := args[id]
 		if !ok {
 			n = 5
@@ -47,7 +51,7 @@ func TestHelperReadsMatchValidator(t *testing.T) {
 			t.Errorf("%v (%d): helperReads %#x, validator reads r1-r%d (%#x)", asm.BuiltinFunc(id), id, got, n, want)
 		}
 	}
-	if len(args) != 211 {
-		t.Errorf("helperArgs has %d rows, want 211", len(args))
+	if len(args) != lastHelper {
+		t.Errorf("helperArgs has %d rows, want %d", len(args), lastHelper)
 	}
 }

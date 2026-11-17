@@ -21,20 +21,24 @@ import (
 )
 
 // hooksJSONVersion changes only when a field changes meaning or goes away.
-const hooksJSONVersion = 2
+const hooksJSONVersion = 3
 
 type hooksFileJSON struct {
 	Version  int                `json:"version"`
 	Programs []injectedProgJSON `json:"programs"`
-	// Refused lists the loads a rule's sites refused; they loaded without hooks.
+	// Refused lists the matched loads that ended without hooks: the original
+	// program loaded in their place or, with --fail-closed, they were refused.
 	Refused []refusedJSON `json:"refused,omitempty"`
 }
 
-// refusedJSON is one load a rule's sites refused, and why (syscallhook.Refusal).
+// refusedJSON is one matched load that ended without hooks, why, what ended
+// it and how it ended (syscallhook.Refusal).
 type refusedJSON struct {
 	Program string `json:"program"`
 	Func    string `json:"func"`
 	Reason  string `json:"reason"`
+	Cause   string `json:"cause"`
+	Outcome string `json:"outcome"`
 }
 
 // injectedProgJSON is one successful injected load. ProgID is zero when the
@@ -56,7 +60,10 @@ type injectedProgJSON struct {
 	Skipped  []hookSiteJSON       `json:"skipped"`
 	// SkippedMaps lists the maps names of a hook_prefix rule that match no
 	// site: they have no pc, so they are not in Skipped.
-	SkippedMaps    []skippedMapJSON    `json:"skipped_maps,omitempty"`
+	SkippedMaps []skippedMapJSON `json:"skipped_maps,omitempty"`
+	// SkippedCalls lists the calls names of a rule that are neither a helper
+	// nor a kernel function of the load: they have no pc either.
+	SkippedCalls   []skippedCallJSON   `json:"skipped_calls,omitempty"`
 	OutsidePremise string              `json:"outside_premise,omitempty"`
 	Stack          *inject.StackReport `json:"stack,omitempty"`
 	// DeadCheckError names hook comparisons that failed. Those hooks and any
@@ -73,7 +80,8 @@ type injectedProgJSON struct {
 // parameter (absent without one; ArgType absent for plain bytes), Ret is
 // "scalar" or "pointer", and RetSize is the byte width of a kernel function's
 // integer result narrower than 8 bytes, whose upper bytes in ret are not part
-// of the result. ArgReason says why the hook of a callee that has an arg
+// of the result; RetSigned marks it signed. RetType names the kernel struct or union a pointer ret
+// points to, absent when it is untyped. ArgReason says why the hook of a callee that has an arg
 // parameter elsewhere (a call-table row) takes none in this program.
 type hookJSON struct {
 	Name           string         `json:"name"`
@@ -86,12 +94,15 @@ type hookJSON struct {
 	ArgSize        uint32         `json:"arg_size,omitempty"`
 	Ret            string         `json:"ret,omitempty"`
 	RetSize        uint32         `json:"ret_size,omitempty"`
+	RetSigned      bool           `json:"ret_signed,omitempty"`
+	RetType        string         `json:"ret_type,omitempty"`
 	ArgReason      string         `json:"arg_reason,omitempty"`
 	Sites          []hookSiteJSON `json:"sites"`
 	Untrusted      bool           `json:"untrusted"`
 	Copied         bool           `json:"copied"`
 	Static         bool           `json:"static"`
 	ReadOnly       bool           `json:"read_only"`
+	SiteParam      bool           `json:"site_param,omitempty"`
 	DeadInThisLoad bool           `json:"dead_in_this_load,omitempty"`
 	DeadCause      string         `json:"dead_cause,omitempty"`
 }
@@ -99,6 +110,11 @@ type hookJSON struct {
 // skippedMapJSON is a maps name that matches no site, and why.
 type skippedMapJSON struct {
 	Map    string `json:"map"`
+	Reason string `json:"reason"`
+}
+
+type skippedCallJSON struct {
+	Name   string `json:"name"`
 	Reason string `json:"reason"`
 }
 
@@ -223,6 +239,19 @@ func hookKind(hook inject.LookupHook) string {
 	return string(hook.Kind)
 }
 
+// siteParam says whether hook takes a u32 site parameter, which capture
+// --site filters on: a call or tail-call hook, and a typed hook of auto. A
+// generic or dispatch hook passes the site in info instead.
+func siteParam(hook inject.LookupHook) bool {
+	switch {
+	case hook.Dispatch, hook.Generic, hook.Kind == inject.HookEntry:
+		return false
+	case hook.Kind == inject.HookCall, hook.Kind == inject.HookTailCall:
+		return true
+	}
+	return hook.SiteArg
+}
+
 func injectionJSON(inj syscallhook.Injection) injectedProgJSON {
 	out := injectedProgJSON{HookForm: inj.HookForm, Program: inj.Program, Func: inj.Func, Type: inj.Type.String(), ProgID: inj.ProgID,
 		Build: inj.Build, Tag: inj.Tag, CtxType: inject.ContextType(inj.Type), Hooks: []hookJSON{}, Skipped: []hookSiteJSON{}}
@@ -275,13 +304,14 @@ func injectionJSON(inj syscallhook.Injection) injectedProgJSON {
 			}
 			continue
 		}
-		h := hookJSON{Name: hook.Name, Kind: hookKind(hook), When: when, Sites: sites, Untrusted: hook.Untrusted, Copied: hook.Copied, Static: hook.Static, ReadOnly: hook.ReadOnly}
+		h := hookJSON{Name: hook.Name, Kind: hookKind(hook), When: when, Sites: sites, Untrusted: hook.Untrusted, Copied: hook.Copied, Static: hook.Static, ReadOnly: hook.ReadOnly,
+			SiteParam: siteParam(hook)}
 		if !hook.Dispatch {
 			h.Map = hook.MapName
 		}
 		if hook.Kind == inject.HookCall {
-			h.Call, h.ArgReg, h.ArgType, h.ArgSize, h.Ret, h.RetSize = hook.Call, hook.ArgReg, hook.ArgType, hook.ArgSize, "scalar", hook.RetSize
-			h.ArgReason = hook.ArgReason
+			h.Call, h.ArgReg, h.ArgType, h.ArgSize, h.Ret, h.RetSize, h.RetSigned = hook.Call, hook.ArgReg, hook.ArgType, hook.ArgSize, "scalar", hook.RetSize, hook.RetSigned
+			h.ArgReason, h.RetType = hook.ArgReason, hook.RetType
 			if hook.RetPtr {
 				h.Ret = "pointer"
 			}
@@ -308,6 +338,10 @@ func injectionJSON(inj syscallhook.Injection) injectedProgJSON {
 	for _, site := range inj.Skipped {
 		if site.Op == "" && site.SitePC == 0 && site.MapName != "" { // see syscallhook's unmatchedMapsName
 			out.SkippedMaps = append(out.SkippedMaps, skippedMapJSON{Map: site.MapName, Reason: site.Reason})
+			continue
+		}
+		if inject.UnknownCallsName(site) {
+			out.SkippedCalls = append(out.SkippedCalls, skippedCallJSON{Name: site.Call, Reason: site.Reason})
 			continue
 		}
 		kind := site.Op
@@ -351,9 +385,9 @@ func (w *hooksWriter) add(inj syscallhook.Injection) error {
 	return w.write()
 }
 
-// refuse records a load a rule's sites refused.
+// refuse records a matched load that ended without hooks.
 func (w *hooksWriter) refuse(r syscallhook.Refusal) error {
-	w.file.Refused = append(w.file.Refused, refusedJSON{Program: r.Program, Func: r.Func, Reason: r.Reason})
+	w.file.Refused = append(w.file.Refused, refusedJSON{Program: r.Program, Func: r.Func, Reason: r.Reason, Cause: r.Cause, Outcome: r.Outcome})
 	return w.write()
 }
 

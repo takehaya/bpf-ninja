@@ -2,6 +2,7 @@ package inject
 
 import (
 	"bytes"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -51,10 +52,11 @@ func TestKfuncRow(t *testing.T) {
 		name    string
 		ptr     bool
 		size    uint32
+		signed  bool
 		reason  string
 		noFound bool
 	}{
-		{name: "k_int", size: 4},
+		{name: "k_int", size: 4, signed: true},
 		{name: "k_u64"},
 		{name: "k_bool", size: 1},
 		{name: "k_enum", size: 4},
@@ -71,7 +73,7 @@ func TestKfuncRow(t *testing.T) {
 			t.Errorf("%s: row %+v reason %q, want neither", tc.name, row, reason)
 		case tc.reason != "" && (row != nil || reason != tc.reason):
 			t.Errorf("%s: row %+v reason %q, want %q", tc.name, row, reason, tc.reason)
-		case tc.reason == "" && !tc.noFound && (row == nil || row.Name != tc.name || row.Helper != 0 || row.ArgReg != 0 || row.RetPtr != tc.ptr || row.RetSize != tc.size):
+		case tc.reason == "" && !tc.noFound && (row == nil || row.Name != tc.name || row.Helper != 0 || row.ArgReg != 0 || row.RetPtr != tc.ptr || row.RetSize != tc.size || row.RetSigned != tc.signed):
 			t.Errorf("%s: row %+v reason %q, want RetPtr %v RetSize %d", tc.name, row, reason, tc.ptr, tc.size)
 		}
 	}
@@ -80,10 +82,10 @@ func TestKfuncRow(t *testing.T) {
 	}
 }
 
-// A Calls name that is neither a helper nor a kernel function is refused
-// where kernel BTF is at hand (the transform), and accepted by a
-// configuration check without it; a kernel function found only in a module
-// BTF the program passes is accepted.
+// A Calls name that is neither a helper nor a kernel function the load
+// passes is no refusal, with kernel BTF (the transform) or without it (a
+// configuration check): it has no site in the program. A name the kernel BTF
+// has but cannot hook is refused.
 func TestKfuncNameCheck(t *testing.T) {
 	kernel := kfuncKernelSpec(t)
 	module := specOf(t, &btf.Func{Name: "m_int", Type: &btf.FuncProto{Return: &btf.Int{Name: "int", Size: 4}}, Linkage: btf.GlobalFunc})
@@ -93,8 +95,8 @@ func TestKfuncNameCheck(t *testing.T) {
 		modules map[int16]*btf.Spec
 		want    string
 	}{
-		{[]string{"k_missing"}, kernel, nil, `Calls name "k_missing" is not supported: it is neither a helper nor a kernel function of the running kernel or of a module BTF the program passes`},
-		{[]string{"m_int"}, kernel, nil, `Calls name "m_int" is not supported`},
+		{[]string{"k_missing"}, kernel, nil, ""},
+		{[]string{"m_int"}, kernel, nil, ""},
 		{[]string{"m_int"}, kernel, map[int16]*btf.Spec{1: module}, ""},
 		{[]string{"k_missing", "k_void"}, nil, nil, ""},
 		{[]string{"k_void"}, kernel, nil, `Calls name "k_void" cannot be hooked: returns nothing`},
@@ -148,17 +150,23 @@ func TestCallKfuncResultOnly(t *testing.T) {
 		h := byCall[name]
 		fn, params := callHookFn(t, insns, h.Name)
 		if h.RetPtr || h.Untrusted || h.RetSize != size || !slices.Equal(params, []string{"ctx", "site", "ret"}) ||
-			!slices.Contains(fn.Tags, hookabi.SizeTag("ret", size)) || hookabi.SizeTags(fn.Tags)["ret"] != size {
+			!slices.Contains(fn.Tags, hookabi.SizeTag("ret", size)) || hookabi.SizeTags(fn.Tags)["ret"] != size ||
+			slices.Contains(fn.Tags, hookabi.RetSignedTag) != (name == "k_int") {
 			t.Errorf("%s: hook %+v params %v tags %v", name, h, params, fn.Tags)
 		}
 	}
 	if h := byCall["k_voidp"]; !h.RetPtr || !h.Untrusted || h.RetSize != 0 {
 		t.Errorf("k_voidp: hook %+v", h)
 	}
-	// Without the module BTF the module kfunc cannot be named, so no call site is hooked.
+	// Without the module BTF the module kfunc cannot be named: its site is
+	// skipped with that reason, its name is listed as one this load does not
+	// have, and the rule keeps its other hooks.
 	req.Modules = nil
-	if _, err := transformLookup(kfuncCallsFixture(t, kernel, module), req); err == nil || !strings.Contains(err.Error(), "m_int") {
-		t.Errorf("without Modules: %v", err)
+	plan, err = transformLookup(kfuncCallsFixture(t, kernel, module), req)
+	if err != nil || len(plan.hooks) != len(req.Calls)-1 || len(plan.skipped) != 2 ||
+		plan.skipped[0].Reason != "call: a kernel-function call that cannot be named" ||
+		!UnknownCallsName(plan.skipped[1]) || plan.skipped[1].Call != "m_int" {
+		t.Errorf("without Modules: err %v hooks %+v skipped %+v", err, plan.hooks, plan.skipped)
 	}
 }
 
@@ -218,6 +226,30 @@ func TestDiscoverKfuncCallees(t *testing.T) {
 	}
 }
 
+// Without kernel BTF two different kernel functions are listed apart, each
+// under its stand-in name and with labels of its own.
+func TestDiscoverUnnamedKfuncs(t *testing.T) {
+	insns := asm.Instructions{
+		btf.WithFuncMetadata(asm.Mov.Reg(asm.R6, asm.R1).WithSymbol("p").WithSource(asm.Comment("entry")), xdpFunc("p")),
+		kfuncCall(7), asm.Mov.Imm(asm.R0, 0), kfuncCall(9), asm.Mov.Imm(asm.R0, 0), kfuncCall(7),
+		asm.Mov.Imm(asm.R0, 2), asm.Return(),
+	}
+	d, err := DiscoverCallSitesRaw(rawOf(t, insns), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(d.Callees) != 2 || d.Callees[0].Name != "kfunc_0_7" || d.Callees[1].Name != "kfunc_0_9" || len(d.Callees[0].Sites) != 2 ||
+		d.Callees[0].Reason != "a kernel-function call that cannot be named" {
+		t.Fatalf("callees %+v", d.Callees)
+	}
+	if len(d.Sites) != 3 || d.Sites[0].Call != "kfunc_0_7" || d.Sites[1].Call != "kfunc_0_9" || d.Sites[0].Reason == "" {
+		t.Fatalf("sites %+v", d.Sites)
+	}
+	if got := []string{d.Labels[1], d.Labels[3], d.Labels[5]}; !slices.Equal(got, []string{"kfunc_0_7@p+1", "kfunc_0_9@p+3", "kfunc_0_7@p+5"}) {
+		t.Fatalf("labels %v", got)
+	}
+}
+
 // A load whose original program calls a denied helper or kernel function
 // anywhere names those callees once each; one without names none.
 func TestPremiseCalls(t *testing.T) {
@@ -225,12 +257,14 @@ func TestPremiseCalls(t *testing.T) {
 	insns := asm.Instructions{
 		asm.FnKtimeGetNs.Call(), asm.FnSpinLock.Call(), testKfunc(t, kernel, "bpf_iter_x_new"),
 		asm.FnSpinLock.Call(), testKfunc(t, kernel, "k_int"), asm.FnLoop.Call(), asm.FnMapLookupElem.Call(),
+		testKfunc(t, kernel, "k_cb"), asm.FnPerfEventRead.Call(), asm.FnPerfEventReadValue.Call(),
 	}
-	if got := PremiseCalls(insns, kernel, nil); !slices.Equal(got, []string{"bpf_spin_lock", "bpf_iter_x_new", "bpf_loop"}) {
+	if got := PremiseCalls(insns, kernel, nil); !slices.Equal(got, []string{"bpf_spin_lock", "bpf_iter_x_new", "bpf_loop", "k_cb",
+		"bpf_perf_event_read", "bpf_perf_event_read_value"}) {
 		t.Errorf("premise calls %v", got)
 	}
 	// Without kernel BTF the kernel-function calls cannot be named, and say so once.
-	if got := PremiseCalls(insns, nil, nil); !slices.Equal(got, []string{"bpf_spin_lock", UnnamedKfunc, "bpf_loop"}) {
+	if got := PremiseCalls(insns, nil, nil); !slices.Equal(got, []string{"bpf_spin_lock", UnnamedKfunc, "bpf_loop", "bpf_perf_event_read", "bpf_perf_event_read_value"}) {
 		t.Errorf("without kernel BTF: %v", got)
 	}
 	if got := PremiseCalls(insns[:1], kernel, nil); got != nil {
@@ -250,5 +284,115 @@ func TestPremiseCallsAfterTransform(t *testing.T) {
 	want := []string{"bpf_spin_lock", "bpf_spin_unlock"}
 	if before, after := PremiseCalls(raw.Instructions, nil, nil), PremiseCalls(got.Instructions, nil, nil); !slices.Equal(before, want) || !slices.Equal(after, want) {
 		t.Errorf("premise calls before %v, after %v", before, after)
+	}
+}
+
+// retTypeOf: a helper's generated column, a kernel function's struct
+// pointee behind modifiers and typedefs, and "" for void *, a scalar
+// pointee, an anonymous struct or no prototype.
+func TestRetTypeOf(t *testing.T) {
+	proto := func(ret btf.Type) *btf.FuncProto { return &btf.FuncProto{Return: ret} }
+	foo := &btf.Struct{Name: "nf_conn", Size: 4}
+	for _, tc := range []struct {
+		helper asm.BuiltinFunc
+		proto  *btf.FuncProto
+		want   string
+	}{
+		{asm.FnSkLookupTcp, nil, "sock"},
+		{asm.FnSkcLookupTcp, nil, "sock_common"},
+		{asm.FnTcpSock, nil, "tcp_sock"},
+		{asm.FnGetCurrentTaskBtf, nil, "task_struct"},
+		{asm.FnMapLookupElem, nil, ""},
+		{asm.FnRingbufReserve, nil, ""},
+		{0, proto(&btf.Pointer{Target: foo}), "nf_conn"},
+		{0, proto(&btf.Pointer{Target: &btf.Const{Type: &btf.Typedef{Name: "conn_t", Type: foo}}}), "nf_conn"},
+		{0, proto(&btf.Pointer{Target: &btf.Union{Name: "u", Size: 4}}), "u"},
+		{0, proto(&btf.Pointer{Target: &btf.Void{}}), ""},
+		{0, proto(&btf.Pointer{Target: &btf.Int{Name: "int", Size: 4}}), ""},
+		{0, proto(&btf.Pointer{Target: &btf.Struct{Size: 4}}), ""},
+		{0, proto(&btf.Int{Name: "int", Size: 4}), ""},
+		{0, nil, ""},
+	} {
+		if got := retTypeOf(tc.helper, tc.proto); got != tc.want {
+			t.Errorf("%s %v: %q, want %q", tc.helper, tc.proto, got, tc.want)
+		}
+	}
+}
+
+// A pointer result with a known type gets the ret_type decl tag and RetType
+// in every form: result-only global and static, the with-arg forms of a row
+// (sk_lookup_tcp) and its size-conflict fallback. An untyped one gets
+// neither; the hook's parameters do not change.
+func TestCallRetTypeTag(t *testing.T) {
+	ctx := xdpFunc("p").Type.(*btf.FuncProto).Params[0].Type
+	sk := &callTable[slices.IndexFunc(callTable, func(r CallRow) bool { return r.Name == "bpf_sk_lookup_tcp" })]
+	tuple := orBytes(nil, 12)
+	for _, tc := range []struct {
+		name  string
+		group lookupGroup
+	}{
+		{"result-only", lookupGroup{name: "obs_x", call: &CallRow{Name: "bpf_x", Helper: 1, RetPtr: true}, retType: "nf_conn"}},
+		{"with arg", lookupGroup{name: "obs_sk", call: sk, argType: tuple, argSize: 12, retType: "sock"}},
+		{"fallback", lookupGroup{name: "obs_sk", call: &CallRow{Name: sk.Name, Helper: sk.Helper, RetPtr: true}, argReason: "two sizes", retType: "sock"}},
+		{"untyped", lookupGroup{name: "obs_r", call: &CallRow{Name: "bpf_ringbuf_reserve", Helper: asm.FnRingbufReserve, RetPtr: true}}},
+	} {
+		for _, static := range []bool{false, true} {
+			hook, plan := callHook(tc.group, ctx, LookupRequest{StaticUntrusted: static})
+			fn := btf.FuncMetadata(&hook[0])
+			bare, _ := callHookBody(tc.group, ctx, LookupRequest{StaticUntrusted: static})
+			params := fn.Type.(*btf.FuncProto).Params
+			ret := params[len(params)-1]
+			if _, ok := btf.UnderlyingType(ret.Type).(*btf.Pointer); !ok || ret.Name != "ret" {
+				t.Errorf("%s static %v: last parameter %+v", tc.name, static, ret)
+			}
+			if got := hookabi.RetType(fn.Tags); got != tc.group.retType || plan.RetType != tc.group.retType {
+				t.Errorf("%s static %v: tag %q plan %q, want %q", tc.name, static, got, plan.RetType, tc.group.retType)
+			}
+			if !reflect.DeepEqual(btf.FuncMetadata(&bare[0]).Type, fn.Type) || !sameInsns(bare, hook) {
+				t.Errorf("%s static %v: the tag changed the hook", tc.name, static)
+			}
+		}
+	}
+}
+
+// The transform types a kernel function's pointer result from its
+// prototype, and the listing names the type per callee.
+func TestCallKfuncRetType(t *testing.T) {
+	kernel := kfuncKernelSpec(t)
+	insns := asm.Instructions{asm.Mov.Imm(asm.R1, 0), testKfunc(t, kernel, "k_ptr")}
+	insns = append(insns, outStore(0, asm.R0)...)
+	insns = append(insns, asm.Mov.Imm(asm.R1, 0), testKfunc(t, kernel, "k_voidp"))
+	insns = append(insns, outStore(1, asm.R0)...)
+	spec := callFixtureSpec(ebpf.XDP, append(insns, asm.Mov.Imm(asm.R0, 2), asm.Return()))
+	req := callReq("k_ptr", "k_voidp")
+	req.Kernel = kernel
+	hooks := checkRewrite(t, spec, req)
+	out := spec.Programs["p"].Instructions
+	for _, h := range hooks {
+		fn, _ := callHookFn(t, out, h.Name)
+		want := map[string]string{"k_ptr": "foo", "k_voidp": ""}[h.Call]
+		if h.RetType != want || hookabi.RetType(fn.Tags) != want {
+			t.Errorf("%s: RetType %q tags %v, want %q", h.Call, h.RetType, fn.Tags, want)
+		}
+	}
+	listed := asm.Instructions{
+		btf.WithFuncMetadata(asm.Mov.Reg(asm.R6, asm.R1).WithSymbol("p").WithSource(asm.Comment("entry")), xdpFunc("p")),
+		testKfunc(t, kernel, "k_ptr"), asm.Mov.Imm(asm.R0, 0),
+		testKfunc(t, kernel, "k_voidp"), asm.Mov.Imm(asm.R0, 0),
+		asm.FnSkcLookupTcp.Call(),
+		asm.Mov.Imm(asm.R0, 2), asm.Return(),
+	}
+	raw := rawOf(t, listed)
+	raw.Kernel = kernel
+	d, err := DiscoverCallSitesRaw(raw, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]string{}
+	for _, c := range d.Callees {
+		got[c.Name] = c.RetType
+	}
+	if want := map[string]string{"k_ptr": "foo", "k_voidp": "", "bpf_skc_lookup_tcp": "sock_common"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("listed types %v, want %v", got, want)
 	}
 }

@@ -58,12 +58,16 @@ class AuditTests(unittest.TestCase):
     def test_conntrack_module_skip_is_specific(self):
         reason = "skipping: kfunc bpf_xdp_ct_lookup is only in nf_conntrack module BTF"
         tests = ("TestBpfCallHookCtXDP", "TestBpfCallHookCtTC", "TestBpfCallHookCtUntrusted",
-                 "TestBpfCallHookCtNoRelease", "TestBpfCallFixtureCtXDP", "TestBpfCallFixtureCtTC")
+                 "TestBpfCallHookCtNoRelease", "TestBpfCallFixtureCtXDP", "TestBpfCallFixtureCtTC",
+                 "TestBpfCallFallbackCtXDP", "TestBpfCallFallbackCtTC", "TestBpfCallFallbackCtUntrusted",
+                 "TestBpfCallFallbackNoRelease")
         for test in tests:
             self.assertTrue(module.allowed_skip(module.INJECT, test, reason, None))
             self.assertFalse(module.allowed_skip(module.INJECT, test, "kfunc bpf_xdp_ct_lookup: not found", None))
         self.assertFalse(module.allowed_skip(module.INJECT, "TestOther", reason, None))
         self.assertFalse(module.allowed_skip(module.PROGRAM, tests[0], reason, None))
+        self.assertTrue(module.allowed_skip(module.COMMAND, "TestBpfRetMember", reason, None))
+        self.assertFalse(module.allowed_skip(module.COMMAND, "TestOther", reason, None))
 
     def test_reentry_skip_requires_subtest_kernel_and_reason(self):
         reason = "neither tcx nor clsact available (operation not supported)"
@@ -115,6 +119,15 @@ class AuditTests(unittest.TestCase):
         self.assertFalse(module.allowed_skip(module.PROGRAM, allowed[0], reason, "6.1"))
         self.assertTrue(module.allowed_skip(module.INJECT, "TestBpfDispatchCGroupSKB", reason, "6.15"))
         self.assertFalse(module.allowed_skip(module.INJECT, "TestBpfDispatchCGroupSKB", reason, "6.18"))
+
+    def test_fallback_untrusted_skip_is_specific(self):
+        reason = "skipping: kernel lacks arg:untrusted: program p: load program"
+        for test in ("TestBpfCallFallbackCtUntrusted", "TestBpfCallFallbackSkUntrusted",
+                     "TestBpfCallFallbackSkUntrusted/bpf_sk_lookup_tcp"):
+            for kernel in ("6.1", "6.6", "6.12", "6.15"):
+                self.assertTrue(module.allowed_skip(module.INJECT, test, reason, kernel))
+            self.assertFalse(module.allowed_skip(module.INJECT, test, reason, "6.18"))
+            self.assertFalse(module.allowed_skip(module.INJECT, test, "unexpected verifier failure", "6.12"))
 
     def test_lookup_wrapper_frame_rounding_skip_is_specific(self):
         reason = "skipping: kernel uses 32-byte frame rounding; the wrapper needs the 16-byte rule"
@@ -177,9 +190,11 @@ class AuditTests(unittest.TestCase):
 
 class RunnerTests(unittest.TestCase):
     def test_syscallhook_binary_requires_all_tests_and_no_skips(self):
+        binary = [*module.SYSCALLHOOK_TESTS, *module.SYSCALLHOOK_UNPRIVILEGED, "TestConfig", "TestBPFStopFilterCommands"]
         stops = "".join(f"--- PASS: {name} (0.01s)\n" for name in module.SYSCALLHOOK_TESTS if name.startswith("TestBPFStops"))
         every_passed = ("--- PASS: TestBpfAutoStatic (0.01s)\n--- PASS: TestIntegrationMapTypes (0.01s)\n--- PASS: TestIntegrationLoader (0.01s)\n--- PASS: TestIntegrationIndirectJump (0.01s)\n--- PASS: TestIntegrationJumpLimit (0.01s)\n--- PASS: TestIntegrationInjectHold (0.01s)\n"
-                        "--- PASS: TestIntegrationRetry (0.01s)\n--- PASS: TestIntegrationRetryPreempt (0.01s)\n")
+                        "--- PASS: TestIntegrationRetry (0.01s)\n--- PASS: TestIntegrationRetryPreempt (0.01s)\n"
+                        "--- PASS: TestBpfFdArray (0.01s)\n--- PASS: TestBpfLoaderLogSmall (0.01s)\n--- PASS: TestBpfTailCallReachabilityProbe (0.01s)\n")
         passed = every_passed + stops
         for output, code, expected in (
             (passed, 0, 0),
@@ -200,7 +215,8 @@ class RunnerTests(unittest.TestCase):
              "=== RUN   TestIntegrationIndirectJump\n--- PASS: TestIntegrationIndirectJump (0.01s)\n"
              "=== RUN   TestIntegrationJumpLimit\n--- PASS: TestIntegrationJumpLimit (0.01s)\n"
              "=== RUN   TestIntegrationInjectHold\n--- PASS: TestIntegrationInjectHold (0.01s)\n"
-             "--- PASS: TestIntegrationRetry (0.01s)\n--- PASS: TestIntegrationRetryPreempt (0.01s)\n" + stops, 0, 0),
+             "--- PASS: TestIntegrationRetry (0.01s)\n--- PASS: TestIntegrationRetryPreempt (0.01s)\n"
+             "--- PASS: TestBpfFdArray (0.01s)\n--- PASS: TestBpfLoaderLogSmall (0.01s)\n--- PASS: TestBpfTailCallReachabilityProbe (0.01s)\n" + stops, 0, 0),
             # Kernels before 6.10 lack bpf_preempt_disable.
             (passed.replace("--- PASS: TestIntegrationRetryPreempt (0.01s)\n",
                             "=== RUN   TestIntegrationRetryPreempt\n"
@@ -213,6 +229,7 @@ class RunnerTests(unittest.TestCase):
         ):
             with self.subTest(output=output, code=code), \
                     mock.patch.object(module.subprocess, "Popen") as popen, \
+                    mock.patch.object(module, "binary_tests", return_value=binary), \
                     mock.patch("builtins.open", mock.mock_open()), \
                     mock.patch("builtins.print"):
                 streams = iter(((output, code), (every_passed, 0)))
@@ -231,13 +248,30 @@ class RunnerTests(unittest.TestCase):
                 self.assertTrue({"TestIntegrationJumpLimit", "TestBpfAutoStatic", "TestBPFStopsDefault",
                                  "TestBPFStopsFallback"} <= set(module.SYSCALLHOOK_TESTS))
 
+    def test_syscallhook_run_list_matches_the_binary(self):
+        # Every kernel-named test of the binary is run, and every listed test exists.
+        binary = [*module.SYSCALLHOOK_TESTS, *module.SYSCALLHOOK_UNPRIVILEGED, "TestConfig", "TestBPFStopFilterCommands"]
+        self.assertEqual(module.syscallhook_list_audit(binary), [])
+        self.assertEqual(module.syscallhook_list_audit(binary + ["TestBpfNewKernelTest"]),
+                         ["TestBpfNewKernelTest: kernel test of the binary is not in SYSCALLHOOK_TESTS"])
+        self.assertEqual(module.syscallhook_list_audit([name for name in binary if name != "TestBpfFdArray"]),
+                         ["TestBpfFdArray: listed in SYSCALLHOOK_TESTS but not in the binary"])
+        self.assertIn("TestBpfFdArray", module.SYSCALLHOOK_TESTS)
+        with mock.patch.object(module.subprocess, "Popen") as popen, \
+                mock.patch.object(module, "binary_tests", return_value=binary + ["TestIntegrationNew"]), \
+                mock.patch("builtins.print"):
+            self.assertEqual(module.syscallhook_suite("./syscallhook.test", "unused.log"), 1)
+            popen.assert_not_called()
+
     def test_syscallhook_every_syscall_pass_is_a_gate(self):
         every = ("--- PASS: TestBpfAutoStatic (0.01s)\n--- PASS: TestIntegrationMapTypes (0.01s)\n--- PASS: TestIntegrationLoader (0.01s)\n--- PASS: TestIntegrationIndirectJump (0.01s)\n--- PASS: TestIntegrationJumpLimit (0.01s)\n--- PASS: TestIntegrationInjectHold (0.01s)\n"
-                 "--- PASS: TestIntegrationRetry (0.01s)\n--- PASS: TestIntegrationRetryPreempt (0.01s)\n")
+                 "--- PASS: TestIntegrationRetry (0.01s)\n--- PASS: TestIntegrationRetryPreempt (0.01s)\n"
+                 "--- PASS: TestBpfFdArray (0.01s)\n--- PASS: TestBpfLoaderLogSmall (0.01s)\n--- PASS: TestBpfTailCallReachabilityProbe (0.01s)\n")
         default = every + "".join(
             f"--- PASS: {name} (0.01s)\n" for name in module.SYSCALLHOOK_TESTS if name.startswith("TestBPFStops")
         )
         with mock.patch.object(module.subprocess, "Popen") as popen, \
+                mock.patch.object(module, "binary_tests", return_value=list(module.SYSCALLHOOK_TESTS)), \
                 mock.patch("builtins.open", mock.mock_open()), mock.patch("builtins.print"):
             streams = iter((default, every.replace("--- PASS: TestIntegrationJumpLimit (0.01s)\n", "")))
             popen.return_value.__enter__.side_effect = lambda: mock.Mock(

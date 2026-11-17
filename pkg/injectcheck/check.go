@@ -14,6 +14,7 @@ import (
 	"strings"
 
 	"github.com/cilium/ebpf/asm"
+	"github.com/cilium/ebpf/btf"
 	"github.com/takehaya/bpf-ninja/internal/ctxflow"
 )
 
@@ -40,7 +41,13 @@ const (
 // ArgSite argument carries. A wrapped site needs Args. Elsewhere nil Args
 // leaves the arguments to the provenance rules alone. A target whose Args is
 // one of the callABIs is a call target: a hook right after a helper outside
-// the map helpers, or after a kernel-function call, on condition any.
+// the map helpers, or after a kernel-function call, on condition any. A call
+// target after a helper that runs or registers a callback is refused. For a
+// kernel function the no-callback, no-lock and returns-once premises are
+// enforced by the transformer's deny-list, not here: the checker sees only a
+// BTF id, never a kernel function's name. An accepted hook is safe because
+// checkHook admits only load-only hook bodies and the postlude restores R0
+// and keeps R6-R9 and the stack, not because the kernel refuses the load.
 type SiteTarget struct {
 	Site   int        `json:"site"`
 	When   TargetWhen `json:"when"`
@@ -276,6 +283,12 @@ func Check(in, out asm.Instructions, c Certificate, premises Premises) (Counts, 
 			return counts, inputError(InputRegister, "original instruction %d: invalid register dst=%d src=%d", i, a.Dst, a.Src)
 		}
 	}
+	// No later step indexes register state with a field past r10.
+	for j, a := range out {
+		if a.Dst > asm.RFP || a.Src > asm.RFP {
+			return fail(RegisterInvalid, "transformed instruction %d: invalid register dst=%d src=%d", j, a.Dst, a.Src)
+		}
+	}
 	if err := unassociated(in); err != nil {
 		return counts, fmt.Errorf("original: %w", err)
 	}
@@ -338,12 +351,13 @@ func Check(in, out asm.Instructions, c Certificate, premises Premises) (Counts, 
 	if err != nil {
 		return counts, err
 	}
+	funcStarts := originalFunctionStarts(in, premises.Frames)
 	for key, b := range targets {
 		if !b.call {
 			continue // the entry target's site is -1
 		}
 		ins := in[key.site]
-		if callee := ins.IsBuiltinCall() && !supportedHelper(ins) || ins.IsKfuncCall(); !callee {
+		if !callTargetCentre(ins) {
 			return counts, inputError(InputTarget, "call target at %d is not a call of a helper outside the map helpers or of a kernel function", key.site)
 		}
 		if ins.IsBuiltinCall() && helperID(ins) == asm.FnUnspec {
@@ -351,6 +365,12 @@ func Check(in, out asm.Instructions, c Certificate, premises Premises) (Counts, 
 		}
 		if id := helperID(ins); callbackHelper(id) {
 			return counts, inputError(InputTarget, "call target at %d is a call of %v, which runs or registers a callback", key.site, id)
+		}
+		if id := helperID(ins); b.argReg != 0 && id != asm.FnUnspec && helperReads(int64(id))&(1<<b.argReg) == 0 {
+			return counts, inputError(InputTarget, "call target at %d passes r%d, which %v does not read", key.site, b.argReg, id)
+		}
+		if reason := callTargetPosition(in, funcStarts, key.site); reason != "" {
+			return counts, inputError(InputTarget, "call target at %d: %s", key.site, reason)
 		}
 	}
 	for j, owner := range owners {
@@ -802,8 +822,59 @@ func supportedHelper(ins asm.Instruction) bool {
 	}
 	return false
 }
+
+// callTargetCentre reports a call that a call target may follow: a helper
+// outside the map helpers and the tail call, or a kernel function.
+func callTargetCentre(ins asm.Instruction) bool {
+	return ins.IsBuiltinCall() && !supportedHelper(ins) || ins.IsKfuncCall()
+}
+
+// originalFunctionStarts are the original indices that start a function:
+// 0, the start of every trusted frame floor, the target of every function
+// reference, and every instruction carrying BTF function info.
+func originalFunctionStarts(in asm.Instructions, frames []FrameFloor) map[int]bool {
+	starts := map[int]bool{0: true}
+	for _, frame := range frames {
+		starts[frame.Start] = true
+	}
+	pcs, index := slots(in)
+	for i := range in {
+		if in[i].IsFunctionReference() {
+			if t, err := target(in, pcs, index, i); err == nil {
+				starts[t] = true
+			}
+		}
+		if btf.FuncMetadata(&in[i]) != nil {
+			starts[i] = true
+		}
+	}
+	return starts
+}
+
+// callTargetPosition gives the reason a call target cannot be at original
+// index site by its position, the transformer's reasons for not planning
+// one there: an original call right before or after it, whose run of
+// inserted code the validators could not tell from its own, or the start of
+// its function, where code inserted before the call cannot be told from the
+// function's prologue.
+func callTargetPosition(in asm.Instructions, starts map[int]bool, site int) string {
+	isCall := func(j int) bool {
+		return j >= 0 && j < len(in) && in[j].OpCode.Class().IsJump() && in[j].OpCode.JumpOp() == asm.Call
+	}
+	switch {
+	case isCall(site-1) || isCall(site+1):
+		return "the instruction before or after the call is a call"
+	case starts[site]:
+		return "the call is the first instruction of its function"
+	}
+	return ""
+}
+
 // callbackHelper reports the helpers that take a callback (ARG_PTR_TO_FUNC
 // in Linux 6.12 and 7.0): a hook after one is outside the proof's premise S0.
+// It covers helpers only. Kernel functions that take a callback, take a lock
+// or do not return once are refused by the transformer's deny-list, since
+// the checker cannot see kernel-function names.
 func callbackHelper(id asm.BuiltinFunc) bool {
 	switch id {
 	case asm.FnForEachMapElem, asm.FnTimerSetCallback, asm.FnFindVma, asm.FnLoop, asm.FnUserRingbufDrain:
@@ -1091,6 +1162,7 @@ type targetBindings map[targetKey]*targetBinding
 
 func newTargetBindings(targets []SiteTarget, sites int, hooks map[int]bool) (targetBindings, error) {
 	b := make(targetBindings, len(targets))
+	whenBySite := map[int][]string{} // conditions in input order
 	ctxBySite := map[int]CtxSource{}
 	ctxSet := map[int]bool{}
 	for _, target := range targets {
@@ -1143,12 +1215,11 @@ func newTargetBindings(targets []SiteTarget, sites int, hooks map[int]bool) (tar
 			return nil, inputError(InputTarget, "duplicate site target site=%d when=%s", target.Site, target.When)
 		}
 		b[key] = &targetBinding{hook: target.Hook, ctx: target.Ctx, args: target.Args, sitePC: target.SitePC, argReg: target.ArgReg, call: call}
+		whenBySite[target.Site] = append(whenBySite[target.Site], string(target.When))
 	}
-	for key, target := range b {
-		for other := range b {
-			if target.call && other.site == key.site && other != key {
-				return nil, inputError(InputTarget, "call site %d has a second target on condition %s", key.site, other.when)
-			}
+	for _, target := range targets {
+		if when := whenBySite[target.Site]; b[targetKey{target.Site, target.When}].call && len(when) > 1 {
+			return nil, inputError(InputTarget, "call site %d has a second target: conditions %s", target.Site, strings.Join(when, ", "))
 		}
 	}
 	return b, nil

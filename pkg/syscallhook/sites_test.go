@@ -22,6 +22,10 @@ func TestConfigSites(t *testing.T) {
 		`[{"program":"p","calls":["bpf_ktime_get_ns"],"hook_prefix":"h","sites":{"only":[3]}}]`:                                                                                   "rule 0: sites.build is required",
 		`[{"program":"p","calls":["bpf_ktime_get_ns"],"hook_prefix":"h","sites":{` + build + `,"only":[-1]}}]`:                                                                    "a sites entry is a label string or an instruction number, not -1",
 		`[{"program":"p","calls":["bpf_ktime_get_ns"],"hook_prefix":"h","sites":{` + build + `,"only":[{"pc":3}]}}]`:                                                              "a sites entry is a label string or an instruction number",
+		`[{"program":"p","calls":["bpf_ktime_get_ns"],"hook_prefix":"h","sites":{` + build + `,"only":[]}}]`:                                                                      "rule 0: sites.only is empty",
+		`[{"program":"p","calls":["bpf_ktime_get_ns"],"hook_prefix":"h","sites":{` + build + `,"except":[]}}]`:                                                                    "rule 0: sites.except is empty",
+		`[{"program":"p","calls":["bpf_ktime_get_ns"],"hook_prefix":"h","sites":{` + build + `,"only":[3,""]}}]`:                                                                  "rule 0: sites.only has an empty label",
+		`[{"program":"p","calls":["bpf_ktime_get_ns"],"hook_prefix":"h","sites":{` + build + `,"except":[""]}}]`:                                                                  "rule 0: sites.except has an empty label",
 		`[{"program":"p","calls":["bpf_ktime_get_ns"],"hook_prefix":"h","sites":{` + build + `,"only":[3],"unknown":1}}]`:                                                         "unknown field",
 	} {
 		_, err := ParseConfig(strings.NewReader(input))
