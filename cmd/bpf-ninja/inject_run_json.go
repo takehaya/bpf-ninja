@@ -26,17 +26,28 @@ const hooksJSONVersion = 2
 type hooksFileJSON struct {
 	Version  int                `json:"version"`
 	Programs []injectedProgJSON `json:"programs"`
+	// Refused lists the loads a rule's sites refused; they loaded without hooks.
+	Refused []refusedJSON `json:"refused,omitempty"`
+}
+
+// refusedJSON is one load a rule's sites refused, and why (syscallhook.Refusal).
+type refusedJSON struct {
+	Program string `json:"program"`
+	Func    string `json:"func"`
+	Reason  string `json:"reason"`
 }
 
 // injectedProgJSON is one successful injected load. ProgID is zero when the
 // tracee could not query it. OutsidePremise, "calls NAME, ...", marks a load
 // whose original program calls a denied callee: the theorem is not claimed
-// for it.
+// for it. Build is the listing fingerprint of the original program, as the
+// lookups file gives it; every site then carries its label.
 type injectedProgJSON struct {
 	Program  string               `json:"program"`
 	Func     string               `json:"func"`
 	Type     string               `json:"type"`
 	ProgID   uint32               `json:"prog_id"`
+	Build    string               `json:"build,omitempty"`
 	CtxType  string               `json:"ctx_type"`
 	HookForm syscallhook.HookForm `json:"hook_form"`
 	Hooks    []hookJSON           `json:"hooks"`
@@ -96,7 +107,7 @@ type hookSiteJSON struct {
 	Func      string `json:"func,omitempty"`
 	File      string `json:"file,omitempty"`
 	Line      uint32 `json:"line,omitempty"`
-	Label     string `json:"label,omitempty"` // lookups file only: the site's label (inject.SiteLabels)
+	Label     string `json:"label,omitempty"` // the site's label (inject.SiteLabels)
 	CtxSource string `json:"ctx_source,omitempty"`
 	Frame     string `json:"frame,omitempty"`
 	Floor     *int16 `json:"floor,omitempty"`
@@ -210,7 +221,7 @@ func hookKind(hook inject.LookupHook) string {
 
 func injectionJSON(inj syscallhook.Injection) injectedProgJSON {
 	out := injectedProgJSON{HookForm: inj.HookForm, Program: inj.Program, Func: inj.Func, Type: inj.Type.String(), ProgID: inj.ProgID,
-		CtxType: inject.ContextType(inj.Type), Hooks: []hookJSON{}, Skipped: []hookSiteJSON{}}
+		Build: inj.Build, CtxType: inject.ContextType(inj.Type), Hooks: []hookJSON{}, Skipped: []hookSiteJSON{}}
 	if len(inj.OutsidePremise) != 0 {
 		out.OutsidePremise = "calls " + strings.Join(inj.OutsidePremise, ", ")
 	}
@@ -241,6 +252,7 @@ func injectionJSON(inj syscallhook.Injection) injectedProgJSON {
 		}
 		for _, site := range hook.Sites {
 			s := siteJSON(hook.Kind, site)
+			s.Label = inj.Labels[site.SitePC]
 			setFrame(&s, site.FuncName)
 			if hook.Dispatch && hook.Kind.MapCall() {
 				s.When = hook.When
@@ -298,6 +310,7 @@ func injectionJSON(inj syscallhook.Injection) injectedProgJSON {
 			kind = inject.HookLookup
 		}
 		s := siteJSON(kind, site)
+		s.Label = inj.Labels[site.SitePC]
 		setFrame(&s, site.FuncName)
 		out.Skipped = append(out.Skipped, s)
 	}
@@ -330,6 +343,12 @@ func (w *hooksWriter) add(inj syscallhook.Injection) error {
 		w.lastDead = applyDeadHookAvailability(&out, availability, err)
 	}
 	w.file.Programs = append(w.file.Programs, out)
+	return w.write()
+}
+
+// refuse records a load a rule's sites refused.
+func (w *hooksWriter) refuse(r syscallhook.Refusal) error {
+	w.file.Refused = append(w.file.Refused, refusedJSON{Program: r.Program, Func: r.Func, Reason: r.Reason})
 	return w.write()
 }
 

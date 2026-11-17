@@ -97,6 +97,12 @@ func newInjectRunCommand() *cli.Command {
 						_, _ = fmt.Fprintf(os.Stderr, "inject-run: site pc %d (map %s) is dead in this load: %s\n", site.PC, site.Map, site.DeadCause)
 					}
 				}
+				opts.OnRefuse = func(refusal syscallhook.Refusal) {
+					if err := hooks.refuse(refusal); err != nil {
+						_, _ = fmt.Fprintf(os.Stderr, "inject-run: --hooks-json: %v\n", err)
+						hooksErr = cmp.Or(hooksErr, err)
+					}
+				}
 			}
 			// Captures that follow a hook subscribe to this run's loads. Each
 			// injected load is announced before the hooks file is written,

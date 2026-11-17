@@ -177,6 +177,15 @@ func TestHooksWriter(t *testing.T) {
 	if len(w.lastDead) != 0 {
 		t.Fatalf("unchecked dead notices: %+v", w.lastDead)
 	}
+	if strings.Contains(mustRead(t, path), `"refused"`) {
+		t.Fatal("refused written without a refusal")
+	}
+	if err := w.refuse(syscallhook.Refusal{Program: "c", Func: "c_main", Reason: "rule sites: pc 3 names no site of this program"}); err != nil {
+		t.Fatal(err)
+	}
+	if f := read(); len(f.Programs) != 2 || len(f.Refused) != 1 || f.Refused[0] != (refusedJSON{Program: "c", Func: "c_main", Reason: "rule sites: pc 3 names no site of this program"}) {
+		t.Fatalf("after a refusal: %+v", f)
+	}
 	if entries, _ := os.ReadDir(filepath.Dir(path)); len(entries) != 1 {
 		t.Fatalf("temporary files left: %v", entries)
 	}
@@ -219,5 +228,27 @@ func TestInjectionJSONSkippedMaps(t *testing.T) {
 		Skipped: []inject.LookupSite{{MapName: "b", Reason: "no lookup"}}}))
 	if err != nil || !strings.Contains(string(out), `"skipped":[],"skipped_maps":[{"map":"b","reason":"no lookup"}]`) {
 		t.Errorf("%s %v", out, err)
+	}
+}
+
+func mustRead(t *testing.T, path string) string {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(data)
+}
+
+// Every hooked and skipped site carries its label, and the program its
+// listing fingerprint.
+func TestInjectionJSONLabels(t *testing.T) {
+	out := injectionJSON(syscallhook.Injection{Program: "p", Type: ebpf.XDP, Build: "sha256:ab",
+		Labels: map[uint32]string{3: "bpf_ktime_get_ns@p:9#1", 5: "bpf_ktime_get_ns@p:9#2"},
+		Hooks: []inject.LookupHook{{Name: "h_bpf_ktime_get_ns", Kind: inject.HookCall, Call: "bpf_ktime_get_ns",
+			Sites: []inject.LookupSite{{Op: inject.HookCall, Call: "bpf_ktime_get_ns", SitePC: 3}}}},
+		Skipped: []inject.LookupSite{{Op: inject.HookCall, Call: "bpf_ktime_get_ns", SitePC: 5, Reason: "not selected by the rule's sites"}}})
+	if out.Build != "sha256:ab" || out.Hooks[0].Sites[0].Label != "bpf_ktime_get_ns@p:9#1" || out.Skipped[0].Label != "bpf_ktime_get_ns@p:9#2" {
+		t.Errorf("%+v", out)
 	}
 }
