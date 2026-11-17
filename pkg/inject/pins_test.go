@@ -40,31 +40,32 @@ func onlyHook(t *testing.T, spec *ebpf.CollectionSpec, req LookupRequest) Lookup
 func TestCallSizeConstantLimits(t *testing.T) {
 	jumpOver := asm.JEq.Imm(asm.R8, 0, "")
 	jumpOver.Offset = 1 // over "r3 = 64"
+	const notConst, outside = "is not a constant set in its basic block", "outside 1 to 512"
 	for _, tc := range []struct {
-		name string
-		edit func(i int, insns asm.Instructions) asm.Instructions
+		name, reason string
+		edit         func(i int, insns asm.Instructions) asm.Instructions
 	}{
-		{"overwritten by a register", func(i int, insns asm.Instructions) asm.Instructions {
+		{"overwritten by a register", notConst, func(i int, insns asm.Instructions) asm.Instructions {
 			return slices.Insert(insns, i+1, asm.Mov.Reg(asm.R3, asm.R8))
 		}},
-		{"changed by ALU", func(i int, insns asm.Instructions) asm.Instructions {
+		{"changed by ALU", notConst, func(i int, insns asm.Instructions) asm.Instructions {
 			return slices.Insert(insns, i+1, asm.Add.Reg(asm.R3, asm.R8))
 		}},
-		{"from another block", func(i int, insns asm.Instructions) asm.Instructions {
+		{"from another block", notConst, func(i int, insns asm.Instructions) asm.Instructions {
 			return slices.Insert(insns, i, asm.Mov.Reg(asm.R3, asm.R8), jumpOver)
 		}},
-		{"atomic fetch", func(i int, insns asm.Instructions) asm.Instructions {
+		{"atomic fetch", notConst, func(i int, insns asm.Instructions) asm.Instructions {
 			return slices.Insert(insns, i+1, asm.FetchAdd.Mem(asm.RFP, asm.R3, asm.DWord, -8))
 		}},
-		{"zero", func(i int, insns asm.Instructions) asm.Instructions { insns[i] = asm.Mov.Imm(asm.R3, 0); return insns }},
-		{"513", func(i int, insns asm.Instructions) asm.Instructions {
+		{"zero", "is 0, " + outside, func(i int, insns asm.Instructions) asm.Instructions { insns[i] = asm.Mov.Imm(asm.R3, 0); return insns }},
+		{"513", "is 513, " + outside, func(i int, insns asm.Instructions) asm.Instructions {
 			insns[i] = asm.Mov.Imm(asm.R3, 513)
 			return insns
 		}},
-		{"negative", func(i int, insns asm.Instructions) asm.Instructions { insns[i] = asm.Mov.Imm(asm.R3, -1); return insns }},
+		{"negative", "is -1, " + outside, func(i int, insns asm.Instructions) asm.Instructions { insns[i] = asm.Mov.Imm(asm.R3, -1); return insns }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if h := onlyHook(t, fibEdited(tc.edit), fibReq(t)); h.ArgReg != 0 || h.ArgReason == "" {
+			if h := onlyHook(t, fibEdited(tc.edit), fibReq(t)); h.ArgReg != 0 || !strings.Contains(h.ArgReason, tc.reason) {
 				t.Fatalf("hook %+v", h)
 			}
 		})

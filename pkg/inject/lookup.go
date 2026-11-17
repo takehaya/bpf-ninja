@@ -758,8 +758,10 @@ func discoverSites(insns asm.Instructions, typ ebpf.ProgramType, resolve lookupM
 				switch {
 				case callReason(insns, it.Index) != "":
 					site.Reason = callReason(insns, it.Index)
-				case row.ArgReg != 0 && (!isConst[row.SizeReg] || consts[row.SizeReg] <= 0 || consts[row.SizeReg] > 512):
+				case row.ArgReg != 0 && !isConst[row.SizeReg]:
 					argReason = fmt.Sprintf("the argument size in %s at pc %d is not a constant set in its basic block", regName(row.SizeReg), pc)
+				case row.ArgReg != 0 && (consts[row.SizeReg] <= 0 || consts[row.SizeReg] > 512):
+					argReason = fmt.Sprintf("the argument size in %s at pc %d is %d, outside 1 to 512", regName(row.SizeReg), pc, consts[row.SizeReg])
 				case row.ArgReg != 0:
 					argOwn, argSize = ownStack[row.ArgReg], uint32(consts[row.SizeReg])
 				}
