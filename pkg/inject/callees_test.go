@@ -120,7 +120,19 @@ func TestSiteLabels(t *testing.T) {
 		{Op: HookTailCall, FuncName: "g", SitePC: 20},
 	}
 	want := map[uint32]string{3: "bpf_fib_lookup@f:88#1", 7: "bpf_fib_lookup@f:88#2", 9: "bpf_fib_lookup@f:88#3",
-		12: "sessions.update@g:5", 15: "any@g+5", 20: "tail_call@g+10"}
+		12: "sessions/update@g:5", 15: "(any)@g+5", 20: "tail_call@g+10"}
+	if got := SiteLabels(funcs, sites); !maps.Equal(got, want) {
+		t.Errorf("%v, want %v", got, want)
+	}
+	// A lookup in a map named m.update and an update of m, or a lookup in a
+	// map named any and in a map known only at run time, never share a label.
+	sites = []LookupSite{
+		{Op: HookLookup, MapName: "m.update", FuncName: "f", Line: 1, SitePC: 1},
+		{Op: HookUpdate, MapName: "m", FuncName: "f", Line: 1, SitePC: 2},
+		{Op: HookLookup, MapName: "any", FuncName: "f", Line: 2, SitePC: 3},
+		{Op: HookLookup, FuncName: "f", Line: 2, SitePC: 4},
+	}
+	want = map[uint32]string{1: "m.update@f:1", 2: "m/update@f:1", 3: "any@f:2", 4: "(any)@f:2"}
 	if got := SiteLabels(funcs, sites); !maps.Equal(got, want) {
 		t.Errorf("%v, want %v", got, want)
 	}

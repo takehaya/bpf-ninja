@@ -268,25 +268,26 @@ func denyReason(name string) string {
 
 // SiteLabels names every site by PC: NAME@FUNC:LINE, or NAME@FUNC+SLOT
 // without line info, where SLOT is the site's slot offset from its function's
-// first instruction. NAME is the map of a lookup (any when known only at run
-// time), MAP.OP for another map call, the callee of a call and tail_call for
-// a tail call. When several sites share a label, every one of them gets #1,
-// #2, ... in PC order, so the label without a suffix names them all. Labels
-// are computed over the full discovery, so a listing and a later selection
-// agree.
+// first instruction. NAME is the map of a lookup ((any) when known only at
+// run time), MAP/OP for another map call, the callee of a call and tail_call
+// for a tail call. A kernel map name holds only letters, digits, _ and ., so
+// neither the / nor (any) can be part of one. When several sites share a
+// label, every one of them gets #1, #2, ... in PC order, so the label
+// without a suffix names them all. Labels are computed over the full
+// discovery, so a listing and a later selection agree.
 func SiteLabels(funcs []FuncRange, sites []LookupSite) map[uint32]string {
 	sites = slices.SortedFunc(slices.Values(sites), func(a, b LookupSite) int { return cmp.Compare(a.SitePC, b.SitePC) })
 	labels := make(map[uint32]string, len(sites))
 	count := map[string]int{}
 	for _, site := range sites {
-		name := cmp.Or(site.MapName, "any")
+		name := cmp.Or(site.MapName, "(any)")
 		switch {
 		case site.Op == HookCall:
 			name = site.Call
 		case site.Op == HookTailCall:
 			name = "tail_call"
 		case site.Op != HookLookup:
-			name += "." + string(site.Op)
+			name += "/" + string(site.Op)
 		}
 		label := fmt.Sprintf("%s@%s:%d", name, site.FuncName, site.Line)
 		if site.Line == 0 {
@@ -318,6 +319,8 @@ func SiteLabels(funcs []FuncRange, sites []LookupSite) map[uint32]string {
 // and BPF_PSEUDO_MAP_VALUE) zeroed and the value offset kept; the name and
 // type of each map reference; the label, PC, kind, name, function, file and
 // line of every site; and the BTF function names with their slot ranges.
+// Each section starts with its name and record count, so no section's bytes
+// can stand for another's.
 // Loader-side relocations that differ per load (kfunc BTF ids, ksym
 // addresses, CO-RE) change it.
 func ListingFingerprint(p RawProgram, funcs []FuncRange, labels map[uint32]string, sites []LookupSite) (string, error) {
@@ -333,15 +336,19 @@ func ListingFingerprint(p RawProgram, funcs []FuncRange, labels map[uint32]strin
 		fmt.Fprintf(&refs, "map %q %d\n", m.Name, m.Type)
 		ins.Constant &^= 0xffffffff
 	}
+	_, _ = fmt.Fprintf(h, "insns %d\n", len(insns))
 	if err := insns.Marshal(h, rawByteOrder()); err != nil {
 		return "", err
 	}
+	_, _ = fmt.Fprintf(h, "\nmaps %d\n", bytes.Count(refs.Bytes(), []byte("\n")))
 	h.Write(refs.Bytes())
 	sites = slices.SortedFunc(slices.Values(sites), func(a, b LookupSite) int { return cmp.Compare(a.SitePC, b.SitePC) })
+	_, _ = fmt.Fprintf(h, "sites %d\n", len(sites))
 	for _, site := range sites {
 		_, _ = fmt.Fprintf(h, "site %q %d %s %q %q %q %d\n", labels[site.SitePC], site.SitePC, site.Op,
 			cmp.Or(site.Call, site.MapName), site.FuncName, site.File, site.Line)
 	}
+	_, _ = fmt.Fprintf(h, "funcs %d\n", len(funcs))
 	for _, f := range funcs {
 		_, _ = fmt.Fprintf(h, "func %q %d %d\n", f.Name, f.Start, f.End)
 	}
