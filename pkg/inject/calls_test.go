@@ -1,7 +1,9 @@
 package inject
 
 import (
+	"errors"
 	"fmt"
+	"math"
 	"slices"
 	"strings"
 	"testing"
@@ -739,5 +741,52 @@ func TestDrop(t *testing.T) {
 	req.Drop = map[uint32]string{full.hooks[0].Sites[0].SitePC: reason}
 	if _, err := transformLookup(lookupFixture(), req); err == nil || !strings.Contains(err.Error(), reason) {
 		t.Fatalf("explicit site dropped: err = %v", err)
+	}
+}
+
+// branchFixture branches from slot 1 over a bpf_ktime_get_ns site at slot 3
+// to the verdict pad instructions later.
+func branchFixture(pad int) *ebpf.CollectionSpec {
+	insns := asm.Instructions{asm.Mov.Imm(asm.R0, 0), asm.JNE.Imm(asm.R0, 0, ""), asm.Mov.Imm(asm.R6, 1), asm.FnKtimeGetNs.Call()}
+	insns = append(insns, outStore(0, asm.R0)...)
+	for range pad {
+		insns = append(insns, asm.Mov.Imm(asm.R7, 0))
+	}
+	insns = append(insns, asm.Mov.Imm(asm.R0, 2), asm.Return())
+	insns[1].Offset = int16(7 + pad - 2) // slots: 0, 1 jne, 2, 3 call, 4-5 ldimm64, 6 store, then the pad
+	return callFixtureSpec(ebpf.XDP, insns)
+}
+
+// A branch that the call site's code pushes out of int16 range drops the
+// call sites, and the rule's other hooks stay; with nothing else to hook the
+// rule is refused as having no call site.
+func TestCallBranchRangeDropsCalls(t *testing.T) {
+	const pad = math.MaxInt16 - 5 // the branch offset is exactly MaxInt16
+	if off := branchFixture(pad).Programs["p"].Instructions[1].Offset; off != math.MaxInt16 {
+		t.Fatalf("offset %d", off)
+	}
+	req := callReq("bpf_ktime_get_ns")
+	req.Entry = true
+	plan, err := transformLookup(branchFixture(pad), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.hooks) != 1 || plan.hooks[0].Kind != HookEntry || len(plan.skipped) != 1 || plan.skipped[0].Call != "bpf_ktime_get_ns" ||
+		plan.skipped[0].Reason != "branch at 4 overflows int16 after insertion" {
+		t.Fatalf("hooks %+v skipped %+v", plan.hooks, plan.skipped)
+	}
+	req.Entry = false
+	if _, err := transformLookup(branchFixture(pad), req); !errors.Is(err, ErrRefused) || !strings.Contains(err.Error(), "no call site is instrumented (1 skipped)") {
+		t.Fatalf("err %v", err)
+	}
+	// A shorter branch keeps the call hook.
+	req.Entry = true
+	if plan, err := transformLookup(branchFixture(10), req); err != nil || len(plan.hooks) != 2 || len(plan.skipped) != 0 {
+		t.Fatalf("err %v hooks %+v skipped %+v", err, plan.hooks, plan.skipped)
+	}
+	// The refusal itself keeps its text and stays a refusal.
+	var ins asm.Instruction
+	if err := relocateOffset(&ins, 0, math.MaxInt16+2, false); !errors.Is(err, ErrRefused) || err.Error() != "inject: refused: branch at 0 overflows int16 after insertion" {
+		t.Fatalf("err %v", err)
 	}
 }

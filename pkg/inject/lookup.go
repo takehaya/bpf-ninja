@@ -1,6 +1,7 @@
 package inject
 
 import (
+	"errors"
 	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
@@ -1832,6 +1833,18 @@ func transformLookupProgramGuarded(insns asm.Instructions, typ ebpf.ProgramType,
 	}
 	emit := lookupEmitter{insns: insns, req: req, ctxType: proto.Params[0].Type, tails: tails, entryName: entryName, tailName: tailName}
 	spliced, hooks, err := emit.splice(groups)
+	// A branch the inserted code pushes out of range drops the call sites
+	// first, as a broken stack limit does; fewer insertions never lengthen a
+	// branch, so later splices cannot break it again.
+	if overflow := (branchRangeError{}); errors.As(err, &overflow) {
+		var dropped bool
+		if groups, plan.skipped, dropped = dropCalls(groups, plan.skipped, overflow.reason()); dropped {
+			if err := noCalls(); err != nil {
+				return nil, plan, err
+			}
+			spliced, hooks, err = emit.splice(groups)
+		}
+	}
 	if err != nil {
 		return nil, plan, err
 	}

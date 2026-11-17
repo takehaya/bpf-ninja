@@ -672,12 +672,22 @@ func relocateOffset(ins *asm.Instruction, pc, target int, function bool) error {
 		ins.Constant = delta
 	} else {
 		if delta < math.MinInt16 || delta > math.MaxInt16 {
-			return refuse("branch at %d overflows int16 after insertion", pc)
+			return branchRangeError{pc}
 		}
 		ins.Offset = int16(delta)
 	}
 	return nil
 }
+
+// branchRangeError is the refusal of a branch at pc whose offset no longer
+// fits int16 after insertion.
+type branchRangeError struct{ pc int }
+
+func (e branchRangeError) reason() string {
+	return fmt.Sprintf("branch at %d overflows int16 after insertion", e.pc)
+}
+func (e branchRangeError) Error() string { return fmt.Sprintf("%v: %s", ErrRefused, e.reason()) }
+func (e branchRangeError) Unwrap() error { return ErrRefused }
 
 // checkShape enforces the audited load shape and site-register redefinition.
 func checkShape(load, next asm.Instruction, shape LoadShape) error {
