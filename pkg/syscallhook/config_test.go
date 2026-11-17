@@ -52,13 +52,15 @@ func TestRuleRequestForwardsOptions(t *testing.T) {
 		fillNonZero(t, v.Field(i))
 	}
 	full.Ops = []string{"lookup:miss", "update:any", "delete", "push", "pop:any", "peek"} // ops parseOps accepts
+	full.HookPrefix = full.Hook + "_prefix"
 	want := full.request()
 	for i := range v.NumField() {
 		name := v.Type().Field(i).Name
 		r := full
 		f := reflect.ValueOf(&r).Elem().Field(i)
 		f.Set(reflect.Zero(f.Type()))
-		if forwarded := !reflect.DeepEqual(r.request(), want); forwarded != (name != "Program" && name != "MapBTF" && name != "StackLowestOffset" && name != "LegacyFrameRounding") {
+		// HookPrefix wins over an equal or (refused) different Hook; TestConfigHookPrefix covers Hook alone.
+		if forwarded := !reflect.DeepEqual(r.request(), want); forwarded != (name != "Program" && name != "MapBTF" && name != "StackLowestOffset" && name != "LegacyFrameRounding" && name != "Hook") {
 			t.Errorf("%s: forwarded=%v", name, forwarded)
 		}
 	}
