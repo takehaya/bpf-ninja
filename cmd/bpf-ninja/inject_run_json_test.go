@@ -226,6 +226,18 @@ func TestInjectionJSONOutsidePremise(t *testing.T) {
 	}
 }
 
+// not_reviewed names the kernel functions without a review record, next to
+// outside_premise, and is absent for a load without them.
+func TestInjectionJSONNotReviewed(t *testing.T) {
+	marked, err := json.Marshal(injectionJSON(syscallhook.Injection{Program: "p", Type: ebpf.XDP, NotReviewed: []string{"bpf_xdp_metadata_rx_hash", inject.UnnamedKfunc}}))
+	if err != nil || !strings.Contains(string(marked), `"not_reviewed":"calls bpf_xdp_metadata_rx_hash, a kernel function that could not be named"`) {
+		t.Fatalf("hooks file entry %s (%v)", marked, err)
+	}
+	if plain, _ := json.Marshal(injectionJSON(syscallhook.Injection{Program: "p", Type: ebpf.XDP})); strings.Contains(string(plain), "not_reviewed") {
+		t.Fatalf("hooks file entry without kernel functions: %s", plain)
+	}
+}
+
 // A maps name that matches no site has no pc: it is listed in skipped_maps,
 // not as a site at instruction 0.
 func TestInjectionJSONSkippedMaps(t *testing.T) {

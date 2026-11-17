@@ -1,5 +1,12 @@
 package inject
 
+import (
+	"slices"
+
+	"github.com/cilium/ebpf/asm"
+	"github.com/cilium/ebpf/btf"
+)
+
 // The reasons helperPremise gives, one per clause of its rule.
 const (
 	premiseCodeReason    = "reads native code addresses or branch records, which inserted code may change"
@@ -44,4 +51,43 @@ func helperPremise(name string) string {
 		return premiseLockReason
 	}
 	return ""
+}
+
+// reviewedKfuncs are the kernel functions with a review record: the
+// function was read, its definition is noted here (Linux 7.0.13, and
+// 6.12.111 in parentheses), and it neither returns code addresses, stacks,
+// branch records or counters to the program, nor runs or registers program
+// code, nor holds a lock across instructions. The conntrack lookups read
+// the time for timeouts, which the claim excludes by statement. A record
+// names one implementation: the XDP receive-metadata functions have none,
+// because the verifier substitutes the driver's function for them.
+var reviewedKfuncs = map[string]string{
+	"bpf_xdp_ct_lookup": "net/netfilter/nf_conntrack_bpf.c:325 (:327)",
+	"bpf_skb_ct_lookup": "net/netfilter/nf_conntrack_bpf.c:391 (:395)",
+	"bpf_ct_release":    "net/netfilter/nf_conntrack_bpf.c:440 (:445)",
+}
+
+// NotReviewed returns the names of the kernel functions insns calls that
+// have no review record (reviewedKfuncs), in call order without repeats; a
+// call that kernel and modules cannot name is UnnamedKfunc, never reviewed.
+// The claim is stated only for a load that calls none. Hooks do not depend
+// on it.
+func NotReviewed(insns asm.Instructions, kernel *btf.Spec, modules map[int16]*btf.Spec) []string {
+	var names []string
+	for i := range insns {
+		ins := &insns[i]
+		if !ins.IsKfuncCall() {
+			continue
+		}
+		_, name, named := callee(ins, kernel, modules)
+		if !named {
+			name = UnnamedKfunc
+		} else if _, ok := reviewedKfuncs[name]; ok {
+			continue
+		}
+		if !slices.Contains(names, name) {
+			names = append(names, name)
+		}
+	}
+	return names
 }

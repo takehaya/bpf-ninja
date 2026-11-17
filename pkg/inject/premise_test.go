@@ -3,9 +3,13 @@ package inject
 import (
 	"bufio"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/cilium/ebpf/asm"
+	"github.com/cilium/ebpf/btf"
 )
 
 // Every helper id 1 to 211 has a row in testdata/helper_premise.tsv, with
@@ -56,5 +60,30 @@ func TestHelperPremiseTable(t *testing.T) {
 	}
 	if len(seen) != 211 {
 		t.Errorf("%d rows, want 211", len(seen))
+	}
+}
+
+// A load is reported as not reviewed for every kernel function without a
+// review record, the receive-metadata functions among them, and for a call
+// that cannot be named; the conntrack lookups and their release are
+// reviewed, and helpers never count.
+func TestNotReviewed(t *testing.T) {
+	fn := func(name string) *btf.Func {
+		return &btf.Func{Name: name, Type: &btf.FuncProto{Return: &btf.Int{Name: "int", Size: 4, Encoding: btf.Signed}}, Linkage: btf.GlobalFunc}
+	}
+	kernel := specOf(t, fn("bpf_xdp_ct_lookup"), fn("bpf_skb_ct_lookup"), fn("bpf_ct_release"), fn("bpf_xdp_metadata_rx_hash"), fn("k_int"))
+	insns := asm.Instructions{
+		testKfunc(t, kernel, "bpf_xdp_ct_lookup"), asm.FnKtimeGetNs.Call(), testKfunc(t, kernel, "bpf_xdp_metadata_rx_hash"),
+		testKfunc(t, kernel, "bpf_ct_release"), testKfunc(t, kernel, "k_int"), testKfunc(t, kernel, "bpf_xdp_metadata_rx_hash"),
+		testKfunc(t, kernel, "bpf_skb_ct_lookup"), asm.FnLoop.Call(),
+	}
+	if got := NotReviewed(insns, kernel, nil); !slices.Equal(got, []string{"bpf_xdp_metadata_rx_hash", "k_int"}) {
+		t.Errorf("not reviewed %v", got)
+	}
+	if got := NotReviewed(insns, nil, nil); !slices.Equal(got, []string{UnnamedKfunc}) {
+		t.Errorf("without kernel BTF: %v", got)
+	}
+	if got := NotReviewed(insns[:2], kernel, nil); got != nil {
+		t.Errorf("reviewed calls only: %v", got)
 	}
 }

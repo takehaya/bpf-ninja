@@ -118,6 +118,10 @@ type Injection struct {
 	// OutsidePremise names the denied callees the original program calls
 	// (inject.PremiseCalls): the theorem is not claimed for this load.
 	OutsidePremise []string
+	// NotReviewed names the kernel functions the original program calls
+	// that have no review record (inject.NotReviewed): the theorem is
+	// claimed only for loads without them.
+	NotReviewed []string
 }
 
 // Refusal is a matched load that ended without hooks; Reason is the message.
@@ -1240,9 +1244,12 @@ func (s *supervisor) entry(pid int, t *thread, regs unix.PtraceRegs) error {
 		if len(premise) != 0 {
 			s.log("program %q: outside the theorem's premise: calls %s", name, strings.Join(premise, ", "))
 		}
+		if len(rewrite.unread) != 0 {
+			s.log("program %q: kernel functions without a review record: calls %s", name, strings.Join(rewrite.unread, ", "))
+		}
 		if s.options.OnInject != nil {
 			inj := Injection{HookForm: form, Program: name, Func: entry, Type: ebpf.ProgramType(u32(attr, 0)), Hooks: result.Hooks, Skipped: result.Skipped, Stack: stack,
-				Build: rewrite.build, Labels: rewrite.labels, OutsidePremise: premise}
+				Build: rewrite.build, Labels: rewrite.labels, OutsidePremise: premise, NotReviewed: rewrite.unread}
 			// bpf_prog_info starts with type, id and the 8-byte tag.
 			if info, err := r.info(uint32(ret), 16); err != nil {
 				s.log("program %q: cannot query program ID: %v", name, err)
@@ -1599,6 +1606,7 @@ type transformed struct {
 	build     string            // the listing fingerprint of the original
 	labels    map[uint32]string // the listing's site labels by pc
 	premise   []string          // inject.PremiseCalls of the original, named with the load's kernel and module BTF
+	unread    []string          // inject.NotReviewed of the original, named the same way
 }
 
 // sitesRefusal is a load a rule's sites refused (Sites.drop).
@@ -1718,7 +1726,8 @@ func (s *supervisor) rewriteLoad(raw, listed inject.RawProgram, entry string, ru
 		return nil, "", err
 	}
 	t = &transformed{result: result, request: request, original: raw.Instructions, missFirst: missFirst, retry: drop != nil,
-		build: list.Fingerprint, labels: list.Labels, premise: inject.PremiseCalls(raw.Instructions, listed.Kernel, listed.Modules)}
+		build: list.Fingerprint, labels: list.Labels, premise: inject.PremiseCalls(raw.Instructions, listed.Kernel, listed.Modules),
+		unread: inject.NotReviewed(raw.Instructions, listed.Kernel, listed.Modules)}
 	t.cert, t.premises, err = loadCheckInputs(raw.Instructions, result, request.Stack, stack)
 	if errors.Is(err, inject.ErrCheckerNotApplicable) && drop == nil {
 		s.log("program %q: %v; load not validated", rule.Program, err)

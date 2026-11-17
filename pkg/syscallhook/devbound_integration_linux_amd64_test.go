@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"os"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -375,6 +376,11 @@ func TestIntegrationDevBound(t *testing.T) {
 		}
 		if !strings.Contains(logs, "checker accepted") || strings.Contains(logs, "stack depth unavailable") || !strings.Contains(out, "devbound timestamp=") {
 			t.Fatal("the device-bound program was not hooked as checked")
+		}
+		// The receive-metadata functions have no review record: the driver's function runs.
+		if nr := injected[0].NotReviewed; len(nr) != 2 || !slices.Contains(nr, "bpf_xdp_metadata_rx_timestamp") || !slices.Contains(nr, "bpf_xdp_metadata_rx_hash") ||
+			!strings.Contains(logs, "kernel functions without a review record: calls bpf_xdp_metadata_rx_") {
+			t.Fatalf("not reviewed %v", nr)
 		}
 		if observers["bpf_xdp_metadata_rx_timestamp"] == nil || observers["bpf_xdp_metadata_rx_hash"] == nil {
 			t.Fatal("observers missing")

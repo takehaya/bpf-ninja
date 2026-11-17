@@ -63,9 +63,12 @@ type injectedProgJSON struct {
 	SkippedMaps []skippedMapJSON `json:"skipped_maps,omitempty"`
 	// SkippedCalls lists the calls names of a rule that are neither a helper
 	// nor a kernel function of the load: they have no pc either.
-	SkippedCalls   []skippedCallJSON   `json:"skipped_calls,omitempty"`
-	OutsidePremise string              `json:"outside_premise,omitempty"`
-	Stack          *inject.StackReport `json:"stack,omitempty"`
+	SkippedCalls   []skippedCallJSON `json:"skipped_calls,omitempty"`
+	OutsidePremise string            `json:"outside_premise,omitempty"`
+	// NotReviewed, "calls NAME, ...", names the kernel functions the
+	// original program calls that have no review record.
+	NotReviewed string              `json:"not_reviewed,omitempty"`
+	Stack       *inject.StackReport `json:"stack,omitempty"`
 	// DeadCheckError names hook comparisons that failed. Those hooks and any
 	// site they may report stay unmarked; independent known results remain.
 	DeadCheckError string `json:"dead_check_error,omitempty"`
@@ -257,6 +260,9 @@ func injectionJSON(inj syscallhook.Injection) injectedProgJSON {
 		Build: inj.Build, Tag: inj.Tag, CtxType: inject.ContextType(inj.Type), Hooks: []hookJSON{}, Skipped: []hookSiteJSON{}}
 	if len(inj.OutsidePremise) != 0 {
 		out.OutsidePremise = "calls " + strings.Join(inj.OutsidePremise, ", ")
+	}
+	if len(inj.NotReviewed) != 0 {
+		out.NotReviewed = "calls " + strings.Join(inj.NotReviewed, ", ")
 	}
 	floors := make(map[string]int16, len(inj.Stack.Functions))
 	for _, frame := range inj.Stack.Functions {
