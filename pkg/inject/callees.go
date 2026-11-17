@@ -245,12 +245,14 @@ func denyReason(name string) string {
 // without line info, where SLOT is the site's slot offset from its function's
 // first instruction. NAME is the map of a lookup (any when known only at run
 // time), MAP.OP for another map call, the callee of a call and tail_call for
-// a tail call. Sites sharing a label get #2, #3 in PC order. Labels are
-// computed over the full discovery, so a listing and a later selection agree.
+// a tail call. When several sites share a label, every one of them gets #1,
+// #2, ... in PC order, so the label without a suffix names them all. Labels
+// are computed over the full discovery, so a listing and a later selection
+// agree.
 func SiteLabels(funcs []FuncRange, sites []LookupSite) map[uint32]string {
 	sites = slices.SortedFunc(slices.Values(sites), func(a, b LookupSite) int { return cmp.Compare(a.SitePC, b.SitePC) })
 	labels := make(map[uint32]string, len(sites))
-	seen := map[string]int{}
+	count := map[string]int{}
 	for _, site := range sites {
 		name := cmp.Or(site.MapName, "any")
 		switch {
@@ -271,11 +273,16 @@ func SiteLabels(funcs []FuncRange, sites []LookupSite) map[uint32]string {
 			}
 			label = fmt.Sprintf("%s@%s+%d", name, site.FuncName, site.SitePC-start)
 		}
-		seen[label]++
-		if n := seen[label]; n > 1 {
-			label += fmt.Sprintf("#%d", n)
-		}
+		count[label]++
 		labels[site.SitePC] = label
+	}
+	seen := map[string]int{}
+	for _, site := range sites {
+		label := labels[site.SitePC]
+		if count[label] > 1 {
+			seen[label]++
+			labels[site.SitePC] = fmt.Sprintf("%s#%d", label, seen[label])
+		}
 	}
 	return labels
 }

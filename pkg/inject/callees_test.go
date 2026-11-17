@@ -119,7 +119,7 @@ func TestSiteLabels(t *testing.T) {
 		{Op: HookCall, Call: "bpf_fib_lookup", FuncName: "f", Line: 88, SitePC: 9},
 		{Op: HookTailCall, FuncName: "g", SitePC: 20},
 	}
-	want := map[uint32]string{3: "bpf_fib_lookup@f:88", 7: "bpf_fib_lookup@f:88#2", 9: "bpf_fib_lookup@f:88#3",
+	want := map[uint32]string{3: "bpf_fib_lookup@f:88#1", 7: "bpf_fib_lookup@f:88#2", 9: "bpf_fib_lookup@f:88#3",
 		12: "sessions.update@g:5", 15: "any@g+5", 20: "tail_call@g+10"}
 	if got := SiteLabels(funcs, sites); !maps.Equal(got, want) {
 		t.Errorf("%v, want %v", got, want)
