@@ -298,7 +298,9 @@ func TestStackErrorClass(t *testing.T) {
 	_, ambiguous := frameFloors([]int{8, 8}, []string{"p", "p"}, raw, inject.KernelInfo{Major: 7})
 	_, badDepth := frameFloors([]int{600}, []string{"p"}, raw, inject.KernelInfo{Major: 7})
 	_, absent := frameFloors([]int{8}, []string{"q"}, raw, inject.KernelInfo{Major: 7})
-	_, funcInfoErr := loadedFunctions(func(uint32) ([]byte, error) { return nil, unix.EBADF }, 3, nil)
+	_, funcInfoErr := loadedFunctions(func(uint32) ([]byte, error) {
+		return nil, traceeError(fmt.Errorf("tracee object info fd 3: %w", unix.EBADF))
+	}, 3, nil)
 	_, funcInfoCount := loadedFunctions(func(uint32) ([]byte, error) {
 		return nil, errors.New("tracee program fd 3 has invalid func_info count 0")
 	}, 3, nil)
@@ -319,7 +321,8 @@ func TestStackErrorClass(t *testing.T) {
 		{"trial-enomem", trialLoadError(unix.ENOMEM, ""), stepRefuse, "stack"},
 		// A failure on the tracee's side loads the original in every step.
 		{"func-info", funcInfoErr, stepOriginal, "stack"},
-		{"func-info-count", funcInfoCount, stepOriginal, "stack"},
+		// The kernel gives no func_info to a loader without CAP_BPF: no audit.
+		{"func-info-count", funcInfoCount, stepRefuse, "stack"},
 		{"trial-tracee", trialLoadError(traceeError(fmt.Errorf("tracee mmap: %w", unix.ENOMEM)), ""), stepOriginal, "stack"},
 		{"trial-verifier", trialLoadError(unix.EACCES, "R0 !read_ok"), stepOriginal, "verifier"},
 		// The kernel prints the statistics after a refused check as well.

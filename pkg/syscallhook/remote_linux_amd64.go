@@ -225,6 +225,10 @@ func (r *remote) info(fd uint32, size int) ([]byte, error) {
 	return info, traceeError(err)
 }
 
+// progFuncInfo returns the func_info records of the program behind the
+// tracee's descriptor fd. A failure to reach the tracee's memory or
+// descriptor is the tracee's (traceeError); a count of zero or one that
+// changed is the kernel's answer and is not.
 func (r *remote) progFuncInfo(fd uint32) ([]byte, error) {
 	const (
 		infoSize       = 152
@@ -261,12 +265,13 @@ func (r *remote) progFuncInfo(fd uint32) ([]byte, error) {
 	}
 	updated, err := readMemory(r.pid, queryAddr, infoSize)
 	if err != nil {
-		return nil, err
+		return nil, traceeError(err)
 	}
 	if got := u32(updated, funcCountOff); got != count {
 		return nil, fmt.Errorf("tracee program func_info count changed from %d to %d", count, got)
 	}
-	return readMemory(r.pid, recordsAddr, uint64(count)*8)
+	records, err := readMemory(r.pid, recordsAddr, uint64(count)*8)
+	return records, traceeError(err)
 }
 func (r *remote) finish(ret int64) error {
 	if r.broken != nil {

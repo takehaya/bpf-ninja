@@ -211,14 +211,16 @@ type supervisor struct {
 var errTrialVerifier = errors.New("trial load was rejected by the verifier")
 
 // errAuditUnavailable marks a stack audit the kernel cannot give: the program
-// is offloaded, or the trial load failed with no verdict on the program.
+// is offloaded, the trial load failed with no verdict on the program, or the
+// kernel did not return the loaded program's functions.
 var errAuditUnavailable = errors.New("stack audit unavailable")
 
 var errIndirectJump = errors.New("indirect jump")
 
 // errTracee marks a failure on the traced process's side, in whatever step:
 // its memory could not be allocated, read or written, or a query on one of
-// its descriptors failed. As for a trial that fails other than by the
+// its descriptors failed. A query the kernel answers with nothing usable is
+// not one (see loadedFunctions). As for a trial that fails other than by the
 // kernel's refusal in the retry, the original then loads under every rule,
 // and only FailClosed refuses it (see refuseOriginal).
 var errTracee = errors.New("tracee")
@@ -1431,11 +1433,17 @@ func runningKernelInfo() inject.KernelInfo {
 }
 
 // loadedFunctions names the functions of the loaded program fd from the
-// func_info query returns; a failed query is the tracee's (traceeError).
+// func_info query returns. A failure to reach the tracee's memory or
+// descriptor stays the tracee's (errTracee); any other failure is the
+// kernel's answer, as no func_info for a loader without CAP_BPF, so the
+// audit is unavailable (errAuditUnavailable).
 func loadedFunctions(query func(fd uint32) ([]byte, error), fd uint32, spec *btf.Spec) ([]string, error) {
 	records, err := query(fd)
+	if errors.Is(err, errTracee) {
+		return nil, err
+	}
 	if err != nil {
-		return nil, traceeError(err)
+		return nil, fmt.Errorf("%w: %w", errAuditUnavailable, err)
 	}
 	return loadedFunctionNames(records, spec)
 }
