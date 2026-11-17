@@ -49,38 +49,44 @@ func TestIntegrationLoader(t *testing.T) {
 	if kernel.Major < 6 || kernel.Major == 6 && kernel.Minor < 8 {
 		inexactExpected = "plain-inexact"
 	}
+	forced := fmt.Errorf("forced trial-load failure")
+	// The stack analysis refuses a program it cannot take (deadRegisterStackErr).
+	unanalysable := fmt.Errorf("matching stack depths to functions: %w", inject.ErrRefused)
 	for _, tc := range []struct {
 		name, expected string
 		closed         bool
-		preloadError   bool
+		preloadError   error
 		change         func(*Rule)
 	}{
-		{"kernel-name", "hook", false, false, func(r *Rule) {}},
-		{"func-info-name", "hook", false, false, func(r *Rule) { r.Program = "entry_with_long_name" }},
-		{"fail-open", "plain", false, false, func(r *Rule) { r.Map = "missing" }},
-		{"fail-closed", "refused", true, false, func(r *Rule) { r.Map = "missing" }},
-		{"unmatched", "plain", true, false, func(r *Rule) { r.Program = "unmatched" }},
-		{"auto", "hook", true, false, func(r *Rule) { r.Auto, r.Map = true, "" }},
-		{"entry-only", "hook", true, false, func(r *Rule) { r.Entry, r.Map = true, "" }},
-		{"pre68-inexact", inexactExpected, false, false, func(r *Rule) {}},
-		{"preload-auto", "plain", false, true, func(r *Rule) { r.Auto, r.Map = true, "" }},
-		{"preload-explicit", "refused", false, true, func(r *Rule) {}},
+		{"kernel-name", "hook", false, nil, func(r *Rule) {}},
+		{"func-info-name", "hook", false, nil, func(r *Rule) { r.Program = "entry_with_long_name" }},
+		{"fail-open", "plain", false, nil, func(r *Rule) { r.Map = "missing" }},
+		{"fail-closed", "refused", true, nil, func(r *Rule) { r.Map = "missing" }},
+		{"unmatched", "plain", true, nil, func(r *Rule) { r.Program = "unmatched" }},
+		{"auto", "hook", true, nil, func(r *Rule) { r.Auto, r.Map = true, "" }},
+		{"entry-only", "hook", true, nil, func(r *Rule) { r.Entry, r.Map = true, "" }},
+		{"pre68-inexact", inexactExpected, false, nil, func(r *Rule) {}},
+		{"preload-auto", "plain", false, forced, func(r *Rule) { r.Auto, r.Map = true, "" }},
+		{"preload-explicit", "refused", false, forced, func(r *Rule) {}},
 		// A rule without auto that names no site with map loads the original.
-		{"preload-entry", "plain", false, true, func(r *Rule) { r.Entry, r.Map = true, "" }},
-		{"preload-closed", "refused", true, true, func(r *Rule) { r.Auto, r.Map = true, "" }},
+		{"preload-entry", "plain", false, forced, func(r *Rule) { r.Entry, r.Map = true, "" }},
+		{"preload-closed", "refused", true, forced, func(r *Rule) { r.Auto, r.Map = true, "" }},
+		// A program the analysis cannot take loads as the original also under a map rule.
+		{"preload-analysis", "plain", false, unanalysable, func(r *Rule) {}},
+		{"preload-analysis-closed", "refused", true, unanalysable, func(r *Rule) {}},
 		// The loader's map is BPF_F_RDONLY_PROG, whose hook becomes static.
-		{"static-untrusted", "hook-rdonly", true, false, func(r *Rule) { r.Auto, r.Map, r.StaticUntrusted = true, "", true }},
+		{"static-untrusted", "hook-rdonly", true, nil, func(r *Rule) { r.Auto, r.Map, r.StaticUntrusted = true, "", true }},
 		// Static, so the dispatch hook loads on kernels without arg:untrusted
 		// too; TestBpfDispatch covers the untrusted form across the matrix.
-		{"dispatch", "hook", true, false, func(r *Rule) { r.Auto, r.Map, r.Entry, r.Dispatch, r.StaticUntrusted = true, "", true, true, true }},
-		{"maps", "hook", true, false, func(r *Rule) { r.Auto, r.Map, r.Maps = true, "", []string{"sessions"} }},
-		{"maps-missing", "refused", true, false, func(r *Rule) { r.Auto, r.Map, r.Maps = true, "", []string{"missing"} }},
+		{"dispatch", "hook", true, nil, func(r *Rule) { r.Auto, r.Map, r.Entry, r.Dispatch, r.StaticUntrusted = true, "", true, true, true }},
+		{"maps", "hook", true, nil, func(r *Rule) { r.Auto, r.Map, r.Maps = true, "", []string{"sessions"} }},
+		{"maps-missing", "refused", true, nil, func(r *Rule) { r.Auto, r.Map, r.Maps = true, "", []string{"missing"} }},
 		// The loader first inserts the present key with BPF_NOEXIST, which
 		// fails; ops instruments only that update.
-		{"ops-update", "hook-update", true, false, func(r *Rule) { r.Auto, r.Map, r.Ops = true, "", []string{"update"} }},
+		{"ops-update", "hook-update", true, nil, func(r *Rule) { r.Auto, r.Map, r.Ops = true, "", []string{"update"} }},
 		// The discover cases also set OnDiscover; discover-only has no rule.
-		{"discover-auto", "hook", true, false, func(r *Rule) { r.Auto, r.Map = true, "" }},
-		{"discover-only", "plain", true, false, func(r *Rule) {}},
+		{"discover-auto", "hook", true, nil, func(r *Rule) { r.Auto, r.Map = true, "" }},
+		{"discover-only", "plain", true, nil, func(r *Rule) {}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Setenv("SYSCALLHOOK_INTEGRATION_CHILD", tc.expected)
@@ -100,9 +106,7 @@ func TestIntegrationLoader(t *testing.T) {
 			opts := Options{Rules: []Rule{rule}, FailClosed: tc.closed, Stdout: out, Stderr: out, Log: &logs,
 				OnInject: func(inj Injection) { injected = append(injected, inj) },
 				OnRefuse: func(r Refusal) { refusals = append(refusals, r) }}
-			if tc.preloadError {
-				opts.preloadError = fmt.Errorf("forced trial-load failure")
-			}
+			opts.preloadError = tc.preloadError
 			discover := strings.HasPrefix(tc.name, "discover")
 			if discover {
 				opts.OnDiscover = func(d Discovery) { discovered = append(discovered, d) }
@@ -157,7 +161,7 @@ func TestIntegrationLoader(t *testing.T) {
 					t.Fatalf("refusals %+v", refusals)
 				}
 			} else if len(refusals) == 0 || tc.expected != "refused" && len(refusals) != 1 || slices.ContainsFunc(refusals, func(r Refusal) bool {
-				return r.Outcome != want || r.Program != "p" || r.Reason == "" || strings.HasPrefix(tc.name, "preload") != (r.Cause == "stack")
+				return r.Outcome != want || r.Program != "p" || r.Reason == "" || r.Cause != integrationCause(tc.name)
 			}) {
 				t.Fatalf("refusals %+v, want them with outcome %s", refusals, want)
 			}
@@ -790,4 +794,16 @@ func openFiles(t *testing.T) map[string]string {
 		}
 	}
 	return files
+}
+
+// integrationCause is the Refusal.Cause of a TestIntegrationLoader case that
+// ends without hooks.
+func integrationCause(name string) string {
+	switch {
+	case strings.HasPrefix(name, "preload-analysis"):
+		return "analysis"
+	case strings.HasPrefix(name, "preload"):
+		return "stack"
+	}
+	return "transform"
 }

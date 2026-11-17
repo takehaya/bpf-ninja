@@ -102,6 +102,11 @@ func TestRefuseOriginal(t *testing.T) {
 		{"map-audited", Rule{Map: "sessions"}, false, nil, false},
 		{"map-trial-verifier", Rule{Map: "sessions"}, false, fmt.Errorf("%w: x", errTrialVerifier), false},
 		{"map-indirect-jump", Rule{Map: "sessions"}, false, fmt.Errorf("%w at instruction 3", errIndirectJump), false},
+		// A program the analysis refuses or panics on loads as the original:
+		// no rewrite of it is possible, unlike an audit the kernel cannot give.
+		{"map-analysis-refused", Rule{Map: "sessions"}, false, deadRegisterStackErr(t), false},
+		{"map-analysis-panic", Rule{Map: "sessions"}, false, guard("parsing verifier stats", func() error { panic("boom") }), false},
+		{"map-analysis-fail-closed", Rule{Map: "sessions"}, true, deadRegisterStackErr(t), true},
 		{"auto", Rule{Auto: true}, false, audit, false},
 		{"calls", Rule{HookPrefix: "h", Calls: []string{"bpf_xdp_metadata_rx_timestamp"}}, false, audit, false},
 		{"entry", Rule{Hook: "h", Entry: true}, false, audit, false},
@@ -126,6 +131,7 @@ func TestRefusalCause(t *testing.T) {
 	}{
 		{sitesRefusal{fmt.Errorf("rule sites: pc 3 names no site of this program")}, nil, false, "sites"},
 		{fmt.Errorf("stack depth unavailable: %w", audit), audit, false, "stack"},
+		{fmt.Errorf("stack depth unavailable: %w", deadRegisterStackErr(t)), deadRegisterStackErr(t), false, "analysis"},
 		{checkerRejection{fmt.Errorf("checker rejected [x]: y")}, nil, false, "checker"},
 		{fmt.Errorf("%w; %w", refused, checkerRejection{fmt.Errorf("checker rejected the transform")}), nil, true, "checker"},
 		{inject.ErrCheckerNotApplicable, nil, false, "checker"},
@@ -161,4 +167,15 @@ func TestLoaderLogFull(t *testing.T) {
 	if loaderLogFull(refused, attr) {
 		t.Fatal("stats only")
 	}
+}
+
+// deadRegisterStackErr is the stack analysis's error for a program the kernel
+// accepts with r13 in a pruned branch: the analysis refuses it.
+func deadRegisterStackErr(t *testing.T) error {
+	t.Helper()
+	_, err := frameFloors([]int{8}, []string{"p"}, deadRegisterProgram(t, asm.Register(13)), inject.KernelInfo{Major: 7})
+	if !errors.Is(err, inject.ErrRefused) {
+		t.Fatalf("frameFloors on r13 = %v, want an ErrRefused", err)
+	}
+	return err
 }

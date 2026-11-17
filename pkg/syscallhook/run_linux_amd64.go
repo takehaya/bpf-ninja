@@ -122,7 +122,8 @@ type Injection struct {
 
 // Refusal is a matched load that ended without hooks; Reason is the message.
 // Cause is what ended it: "sites" (the rule's sites refused the load),
-// "stack" (the stack audit was unavailable), "checker" (the load-time
+// "stack" (the stack audit was unavailable), "analysis" (the stack analysis
+// cannot take the program: see unanalysable), "checker" (the load-time
 // checker refused the rewrite), "retry" (the kernel refused the rewrite and
 // the retry loaded none) or "transform" (the load could not be rewritten).
 // Outcome is "original_loaded" or, with FailClosed, "refused_fail_closed".
@@ -138,6 +139,8 @@ func refusalCause(err, stackErr error, retried bool) string {
 	switch {
 	case errors.As(err, &sitesRefusal{}):
 		return "sites"
+	case stackErr != nil && unanalysable(stackErr):
+		return "analysis"
 	case stackErr != nil:
 		return "stack"
 	case errors.As(err, &checkerRejection{}) || errors.Is(err, inject.ErrCheckerNotApplicable):
@@ -293,11 +296,22 @@ func loaderLogFull(err error, attr []byte) bool {
 
 // refuseOriginal says whether a matched load whose rewrite did not load is
 // refused instead of loading the original: always with failClosed, and when
-// the stack audit is unavailable (stackErr) for a rule that names its one
-// site with map, which must be hooked. A rule with calls, entry or
-// tail_calls and no auto loads the original like an auto rule.
+// the kernel cannot give the stack audit (stackErr) for a rule that names its
+// one site with map, which must be hooked. A rule with calls, entry or
+// tail_calls and no auto loads the original like an auto rule. A program the
+// verifier refuses, or one the analysis cannot take (unanalysable), loads as
+// the original under every rule.
 func refuseOriginal(failClosed bool, rule Rule, stackErr error) bool {
-	return failClosed || stackErr != nil && !rule.Auto && rule.Map != "" && !errors.Is(stackErr, errTrialVerifier) && !errors.Is(stackErr, errIndirectJump)
+	return failClosed || stackErr != nil && !rule.Auto && rule.Map != "" && !errors.Is(stackErr, errTrialVerifier) && !unanalysable(stackErr)
+}
+
+// unanalysable says whether the stack audit failed because the program is
+// one the analysis cannot take: it refused the program (inject.ErrRefused),
+// panicked on it (errAnalysisPanic) or cannot run its trial load
+// (errIndirectJump). No rewrite of such a program is possible at all, unlike
+// an audit the kernel cannot give.
+func unanalysable(stackErr error) bool {
+	return errors.Is(stackErr, inject.ErrRefused) || errors.Is(stackErr, errAnalysisPanic) || errors.Is(stackErr, errIndirectJump)
 }
 
 func retryOriginalOrRefuse(failClosed bool, retry func() (int64, error)) (int64, error) {
