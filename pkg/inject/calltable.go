@@ -47,7 +47,7 @@ var callTable = []CallRow{
 // pointerResults are the helpers with a pointer result and no row that get
 // the result-only pointer hook. A pointer kind is listed only when its kernel
 // test (calls_all_kernel_test.go) passes on 6.1, 6.12, 6.18 and 7.0.
-var pointerResults = []string{}
+var pointerResults = []string{"bpf_sk_fullsock", "bpf_tcp_sock", "bpf_ringbuf_reserve", "bpf_this_cpu_ptr", "bpf_kptr_xchg"}
 
 // noPointerTest is the reason a helper with a pointer result outside
 // pointerResults gets no hook.
