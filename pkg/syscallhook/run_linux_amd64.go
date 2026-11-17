@@ -51,8 +51,8 @@ type Options struct {
 	// their next stop, then wait behind this callback. It must not wait on the target.
 	OnInject func(Injection)
 	// OnRefuse, if set, is called on the tracing thread for each load a
-	// rule's sites refused (see Sites): the listing was of another build or
-	// an entry names no site of the program. The original program then
+	// rule's sites refused (see Sites): the listing was of another build, an
+	// entry names no site of the program, or the load could not be listed. The original program then
 	// loads, or the load is refused with FailClosed.
 	OnRefuse func(Refusal)
 	// OnDiscover, if set, is called on the tracing thread for every XDP, tc or
@@ -1405,7 +1405,7 @@ func (s *supervisor) transform(r *remote, attr []byte, rule Rule, form HookForm,
 	}
 	mapCalls, list, listErr := listing(listed)
 	if listErr != nil && rule.Sites != nil {
-		return nil, entry, fmt.Errorf("listing the load for the rule's sites: %w", listErr)
+		return nil, entry, sitesRefusal{fmt.Errorf("listing the load for the rule's sites: %w", listErr)}
 	}
 	if listErr != nil && drop == nil {
 		s.log("program %q: no site labels: %v", rule.Program, listErr)
