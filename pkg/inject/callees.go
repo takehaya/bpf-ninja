@@ -14,10 +14,12 @@ import (
 )
 
 // Callee is one helper or kernel function a program calls, outside the map
-// helpers and bpf_tail_call, which have their own kinds. Typed means the call
-// table has a row for it, so its hook is typed; a rule's Calls may name every
-// callee without a Reason, which says why the callee gets no hook. Module is the fd_array offset of a module
-// kernel function, zero for vmlinux. Sites are its call sites' raw PCs.
+// helpers and bpf_tail_call, which have their own kinds. Typed means a rule
+// naming it gets a typed hook in this program (const T *arg, as the
+// transform groups its sites); a rule's Calls may name every callee without
+// a Reason, which says why the callee gets no hook. Module is the fd_array
+// offset of a module kernel function, zero for vmlinux. Sites are its call
+// sites' raw PCs.
 type Callee struct {
 	Name   string
 	Kind   string // "helper" or "kfunc"
@@ -56,7 +58,7 @@ type CallDiscovery struct {
 // is listed unnamed. It performs no syscalls and changes nothing the
 // transform does.
 func DiscoverCallSitesRaw(p RawProgram, mapCalls []LookupSite) (CallDiscovery, error) {
-	insns, _, resolve, err := prepareRawLookup(p)
+	insns, types, resolve, err := prepareRawLookup(p)
 	if err != nil {
 		return CallDiscovery{}, err
 	}
@@ -76,10 +78,18 @@ func DiscoverCallSitesRaw(p RawProgram, mapCalls []LookupSite) (CallDiscovery, e
 		return CallDiscovery{}, err
 	}
 	rows := map[uint32]LookupSite{}
+	var callSites []discoveredLookup
 	for _, site := range known {
 		if site.Op == HookCall {
 			rows[site.SitePC] = site.LookupSite
+			callSites = append(callSites, site)
 		}
+	}
+	// A callee is typed as the transform's grouping makes its hook.
+	typed := map[string]bool{}
+	groups, _ := selectCalls(callSites, LookupRequest{Kernel: p.Kernel, Modules: p.Modules}, types)
+	for _, group := range groups {
+		typed[group.call.Name] = group.typed
 	}
 	var d CallDiscovery
 	callees := map[string]int{}
@@ -123,6 +133,7 @@ func DiscoverCallSitesRaw(p RawProgram, mapCalls []LookupSite) (CallDiscovery, e
 		if !ok {
 			i = len(d.Callees)
 			callees[c.Kind+"\x00"+c.Name] = i
+			c.Typed = typed[c.Name]
 			d.Callees = append(d.Callees, c)
 		}
 		d.Callees[i].Sites = append(d.Callees[i].Sites, pc)
@@ -140,7 +151,7 @@ func DiscoverCallSitesRaw(p RawProgram, mapCalls []LookupSite) (CallDiscovery, e
 // calleeOf describes the callee of a helper or kernel-function call, without sites.
 func calleeOf(ins *asm.Instruction, kernel *btf.Spec, modules map[int16]*btf.Spec) Callee {
 	row, name, named := callee(ins, kernel, modules)
-	c := Callee{Kind: "kfunc", Name: name, Module: kfuncModule(ins), Typed: row != nil}
+	c := Callee{Kind: "kfunc", Name: name, Module: kfuncModule(ins)}
 	if ins.IsBuiltinCall() {
 		c.Kind = "helper"
 		h, ok := helperByID(ins.Constant)
