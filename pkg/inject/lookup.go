@@ -1902,7 +1902,9 @@ func transformLookupProgramGuarded(insns asm.Instructions, typ ebpf.ProgramType,
 					guardedEmit = trialEmit
 				}
 			}
-			emit = guardedEmit
+			// Every later check reads req: without a tail hook its TailCalls
+			// must say so, as when no tail call fits.
+			emit, req.TailCalls = guardedEmit, guardedEmit.req.TailCalls
 			if len(groups) == 0 && !emit.req.Entry && !emit.req.TailCalls {
 				return nil, plan, refuse("no hook site is safe on this kernel (%d skipped): %s", len(plan.skipped), reason)
 			}
@@ -1996,6 +1998,9 @@ func transformLookupProgramGuarded(insns asm.Instructions, typ ebpf.ProgramType,
 	}
 	if broken != "" {
 		return nil, plan, refuse("%s", broken)
+	}
+	if len(hooks) == 0 {
+		return nil, plan, refuse("no hook is left to generate (%d skipped)", len(plan.skipped))
 	}
 	var selected []discoveredLookup
 	for _, group := range groups {
