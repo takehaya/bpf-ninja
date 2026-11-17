@@ -290,7 +290,9 @@ func (s *supervisor) loadKernel(load func() (*btf.Spec, error)) {
 // read reads tracee memory, info returns the fd's 32-byte bpf_btf_info and
 // load opens a kernel BTF by id and gives its module's name, which homes
 // keeps by the same offset. An offset that fails is left out and logged,
-// so its calls stay unnamed and the load goes on.
+// so its calls stay unnamed and the load goes on. A BTF whose name load
+// cannot read is kept with an empty home and logged: its calls are hooked
+// and reported as not reviewed.
 func (s *supervisor) moduleBTFs(insns asm.Instructions, fdArray uint64, read func(addr, size uint64) ([]byte, error),
 	info func(fd uint32) ([]byte, error), load func(id btf.ID, base *btf.Spec) (*btf.Spec, string, error)) (modules map[int16]*btf.Spec, homes map[int16]string) {
 	failed := map[int16]bool{}
@@ -316,10 +318,13 @@ func (s *supervisor) moduleBTFs(insns asm.Instructions, fdArray uint64, read fun
 			}
 			return load(btf.ID(u32(bi, 12)), s.kernel)
 		}()
-		if err != nil {
+		if err != nil && spec == nil {
 			failed[off] = true
 			s.log("module BTF at fd_array offset %d unavailable: its kernel-function calls are not hooked: %v", off, err)
 			continue
+		}
+		if err != nil {
+			s.log("module BTF at fd_array offset %d has no name: its kernel-function calls are reported as not reviewed: %v", off, err)
 		}
 		if modules == nil {
 			modules, homes = map[int16]*btf.Spec{}, map[int16]string{}
@@ -330,19 +335,23 @@ func (s *supervisor) moduleBTFs(insns asm.Instructions, fdArray uint64, read fun
 }
 
 // loadModuleBTF opens the kernel BTF id, split on base, and gives the name
-// the kernel gives it: the module's.
+// the kernel gives it: the module's. When only the name cannot be read it
+// returns the BTF with an empty name and the error.
 func loadModuleBTF(id btf.ID, base *btf.Spec) (*btf.Spec, string, error) {
 	h, err := btf.NewHandleFromID(id)
 	if err != nil {
 		return nil, "", err
 	}
 	defer func() { _ = h.Close() }()
-	info, err := h.Info()
+	spec, err := h.Spec(base)
 	if err != nil {
 		return nil, "", err
 	}
-	spec, err := h.Spec(base)
-	return spec, info.Name, err
+	info, err := h.Info()
+	if err != nil {
+		return spec, "", fmt.Errorf("kernel BTF %d name: %w", id, err)
+	}
+	return spec, info.Name, nil
 }
 
 // loaderLog says whether the loader asked for a verifier log (log_level 1
