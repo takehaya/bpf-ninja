@@ -174,6 +174,64 @@ func dropCalls(groups []lookupGroup, skipped []LookupSite, reason string) ([]loo
 	return kept, skipped, len(kept) != len(groups)
 }
 
+// RetryRank orders hooks by how far their sites are trusted, lowest first:
+// lookups 0, other map calls 1, tail calls 2, callees with a call-table row
+// 3, then result-only hooks of helpers with a scalar (4) or a pointer result
+// (5) and of kernel functions with a scalar (6) or a pointer result (7). The
+// load retry tries sites in this order, and the function-count limit drops
+// call groups from its end.
+func RetryRank(h LookupHook) int {
+	switch {
+	case h.Kind.MapCall():
+		return 1
+	case h.Kind == HookTailCall:
+		return 2
+	case h.Kind != HookCall:
+		return 0
+	case slices.ContainsFunc(callTable, func(row CallRow) bool { return row.Name == h.Call }):
+		return 3
+	}
+	rank := 4
+	if !slices.ContainsFunc(helperTable[:], func(row helperRow) bool { return row.Name == h.Call }) {
+		rank = 6
+	}
+	if h.RetPtr {
+		rank++
+	}
+	return rank
+}
+
+// dropLastCalls removes the last n call groups in RetryRank order (by first
+// site within a rank), listing their sites as skipped with reason.
+func dropLastCalls(groups []lookupGroup, skipped []LookupSite, n int, reason string) ([]lookupGroup, []LookupSite, bool) {
+	var calls []int
+	for i, group := range groups {
+		if group.op == HookCall {
+			calls = append(calls, i)
+		}
+	}
+	rank := func(i int) int { return RetryRank(LookupHook{Kind: HookCall, Call: groups[i].call.Name, RetPtr: groups[i].call.RetPtr}) }
+	slices.SortStableFunc(calls, func(a, b int) int {
+		if ra, rb := rank(a), rank(b); ra != rb {
+			return ra - rb
+		}
+		return int(groups[a].sites[0].SitePC) - int(groups[b].sites[0].SitePC)
+	})
+	drop := map[int]bool{}
+	for _, i := range calls[max(len(calls)-n, 0):] {
+		drop[i] = true
+	}
+	var kept []lookupGroup
+	for i, group := range groups {
+		if drop[i] {
+			skipped = skipGroup(skipped, group, reason)
+			continue
+		}
+		kept = append(kept, group)
+	}
+	return kept, skipped, len(drop) != 0
+}
+
 // funcCount counts the functions of insns.
 func funcCount(insns asm.Instructions) int {
 	n := 0

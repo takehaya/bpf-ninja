@@ -1878,22 +1878,31 @@ func transformLookupProgramGuarded(insns asm.Instructions, typ ebpf.ProgramType,
 	if err != nil {
 		return nil, plan, err
 	}
-	// Call sites go first, for every request, when a limit breaks.
-	limit := broken
-	if n := funcCount(spliced); limit == "" && n > maxFuncs {
-		limit = fmt.Sprintf("call: the program would have %d functions, more than the kernel's %d", n, maxFuncs)
-	}
-	if dropped := false; limit != "" {
-		if groups, plan.skipped, dropped = dropCalls(groups, plan.skipped, limit); dropped {
-			if err := noCalls(); err != nil {
-				return nil, plan, err
-			}
-			if spliced, hooks, err = emit.splice(groups); err != nil {
-				return nil, plan, err
-			}
-			if broken, err = stackLimitsBroken(insns, spliced, req.Stack); err != nil {
-				return nil, plan, err
-			}
+	// Call sites go first, for every request, when a limit breaks: all of
+	// them for a stack limit, and for the function limit as many call groups
+	// as it takes, from the end of RetryRank's order.
+	for n := funcCount(spliced); broken != "" || n > maxFuncs; n = funcCount(spliced) {
+		dropped, wasBroken := false, broken != ""
+		if wasBroken {
+			groups, plan.skipped, dropped = dropCalls(groups, plan.skipped, broken)
+		} else {
+			reason := fmt.Sprintf("call: the program would have %d functions, more than the kernel's %d", n, maxFuncs)
+			groups, plan.skipped, dropped = dropLastCalls(groups, plan.skipped, n-maxFuncs, reason)
+		}
+		if !dropped {
+			break
+		}
+		if err := noCalls(); err != nil {
+			return nil, plan, err
+		}
+		if spliced, hooks, err = emit.splice(groups); err != nil {
+			return nil, plan, err
+		}
+		if broken, err = stackLimitsBroken(insns, spliced, req.Stack); err != nil {
+			return nil, plan, err
+		}
+		if wasBroken {
+			break
 		}
 	}
 	// Passed-context sites go first, then callback sites, each kind at once:

@@ -541,6 +541,41 @@ func TestCallFunctionLimit(t *testing.T) {
 	}
 }
 
+// Past the kernel's 256 functions, call groups go from the end of
+// RetryRank's order until the program fits: the result-only hook of a helper
+// without a row before the hook of a row callee.
+func TestCallFunctionLimitDropsFromTheEnd(t *testing.T) {
+	insns := asm.Instructions{asm.Mov.Reg(asm.R6, asm.R1), asm.FnGetNumaNodeId.Call(), asm.Mov.Imm(asm.R0, 2), asm.FnJiffies64.Call(), asm.Mov.Imm(asm.R0, 2)}
+	for i := range 254 {
+		insns = append(insns, asm.Call.Label(fmt.Sprintf("f%d", i)), asm.Mov.Imm(asm.R0, 2))
+	}
+	insns = append(insns, asm.Return())
+	for i := range 254 {
+		name := fmt.Sprintf("f%d", i)
+		insns = append(insns, btf.WithFuncMetadata(asm.Mov.Imm(asm.R0, 0).WithSymbol(name).WithSource(asm.Comment(name)), staticFunc(name)), asm.Return())
+	}
+	plan, err := transformLookup(callFixtureSpec(ebpf.XDP, insns), callReq("bpf_get_numa_node_id", "bpf_jiffies64"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.hooks) != 1 || plan.hooks[0].Call != "bpf_jiffies64" || len(plan.skipped) != 1 || plan.skipped[0].Call != "bpf_get_numa_node_id" ||
+		plan.skipped[0].Reason != "call: the program would have 257 functions, more than the kernel's 256" {
+		t.Fatalf("hooks %+v skipped %+v", plan.hooks, plan.skipped)
+	}
+}
+
+// RetryRank orders the kinds as the retry tries them.
+func TestRetryRank(t *testing.T) {
+	hooks := []LookupHook{{Kind: HookLookup}, {Kind: HookDelete}, {Kind: HookTailCall}, {Kind: HookCall, Call: "bpf_fib_lookup"},
+		{Kind: HookCall, Call: "bpf_get_numa_node_id"}, {Kind: HookCall, Call: "bpf_sk_fullsock", RetPtr: true},
+		{Kind: HookCall, Call: "bpf_dynptr_from_xdp"}, {Kind: HookCall, Call: "bpf_task_from_pid", RetPtr: true}}
+	for i, h := range hooks {
+		if got := RetryRank(h); got != i {
+			t.Errorf("RetryRank(%+v) = %d, want %d", h, got, i)
+		}
+	}
+}
+
 // spliceLookupCalls gives a call site with nothing to keep no prelude, also
 // at the start of a function: the function's symbol stays on the call.
 func TestCallEmptyPreludeAtFunctionStart(t *testing.T) {
