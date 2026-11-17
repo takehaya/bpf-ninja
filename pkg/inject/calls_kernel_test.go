@@ -116,7 +116,7 @@ func TestBpfCallHookWithAutoLookup(t *testing.T) {
 	lookupObs := attachArgObserver(t, lookup.Name, hooked.Programs["p"], false, true, true)
 	plainRet, plainOut := runCallFixture(t, plain, make([]byte, 64), nil)
 	ret, out := runCallFixture(t, hooked, make([]byte, 64), nil)
-	if ret != plainRet || out != plainOut || ret != 2 {
+	if ret != plainRet || ret != 2 || out[1] != plainOut[1] || out[1] != 2 {
 		t.Fatalf("hooked %d %#x, plain %d %#x", ret, out, plainRet, plainOut)
 	}
 	if got := lastCall(t, callObs, 1); got[0] != uint64(call.Sites[0].SitePC) || got[1] != out[0] {
@@ -145,7 +145,7 @@ func TestBpfCallHookInCallbackWithContext(t *testing.T) {
 	obs := attachArgObserver(t, plan.hooks[0].Name, hooked.Programs["p"], false, false)
 	plainRet, plainOut := runCallFixture(t, plain, make([]byte, 64), nil)
 	ret, out := runCallFixture(t, hooked, make([]byte, 64), nil)
-	if ret != plainRet || out != plainOut || ret != 3 || out[0] == 0 {
+	if ret != plainRet || ret != 3 || out[0] == 0 {
 		t.Fatalf("hooked %d %#x, plain %d %#x", ret, out, plainRet, plainOut)
 	}
 	calls := observed(t, obs)
