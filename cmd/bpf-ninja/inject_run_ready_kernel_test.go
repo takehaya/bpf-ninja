@@ -5,6 +5,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -14,17 +15,26 @@ import (
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/asm"
 	"github.com/cilium/ebpf/btf"
+	"golang.org/x/sys/unix"
 )
 
 // readyCalls are the callees the ready-rule loader calls: five with a
 // call-table row and bpf_get_numa_node_id, a helper without one; on kernels
-// with it also the kernel function bpf_dynptr_from_xdp, which has no row
+// from 6.8 with it also the kernel function bpf_dynptr_from_xdp, which has no row
 // (see readyKfunc).
 var readyCalls = []string{"bpf_ktime_get_ns", "bpf_jiffies64", "bpf_get_prandom_u32", "bpf_get_smp_processor_id", "bpf_xdp_get_buff_len", "bpf_get_numa_node_id"}
 
-// readyKfunc is the BTF id of bpf_dynptr_from_xdp in the running kernel, or
-// false when it has none.
+// readyKfunc is the BTF id of bpf_dynptr_from_xdp on kernels whose verifier
+// reports its variable-offset stack access, or false otherwise.
 func readyKfunc() (int64, bool) {
+	var uts unix.Utsname
+	var major, minor int
+	if unix.Uname(&uts) != nil {
+		return 0, false
+	}
+	if _, err := fmt.Sscanf(unix.ByteSliceToString(uts.Release[:]), "%d.%d", &major, &minor); err != nil || major < 6 || major == 6 && minor < 8 {
+		return 0, false
+	}
 	spec, err := btf.LoadKernelSpec()
 	if err != nil {
 		return 0, false
