@@ -243,6 +243,15 @@ func ParseConfig(r io.Reader) ([]Rule, error) {
 	if err := d.Decode(&trailing); err != io.EOF {
 		return nil, fmt.Errorf("injection config: expected one JSON array")
 	}
+	// The key hook_prefix marks a rule that states every kind; empty, it would
+	// read as a hook rule, whose empty maps and ops select everything.
+	var keys []map[string]json.RawMessage
+	_ = json.Unmarshal(data, &keys) // decoded above
+	for i, rule := range keys {
+		if v, ok := rule["hook_prefix"]; ok && (string(v) == `""` || string(v) == "null") {
+			return nil, fmt.Errorf("rule %d: hook_prefix is empty; give the prefix or remove the key", i)
+		}
+	}
 	if err := Validate(rules); err != nil {
 		return nil, err
 	}

@@ -23,6 +23,9 @@ func TestConfigHookPrefix(t *testing.T) {
 		`[{"program":"p","auto":true,"maps":["a"],"ops":["lookup"],"hook":"h","hook_prefix":"h"}]`: "",
 		`[{"program":"p","auto":true,"hook":"a","hook_prefix":"b"}]`:                               `rule 0: hook and hook_prefix are both given and differ ("a" and "b"); keep hook_prefix`,
 		`[{"program":"p","auto":true}]`:                                                            "rule 0: hook_prefix is required",
+		// An empty hook_prefix beside a hook would read as a hook rule and select every map.
+		`[{"program":"p","auto":true,"entry":true,"hook":"h","hook_prefix":"","maps":[],"ops":[]}]`:   "rule 0: hook_prefix is empty; give the prefix or remove the key",
+		`[{"program":"p","auto":true,"entry":true,"hook":"h","hook_prefix":null,"maps":[],"ops":[]}]`: "rule 0: hook_prefix is empty; give the prefix or remove the key",
 		// A map rule names its one site itself: without ops it observes that lookup.
 		`[{"program":"p","map":"m","hook_prefix":"h"}]`: "",
 	} {
