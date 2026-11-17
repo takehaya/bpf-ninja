@@ -111,6 +111,8 @@ func TestEntryCallHooks(t *testing.T) {
 		// comment shows the fields.
 		{"pointer result", nil, []btf.FuncParam{{Name: "arg", Type: fib("ct_opts")}, {Name: "ret", Type: void()}}, 256, 8,
 			"site=3 arg->family=2 arg->ifindex=7"},
+		// The result-only pointer hook of a helper without a row records its site only.
+		{"pointer result only", nil, []btf.FuncParam{{Name: "ret", Type: void()}}, 256, 0, "site=3"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			l := entry(t, callHook(t, c.tags, c.params...), c.max)
