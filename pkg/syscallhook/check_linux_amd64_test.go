@@ -309,6 +309,14 @@ func TestStackErrorClass(t *testing.T) {
 	const refusedStats = "verification time 6 usec\nstack depth 0\nprocessed 1 insns (limit 1000000) max_states_per_insn 0 total_states 0 peak_states 0 mark_read 0\n"
 	refusedLog := "0: R1=ctx() R10=fp0\n0: (95) exit\nR0 !read_ok\n" + refusedStats
 	mapRule := Rule{Program: "p", HookPrefix: "h", Map: "m"}
+	// A trial without a verdict says so in the supervisor's log line, with
+	// the errno, whatever the log holds.
+	for errno, log := range map[unix.Errno]string{unix.EFAULT: refusedLog, unix.EBUSY: "", unix.E2BIG: refusedStats} {
+		want := "stack audit unavailable: trial PROG_LOAD ended without a verdict on the program with " + unix.ErrnoName(errno) + ": "
+		if got := trialLoadError(errno, log).Error(); !strings.HasPrefix(got, want) {
+			t.Errorf("%s: %q, want prefix %q", unix.ErrnoName(errno), got, want)
+		}
+	}
 	for _, tc := range []struct {
 		name     string
 		stackErr error
@@ -342,6 +350,8 @@ func TestStackErrorClass(t *testing.T) {
 		{"trial-enospc-log", trialLoadError(unix.ENOSPC, refusedLog), stepRefuse, "stack"},
 		{"trial-efault-log", trialLoadError(unix.EFAULT, refusedLog), stepRefuse, "stack"},
 		{"trial-enomem-log", trialLoadError(unix.ENOMEM, refusedLog), stepRefuse, "stack"},
+		{"trial-eagain-log", trialLoadError(unix.EAGAIN, refusedLog), stepRefuse, "stack"},
+		{"trial-ebusy-log", trialLoadError(unix.EBUSY, refusedLog), stepRefuse, "stack"},
 		{"trial-e2big-no-log", trialLoadError(unix.E2BIG, ""), stepRefuse, "stack"},
 		{"trial-e2big-stats-only", trialLoadError(unix.E2BIG, refusedStats), stepRefuse, "stack"},
 		{"no-depth-line", analysisErr(noDepth), stepOriginal, "analysis"},

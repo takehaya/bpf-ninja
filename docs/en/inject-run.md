@@ -93,9 +93,10 @@ When no rewrite loads, or the load cannot be rewritten at all, the original prog
 These loads are refused with `EPERM` instead:
 
 - every such load under `--fail-closed`;
-- a load of a rule that names its one site with `map`, when the kernel cannot give the [stack audit](#stack-floor): the program is offloaded, the trial load of the original failed with no verdict on the program (`ENOSPC`, `EFAULT`, `ENOMEM`, `EAGAIN` or `EBUSY`, or a log with only the statistics), or the kernel gave no functions of the loaded trial (it gives no `func_info` to a loader without `CAP_BPF` or `CAP_SYS_ADMIN`).
+- a load of a rule that names its one site with `map`, when the kernel cannot give the [stack audit](#stack-floor): the program is offloaded, the trial load of the original failed with no verdict on the program (`ENOSPC`, `EFAULT`, `ENOMEM`, `EAGAIN` or `EBUSY` whatever the log, a log with only the statistics, or an empty log with an errno other than `EACCES` or `EINVAL`), or the kernel gave no functions of the loaded trial (it gives no `func_info` to a loader without `CAP_BPF` or `CAP_SYS_ADMIN`).
+  For a trial without a verdict, the line `stack depth unavailable` of the log says `trial PROG_LOAD ended without a verdict on the program with ERRNO`.
   Under every other rule (`auto`, or `calls`, `entry` or `tail_calls` without `auto`) the original loads.
-  A program the verifier refuses (a reason in the trial's log, whatever the errno), one the stack analysis cannot take, or one with an [indirect jump](#load-stream-check), loads unchanged under every rule, `map` included, and the loader sees the kernel's own error and log.
+  A program the verifier refuses (a reason in the trial's log with any other errno, or `EACCES` or `EINVAL` with an empty log), one the stack analysis cannot take, or one with an [indirect jump](#load-stream-check), loads unchanged under every rule, `map` included, and the loader sees the kernel's own error and log.
   So does a load whose audit failed on the loader's side (its memory or a descriptor of it could not be read or written; a query the kernel answers is not such a failure), as a trial that fails other than by the kernel's refusal does in [Refused rewrites](#refused-rewrites); its `cause` is `stack`.
 
 The hooks file lists each of these loads in `refused`, with its `cause` and `outcome`.

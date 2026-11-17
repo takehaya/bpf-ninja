@@ -1522,9 +1522,10 @@ func offloadAudit(attr []byte) error {
 // limits, EPERM for a capability the program needs), or for EACCES or EINVAL
 // when the log has no line at all (the kernel refused the program before the
 // verifier ran, as for a device that is gone). It is errAuditUnavailable when
-// the kernel gave no verdict on the program: an errno of the log's
-// finalisation (noVerdict), which replaces the verifier's own, or a
-// statistics-only log.
+// the kernel gave no verdict on the program: an errno that carries none
+// (noVerdict), whatever the log, a statistics-only log, or an empty log with
+// an errno other than EACCES or EINVAL. Its message says so and names the
+// errno, because a rule that names a map then refuses the load.
 func trialLoadError(loadErr error, log string) error {
 	if errors.Is(loadErr, errTracee) {
 		return loadErr
@@ -1536,16 +1537,22 @@ func trialLoadError(loadErr error, log string) error {
 	if verdict {
 		return fmt.Errorf("%w: %v: %s", errTrialVerifier, loadErr, strings.TrimSpace(log))
 	}
-	if log != "" {
-		return fmt.Errorf("%w: trial PROG_LOAD: %w: %s", errAuditUnavailable, loadErr, strings.TrimSpace(log))
+	ended := "trial PROG_LOAD ended without a verdict on the program"
+	if errno := unix.Errno(0); errors.As(loadErr, &errno) {
+		ended += " with " + unix.ErrnoName(errno)
 	}
-	return fmt.Errorf("%w: trial PROG_LOAD: %w", errAuditUnavailable, loadErr)
+	if log != "" {
+		return fmt.Errorf("%w: %s: %w: %s", errAuditUnavailable, ended, loadErr, strings.TrimSpace(log))
+	}
+	return fmt.Errorf("%w: %s: %w", errAuditUnavailable, ended, loadErr)
 }
 
 // noVerdict says whether a trial's errno says nothing of the program: ENOSPC
 // and EFAULT, which the log's finalisation returns in place of the verifier's
 // verdict, passed or not (bpf_check, bpf_vlog_finalize), and ENOMEM, EAGAIN
-// and EBUSY, which a later load need not meet.
+// and EBUSY, which a later load need not meet. The errno decides over the
+// log: an EFAULT or EBUSY the verifier returns with a reason of its own is
+// taken as no verdict as well.
 func noVerdict(err error) bool {
 	for _, errno := range []unix.Errno{unix.ENOSPC, unix.EFAULT, unix.ENOMEM, unix.EAGAIN, unix.EBUSY} {
 		if errors.Is(err, errno) {
