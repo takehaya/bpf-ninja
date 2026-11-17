@@ -208,7 +208,7 @@ func TestIntegrationRetryPreempt(t *testing.T) {
 	}
 	retryKfunc(t, "bpf_preempt_disable")
 	injected, logs, _ := runRetryLoader(t, "TestIntegrationRetryPreempt", "hook", false, nil)
-	if len(injected) != 1 {
+	if len(injected) != 1 || !strings.Contains(logs, "checker accepted") {
 		t.Fatalf("injections %+v", injected)
 	}
 	kernel := runningKernelInfo()
