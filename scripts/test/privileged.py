@@ -21,6 +21,9 @@ def allowed_skip(package, test, output, kernel):
     if package == COMMAND:
         return test == "TestBpfRetMember" and "is only in nf_conntrack module BTF" in output
     if package == SYSCALLHOOK:
+        # The device-bound loader needs veth, which the CI kernels lack.
+        if test == "TestIntegrationDevBound":
+            return "veth unavailable" in output or "kernel lacks kfunc bpf_xdp_metadata_rx_" in output
         return ((test == "TestIntegrationIndirectJump" and "kernel lacks BPF_MAP_TYPE_INSN_ARRAY" in output)
                 or (test == "TestIntegrationRetryPreempt" and "kernel lacks bpf_preempt_disable" in output))
     if package == INJECT:
@@ -33,6 +36,16 @@ def allowed_skip(package, test, output, kernel):
             "TestBpfCallFallbackNoRelease",
         } and "is only in nf_conntrack module BTF" in output:
             return True
+        # The XDP receive-metadata tests need veth, which the CI kernels lack;
+        # 6.1 has none of these kfuncs, and bpf_xdp_metadata_rx_vlan_tag and
+        # tcx (which tags the frames) appear in 6.8 and 6.6.
+        if test in {"TestBpfDevBoundTrialLoad", "TestBpfCallHookRowXdpRxTimestamp", "TestBpfCallHookRowXdpRxHash",
+                    "TestBpfCallHookRowXdpRxVlanTag"}:
+            if "veth unavailable" in output:
+                return True
+            if test == "TestBpfCallHookRowXdpRxVlanTag" and kernel in {"6.1", "6.6"}:
+                return "kernel lacks kfunc" in output or "tcx unavailable" in output
+            return kernel == "6.1" and "kernel lacks kfunc" in output
         # The native control shape falls through on kernels that lose tail-call
         # reachability; the guarded refusal test covers those kernels instead.
         if test == "TestBpfTailCallInSubprogram":
@@ -159,7 +172,7 @@ def audit(events, expected, kernel):
 # syscall-stop modes, including the fallback from the seccomp filter.
 SYSCALLHOOK_TESTS = (
     "TestIntegrationMapTypes", "TestIntegrationLoader", "TestIntegrationIndirectJump", "TestIntegrationJumpLimit",
-    "TestIntegrationInjectHold", "TestIntegrationRetry", "TestIntegrationRetryPreempt",
+    "TestIntegrationInjectHold", "TestIntegrationRetry", "TestIntegrationRetryPreempt", "TestIntegrationDevBound",
     "TestBpfAutoStatic", "TestBPFStopsBehaviour", "TestBPFStopsCount", "TestBPFStopsDefault", "TestBPFStopsFallback",
     "TestBPFStopsOutlivingChild", "TestBPFStopsLeaderExit", "TestBPFStopsCancelEndsChild",
     "TestBPFStopsChildNotInstrumented", "TestBPFStopsTargetListener", "TestBPFStopsCommonAttrs",

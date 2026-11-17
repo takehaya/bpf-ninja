@@ -27,6 +27,18 @@ func cstring(b []byte) string {
 	return string(b)
 }
 
+// devBoundOnly is BPF_F_XDP_DEV_BOUND_ONLY, a prog_flags bit.
+const devBoundOnly = 1 << 6
+
+// offloaded reports a program load that asks the device in prog_ifindex to
+// verify and run the program: prog_ifindex set without devBoundOnly. A load
+// with that flag only binds the program to the device (so that it may call
+// the XDP receive-metadata kfuncs); the host verifies and runs it like any
+// other. attr is at least 68 bytes.
+func offloaded(attr []byte) bool {
+	return u32(attr, 64) != 0 && u32(attr, 44)&devBoundOnly == 0
+}
+
 func parseProgAttr(b []byte) error {
 	if len(b) < progAttrSize {
 		return fmt.Errorf("BPF_PROG_LOAD attr is %d bytes; need at least %d for BTF metadata", len(b), progAttrSize)

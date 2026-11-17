@@ -1432,7 +1432,7 @@ func stackDepths(log string) (depths []int, err error) {
 }
 
 func (s *supervisor) preloadDepths(r *remote, attr []byte, rounding int) (report inject.StackReport, err error) {
-	if len(attr) < 68 || u32(attr, 64) != 0 {
+	if len(attr) < 68 || offloaded(attr) {
 		return report, fmt.Errorf("offloaded programs do not expose local verifier stack accounting")
 	}
 	spec, err := s.programBTF(r, attr)
