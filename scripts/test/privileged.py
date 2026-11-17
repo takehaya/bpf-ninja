@@ -18,7 +18,8 @@ SYSCALLHOOK = "github.com/takehaya/bpf-ninja/pkg/syscallhook"
 
 def allowed_skip(package, test, output, kernel):
     if package == SYSCALLHOOK:
-        return test == "TestIntegrationIndirectJump" and "kernel lacks BPF_MAP_TYPE_INSN_ARRAY" in output
+        return ((test == "TestIntegrationIndirectJump" and "kernel lacks BPF_MAP_TYPE_INSN_ARRAY" in output)
+                or (test == "TestIntegrationRetryPreempt" and "kernel lacks bpf_preempt_disable" in output))
     if package == INJECT:
         # These tests require conntrack kfuncs in vmlinux BTF. The test checks
         # module BTF before emitting this reason.
@@ -133,7 +134,7 @@ def audit(events, expected, kernel):
 # syscall-stop modes, including the fallback from the seccomp filter.
 SYSCALLHOOK_TESTS = (
     "TestIntegrationMapTypes", "TestIntegrationLoader", "TestIntegrationIndirectJump", "TestIntegrationJumpLimit",
-    "TestIntegrationInjectHold",
+    "TestIntegrationInjectHold", "TestIntegrationRetry", "TestIntegrationRetryPreempt",
     "TestBpfAutoStatic", "TestBPFStopsBehaviour", "TestBPFStopsCount", "TestBPFStopsDefault", "TestBPFStopsFallback",
     "TestBPFStopsOutlivingChild", "TestBPFStopsLeaderExit", "TestBPFStopsCancelEndsChild",
     "TestBPFStopsChildNotInstrumented", "TestBPFStopsTargetListener", "TestBPFStopsCommonAttrs",
@@ -168,6 +169,8 @@ def syscallhook_suite(binary, log_path):
                     started = re.match(r"=== RUN\s+([^/\s]+)$", line)
                     if started and running is None:
                         running = started[1]
+                    if running is not None:
+                        events.append({"Package": SYSCALLHOOK, "Test": running, "Output": line})
                     match = re.match(r"\s*--- (PASS|FAIL|SKIP): (\S+)", line)
                     if match and running in (None, match[2].split("/", 1)[0]):
                         events.append({"Package": SYSCALLHOOK, "Test": match[2], "Action": match[1].lower()})
@@ -180,7 +183,7 @@ def syscallhook_suite(binary, log_path):
                 print(f"AUDIT FAIL ({name}): {failure}", file=sys.stderr)
             if failures:
                 return 1
-    print("Privileged supervisor audit passed in default and every-syscall modes: all required tests passed; no skips.")
+    print("Privileged supervisor audit passed in default and every-syscall modes: all required tests passed; no unexpected skips.")
     return 0
 
 
