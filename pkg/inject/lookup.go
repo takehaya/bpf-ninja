@@ -386,6 +386,7 @@ type LookupHook struct {
 	ArgSize   uint32 `json:",omitempty"` // size of arg's pointee in bytes
 	RetPtr    bool   `json:",omitempty"` // ret is const void *; false: u64 ret
 	RetSize   uint32 `json:",omitempty"` // byte size of the callee's integer result when narrower than 8: only its low bytes are the result
+	ArgReason string `json:",omitempty"` // why the hook of a callee whose row has an argument takes none (selectCalls); "" otherwise
 }
 
 // LookupResult reports the selected original sites and the transformed clone.
@@ -519,11 +520,13 @@ type discoveredLookup struct {
 	pass []ctxflow.Pass
 	// row is a HookCall site's call-table row; argOwn says its argument
 	// register holds R10 plus a constant set in this block, argSize is the
-	// constant its size register holds.
-	row     *CallRow
-	argOwn  bool
-	argSize uint32
-	module  int16 // a module kfunc call's fd_array offset, else 0
+	// constant its size register holds, and argReason says why the size is
+	// not such a constant (the callee's hook then carries no argument).
+	row       *CallRow
+	argOwn    bool
+	argSize   uint32
+	argReason string
+	module    int16 // a module kfunc call's fd_array offset, else 0
 }
 
 func kfuncModule(ins *asm.Instruction) int16 {
@@ -732,12 +735,13 @@ func discoverSites(insns asm.Instructions, typ ebpf.ProgramType, resolve lookupM
 			}
 			var argOwn bool
 			var argSize uint32
+			var argReason string
 			if site.Reason == "" && row != nil {
 				switch {
 				case callReason(insns, it.Index) != "":
 					site.Reason = callReason(insns, it.Index)
 				case row.ArgReg != 0 && (!isConst[row.SizeReg] || consts[row.SizeReg] <= 0 || consts[row.SizeReg] > 512):
-					site.Reason = fmt.Sprintf("call: the argument size in %s is not a constant set in this basic block", regName(row.SizeReg))
+					argReason = fmt.Sprintf("the argument size in %s at pc %d is not a constant set in its basic block", regName(row.SizeReg), pc)
 				case row.ArgReg != 0:
 					argOwn, argSize = ownStack[row.ArgReg], uint32(consts[row.SizeReg])
 				}
@@ -778,7 +782,7 @@ func discoverSites(insns asm.Instructions, typ ebpf.ProgramType, resolve lookupM
 			}
 			sites = append(sites, discoveredLookup{LookupSite: site, mapID: mapID, mapInfo: m, generic: generic,
 				typedOnly: typedOnly, readOnlyArg: readOnlyArg, ctxReg: ctxReg, ctxSlot: ctxSlot, callback: callback, callbackStart: callbackStart, pass: pass,
-				row: row, argOwn: argOwn, argSize: argSize, module: kfuncModule(ins)})
+				row: row, argOwn: argOwn, argSize: argSize, argReason: argReason, module: kfuncModule(ins)})
 		}
 		// Track direct R1 definitions only; calls also clobber R1. Atomic
 		// operations and legacy packet loads are conservatively barriers.
@@ -1308,12 +1312,14 @@ type lookupGroup struct {
 	sites    []discoveredLookup
 	generic  bool
 	// A HookCall group's row and the pointee of its hook's arg (see
-	// selectCalls); typed says the hook takes const T *arg.
-	call    *CallRow
-	argType btf.Type
-	argName string
-	argSize uint32
-	typed   bool
+	// selectCalls); typed says the hook takes const T *arg, and argReason
+	// why a row callee's hook takes no arg.
+	call      *CallRow
+	argType   btf.Type
+	argName   string
+	argSize   uint32
+	typed     bool
+	argReason string
 }
 
 // readOnlyArg reports whether a site of group may pass a pointer into a

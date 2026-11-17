@@ -73,7 +73,8 @@ type injectedProgJSON struct {
 // parameter (absent without one; ArgType absent for plain bytes), Ret is
 // "scalar" or "pointer", and RetSize is the byte width of a kernel function's
 // integer result narrower than 8 bytes, whose upper bytes in ret are not part
-// of the result.
+// of the result. ArgReason says why the hook of a callee that has an arg
+// parameter elsewhere (a call-table row) takes none in this program.
 type hookJSON struct {
 	Name           string         `json:"name"`
 	Kind           string         `json:"kind"`
@@ -85,6 +86,7 @@ type hookJSON struct {
 	ArgSize        uint32         `json:"arg_size,omitempty"`
 	Ret            string         `json:"ret,omitempty"`
 	RetSize        uint32         `json:"ret_size,omitempty"`
+	ArgReason      string         `json:"arg_reason,omitempty"`
 	Sites          []hookSiteJSON `json:"sites"`
 	Untrusted      bool           `json:"untrusted"`
 	Copied         bool           `json:"copied"`
@@ -279,6 +281,7 @@ func injectionJSON(inj syscallhook.Injection) injectedProgJSON {
 		}
 		if hook.Kind == inject.HookCall {
 			h.Call, h.ArgReg, h.ArgType, h.ArgSize, h.Ret, h.RetSize = hook.Call, hook.ArgReg, hook.ArgType, hook.ArgSize, "scalar", hook.RetSize
+			h.ArgReason = hook.ArgReason
 			if hook.RetPtr {
 				h.Ret = "pointer"
 			}

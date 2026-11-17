@@ -34,7 +34,9 @@ func callReason(insns asm.Instructions, i int) string {
 // selectCalls groups the call sites, one hook PREFIX_<callee> per callee, in
 // the order of each callee's first site. Sites are fitted one by one: a site
 // that cannot be hooked is skipped with its reason, whatever Auto is, and
-// never costs another site its hook.
+// never costs another site its hook. A callee whose row has an argument but
+// whose sites do not all pass it with one block-local constant size gets the
+// result-only hook at all its sites, with the reason in argReason.
 func selectCalls(sites []discoveredLookup, req LookupRequest, types *btf.Spec) ([]lookupGroup, []LookupSite) {
 	var groups []lookupGroup
 	var skipped []LookupSite
@@ -74,13 +76,21 @@ func selectCalls(sites []discoveredLookup, req LookupRequest, types *btf.Spec) (
 			sizes := []uint32{}
 			typed := !row.RetPtr && row.Writes
 			for _, site := range group.sites {
-				if !slices.Contains(sizes, site.argSize) {
+				if site.argReason != "" && group.argReason == "" {
+					group.argReason = site.argReason
+				} else if site.argReason == "" && !slices.Contains(sizes, site.argSize) {
 					sizes = append(sizes, site.argSize)
 				}
 				typed = typed && site.argOwn
 			}
-			if len(sizes) > 1 {
-				skipped = skipGroup(skipped, group, fmt.Sprintf("call: %s is called with more than one argument size in this program (%d and %d)", row.Name, sizes[0], sizes[1]))
+			if group.argReason == "" && len(sizes) > 1 {
+				group.argReason = fmt.Sprintf("%s is called with more than one argument size in this program (%d and %d)", row.Name, sizes[0], sizes[1])
+			}
+			if group.argReason != "" {
+				// The hook takes one argument size, so every site of the callee
+				// falls back to the result-only hook a callee without a row gets.
+				group.call = &CallRow{Name: row.Name, Helper: row.Helper, RetPtr: row.RetPtr, RetSize: row.RetSize}
+				kept = append(kept, group)
 				continue
 			}
 			group.argSize, group.typed = sizes[0], typed
@@ -104,7 +114,7 @@ func selectCalls(sites []discoveredLookup, req LookupRequest, types *btf.Spec) (
 func callHook(group lookupGroup, ctx btf.Type, req LookupRequest) (asm.Instructions, LookupHook) {
 	row := group.call
 	plan := LookupHook{Name: group.name, Kind: HookCall, When: string(CallAny), SiteArg: true, Sites: publicLookupSites(group.sites),
-		Call: row.Name, RetPtr: row.RetPtr, RetSize: row.RetSize}
+		Call: row.Name, RetPtr: row.RetPtr, RetSize: row.RetSize, ArgReason: group.argReason}
 	if row.ArgReg == 0 && !row.RetPtr {
 		hook := pointerHook(group.name, ctx, nil, true, false, "ret")
 		if row.RetSize != 0 {

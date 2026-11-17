@@ -382,7 +382,8 @@ func TestCallSequenceBUntyped(t *testing.T) {
 	}
 }
 
-// A size that is not a constant set in this block skips the site.
+// A size that is not a constant set in this block gives the callee the
+// result-only hook, with the reason in ArgReason.
 func TestCallSizeNotConstant(t *testing.T) {
 	spec := fibFixture(ebpf.XDP)
 	insns := spec.Programs["p"].Instructions
@@ -390,9 +391,35 @@ func TestCallSizeNotConstant(t *testing.T) {
 	insns[i] = asm.Mov.Reg(asm.R3, asm.R8)
 	insns = slices.Insert(insns, 1, asm.Mov.Imm(asm.R8, 64))
 	spec.Programs["p"].Instructions = insns
-	plan, err := transformLookup(spec, fibReq(t))
-	if err == nil || len(plan.skipped) != 1 || plan.skipped[0].Reason != "call: the argument size in r3 is not a constant set in this basic block" {
-		t.Fatalf("err %v skipped %+v", err, plan.skipped)
+	pc := slices.IndexFunc(insns, func(ins asm.Instruction) bool { return ins.IsBuiltinCall() && ins.Constant == int64(asm.FnFibLookup) })
+	checkResultOnly(t, spec, fibReq(t), 1, fmt.Sprintf("the argument size in r3 at pc %d is not a constant set in its basic block", insns[:pc].Size()/asm.InstructionSize))
+}
+
+// checkResultOnly checks that req gives spec one result-only scalar hook of
+// bpf_fib_lookup over sites sites, with reason, that injectcheck accepts.
+func checkResultOnly(t *testing.T, spec *ebpf.CollectionSpec, req LookupRequest, sites int, reason string) {
+	t.Helper()
+	injectcheck.Label(spec.Programs["p"].Instructions)
+	in := append(asm.Instructions(nil), spec.Programs["p"].Instructions...)
+	plan, err := transformLookup(spec, req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.hooks) != 1 || len(plan.skipped) != 0 {
+		t.Fatalf("hooks %+v skipped %+v", plan.hooks, plan.skipped)
+	}
+	h := plan.hooks[0]
+	if h.Call != "bpf_fib_lookup" || h.ArgReg != 0 || h.ArgSize != 0 || h.ArgType != "" || h.RetPtr || h.Untrusted || h.Static ||
+		len(h.Sites) != sites || h.ArgReason != reason {
+		t.Fatalf("hook %+v", h)
+	}
+	out := spec.Programs["p"].Instructions
+	if _, params := callHookFn(t, out, h.Name); !slices.Equal(params, []string{"ctx", "site", "ret"}) {
+		t.Errorf("params %v", params)
+	}
+	cert, premises := validationCertificate(t, in, out, plan.hooks, -64)
+	if counts, err := injectcheck.Check(in, out, cert, premises); err != nil || counts.Sites != sites {
+		t.Fatalf("counts %+v err %v", counts, err)
 	}
 }
 
@@ -500,21 +527,29 @@ func TestCallCheckerAccepts(t *testing.T) {
 	}
 }
 
-// Two sizes for one callee skip all its sites.
+// Two sizes for one callee give all its sites the result-only hook.
 func TestCallTwoSizes(t *testing.T) {
 	second := fibCall(ebpf.XDP)
 	i := slices.IndexFunc(second, func(ins asm.Instruction) bool { return ins.Dst == asm.R3 && ins.Constant == 64 })
 	second[i] = asm.Mov.Imm(asm.R3, 48)
 	insns := append(asm.Instructions{asm.Mov.Reg(asm.R6, asm.R1)}, fibCall(ebpf.XDP)...)
 	insns = append(append(insns, second...), fibVerdict(ebpf.XDP)...)
+	checkResultOnly(t, callFixtureSpec(ebpf.XDP, insns), fibReq(t), 2, "bpf_fib_lookup is called with more than one argument size in this program (64 and 48)")
+}
+
+// Two sites with one size keep the typed hook, with no ArgReason.
+func TestCallOneSizeTwice(t *testing.T) {
+	insns := append(asm.Instructions{asm.Mov.Reg(asm.R6, asm.R1)}, fibCall(ebpf.XDP)...)
+	insns = append(append(insns, fibCall(ebpf.XDP)...), fibVerdict(ebpf.XDP)...)
 	plan, err := transformLookup(callFixtureSpec(ebpf.XDP, insns), fibReq(t))
-	if err == nil || len(plan.skipped) != 2 {
-		t.Fatalf("err %v skipped %+v", err, plan.skipped)
+	if err != nil {
+		t.Fatal(err)
 	}
-	for _, s := range plan.skipped {
-		if s.Reason != "call: bpf_fib_lookup is called with more than one argument size in this program (64 and 48)" {
-			t.Errorf("skipped %+v", s)
-		}
+	if len(plan.hooks) != 1 || len(plan.skipped) != 0 {
+		t.Fatalf("hooks %+v skipped %+v", plan.hooks, plan.skipped)
+	}
+	if h := plan.hooks[0]; h.ArgReg != 2 || h.ArgSize != 64 || h.ArgType != "bpf_fib_lookup" || h.Untrusted || len(h.Sites) != 2 || h.ArgReason != "" {
+		t.Fatalf("hook %+v", h)
 	}
 }
 

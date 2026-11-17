@@ -1053,6 +1053,11 @@ func (s *supervisor) entry(pid int, t *thread, regs unix.PtraceRegs) error {
 		}
 	} else {
 		s.log("program %q: injected %s, tracee fd %d%s", name, summary, ret, branches)
+		for _, hook := range result.Hooks {
+			if hook.ArgReason != "" {
+				s.log("program %q: hook %q observes only the result of %s: %s", name, hook.Name, hook.Call, hook.ArgReason)
+			}
+		}
 		premise := rewrite.premise
 		if len(premise) != 0 {
 			s.log("program %q: outside the theorem's premise: calls %s", name, strings.Join(premise, ", "))
