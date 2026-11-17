@@ -88,6 +88,12 @@ class AuditTests(unittest.TestCase):
         self.assertFalse(module.allowed_skip(module.PROGRAM, tests[0], reason, None))
         self.assertTrue(module.allowed_skip(module.COMMAND, "TestBpfRetMember", reason, None))
         self.assertFalse(module.allowed_skip(module.COMMAND, "TestOther", reason, None))
+        test = "TestBpfDevBoundCapture"
+        self.assertTrue(module.allowed_skip(module.COMMAND, test, "veth unavailable (operation not supported)", "7.0"))
+        self.assertFalse(module.allowed_skip(module.COMMAND, test, "veth unavailable (operation not supported)", None))
+        self.assertTrue(module.allowed_skip(module.COMMAND, test, "kernel lacks kfunc bpf_xdp_metadata_rx_hash: x", "6.1"))
+        self.assertFalse(module.allowed_skip(module.COMMAND, test, "kernel lacks kfunc bpf_xdp_metadata_rx_hash: x", "6.6"))
+        self.assertFalse(module.allowed_skip(module.COMMAND, test, "the loader skipped", "7.0"))
 
     def test_reentry_skip_requires_subtest_kernel_and_reason(self):
         reason = "neither tcx nor clsact available (operation not supported)"

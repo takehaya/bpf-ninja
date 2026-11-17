@@ -19,6 +19,10 @@ SYSCALLHOOK = "github.com/takehaya/bpf-ninja/pkg/syscallhook"
 
 def allowed_skip(package, test, output, kernel):
     if package == COMMAND:
+        # The device-bound capture needs veth, which the CI kernels lack; 6.1 lacks the kfunc.
+        if test == "TestBpfDevBoundCapture":
+            return (kernel is not None and "veth unavailable" in output
+                    or kernel == "6.1" and "kernel lacks kfunc bpf_xdp_metadata_rx_hash" in output)
         return test == "TestBpfRetMember" and "is only in nf_conntrack module BTF" in output
     if package == SYSCALLHOOK:
         # The device-bound loader needs veth, which the CI kernels lack; the
