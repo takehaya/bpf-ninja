@@ -96,8 +96,10 @@ func TestIntegrationLoader(t *testing.T) {
 			defer cancel()
 			var injected []Injection
 			var discovered []Discovery
+			var refusals []Refusal
 			opts := Options{Rules: []Rule{rule}, FailClosed: tc.closed, Stdout: out, Stderr: out, Log: &logs,
-				OnInject: func(inj Injection) { injected = append(injected, inj) }}
+				OnInject: func(inj Injection) { injected = append(injected, inj) },
+				OnRefuse: func(r Refusal) { refusals = append(refusals, r) }}
 			if tc.preloadError {
 				opts.preloadError = fmt.Errorf("forced trial-load failure")
 			}
@@ -145,6 +147,19 @@ func TestIntegrationLoader(t *testing.T) {
 				if d.Stack.Source != "verifier" || len(d.Stack.Functions) != 1 || d.Stack.Functions[0].VerifiedDepth == 0 {
 					t.Fatalf("discovery has no verifier stack accounting: %+v", d.Stack)
 				}
+			}
+			// A matched load that ends without hooks is reported, with how it
+			// ended, once per BPF_PROG_LOAD: the loader repeats a refused load.
+			matched := tc.name != "unmatched" && tc.name != "discover-only"
+			want := map[bool]string{true: "refused_fail_closed", false: "original_loaded"}[tc.expected == "refused"]
+			if hooked := strings.HasPrefix(tc.expected, "hook"); hooked || !matched {
+				if len(refusals) != 0 {
+					t.Fatalf("refusals %+v", refusals)
+				}
+			} else if len(refusals) == 0 || tc.expected != "refused" && len(refusals) != 1 || slices.ContainsFunc(refusals, func(r Refusal) bool {
+				return r.Outcome != want || r.Program != "p" || r.Reason == "" || strings.HasPrefix(tc.name, "preload") != (r.Cause == "stack")
+			}) {
+				t.Fatalf("refusals %+v, want them with outcome %s", refusals, want)
 			}
 			if tc.name == "pre68-inexact" && strings.HasPrefix(tc.expected, "plain") &&
 				!strings.Contains(logs.String(), "kernel before 6.8 does not count variable-offset stack accesses") {

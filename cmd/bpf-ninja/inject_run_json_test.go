@@ -183,10 +183,12 @@ func TestHooksWriter(t *testing.T) {
 	if strings.Contains(mustRead(t, path), `"refused"`) {
 		t.Fatal("refused written without a refusal")
 	}
-	if err := w.refuse(syscallhook.Refusal{Program: "c", Func: "c_main", Reason: "rule sites: pc 3 names no site of this program"}); err != nil {
+	if err := w.refuse(syscallhook.Refusal{Program: "c", Func: "c_main", Reason: "rule sites: pc 3 names no site of this program", Cause: "sites", Outcome: "original_loaded"}); err != nil {
 		t.Fatal(err)
 	}
-	if f := read(); len(f.Programs) != 2 || len(f.Refused) != 1 || f.Refused[0] != (refusedJSON{Program: "c", Func: "c_main", Reason: "rule sites: pc 3 names no site of this program"}) {
+	if f := read(); len(f.Programs) != 2 || len(f.Refused) != 1 ||
+		f.Refused[0] != (refusedJSON{Program: "c", Func: "c_main", Reason: "rule sites: pc 3 names no site of this program", Cause: "sites", Outcome: "original_loaded"}) ||
+		!strings.Contains(mustRead(t, path), `"cause": "sites"`) || !strings.Contains(mustRead(t, path), `"outcome": "original_loaded"`) {
 		t.Fatalf("after a refusal: %+v", f)
 	}
 	if entries, _ := os.ReadDir(filepath.Dir(path)); len(entries) != 1 {

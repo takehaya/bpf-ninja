@@ -50,10 +50,9 @@ type Options struct {
 	// thread. Other target threads keep running until the supervisor handles
 	// their next stop, then wait behind this callback. It must not wait on the target.
 	OnInject func(Injection)
-	// OnRefuse, if set, is called on the tracing thread for each load a
-	// rule's sites refused (see Sites): the listing was of another build, an
-	// entry names no site of the program, or the load could not be listed. The original program then
-	// loads, or the load is refused with FailClosed.
+	// OnRefuse, if set, is called on the tracing thread for each load a rule
+	// matched that ended without hooks (see Refusal), once the original program
+	// was loaded in its place or, with FailClosed, the load was refused.
 	OnRefuse func(Refusal)
 	// OnDiscover, if set, is called on the tracing thread for every XDP, tc or
 	// cgroup_skb program load whose attr carries BTF, whether or not a rule selects it,
@@ -121,9 +120,40 @@ type Injection struct {
 	OutsidePremise []string
 }
 
-// Refusal is a load a rule's sites refused; Reason is the message.
+// Refusal is a matched load that ended without hooks; Reason is the message.
+// Cause is what ended it: "sites" (the rule's sites refused the load),
+// "stack" (the stack audit was unavailable), "checker" (the load-time
+// checker refused the rewrite), "retry" (the kernel refused the rewrite and
+// the retry loaded none) or "transform" (the load could not be rewritten).
+// Outcome is "original_loaded" or, with FailClosed, "refused_fail_closed".
 type Refusal struct {
 	Program, Func, Reason string
+	Cause, Outcome        string
+}
+
+// refusalCause is the Refusal.Cause of a matched load whose rewrite failed
+// with err; stackErr is the stack audit's error and retried says whether the
+// retry ran.
+func refusalCause(err, stackErr error, retried bool) string {
+	switch {
+	case errors.As(err, &sitesRefusal{}):
+		return "sites"
+	case stackErr != nil:
+		return "stack"
+	case errors.As(err, &checkerRejection{}) || errors.Is(err, inject.ErrCheckerNotApplicable):
+		return "checker"
+	case retried:
+		return "retry"
+	}
+	return "transform"
+}
+
+// refusalOutcome is the Refusal.Outcome of a load refuse says is refused.
+func refusalOutcome(refuse bool) string {
+	if refuse {
+		return "refused_fail_closed"
+	}
+	return "original_loaded"
 }
 
 type rememberedBTF struct {
@@ -978,7 +1008,13 @@ func (s *supervisor) entry(pid int, t *thread, regs unix.PtraceRegs) error {
 			s.log("program %q: lookup discovery skipped: %v", name, err)
 			return nil
 		}
-		return s.skipEntry(pid, regs, err)
+		if skipErr := s.skipEntry(pid, regs, err); skipErr != nil {
+			return skipErr
+		}
+		if s.options.OnRefuse != nil {
+			s.options.OnRefuse(Refusal{Program: name, Func: entryName, Reason: err.Error(), Cause: "transform", Outcome: refusalOutcome(s.options.FailClosed)})
+		}
+		return nil
 	}
 	r, err := beginRemote(pid, regs, true)
 	if err != nil {
@@ -1032,6 +1068,7 @@ func (s *supervisor) entry(pid int, t *thread, regs unix.PtraceRegs) error {
 	var entry string
 	var injectErr error
 	branches := ""
+	retried := false
 	s.extra = 0
 	if stackErr != nil {
 		injectErr = fmt.Errorf("stack depth unavailable: %w", stackErr)
@@ -1044,6 +1081,7 @@ func (s *supervisor) entry(pid int, t *thread, regs unix.PtraceRegs) error {
 		}
 		if errors.As(injectErr, &refusedLoad{}) && r.broken == nil {
 			s.log("program %q: %v; retrying with fewer sites", name, injectErr)
+			retried = true
 			ret, rewrite, injectErr = s.retryLoad(r, attr, *rule, form, stack, rewrite, injectErr)
 		}
 	}
@@ -1064,10 +1102,8 @@ func (s *supervisor) entry(pid int, t *thread, regs unix.PtraceRegs) error {
 				s.log("program %q: injection skipped: %v", name, injectErr)
 			}
 		}
-		if errors.As(injectErr, &sitesRefusal{}) && s.options.OnRefuse != nil {
-			s.options.OnRefuse(Refusal{Program: name, Func: entry, Reason: injectErr.Error()})
-		}
-		ret, err = retryOriginalOrRefuse(refuseOriginal(s.options.FailClosed, *rule, stackErr), func() (int64, error) {
+		refuse := refuseOriginal(s.options.FailClosed, *rule, stackErr)
+		ret, err = retryOriginalOrRefuse(refuse, func() (int64, error) {
 			// Substituted attrs and buffers live in scratch memory, so the original
 			// registers, attr and input buffers still describe the unchanged load.
 			// A verifier attempt may have written the caller-owned log buffer.
@@ -1075,6 +1111,10 @@ func (s *supervisor) entry(pid int, t *thread, regs unix.PtraceRegs) error {
 		})
 		if err != nil {
 			return err
+		}
+		if s.options.OnRefuse != nil {
+			s.options.OnRefuse(Refusal{Program: name, Func: cmp.Or(entry, entryName), Reason: injectErr.Error(),
+				Cause: refusalCause(injectErr, stackErr, retried), Outcome: refusalOutcome(refuse)})
 		}
 	} else {
 		s.log("program %q: injected %s, tracee fd %d%s", name, summary, ret, branches)
@@ -1584,11 +1624,11 @@ func (s *supervisor) load(r *remote, attr []byte, name string, form HookForm, t 
 	if t.check {
 		encoded, err := readMemory(r.pid, u64(patched, 8), uint64(u32(patched, 4))*8)
 		if err != nil {
-			return 0, "", fmt.Errorf("checker rejected the transform: read substituted load stream: %w; probe was not installed", err)
+			return 0, "", checkerRejection{fmt.Errorf("checker rejected the transform: read substituted load stream: %w; probe was not installed", err)}
 		}
 		verdict, err = checkLoad(t.original, encoded, t.cert, t.premises)
 		if err != nil {
-			return 0, "", fmt.Errorf("checker rejected the transform: %w; probe was not installed", err)
+			return 0, "", checkerRejection{fmt.Errorf("checker rejected the transform: %w; probe was not installed", err)}
 		}
 	}
 	if trial {

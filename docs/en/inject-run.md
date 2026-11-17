@@ -628,7 +628,7 @@ If a rewrite fails, `inject-run` reports it on stderr and keeps running the targ
 |---|---|
 | `version` | 2. It changes only when a field changes meaning or is removed; new fields can appear. |
 | `programs` | One entry per injected load, in load order; a program loaded twice appears twice. Loads that fell back or were refused are not listed. |
-| `refused` | The loads a rule's [`sites`](#choose-sites-from-the-listing) refused, each with `program`, `func` and `reason`. Each refused `BPF_PROG_LOAD` appears once, so a loader that repeats a refused load appears twice. Absent when there is none. |
+| `refused` | The loads a rule matched that ended without hooks, each with `program`, `func`, `reason`, `cause` and `outcome`. `cause` is `sites` (the rule's [`sites`](#choose-sites-from-the-listing) refused the load), `stack` (the [stack audit](#stack-floor) was unavailable), `checker` (the [load-stream check](#load-stream-check) refused the rewrite), `retry` (the kernel refused the rewrite and the [retry](#refused-rewrites) loaded none) or `transform` (the load could not be rewritten). `outcome` is `original_loaded` or, with `--fail-closed` or an unaudited `map` rule, `refused_fail_closed`. Each such `BPF_PROG_LOAD` appears once, so a loader that repeats a refused load appears twice. Absent when there is none. |
 | `program`, `func` | The kernel program name and the entry function. |
 | `type` | `XDP`, `SchedCLS`, `SchedACT`, `CGroupSKB` or `Netfilter`. |
 | `prog_id` | The loaded program's kernel ID, for `-p` or `BPF_PROG_GET_FD_BY_ID`. 0 if `inject-run` could not query it; the diagnostic says why. |

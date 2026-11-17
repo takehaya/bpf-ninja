@@ -26,15 +26,19 @@ const hooksJSONVersion = 2
 type hooksFileJSON struct {
 	Version  int                `json:"version"`
 	Programs []injectedProgJSON `json:"programs"`
-	// Refused lists the loads a rule's sites refused; they loaded without hooks.
+	// Refused lists the matched loads that ended without hooks: the original
+	// program loaded in their place or, with --fail-closed, they were refused.
 	Refused []refusedJSON `json:"refused,omitempty"`
 }
 
-// refusedJSON is one load a rule's sites refused, and why (syscallhook.Refusal).
+// refusedJSON is one matched load that ended without hooks, why, what ended
+// it and how it ended (syscallhook.Refusal).
 type refusedJSON struct {
 	Program string `json:"program"`
 	Func    string `json:"func"`
 	Reason  string `json:"reason"`
+	Cause   string `json:"cause"`
+	Outcome string `json:"outcome"`
 }
 
 // injectedProgJSON is one successful injected load. ProgID is zero when the
@@ -366,9 +370,9 @@ func (w *hooksWriter) add(inj syscallhook.Injection) error {
 	return w.write()
 }
 
-// refuse records a load a rule's sites refused.
+// refuse records a matched load that ended without hooks.
 func (w *hooksWriter) refuse(r syscallhook.Refusal) error {
-	w.file.Refused = append(w.file.Refused, refusedJSON{Program: r.Program, Func: r.Func, Reason: r.Reason})
+	w.file.Refused = append(w.file.Refused, refusedJSON{Program: r.Program, Func: r.Func, Reason: r.Reason, Cause: r.Cause, Outcome: r.Outcome})
 	return w.write()
 }
 

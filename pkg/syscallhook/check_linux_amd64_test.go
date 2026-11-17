@@ -114,3 +114,33 @@ func TestRefuseOriginal(t *testing.T) {
 		}
 	}
 }
+
+// Every matched load that ends without hooks names what ended it.
+func TestRefusalCause(t *testing.T) {
+	audit := fmt.Errorf("offloaded programs do not expose local verifier stack accounting")
+	refused := refusedLoad{error: fmt.Errorf("transformed PROG_LOAD: permission denied")}
+	for _, tc := range []struct {
+		err, stackErr error
+		retried       bool
+		want          string
+	}{
+		{sitesRefusal{fmt.Errorf("rule sites: pc 3 names no site of this program")}, nil, false, "sites"},
+		{fmt.Errorf("stack depth unavailable: %w", audit), audit, false, "stack"},
+		{checkerRejection{fmt.Errorf("checker rejected [x]: y")}, nil, false, "checker"},
+		{fmt.Errorf("%w; %w", refused, checkerRejection{fmt.Errorf("checker rejected the transform")}), nil, true, "checker"},
+		{inject.ErrCheckerNotApplicable, nil, false, "checker"},
+		{fmt.Errorf("%w; %w", refused, errNothingLoads), nil, true, "retry"},
+		{fmt.Errorf("inject: refused: no call site is instrumented"), nil, false, "transform"},
+		{fmt.Errorf("rewriting the load: %w: boom", errAnalysisPanic), nil, false, "transform"},
+	} {
+		if got := refusalCause(tc.err, tc.stackErr, tc.retried); got != tc.want {
+			t.Errorf("%v: cause %q, want %q", tc.err, got, tc.want)
+		}
+	}
+	if refusalOutcome(true) != "refused_fail_closed" || refusalOutcome(false) != "original_loaded" {
+		t.Fatal("outcomes")
+	}
+	if _, err := loadCheckPolicy(fmt.Errorf("bad"), false); !errors.As(err, &checkerRejection{}) {
+		t.Fatalf("loadCheckPolicy: %v", err)
+	}
+}

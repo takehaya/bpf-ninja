@@ -23,8 +23,13 @@ func loadCheckPolicy(err error, failClosed bool) (bool, error) {
 		}
 		return false, nil
 	}
-	return false, fmt.Errorf("checker rejected the transform: %w; probe was not installed", err)
+	return false, checkerRejection{fmt.Errorf("checker rejected the transform: %w; probe was not installed", err)}
 }
+
+// checkerRejection is a rewrite the load-time checker refused.
+type checkerRejection struct{ error }
+
+func (e checkerRejection) Unwrap() error { return e.error }
 
 // Layout hints remain untrusted; injectcheck accounts for every instruction.
 func loadCheckInputs(original asm.Instructions, result *inject.LookupResultRaw, audit inject.StackAudit, stack inject.StackReport) (injectcheck.Certificate, injectcheck.Premises, error) {
