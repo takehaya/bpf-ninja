@@ -351,7 +351,7 @@ func Check(in, out asm.Instructions, c Certificate, premises Premises) (Counts, 
 			continue // the entry target's site is -1
 		}
 		ins := in[key.site]
-		if callee := ins.IsBuiltinCall() && !supportedHelper(ins) || ins.IsKfuncCall(); !callee {
+		if !callTargetCentre(ins) {
 			return counts, inputError(InputTarget, "call target at %d is not a call of a helper outside the map helpers or of a kernel function", key.site)
 		}
 		if ins.IsBuiltinCall() && helperID(ins) == asm.FnUnspec {
@@ -816,6 +816,13 @@ func supportedHelper(ins asm.Instruction) bool {
 	}
 	return false
 }
+
+// callTargetCentre reports a call that a call target may follow: a helper
+// outside the map helpers and the tail call, or a kernel function.
+func callTargetCentre(ins asm.Instruction) bool {
+	return ins.IsBuiltinCall() && !supportedHelper(ins) || ins.IsKfuncCall()
+}
+
 // originalFunctionStarts are the original indices that start a function:
 // 0, the start of every trusted frame floor, the target of every function
 // reference, and every instruction carrying BTF function info.

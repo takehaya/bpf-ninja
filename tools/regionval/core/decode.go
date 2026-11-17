@@ -65,6 +65,7 @@ func (x Insn) JumpTarget() int {
 	return x.Raw + 1 + int(x.Off)
 }
 
+func (x Insn) IsCall() bool       { return x.Class() == ClassJMP && x.Op&0xf0 == 0x80 } // any call, callx included
 func (x Insn) IsHelperCall() bool { return x.Op == OpCall && x.Src == 0 }
 func (x Insn) IsPseudoCall() bool { return x.Op == OpCall && x.Src == 1 }
 func (x Insn) IsKfuncCall() bool  { return x.Op == OpCall && x.Src == 2 }    // imm: BTF id, off: BTF fd index

@@ -243,7 +243,7 @@ type span struct{ start, end int }
 // kind. Next to a call, the runs keep the cut they had before kfunc centres.
 func (l *Layout) kfuncCentre(G Func, j int) bool {
 	call := func(k int) bool {
-		return G.Start <= k && k < G.End && l.O[k].Class() == core.ClassJMP && l.O[k].Op&0xf0 == 0x80
+		return G.Start <= k && k < G.End && l.O[k].IsCall()
 	}
 	return G.Start <= j && j < G.End && l.O[j].IsKfuncCall() && !call(j-1) && !call(j+1)
 }
