@@ -50,8 +50,12 @@ class AuditTests(unittest.TestCase):
             self.assertFalse(module.allowed_skip(module.INJECT, test, "unexpected verifier failure", "6.1"))
         self.assertTrue(module.allowed_skip(module.INJECT, "TestBpfCallHookRowXdpRxVlanTag", "tcx unavailable to tag", "6.6"))
         self.assertFalse(module.allowed_skip(module.INJECT, "TestBpfCallHookRowXdpRxVlanTag", "tcx unavailable to tag", "6.12"))
-        self.assertTrue(module.allowed_skip(module.SYSCALLHOOK, "TestIntegrationDevBound", "veth unavailable (x)", None))
-        self.assertFalse(module.allowed_skip(module.SYSCALLHOOK, "TestIntegrationDevBound", "unexpected verifier failure", None))
+        for test in ("TestIntegrationDevBound", "TestIntegrationDevBound/device-bound",
+                     "TestIntegrationDevBound/offload"):
+            self.assertTrue(module.allowed_skip(module.SYSCALLHOOK, test, "veth unavailable (x)", None))
+            self.assertFalse(module.allowed_skip(module.SYSCALLHOOK, test, "unexpected verifier failure", None))
+        self.assertFalse(module.allowed_skip(module.SYSCALLHOOK, "TestIntegrationDevBound/other",
+                                             "veth unavailable (x)", None))
 
     def test_subtest_skip_is_not_hidden_by_parent_pass(self):
         package, test = module.PROGRAM, "TestBpfFilterSetTC"
