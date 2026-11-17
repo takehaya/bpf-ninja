@@ -158,12 +158,39 @@ SYSCALLHOOK_TESTS = (
     "TestBPFStopsOutlivingChild", "TestBPFStopsLeaderExit", "TestBPFStopsCancelEndsChild",
     "TestBPFStopsChildNotInstrumented", "TestBPFStopsTargetListener", "TestBPFStopsCommonAttrs",
     "TestBPFStopsDaemonizingTarget", "TestBPFStopsForeignExecDropsFormerTID", "TestBPFStopsChildPidfdFailure",
-    "TestBPFStopsMultipleNewbornRegistrationFailure",
+    "TestBPFStopsMultipleNewbornRegistrationFailure", "TestBpfFdArray", "TestBpfTailCallReachabilityProbe",
 )
+# Tests named like the privileged ones that need no root and run in the
+# ordinary suite.
+SYSCALLHOOK_UNPRIVILEGED = ("TestBPFStopsChildPidfdFailureStopsUnregisteredChild",)
+SYSCALLHOOK_KERNEL_TEST = re.compile(r"Test(Bpf|BPFStops|Integration)")
+
+
+def binary_tests(binary):
+    """The top-level tests of a Go test binary, from its -test.list."""
+    result = subprocess.run([str(Path(binary).resolve()), "-test.list", "."], stdout=subprocess.PIPE,
+                            text=True, check=True)
+    return result.stdout.split()
+
+
+def syscallhook_list_audit(names):
+    """Compare SYSCALLHOOK_TESTS with the binary's tests, names: every kernel
+    test of the binary is listed, and every listed test is in the binary."""
+    failures = [f"{name}: kernel test of the binary is not in SYSCALLHOOK_TESTS" for name in names
+                if SYSCALLHOOK_KERNEL_TEST.match(name) and name not in SYSCALLHOOK_TESTS
+                and name not in SYSCALLHOOK_UNPRIVILEGED]
+    failures += [f"{name}: listed in SYSCALLHOOK_TESTS but not in the binary" for name in SYSCALLHOOK_TESTS
+                 if name not in names]
+    return sorted(failures)
 
 
 def syscallhook_suite(binary, log_path):
     # Run the same tagged binary in CI and in VMs without a Go toolchain.
+    failures = syscallhook_list_audit(binary_tests(binary))
+    for failure in failures:
+        print(f"AUDIT FAIL (list): {failure}", file=sys.stderr)
+    if failures:
+        return 1
     command = [str(Path(binary).resolve()), "-test.v", "-test.count=1", "-test.timeout=5m",
                "-test.run=^(" + "|".join(SYSCALLHOOK_TESTS) + ")$"]
     passes = [

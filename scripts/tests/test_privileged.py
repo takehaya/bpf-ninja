@@ -177,9 +177,11 @@ class AuditTests(unittest.TestCase):
 
 class RunnerTests(unittest.TestCase):
     def test_syscallhook_binary_requires_all_tests_and_no_skips(self):
+        binary = [*module.SYSCALLHOOK_TESTS, *module.SYSCALLHOOK_UNPRIVILEGED, "TestConfig", "TestBPFStopFilterCommands"]
         stops = "".join(f"--- PASS: {name} (0.01s)\n" for name in module.SYSCALLHOOK_TESTS if name.startswith("TestBPFStops"))
         every_passed = ("--- PASS: TestBpfAutoStatic (0.01s)\n--- PASS: TestIntegrationMapTypes (0.01s)\n--- PASS: TestIntegrationLoader (0.01s)\n--- PASS: TestIntegrationIndirectJump (0.01s)\n--- PASS: TestIntegrationJumpLimit (0.01s)\n--- PASS: TestIntegrationInjectHold (0.01s)\n"
-                        "--- PASS: TestIntegrationRetry (0.01s)\n--- PASS: TestIntegrationRetryPreempt (0.01s)\n")
+                        "--- PASS: TestIntegrationRetry (0.01s)\n--- PASS: TestIntegrationRetryPreempt (0.01s)\n"
+                        "--- PASS: TestBpfFdArray (0.01s)\n--- PASS: TestBpfTailCallReachabilityProbe (0.01s)\n")
         passed = every_passed + stops
         for output, code, expected in (
             (passed, 0, 0),
@@ -200,7 +202,8 @@ class RunnerTests(unittest.TestCase):
              "=== RUN   TestIntegrationIndirectJump\n--- PASS: TestIntegrationIndirectJump (0.01s)\n"
              "=== RUN   TestIntegrationJumpLimit\n--- PASS: TestIntegrationJumpLimit (0.01s)\n"
              "=== RUN   TestIntegrationInjectHold\n--- PASS: TestIntegrationInjectHold (0.01s)\n"
-             "--- PASS: TestIntegrationRetry (0.01s)\n--- PASS: TestIntegrationRetryPreempt (0.01s)\n" + stops, 0, 0),
+             "--- PASS: TestIntegrationRetry (0.01s)\n--- PASS: TestIntegrationRetryPreempt (0.01s)\n"
+             "--- PASS: TestBpfFdArray (0.01s)\n--- PASS: TestBpfTailCallReachabilityProbe (0.01s)\n" + stops, 0, 0),
             # Kernels before 6.10 lack bpf_preempt_disable.
             (passed.replace("--- PASS: TestIntegrationRetryPreempt (0.01s)\n",
                             "=== RUN   TestIntegrationRetryPreempt\n"
@@ -213,6 +216,7 @@ class RunnerTests(unittest.TestCase):
         ):
             with self.subTest(output=output, code=code), \
                     mock.patch.object(module.subprocess, "Popen") as popen, \
+                    mock.patch.object(module, "binary_tests", return_value=binary), \
                     mock.patch("builtins.open", mock.mock_open()), \
                     mock.patch("builtins.print"):
                 streams = iter(((output, code), (every_passed, 0)))
@@ -231,13 +235,30 @@ class RunnerTests(unittest.TestCase):
                 self.assertTrue({"TestIntegrationJumpLimit", "TestBpfAutoStatic", "TestBPFStopsDefault",
                                  "TestBPFStopsFallback"} <= set(module.SYSCALLHOOK_TESTS))
 
+    def test_syscallhook_run_list_matches_the_binary(self):
+        # Every kernel-named test of the binary is run, and every listed test exists.
+        binary = [*module.SYSCALLHOOK_TESTS, *module.SYSCALLHOOK_UNPRIVILEGED, "TestConfig", "TestBPFStopFilterCommands"]
+        self.assertEqual(module.syscallhook_list_audit(binary), [])
+        self.assertEqual(module.syscallhook_list_audit(binary + ["TestBpfNewKernelTest"]),
+                         ["TestBpfNewKernelTest: kernel test of the binary is not in SYSCALLHOOK_TESTS"])
+        self.assertEqual(module.syscallhook_list_audit([name for name in binary if name != "TestBpfFdArray"]),
+                         ["TestBpfFdArray: listed in SYSCALLHOOK_TESTS but not in the binary"])
+        self.assertIn("TestBpfFdArray", module.SYSCALLHOOK_TESTS)
+        with mock.patch.object(module.subprocess, "Popen") as popen, \
+                mock.patch.object(module, "binary_tests", return_value=binary + ["TestIntegrationNew"]), \
+                mock.patch("builtins.print"):
+            self.assertEqual(module.syscallhook_suite("./syscallhook.test", "unused.log"), 1)
+            popen.assert_not_called()
+
     def test_syscallhook_every_syscall_pass_is_a_gate(self):
         every = ("--- PASS: TestBpfAutoStatic (0.01s)\n--- PASS: TestIntegrationMapTypes (0.01s)\n--- PASS: TestIntegrationLoader (0.01s)\n--- PASS: TestIntegrationIndirectJump (0.01s)\n--- PASS: TestIntegrationJumpLimit (0.01s)\n--- PASS: TestIntegrationInjectHold (0.01s)\n"
-                 "--- PASS: TestIntegrationRetry (0.01s)\n--- PASS: TestIntegrationRetryPreempt (0.01s)\n")
+                 "--- PASS: TestIntegrationRetry (0.01s)\n--- PASS: TestIntegrationRetryPreempt (0.01s)\n"
+                 "--- PASS: TestBpfFdArray (0.01s)\n--- PASS: TestBpfTailCallReachabilityProbe (0.01s)\n")
         default = every + "".join(
             f"--- PASS: {name} (0.01s)\n" for name in module.SYSCALLHOOK_TESTS if name.startswith("TestBPFStops")
         )
         with mock.patch.object(module.subprocess, "Popen") as popen, \
+                mock.patch.object(module, "binary_tests", return_value=list(module.SYSCALLHOOK_TESTS)), \
                 mock.patch("builtins.open", mock.mock_open()), mock.patch("builtins.print"):
             streams = iter((default, every.replace("--- PASS: TestIntegrationJumpLimit (0.01s)\n", "")))
             popen.return_value.__enter__.side_effect = lambda: mock.Mock(
