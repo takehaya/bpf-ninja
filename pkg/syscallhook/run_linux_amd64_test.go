@@ -440,3 +440,46 @@ func TestSeizeKeepsPendingSignal(t *testing.T) {
 		t.Fatalf("after seize: %#x %v, want the SIGUSR1 delivery stop", uint32(status), err)
 	}
 }
+
+// Every failure to reach the traced process's memory is marked errTracee
+// where it happens: the scratch mmap, the arena, a write, an info query and
+// the read of a trial's log.
+func TestTraceeMarks(t *testing.T) {
+	self := os.Getpid() // not traced by this process: ptrace gives ESRCH
+	check := func(what string, err error, want string) {
+		t.Helper()
+		if !errors.Is(err, errTracee) || !strings.Contains(fmt.Sprint(err), want) {
+			t.Errorf("%s: %v, want errTracee with %q", what, err, want)
+		}
+	}
+	_, err := (&remote{pid: self}).alloc([]byte{1})
+	check("mmap", err, "tracee mmap")
+	_, err = (&remote{pid: self, base: 0x1000, used: scratchSize}).alloc([]byte{1})
+	check("arena", err, "scratch arena exhausted")
+	_, err = (&remote{pid: self, base: 0x1000}).alloc([]byte{1})
+	check("write", err, "write tracee memory")
+	_, err = readStatsLog(self, 0x1000, 64)
+	check("stats log", err, "reading verifier stats")
+
+	// The query itself fails after its buffers were written: a stopped
+	// child traced by this thread, whose replayed syscall is lost.
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+	cmd := exec.Command("/bin/true")
+	cmd.SysProcAttr = &syscall.SysProcAttr{Ptrace: true}
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	pid := cmd.Process.Pid
+	defer func() { _ = unix.Kill(pid, unix.SIGKILL); _, _ = waitThread(pid) }()
+	if status, err := waitThread(pid); err != nil || !status.Stopped() {
+		t.Fatalf("exec stop: %#x %v", uint32(status), err)
+	}
+	var regs unix.PtraceRegs
+	if err := unix.PtraceGetRegs(pid, &regs); err != nil {
+		t.Fatal(err)
+	}
+	r := &remote{pid: pid, base: (regs.Rsp - 256) &^ 7, broken: errors.New("stop lost")}
+	_, err = r.info(3, 16)
+	check("info", err, "tracee object info fd 3: stop lost")
+}

@@ -1574,6 +1574,16 @@ func statsOnly(log string) bool {
 	return true
 }
 
+// readStatsLog reads a trial's verifier log of size bytes at addr in the
+// tracee pid; a failed read is the tracee's (traceeError).
+func readStatsLog(pid int, addr, size uint64) (string, error) {
+	logBytes, err := readMemory(pid, addr, size)
+	if err != nil {
+		return "", traceeError(fmt.Errorf("reading verifier stats: %w", err))
+	}
+	return cstring(logBytes), nil
+}
+
 func (s *supervisor) preloadDepths(r *remote, attr []byte, rounding int) (report inject.StackReport, err error) {
 	if err := offloadAudit(attr); err != nil {
 		return report, err
@@ -1598,13 +1608,7 @@ func (s *supervisor) preloadDepths(r *remote, attr []byte, rounding int) (report
 	}
 	trial := statsLog(bytes.Clone(attr), logSize, logAddr)
 	fd, loadErr := r.bpf(unix.BPF_PROG_LOAD, trial)
-	readLog := func() (string, error) {
-		logBytes, readErr := readMemory(r.pid, logAddr, logSize)
-		if readErr != nil {
-			return "", traceeError(fmt.Errorf("reading verifier stats: %w", readErr))
-		}
-		return cstring(logBytes), nil
-	}
+	readLog := func() (string, error) { return readStatsLog(r.pid, logAddr, logSize) }
 	if loadErr != nil {
 		log, readErr := readLog()
 		if readErr != nil {
