@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -18,6 +19,7 @@ import (
 	"github.com/cilium/ebpf/btf"
 	"github.com/cilium/ebpf/link"
 	"github.com/vishvananda/netlink"
+	"github.com/vishvananda/netns"
 	"golang.org/x/sys/unix"
 )
 
@@ -131,6 +133,27 @@ func devBoundSeen(t *testing.T, obs *ebpf.Collection) []uint64 {
 // test's crosses it, and returns its names; it skips when veth is missing.
 func devBoundVeth(t *testing.T) (rx, tx string) {
 	t.Helper()
+	runtime.LockOSThread()
+	original, err := netns.Get()
+	if err != nil {
+		runtime.UnlockOSThread()
+		t.Fatal(err)
+	}
+	isolated, err := netns.New()
+	if err != nil {
+		_ = original.Close()
+		runtime.UnlockOSThread()
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := netns.Set(original); err != nil {
+			t.Errorf("restoring netns: %v", err)
+			return
+		}
+		_ = isolated.Close()
+		_ = original.Close()
+		runtime.UnlockOSThread()
+	})
 	rx, tx = fmt.Sprintf("kxd%da", os.Getpid()%100000), fmt.Sprintf("kxd%db", os.Getpid()%100000)
 	if old, err := netlink.LinkByName(rx); err == nil {
 		_ = netlink.LinkDel(old) // left behind by an interrupted run
@@ -299,11 +322,11 @@ func TestIntegrationDevBound(t *testing.T) {
 			t.Skipf("kernel lacks kfunc %s: %v", name, err)
 		}
 	}
-	rx, tx := devBoundVeth(t)
-	t.Setenv("SYSCALLHOOK_DEVBOUND_RX", rx)
-	t.Setenv("SYSCALLHOOK_DEVBOUND_TX", tx)
 	observers := map[string]*ebpf.Collection{}
 	run := func(t *testing.T, mode string) ([]Injection, string, string) {
+		rx, tx := devBoundVeth(t)
+		t.Setenv("SYSCALLHOOK_DEVBOUND_RX", rx)
+		t.Setenv("SYSCALLHOOK_DEVBOUND_TX", tx)
 		t.Setenv("SYSCALLHOOK_DEVBOUND_CHILD", mode)
 		out, err := os.CreateTemp(t.TempDir(), "loader.out")
 		if err != nil {

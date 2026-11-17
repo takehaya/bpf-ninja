@@ -82,6 +82,7 @@ type metadataVeth struct {
 func newMetadataVeth(t *testing.T, vlan bool) *metadataVeth {
 	t.Helper()
 	testutil.SkipIfNotRoot(t)
+	isolatedNetNS(t)
 	name0, name1 := fmt.Sprintf("kxm%da", os.Getpid()%100000), fmt.Sprintf("kxm%db", os.Getpid()%100000)
 	if old, err := netlink.LinkByName(name0); err == nil {
 		_ = netlink.LinkDel(old) // left behind by an interrupted run
