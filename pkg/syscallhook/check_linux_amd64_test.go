@@ -205,7 +205,14 @@ func TestFailedLoad(t *testing.T) {
 		{"refused-retries", loadFailure{err: refused}, false, autoRule, 0, stepRetry, "", ""},
 		{"refused-retries-fail-closed", loadFailure{err: refused}, true, mapRule, 0, stepRetry, "", ""},
 		{"enospc-without-log-retries", loadFailure{err: logFull}, false, autoRule, 0, stepRetry, "", ""},
-		{"enospc-with-log", loadFailure{err: logFull, loaderLog: true}, false, autoRule, 5, stepOriginal, "transform", "original_loaded"},
+		// ENOSPC on the loader's log: one trial with a log of the supervisor's own.
+		{"enospc-with-log", loadFailure{err: logFull, loaderLog: true}, false, autoRule, 0, stepLogTrial, "", ""},
+		{"log-trial-passed", loadFailure{err: logFull, loaderLog: true, logTried: true, logPassed: true}, false, autoRule, -int64(unix.ENOSPC), stepOriginal, "loader_log", "original_refused"},
+		{"log-trial-passed-original-loads", loadFailure{err: logFull, loaderLog: true, logTried: true, logPassed: true}, false, mapRule, 5, stepOriginal, "loader_log", "original_loaded"},
+		{"log-trial-passed-fail-closed", loadFailure{err: logFull, loaderLog: true, logTried: true, logPassed: true}, true, autoRule, -int64(unix.EPERM), stepRefuse, "loader_log", "load_refused"},
+		{"log-trial-refused-retries", loadFailure{err: refused, loaderLog: true, logTried: true}, false, autoRule, 0, stepRetry, "", ""},
+		{"log-trial-enospc-retries", loadFailure{err: logFull, loaderLog: true, logTried: true}, false, autoRule, 0, stepRetry, "", ""},
+		{"log-trial-error", loadFailure{err: fmt.Errorf("tracee extended BTF load: %w", unix.ENOMEM), loaderLog: true, logTried: true}, false, autoRule, 5, stepOriginal, "transform", "original_loaded"},
 		{"eacces-with-log-retries", loadFailure{err: refused, loaderLog: true}, false, autoRule, 0, stepRetry, "", ""},
 		{"retry-failed", loadFailure{err: retryFailed, retried: true}, false, autoRule, 5, stepOriginal, "retry", "original_loaded"},
 		{"retry-failed-fail-closed", loadFailure{err: retryFailed, retried: true}, true, autoRule, -int64(unix.EPERM), stepRefuse, "retry", "load_refused"},
@@ -225,7 +232,7 @@ func TestFailedLoad(t *testing.T) {
 	} {
 		step, cause := failedLoad(tc.f, tc.failClosed, tc.rule)
 		outcome := ""
-		if step != stepRetry {
+		if step == stepOriginal || step == stepRefuse {
 			outcome = refusalOutcome(step == stepRefuse, tc.ret)
 		}
 		if step != tc.step || cause != tc.cause || outcome != tc.outcome {

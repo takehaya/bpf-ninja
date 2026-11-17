@@ -126,7 +126,9 @@ type Injection struct {
 // cannot take the program: see unanalysable), "verifier" (the verifier
 // refused the trial load of the original program), "checker" (the load-time
 // checker refused the rewrite), "retry" (the kernel refused the rewrite and
-// the retry loaded none), "selector" (more than one rule matches the load) or
+// the retry loaded none), "loader_log" (the rewrite passes with a log of its
+// own, but not with the loader's log buffer: see failedLoad), "selector"
+// (more than one rule matches the load) or
 // "transform" (the load could not be rewritten). Outcome is what happened:
 // "original_loaded", "original_refused" (the kernel refused the original
 // program as well) or "load_refused" (the supervisor refused the load: with
@@ -323,27 +325,39 @@ const (
 	stepOriginal loadStep = iota // the original program loads
 	stepRefuse                   // the load is refused with EPERM
 	stepRetry                    // the retry looks for a rewrite with fewer sites (retryLoad)
+	stepLogTrial                 // the rewrite is tried once with a log of the supervisor's own
 )
 
 // loadFailure is a matched load whose rewrite did not load: err is why,
 // stackErr the stack audit's error, loaderLog says that the loader asked for
-// a verifier log (loaderLog) and retried that the retry ran.
+// a verifier log (loaderLog) and retried that the retry ran. logTried says
+// that the rewrite was tried with a log of the supervisor's own
+// (stepLogTrial) and logPassed that this trial passed.
 type loadFailure struct {
-	err, stackErr      error
-	loaderLog, retried bool
+	err, stackErr                           error
+	loaderLog, retried, logTried, logPassed bool
 }
 
 // failedLoad decides what happens to the load f describes: the retry, once,
 // for a rewrite the kernel refused, else the original or, by refuseOriginal,
 // a refusal. cause is the Refusal.Cause (refusalCause) of a load that ends
-// without hooks. An ENOSPC with the loader's log is not retried: the
-// loader's log buffer was too small, and the trials, with a log of their
-// own, would drop sites for a refusal no verifier gave.
+// without hooks. The kernel returns ENOSPC whenever the loader's log does
+// not fit its buffer, also in place of the verifier's own refusal, so a
+// rewrite refused with ENOSPC on the loader's log is first tried with a log
+// of the supervisor's own: the retry runs on that trial's refusal, and when
+// the trial passes the loader's log buffer is the problem (cause
+// "loader_log"), for which no site is dropped.
 func failedLoad(f loadFailure, failClosed bool, rule Rule) (step loadStep, cause string) {
-	if f.stackErr == nil && !f.retried && errors.As(f.err, &refusedLoad{}) && !(f.loaderLog && errors.Is(f.err, unix.ENOSPC)) {
+	if f.stackErr == nil && !f.retried && !f.logPassed && errors.As(f.err, &refusedLoad{}) {
+		if f.loaderLog && !f.logTried && errors.Is(f.err, unix.ENOSPC) {
+			return stepLogTrial, ""
+		}
 		return stepRetry, ""
 	}
 	cause = refusalCause(f.err, f.stackErr, f.retried)
+	if f.logPassed {
+		cause = "loader_log"
+	}
 	if refuseOriginal(failClosed, rule, f.stackErr) {
 		return stepRefuse, cause
 	}
@@ -1154,7 +1168,21 @@ func (s *supervisor) entry(pid int, t *thread, regs unix.PtraceRegs) error {
 	step, cause := stepOriginal, ""
 	if injectErr != nil && r.broken == nil {
 		failure := loadFailure{err: injectErr, stackErr: stackErr, loaderLog: loaderLog(attr)}
-		if step, cause = failedLoad(failure, s.options.FailClosed, *rule); step == stepRetry {
+		if step, cause = failedLoad(failure, s.options.FailClosed, *rule); step == stepLogTrial {
+			s.log("program %q: %v with the loader's verifier log; trying the rewrite with a log of its own", name, injectErr)
+			s.extra++
+			trialErr := s.logTrial(r, attr, rule.Program, form, rewrite)
+			failure.logTried = true
+			if trialErr == nil {
+				failure.logPassed = true
+				injectErr = fmt.Errorf("%w; the rewrite passes with a log of its own: the loader's verifier log buffer is too small", injectErr)
+			} else {
+				injectErr = trialErr
+			}
+			failure.err = injectErr
+			step, cause = failedLoad(failure, s.options.FailClosed, *rule)
+		}
+		if step == stepRetry && r.broken == nil {
 			s.log("program %q: %v; retrying with fewer sites", name, injectErr)
 			ret, rewrite, injectErr = s.retryLoad(r, attr, *rule, form, stack, rewrite, injectErr)
 			if failure.err, failure.retried = injectErr, true; injectErr != nil {
@@ -1863,6 +1891,14 @@ func (s *supervisor) retryLoad(r *remote, attr []byte, rule Rule, form HookForm,
 		}
 	}
 	return ret, out.art, nil
+}
+
+// logTrial loads t once as a trial (load), with a log of the supervisor's
+// own; the scratch memory it used is free again.
+func (s *supervisor) logTrial(r *remote, attr []byte, name string, form HookForm, t *transformed) error {
+	defer func(used uint64) { r.used = used }(r.used)
+	_, _, err := s.load(r, attr, name, form, t, true)
+	return err
 }
 
 // missFirstDiffers reports whether MissFirst would change the rewrite: some

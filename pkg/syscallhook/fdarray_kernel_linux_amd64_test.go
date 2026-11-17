@@ -18,6 +18,7 @@ import (
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/asm"
 	"github.com/cilium/ebpf/btf"
+	"github.com/takehaya/bpf-ninja/pkg/inject"
 	"golang.org/x/sys/unix"
 )
 
@@ -79,6 +80,92 @@ func TestBpfFdArray(t *testing.T) {
 	if out, err := cmd.CombinedOutput(); err != nil || !strings.Contains(string(out), "hook=false") {
 		t.Fatalf("baseline loader: %v\n%s", err, out)
 	}
+}
+
+// smallLog is the log buffer of the "smalllog" loader: 128 bytes, the least
+// the kernel accepts.
+var smallLog = make([]byte, 128)
+
+// TestBpfLoaderLogSmall loads the lookup program of TestBpfFdArray with a
+// level-1 verifier log in a 128-byte buffer. Without the supervisor the
+// kernel's answer is logged (6.4 and later: ENOSPC, the log was truncated).
+// Under a map rule the rewrite's real load fails with ENOSPC; one trial with
+// a log of the supervisor's own passes, so the loader's buffer is the
+// problem and the original is loaded with it (cause "loader_log"), the
+// outcome being what the kernel returned. When that trial is refused
+// (planted), the retry runs on its refusal.
+func TestBpfLoaderLogSmall(t *testing.T) {
+	if os.Geteuid() != 0 {
+		t.Skip("requires root and BPF privileges")
+	}
+	if mode := os.Getenv(fdArrayChild); mode != "" {
+		loadFdArrayProgram(t, mode)
+		return
+	}
+	t.Setenv(fdArrayChild, "smalllog")
+	child := []string{os.Args[0], "-test.run=^TestBpfLoaderLogSmall$"}
+	plain, err := exec.Command(child[0], child[1:]...).CombinedOutput()
+	if err != nil {
+		t.Fatalf("baseline loader: %v\n%s", err, plain)
+	}
+	k := runningKernelInfo()
+	t.Logf("kernel %d.%d, loader alone: %s", k.Major, k.Minor, firstLine(string(plain), "errno="))
+	baselineENOSPC := strings.Contains(string(plain), fmt.Sprintf("errno=%d ", int(unix.ENOSPC)))
+	for _, planted := range []bool{false, true} {
+		t.Run(fmt.Sprintf("trial-refused=%v", planted), func(t *testing.T) {
+			out, err := os.Create(filepath.Join(t.TempDir(), "loader.out"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = out.Close() }()
+			var logs bytes.Buffer
+			var refusals []Refusal
+			var injected []Injection
+			opts := Options{Rules: []Rule{testRule()}, Stdout: out, Stderr: out, Log: &logs,
+				OnRefuse: func(r Refusal) { refusals = append(refusals, r) }, OnInject: func(i Injection) { injected = append(injected, i) }}
+			if planted {
+				opts.loadFault = func([]inject.LookupHook) error { return fmt.Errorf("planted refusal") }
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+			defer cancel()
+			code, err := Run(ctx, child, opts)
+			data, _ := os.ReadFile(out.Name())
+			t.Logf("supervisor:\n%sloader:\n%s", &logs, data)
+			if err != nil || code != 0 {
+				t.Fatalf("code=%d err=%v", code, err)
+			}
+			t.Logf("kernel %d.%d, trial refused %v: loader %s, refusals %+v", k.Major, k.Minor, planted, firstLine(string(data), "errno="), refusals)
+			if !baselineENOSPC {
+				t.Fatalf("the loader alone did not get ENOSPC, which this test reads as a truncated log: %s", plain)
+			}
+			if len(injected) != 0 || !strings.Contains(logs.String(), "with the loader's verifier log; trying the rewrite with a log of its own") {
+				t.Fatalf("injections %+v, or no trial with a log of its own", injected)
+			}
+			wantCause, wantOutcome := "loader_log", "original_refused"
+			if planted {
+				wantCause = "retry"
+				if !strings.Contains(logs.String(), "trial PROG_LOAD: permission denied; retrying with fewer sites") {
+					t.Fatal("the retry did not run on the trial's refusal")
+				}
+			} else if !strings.Contains(logs.String(), "the loader's verifier log buffer is too small") {
+				t.Fatal("no message that the loader's log buffer is too small")
+			}
+			if !strings.Contains(string(data), fmt.Sprintf("errno=%d ", int(unix.ENOSPC))) || len(refusals) != 1 ||
+				refusals[0].Cause != wantCause || refusals[0].Outcome != wantOutcome {
+				t.Fatalf("refusals %+v, want cause %s outcome %s", refusals, wantCause, wantOutcome)
+			}
+		})
+	}
+}
+
+// firstLine is the first line of s that starts with prefix.
+func firstLine(s, prefix string) string {
+	for line := range strings.Lines(s) {
+		if strings.HasPrefix(line, prefix) {
+			return strings.TrimSpace(line)
+		}
+	}
+	return ""
 }
 
 func bpfRaw(t *testing.T, cmd uintptr, attr []byte) int {
@@ -154,6 +241,25 @@ func loadFdArrayProgram(t *testing.T, mode string) {
 	put64(attr, 120, uint64(uintptr(unsafe.Pointer(&fdArray[0]))))
 	if mode == "cnt" {
 		put32(attr, 148, 1)
+	}
+	if mode == "smalllog" {
+		// A verifier log of level 1 in a buffer too small for it.
+		put32(attr, 24, 1)
+		put32(attr, 28, uint32(len(smallLog)))
+		put64(attr, 32, uint64(uintptr(unsafe.Pointer(&smallLog[0]))))
+		r, _, errno := unix.Syscall(unix.SYS_BPF, unix.BPF_PROG_LOAD, uintptr(unsafe.Pointer(&attr[0])), uintptr(len(attr)))
+		runtime.KeepAlive(raw)
+		runtime.KeepAlive(license)
+		runtime.KeepAlive(funcInfo)
+		runtime.KeepAlive(lineInfo)
+		runtime.KeepAlive(fdArray)
+		if errno != 0 {
+			fmt.Printf("errno=%d (%v)\n", int(errno), errno)
+			return
+		}
+		_ = unix.Close(int(r))
+		fmt.Println("errno=0")
+		return
 	}
 	fd := bpfRaw(t, unix.BPF_PROG_LOAD, attr)
 	runtime.KeepAlive(raw)

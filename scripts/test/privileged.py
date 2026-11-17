@@ -158,7 +158,7 @@ SYSCALLHOOK_TESTS = (
     "TestBPFStopsOutlivingChild", "TestBPFStopsLeaderExit", "TestBPFStopsCancelEndsChild",
     "TestBPFStopsChildNotInstrumented", "TestBPFStopsTargetListener", "TestBPFStopsCommonAttrs",
     "TestBPFStopsDaemonizingTarget", "TestBPFStopsForeignExecDropsFormerTID", "TestBPFStopsChildPidfdFailure",
-    "TestBPFStopsMultipleNewbornRegistrationFailure", "TestBpfFdArray", "TestBpfTailCallReachabilityProbe",
+    "TestBPFStopsMultipleNewbornRegistrationFailure", "TestBpfFdArray", "TestBpfLoaderLogSmall", "TestBpfTailCallReachabilityProbe",
 )
 # Tests named like the privileged ones that need no root and run in the
 # ordinary suite.
