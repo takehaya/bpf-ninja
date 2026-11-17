@@ -58,12 +58,16 @@ class AuditTests(unittest.TestCase):
     def test_conntrack_module_skip_is_specific(self):
         reason = "skipping: kfunc bpf_xdp_ct_lookup is only in nf_conntrack module BTF"
         tests = ("TestBpfCallHookCtXDP", "TestBpfCallHookCtTC", "TestBpfCallHookCtUntrusted",
-                 "TestBpfCallHookCtNoRelease", "TestBpfCallFixtureCtXDP", "TestBpfCallFixtureCtTC")
+                 "TestBpfCallHookCtNoRelease", "TestBpfCallFixtureCtXDP", "TestBpfCallFixtureCtTC",
+                 "TestBpfCallFallbackCtXDP", "TestBpfCallFallbackCtTC", "TestBpfCallFallbackCtUntrusted",
+                 "TestBpfCallFallbackNoRelease")
         for test in tests:
             self.assertTrue(module.allowed_skip(module.INJECT, test, reason, None))
             self.assertFalse(module.allowed_skip(module.INJECT, test, "kfunc bpf_xdp_ct_lookup: not found", None))
         self.assertFalse(module.allowed_skip(module.INJECT, "TestOther", reason, None))
         self.assertFalse(module.allowed_skip(module.PROGRAM, tests[0], reason, None))
+        self.assertTrue(module.allowed_skip(module.COMMAND, "TestBpfRetMember", reason, None))
+        self.assertFalse(module.allowed_skip(module.COMMAND, "TestOther", reason, None))
 
     def test_reentry_skip_requires_subtest_kernel_and_reason(self):
         reason = "neither tcx nor clsact available (operation not supported)"
@@ -115,6 +119,15 @@ class AuditTests(unittest.TestCase):
         self.assertFalse(module.allowed_skip(module.PROGRAM, allowed[0], reason, "6.1"))
         self.assertTrue(module.allowed_skip(module.INJECT, "TestBpfDispatchCGroupSKB", reason, "6.15"))
         self.assertFalse(module.allowed_skip(module.INJECT, "TestBpfDispatchCGroupSKB", reason, "6.18"))
+
+    def test_fallback_untrusted_skip_is_specific(self):
+        reason = "skipping: kernel lacks arg:untrusted: program p: load program"
+        for test in ("TestBpfCallFallbackCtUntrusted", "TestBpfCallFallbackSkUntrusted",
+                     "TestBpfCallFallbackSkUntrusted/bpf_sk_lookup_tcp"):
+            for kernel in ("6.1", "6.6", "6.12", "6.15"):
+                self.assertTrue(module.allowed_skip(module.INJECT, test, reason, kernel))
+            self.assertFalse(module.allowed_skip(module.INJECT, test, reason, "6.18"))
+            self.assertFalse(module.allowed_skip(module.INJECT, test, "unexpected verifier failure", "6.12"))
 
     def test_lookup_wrapper_frame_rounding_skip_is_specific(self):
         reason = "skipping: kernel uses 32-byte frame rounding; the wrapper needs the 16-byte rule"

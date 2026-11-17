@@ -12,11 +12,14 @@ import tempfile
 
 ROOT = Path(__file__).resolve().parents[2]
 PROGRAM = "github.com/takehaya/bpf-ninja/internal/program"
+COMMAND = "github.com/takehaya/bpf-ninja/cmd/bpf-ninja"
 INJECT = "github.com/takehaya/bpf-ninja/pkg/inject"
 SYSCALLHOOK = "github.com/takehaya/bpf-ninja/pkg/syscallhook"
 
 
 def allowed_skip(package, test, output, kernel):
+    if package == COMMAND:
+        return test == "TestBpfRetMember" and "is only in nf_conntrack module BTF" in output
     if package == SYSCALLHOOK:
         return ((test == "TestIntegrationIndirectJump" and "kernel lacks BPF_MAP_TYPE_INSN_ARRAY" in output)
                 or (test == "TestIntegrationRetryPreempt" and "kernel lacks bpf_preempt_disable" in output))
@@ -26,6 +29,8 @@ def allowed_skip(package, test, output, kernel):
         if test in {
             "TestBpfCallHookCtXDP", "TestBpfCallHookCtTC", "TestBpfCallHookCtUntrusted",
             "TestBpfCallHookCtNoRelease", "TestBpfCallFixtureCtXDP", "TestBpfCallFixtureCtTC",
+            "TestBpfCallFallbackCtXDP", "TestBpfCallFallbackCtTC", "TestBpfCallFallbackCtUntrusted",
+            "TestBpfCallFallbackNoRelease",
         } and "is only in nf_conntrack module BTF" in output:
             return True
         # The native control shape falls through on kernels that lose tail-call
@@ -79,6 +84,7 @@ def allowed_skip(package, test, output, kernel):
             "TestBpfReadOnlyKconfigArg", "TestBpfLookupWrapperGeneric",
             "TestBpfCallHookFibUntrusted", "TestBpfCallHookCtUntrusted", "TestBpfCallHookRowSkUntrusted",
             "TestBpfCallHookRowLoadBytesMapUntrusted", "TestBpfCallAllPointerSkFullsock", "TestBpfCallAllPointerTcpSock",
+            "TestBpfCallFallbackCtUntrusted", "TestBpfCallFallbackSkUntrusted",
             "TestBpfCallAllPointerRingbufReserve", "TestBpfCallAllPointerThisCpuPtr", "TestBpfCallAllPointerKptrXchg",
             "TestBpfCallKfuncPointer", "TestBpfCallKfuncDynptrSlice", "TestBpfCallKfuncAcquired",
             "TestBpfCallAllPointerGetListenerSock", "TestBpfCallAllPointerSkcToTcp6Sock", "TestBpfCallAllPointerSkcToTcpSock",

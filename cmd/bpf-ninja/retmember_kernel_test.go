@@ -44,6 +44,11 @@ func retKfunc(t *testing.T, kernel *btf.Spec, name string) asm.Instruction {
 	t.Helper()
 	var fn *btf.Func
 	if err := kernel.TypeByName(name, &fn); err != nil {
+		module, moduleErr := btf.LoadKernelModuleSpec("nf_conntrack")
+		var moduleFn *btf.Func
+		if moduleErr == nil && module.TypeByName(name, &moduleFn) == nil {
+			t.Skipf("skipping: kfunc %s is only in nf_conntrack module BTF", name)
+		}
 		t.Skipf("kfunc %s: %v", name, err)
 	}
 	id, err := kernel.TypeID(fn)
@@ -51,6 +56,26 @@ func retKfunc(t *testing.T, kernel *btf.Spec, name string) asm.Instruction {
 		t.Fatal(err)
 	}
 	return asm.Instruction{OpCode: asm.OpCode(asm.JumpClass).SetJumpOp(asm.Call), Src: asm.PseudoKfuncCall, Constant: int64(id)}
+}
+
+// retCtTupleMap writes the tuple and options into scratch and sets R1-R5.
+// Keeping the kfunc arguments out of the stack makes its stack floor exact.
+func retCtTupleMap(scratch *ebpf.Map) asm.Instructions {
+	return asm.Instructions{
+		asm.LoadMapValue(asm.R8, scratch.FD(), 0),
+		asm.StoreImm(asm.R8, 0, retIP([4]byte{10, 77, 0, 1}), asm.Word),
+		asm.StoreImm(asm.R8, 4, retIP([4]byte{10, 77, 0, 2}), asm.Word),
+		asm.StoreImm(asm.R8, 8, retPort(4321), asm.Half),
+		asm.StoreMem(asm.R8, 10, asm.R9, asm.Half),
+		asm.StoreImm(asm.R8, 12, 0, asm.Word),
+		asm.StoreImm(asm.R8, 16, -1, asm.Word),
+		asm.StoreImm(asm.R8, 20, 0, asm.Word),
+		asm.StoreImm(asm.R8, 24, unix.IPPROTO_TCP, asm.Word),
+		asm.StoreImm(asm.R8, 28, 0, asm.Word),
+		asm.Mov.Reg(asm.R1, asm.R6),
+		asm.Mov.Reg(asm.R2, asm.R8), asm.Mov.Imm(asm.R3, 12),
+		asm.Mov.Reg(asm.R4, asm.R8), asm.Add.Imm(asm.R4, 16), asm.Mov.Imm(asm.R5, 12),
+	}
 }
 
 // retIP is an IPv4 address as the immediate of a 4-byte store.
@@ -162,8 +187,8 @@ func retStatusOffset(t *testing.T, kernel *btf.Spec) int16 {
 
 // ctLookupProgram (ctprog) looks up the flow of the packet's port with
 // bpf_xdp_ct_lookup. A hit stores ct->status in out and passes, a miss drops.
-func ctLookupProgram(t *testing.T, kernel *btf.Spec, out *ebpf.Map) *ebpf.ProgramSpec {
-	insns := append(retPortFromPacket(), retCtTuple()...)
+func ctLookupProgram(t *testing.T, kernel *btf.Spec, out, scratch *ebpf.Map) *ebpf.ProgramSpec {
+	insns := append(retPortFromPacket(), retCtTupleMap(scratch)...)
 	insns = append(insns, retKfunc(t, kernel, "bpf_xdp_ct_lookup"),
 		asm.JNE.Imm(asm.R0, 0, "hit"),
 		asm.Mov.Imm(asm.R0, 1).WithSymbol("drop"), asm.Return(),
@@ -179,15 +204,16 @@ func ctLookupProgram(t *testing.T, kernel *btf.Spec, out *ebpf.Map) *ebpf.Progra
 // skLookupProgram (skprog) looks up the TCP socket for 127.0.0.1:4321 to
 // 127.0.0.1:port with bpf_skc_lookup_tcp; a hit releases it and passes, a
 // miss drops.
-func skLookupProgram() *ebpf.ProgramSpec {
+func skLookupProgram(scratch *ebpf.Map) *ebpf.ProgramSpec {
 	lo := [4]byte{127, 0, 0, 1}
 	insns := append(retPortFromPacket(),
-		asm.StoreImm(asm.RFP, -16, retIP(lo), asm.Word),
-		asm.StoreImm(asm.RFP, -12, retIP(lo), asm.Word),
-		asm.StoreImm(asm.RFP, -8, retPort(4321), asm.Half),
-		asm.StoreMem(asm.RFP, -6, asm.R9, asm.Half),
+		asm.LoadMapValue(asm.R8, scratch.FD(), 0),
+		asm.StoreImm(asm.R8, 0, retIP(lo), asm.Word),
+		asm.StoreImm(asm.R8, 4, retIP(lo), asm.Word),
+		asm.StoreImm(asm.R8, 8, retPort(4321), asm.Half),
+		asm.StoreMem(asm.R8, 10, asm.R9, asm.Half),
 		asm.Mov.Reg(asm.R1, asm.R6),
-		asm.Mov.Reg(asm.R2, asm.RFP), asm.Add.Imm(asm.R2, -16), asm.Mov.Imm(asm.R3, 12),
+		asm.Mov.Reg(asm.R2, asm.R8), asm.Mov.Imm(asm.R3, 12),
 		asm.Mov.Imm(asm.R4, -1), // BPF_F_CURRENT_NETNS
 		asm.Mov.Imm(asm.R5, 0),
 		asm.FnSkcLookupTcp.Call(),
@@ -255,9 +281,14 @@ func retMemberChild(t *testing.T, dir string) {
 		t.Fatal(err)
 	}
 	defer func() { _ = out.Close() }()
+	scratch, err := ebpf.NewMap(&ebpf.MapSpec{Name: "scratch", Type: ebpf.Array, KeySize: 4, ValueSize: 32, MaxEntries: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = scratch.Close() }()
 	retSeed(t, kernel, retFlowA, retSeeded)
 	retSeed(t, kernel, retFlowB, 0)
-	ct, err := ebpf.NewProgram(ctLookupProgram(t, kernel, out))
+	ct, err := ebpf.NewProgram(ctLookupProgram(t, kernel, out, scratch))
 	if err != nil {
 		t.Fatalf("ctprog: %v", err)
 	}
@@ -345,7 +376,7 @@ func retMemberChild(t *testing.T, dir string) {
 	}
 	defer func() { _ = l.Close() }()
 	port := uint16(l.Addr().(*net.TCPAddr).Port)
-	sk, err := ebpf.NewProgram(skLookupProgram())
+	sk, err := ebpf.NewProgram(skLookupProgram(scratch))
 	if err != nil {
 		t.Fatalf("skprog: %v", err)
 	}
@@ -391,6 +422,18 @@ func TestBpfRetMember(t *testing.T) {
 	if os.Geteuid() != 0 {
 		t.Skip("requires root and BPF privileges")
 	}
+	kernel, err := btf.LoadKernelSpec()
+	if err != nil {
+		t.Skipf("kernel BTF: %v", err)
+	}
+	var fn *btf.Func
+	if kernel.TypeByName("bpf_xdp_ct_alloc", &fn) != nil {
+		module, moduleErr := btf.LoadKernelModuleSpec("nf_conntrack")
+		var moduleFn *btf.Func
+		if moduleErr == nil && module.TypeByName("bpf_xdp_ct_alloc", &moduleFn) == nil {
+			t.Skip("skipping: kfunc bpf_xdp_ct_alloc is only in nf_conntrack module BTF")
+		}
+	}
 	t.Setenv("BPF_NINJA_INJECT_CONFIG", "")
 	dir := t.TempDir()
 	rules := []syscallhook.Rule{
@@ -403,7 +446,7 @@ func TestBpfRetMember(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("BPF_NINJA_RET_CHILD", out)
-	err := newRootCommand().Run(context.Background(), []string{"bpf-ninja", "inject-run", "--config", config, "--hooks-json", hooks,
+	err = newRootCommand().Run(context.Background(), []string{"bpf-ninja", "inject-run", "--config", config, "--hooks-json", hooks,
 		"--", os.Args[0], "-test.run=^TestBpfRetMember$", "-test.v"})
 	data, _ := os.ReadFile(hooks)
 	t.Logf("hooks:\n%s", data)
