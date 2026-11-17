@@ -16,8 +16,9 @@ import (
 	"github.com/cilium/ebpf/btf"
 )
 
-// readyRowCalls are the call-table callees the ready-rule loader calls.
-var readyRowCalls = []string{"bpf_ktime_get_ns", "bpf_jiffies64", "bpf_get_prandom_u32", "bpf_get_smp_processor_id", "bpf_xdp_get_buff_len"}
+// readyCalls are the callees the ready-rule loader calls: five with a
+// call-table row and bpf_get_numa_node_id, a helper without one.
+var readyCalls = []string{"bpf_ktime_get_ns", "bpf_jiffies64", "bpf_get_prandom_u32", "bpf_get_smp_processor_id", "bpf_xdp_get_buff_len", "bpf_get_numa_node_id"}
 
 // readyResult is what the ready-rule loader saw: the test run's action, the
 // map value afterwards and the names of the loaded program's functions.
@@ -153,7 +154,7 @@ func TestBpfReadyRuleRoundTrip(t *testing.T) {
 			numa = &file.Programs[0].Callees[i]
 		}
 	}
-	if numa == nil || numa.Typed || numa.Reason != "no hook form yet" {
+	if numa == nil || numa.Typed || numa.Reason != "" {
 		t.Fatalf("callee without a row: %+v", numa)
 	}
 	// Load with the rule as emitted (jq '[.programs[].rule]').
@@ -186,12 +187,12 @@ func TestBpfReadyRuleRoundTrip(t *testing.T) {
 			calls[h.Call] = true
 		}
 	}
-	for _, name := range readyRowCalls {
+	for _, name := range readyCalls {
 		if !calls[name] || !slices.Contains(ready.Funcs, "ninja_"+name) {
 			t.Errorf("%s: no hook (hooks %v, funcs %v)", name, calls, ready.Funcs)
 		}
 	}
-	if len(calls) != len(readyRowCalls) || !slices.Contains(ready.Funcs, "ninja_entry") || !slices.Contains(ready.Funcs, "ninja_sessions") {
+	if len(calls) != len(readyCalls) || !slices.Contains(ready.Funcs, "ninja_entry") || !slices.Contains(ready.Funcs, "ninja_sessions") {
 		t.Errorf("ready rule hooks: %v, funcs %v", calls, ready.Funcs)
 	}
 	// Delete one name.

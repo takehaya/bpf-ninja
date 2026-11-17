@@ -87,8 +87,8 @@ type discoveredMapJSON struct {
 }
 
 // calleeJSON is one helper or kernel function the program calls (see
-// inject.Callee). Typed callees may be named in a rule's calls; Reason says
-// why another gets no hook.
+// inject.Callee). Callees without a Reason may be named in a rule's calls,
+// Typed ones with their typed hook; Reason says why another gets no hook.
 type calleeJSON struct {
 	Name   string   `json:"name"`
 	Kind   string   `json:"kind"`
@@ -208,7 +208,8 @@ func discoveryJSON(d syscallhook.Discovery, kinds map[string]bool) discoveredPro
 
 // readyRule is the hook_prefix rule that names everything of the listed kinds
 // out can hook: each named map with a call of a listed op, and those ops as
-// op:any; the callees with a call-table row; the entry; and the tail calls
+// op:any; the callees without a reason (with a call-table row, or a helper
+// that may be hooked); the entry; and the tail calls
 // when the program has one. A key left out hooks nothing of its kind.
 func readyRule(out discoveredProgJSON, d syscallhook.Discovery, kinds map[string]bool) syscallhook.Rule {
 	rule := syscallhook.Rule{Program: cmp.Or(d.Func, d.Program), Auto: true, HookPrefix: lookupsRuleHook,
@@ -232,7 +233,7 @@ func readyRule(out discoveredProgJSON, d syscallhook.Discovery, kinds map[string
 		}
 	}
 	for _, c := range out.Callees {
-		if c.Typed {
+		if c.Reason == "" {
 			rule.Calls = append(rule.Calls, c.Name)
 		}
 	}

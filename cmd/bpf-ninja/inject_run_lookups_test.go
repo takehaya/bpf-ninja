@@ -158,29 +158,31 @@ func TestDiscoveryJSONReadyRule(t *testing.T) {
 		CallSites: inject.CallDiscovery{
 			Sites: []inject.LookupSite{
 				{Op: inject.HookCall, SitePC: 30, Call: "bpf_ktime_get_ns", FuncName: "p", CtxSource: "entry"},
-				{Op: inject.HookCall, SitePC: 34, Call: "bpf_get_numa_node_id", FuncName: "p", Reason: "no hook form yet"},
+				{Op: inject.HookCall, SitePC: 34, Call: "bpf_get_numa_node_id", FuncName: "p", CtxSource: "entry"},
+				{Op: inject.HookCall, SitePC: 36, Call: "bpf_dynptr_from_xdp", FuncName: "p", Reason: "no hook form yet"},
 				{Op: inject.HookCall, SitePC: 38, Call: "bpf_xdp_ct_lookup", FuncName: "p", CtxSource: "entry"},
 			},
 			TailCalls: []inject.LookupSite{{Op: inject.HookTailCall, SitePC: 40, FuncName: "p"}},
 			Callees: []inject.Callee{
 				{Name: "bpf_ktime_get_ns", Kind: "helper", Ret: inject.RetScalar, Typed: true, Sites: []uint32{30}},
-				{Name: "bpf_get_numa_node_id", Kind: "helper", Ret: inject.RetScalar, Sites: []uint32{34}, Reason: "no hook form yet"},
+				{Name: "bpf_get_numa_node_id", Kind: "helper", Ret: inject.RetScalar, Sites: []uint32{34}},
+				{Name: "bpf_dynptr_from_xdp", Kind: "kfunc", Ret: inject.RetScalar, Sites: []uint32{36}, Reason: "no hook form yet"},
 				{Name: "bpf_xdp_ct_lookup", Kind: "kfunc", Ret: inject.RetPointer, Typed: true, Sites: []uint32{38}},
 			},
-			Labels:      map[uint32]string{12: "services@p+12", 20: "flows.update@p+20", 25: "any@p+25", 30: "bpf_ktime_get_ns@p+30", 34: "bpf_get_numa_node_id@p+34", 38: "bpf_xdp_ct_lookup@p+38", 40: "tail_call@p+40"},
+			Labels:      map[uint32]string{12: "services@p+12", 20: "flows.update@p+20", 25: "any@p+25", 30: "bpf_ktime_get_ns@p+30", 34: "bpf_get_numa_node_id@p+34", 36: "bpf_dynptr_from_xdp@p+36", 38: "bpf_xdp_ct_lookup@p+38", 40: "tail_call@p+40"},
 			Fingerprint: "sha256:00",
 		}}
 	all, _ := parseLookupsKinds("")
 	out := discoveryJSON(d, all)
 	rule, _ := json.Marshal(out.Rule)
 	if want := `{"program":"p","auto":true,"maps":["services","flows"],"entry":true,"tail_calls":true,` +
-		`"calls":["bpf_ktime_get_ns","bpf_xdp_ct_lookup"],"ops":["lookup:any","update:any"],"hook_prefix":"ninja"}`; string(rule) != want {
+		`"calls":["bpf_ktime_get_ns","bpf_get_numa_node_id","bpf_xdp_ct_lookup"],"ops":["lookup:any","update:any"],"hook_prefix":"ninja"}`; string(rule) != want {
 		t.Errorf("rule\n%s\nwant\n%s", rule, want)
 	}
 	if _, err := syscallhook.ParseConfig(strings.NewReader("[" + string(rule) + "]")); err != nil {
 		t.Errorf("rule does not parse: %v", err)
 	}
-	if out.Build != "sha256:00" || len(out.Callees) != 3 || out.Callees[1].Reason != "no hook form yet" || len(out.CallSites) != 3 || len(out.TailCalls) != 1 {
+	if out.Build != "sha256:00" || len(out.Callees) != 4 || out.Callees[2].Reason != "no hook form yet" || len(out.CallSites) != 4 || len(out.TailCalls) != 1 {
 		t.Errorf("build %q callees %+v call sites %+v tail calls %+v", out.Build, out.Callees, out.CallSites, out.TailCalls)
 	}
 	for _, list := range [][]hookSiteJSON{out.Lookups, out.Calls, out.CallSites, out.TailCalls} {
@@ -192,7 +194,7 @@ func TestDiscoveryJSONReadyRule(t *testing.T) {
 	}
 	// Each subset of kinds names only its kinds; a key left out hooks nothing of its kind.
 	for kinds, want := range map[string]string{
-		"helpers":           `{"program":"p","auto":true,"calls":["bpf_ktime_get_ns"],"hook_prefix":"ninja"}`,
+		"helpers":           `{"program":"p","auto":true,"calls":["bpf_ktime_get_ns","bpf_get_numa_node_id"],"hook_prefix":"ninja"}`,
 		"kfuncs":            `{"program":"p","auto":true,"calls":["bpf_xdp_ct_lookup"],"hook_prefix":"ninja"}`,
 		"map_calls":         `{"program":"p","auto":true,"maps":["flows"],"ops":["update:any"],"hook_prefix":"ninja"}`,
 		"lookups,entry":     `{"program":"p","auto":true,"maps":["services"],"entry":true,"ops":["lookup:any"],"hook_prefix":"ninja"}`,
@@ -209,7 +211,7 @@ func TestDiscoveryJSONReadyRule(t *testing.T) {
 		if rule, _ := json.Marshal(out.Rule); string(rule) != want {
 			t.Errorf("%s: rule\n%s\nwant\n%s", kinds, rule, want)
 		}
-		if got := len(out.CallSites); got != map[string]int{"helpers": 2, "kfuncs": 1}[kinds] {
+		if got := len(out.CallSites); got != map[string]int{"helpers": 2, "kfuncs": 2}[kinds] {
 			t.Errorf("%s: %d call sites", kinds, got)
 		}
 	}
