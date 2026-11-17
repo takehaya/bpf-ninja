@@ -211,36 +211,31 @@ func TestCallNotBlockedBySpinLock(t *testing.T) {
 	}
 }
 
-// An unnameable kfunc skips every requested call site without affecting the
-// request's other hooks.
-func TestCallBlockedByUnnameableKfunc(t *testing.T) {
+// Neither an unnameable kfunc nor bpf_preempt_disable keeps the program's
+// other call sites from their hooks: a site the kernel refuses inside a
+// preemption-disabled region is left to the load retry.
+func TestCallNotBlockedByKfuncs(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
-		offset int16
+		call   asm.Instruction
 		kernel *btf.Spec
 	}{
-		{name: "nil kernel"},
-		{name: "missing module", offset: 1, kernel: testKernelSpec(t)},
+		{"nil kernel", kfuncCall(1), nil},
+		{"missing module", asm.Instruction{OpCode: asm.OpCode(asm.JumpClass).SetJumpOp(asm.Call), Src: asm.PseudoKfuncCall, Constant: 1, Offset: 1}, testKernelSpec(t)},
+		{"preempt disable", kfuncCall(-1).WithReference("bpf_preempt_disable"), nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			spec := scalarFixture()
 			insns := spec.Programs["p"].Instructions
-			call := kfuncCall(1)
-			call.Offset = tc.offset
-			spec.Programs["p"].Instructions = slices.Insert(insns, len(insns)-1, call)
+			spec.Programs["p"].Instructions = slices.Insert(insns, len(insns)-1, tc.call)
 			req := callReq("bpf_get_prandom_u32", "bpf_jiffies64")
 			req.Entry, req.Kernel = true, tc.kernel
 			plan, err := transformLookup(spec, req)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if len(plan.hooks) != 1 || plan.hooks[0].Kind != HookEntry || len(plan.skipped) != 2 {
+			if len(plan.hooks) != 3 || len(plan.skipped) != 0 {
 				t.Fatalf("hooks %+v skipped %+v", plan.hooks, plan.skipped)
-			}
-			for _, site := range plan.skipped {
-				if site.Reason != "call: a kernel-function call in the program cannot be named" {
-					t.Errorf("skipped %+v", site)
-				}
 			}
 		})
 	}
@@ -423,7 +418,7 @@ func TestCallKfuncRaw(t *testing.T) {
 	if !slices.Equal(params, []string{"ctx", "site", "arg", "ret"}) || fn.ParamTags[2][0] != "arg:untrusted" || fn.ParamTags[3][0] != "arg:untrusted" {
 		t.Errorf("params %v tags %v", params, fn.ParamTags)
 	}
-	// Without kernel BTF the kfunc cannot be named: every call site is skipped.
+	// Without kernel BTF the kfunc cannot be named, so it is not a site.
 	req.Kernel = nil
 	spec = ctFixture(ebpf.XDP, func(name string) asm.Instruction { return testKfunc(t, kernel, name) }, 0, 8101, false)
 	plan, err = transformLookup(spec, req)

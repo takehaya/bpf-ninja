@@ -648,10 +648,6 @@ func discoverSites(insns asm.Instructions, typ ebpf.ProgramType, resolve lookupM
 	// and consts those holding a constant set in this block.
 	var ownStack, isConst [asm.R10 + 1]bool
 	var consts [asm.R10 + 1]int64
-	blocked := ""
-	if len(req.Calls) != 0 {
-		blocked = callsBlocked(insns, req.Kernel, req.Modules)
-	}
 	it = insns.Iterate()
 	for it.Next() {
 		pc, ins := int(it.Offset), it.Ins
@@ -734,8 +730,6 @@ func discoverSites(insns asm.Instructions, typ ebpf.ProgramType, resolve lookupM
 			var argSize uint32
 			if site.Reason == "" && row != nil {
 				switch {
-				case blocked != "":
-					site.Reason = blocked
 				case callReason(insns, it.Index) != "":
 					site.Reason = callReason(insns, it.Index)
 				case row.ArgReg != 0 && (!isConst[row.SizeReg] || consts[row.SizeReg] <= 0 || consts[row.SizeReg] > 512):

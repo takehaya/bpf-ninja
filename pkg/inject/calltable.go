@@ -204,25 +204,3 @@ func callArgType(row *CallRow, n uint32, prog, kernel *btf.Spec) (typ btf.Type, 
 	}
 	return orBytes(nil, n), ""
 }
-
-// callsBlocked returns why no call site of the program may be hooked, or "": the program calls
-// bpf_preempt_disable, under which a hook call may be refused, or holds a kfunc call that cannot be
-// named (see callee). A spin lock blocks nothing: with a lock held the verifier accepts only
-// bpf_spin_unlock and the kfuncs it lets run under a lock, all denied by name, so no site that may be
-// hooked lies inside a locked region.
-func callsBlocked(insns asm.Instructions, kernel *btf.Spec, modules map[int16]*btf.Spec) string {
-	for i := range insns {
-		ins := &insns[i]
-		if !ins.IsKfuncCall() {
-			continue
-		}
-		_, name, named := callee(ins, kernel, modules)
-		if !named {
-			return "call: a kernel-function call in the program cannot be named"
-		}
-		if name == "bpf_preempt_disable" {
-			return "call: the program calls " + name + ", under which a hook call may be refused"
-		}
-	}
-	return ""
-}

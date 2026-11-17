@@ -5,7 +5,6 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/asm"
 	"github.com/cilium/ebpf/btf"
 )
@@ -160,9 +159,6 @@ func TestCalleeModule(t *testing.T) {
 			if got != tc.row || named != tc.named {
 				t.Fatalf("callee = (%q, %v), want (%q, %v)", got, named, tc.row, tc.named)
 			}
-			if blocked := callsBlocked(asm.Instructions{tc.ins}, kernel, tc.modules) != ""; blocked == tc.named {
-				t.Fatalf("callsBlocked blocked=%v, want %v", blocked, !tc.named)
-			}
 		})
 	}
 }
@@ -223,31 +219,4 @@ func typesOf(spec *btf.Spec) []btf.Type {
 		}
 	}
 	return types
-}
-
-func TestCallsBlocked(t *testing.T) {
-	kernel := testKernelSpec(t)
-	ret := []asm.Instruction{asm.Mov.Imm(asm.R0, 0), asm.Return()}
-	prog := func(calls ...asm.Instruction) asm.Instructions { return append(calls, ret...) }
-	ct := ctFixture(ebpf.XDP, func(name string) asm.Instruction { return testKfunc(t, kernel, name) }, 8, 80, false)
-	for _, tc := range []struct {
-		name   string
-		insns  asm.Instructions
-		kernel *btf.Spec
-		want   string
-	}{
-		{"helpers only", prog(asm.FnKtimeGetNs.Call(), asm.FnMapLookupElem.Call()), nil, ""},
-		{"conntrack kfuncs by id", ct.Programs["p"].Instructions, kernel, ""},
-		{"spin lock", prog(asm.FnKtimeGetNs.Call(), asm.FnSpinLock.Call()), nil, ""},
-		{"preempt disable", prog(kfuncCall(-1).WithReference("bpf_preempt_disable")), nil, "call: the program calls bpf_preempt_disable, under which a hook call may be refused"},
-		{"res spin lock", prog(kfuncCall(-1).WithReference("bpf_res_spin_lock_irqsave")), nil, ""},
-		{"kfunc by id, nil kernel", ct.Programs["p"].Instructions, nil, "call: a kernel-function call in the program cannot be named"},
-		{"kfunc in a module", prog(asm.Instruction{OpCode: asm.OpCode(asm.JumpClass).SetJumpOp(asm.Call), Src: asm.PseudoKfuncCall, Constant: 5, Offset: 1}), kernel, "call: a kernel-function call in the program cannot be named"},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			if got := callsBlocked(tc.insns, tc.kernel, nil); got != tc.want {
-				t.Fatalf("callsBlocked = %q, want %q", got, tc.want)
-			}
-		})
-	}
 }
