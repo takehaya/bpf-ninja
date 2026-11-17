@@ -184,12 +184,16 @@ func kfuncRet(ins *asm.Instruction, kernel *btf.Spec, modules map[int16]*btf.Spe
 	return ""
 }
 
+// UnnamedKfunc stands in PremiseCalls for kernel-function calls that could not be named.
+const UnnamedKfunc = "a kernel function that could not be named"
+
 // PremiseCalls returns the names of the helpers and kernel functions on the
 // deny list (denyReason) that insns call anywhere, in call order without
 // repeats. The equivalence theorem assumes the original program calls none of
 // them. The transform adds no helper or kernel-function call, so a rewritten
 // program gives the same names as its original. A kernel-function call that
-// kernel and modules cannot name is not seen.
+// kernel and modules cannot name may be a denied one: it is reported once as
+// UnnamedKfunc.
 func PremiseCalls(insns asm.Instructions, kernel *btf.Spec, modules map[int16]*btf.Spec) []string {
 	var names []string
 	for i := range insns {
@@ -201,9 +205,12 @@ func PremiseCalls(insns asm.Instructions, kernel *btf.Spec, modules map[int16]*b
 		if h, ok := helperByID(ins.Constant); ins.IsBuiltinCall() && ok {
 			name = h.Name
 		} else if ins.IsKfuncCall() {
-			_, name, _ = callee(ins, kernel, modules)
+			var named bool
+			if _, name, named = callee(ins, kernel, modules); !named {
+				name = UnnamedKfunc
+			}
 		}
-		if name != "" && denyReason(name) != "" && !slices.Contains(names, name) {
+		if name != "" && (name == UnnamedKfunc || denyReason(name) != "") && !slices.Contains(names, name) {
 			names = append(names, name)
 		}
 	}

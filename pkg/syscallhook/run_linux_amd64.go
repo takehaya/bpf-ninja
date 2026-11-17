@@ -1053,7 +1053,7 @@ func (s *supervisor) entry(pid int, t *thread, regs unix.PtraceRegs) error {
 		}
 	} else {
 		s.log("program %q: injected %s, tracee fd %d%s", name, summary, ret, branches)
-		premise := inject.PremiseCalls(result.Instructions, s.kernel, nil)
+		premise := rewrite.premise
 		if len(premise) != 0 {
 			s.log("program %q: outside the theorem's premise: calls %s", name, strings.Join(premise, ", "))
 		}
@@ -1335,6 +1335,7 @@ type transformed struct {
 	retry     bool              // a trial of the retry, with its own drop list
 	build     string            // the listing fingerprint of the original
 	labels    map[uint32]string // the listing's site labels by pc
+	premise   []string          // inject.PremiseCalls of the original, named with the load's kernel and module BTF
 }
 
 // sitesRefusal is a load a rule's sites refused (Sites.drop).
@@ -1439,7 +1440,7 @@ func (s *supervisor) transform(r *remote, attr []byte, rule Rule, form HookForm,
 		return nil, "", err
 	}
 	t = &transformed{result: result, request: request, original: raw.Instructions, missFirst: missFirst, retry: drop != nil,
-		build: list.Fingerprint, labels: list.Labels}
+		build: list.Fingerprint, labels: list.Labels, premise: inject.PremiseCalls(raw.Instructions, listed.Kernel, listed.Modules)}
 	t.cert, t.premises, err = loadCheckInputs(raw.Instructions, result, request.Stack, stack)
 	if errors.Is(err, inject.ErrCheckerNotApplicable) && drop == nil {
 		s.log("program %q: %v; load not validated", rule.Program, err)

@@ -229,8 +229,8 @@ func TestPremiseCalls(t *testing.T) {
 	if got := PremiseCalls(insns, kernel, nil); !slices.Equal(got, []string{"bpf_spin_lock", "bpf_iter_x_new", "bpf_loop"}) {
 		t.Errorf("premise calls %v", got)
 	}
-	// Without kernel BTF the kernel-function call cannot be named.
-	if got := PremiseCalls(insns, nil, nil); !slices.Equal(got, []string{"bpf_spin_lock", "bpf_loop"}) {
+	// Without kernel BTF the kernel-function calls cannot be named, and say so once.
+	if got := PremiseCalls(insns, nil, nil); !slices.Equal(got, []string{"bpf_spin_lock", UnnamedKfunc, "bpf_loop"}) {
 		t.Errorf("without kernel BTF: %v", got)
 	}
 	if got := PremiseCalls(insns[:1], kernel, nil); got != nil {
