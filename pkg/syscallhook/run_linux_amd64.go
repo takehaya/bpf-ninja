@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"cmp"
 	"context"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -114,6 +115,7 @@ type Injection struct {
 	Stack         inject.StackReport
 	Build         string
 	Labels        map[uint32]string
+	Tag           string // the loaded program's kernel tag in hex, empty with ProgID zero
 	// OutsidePremise names the denied callees the original program calls
 	// (inject.PremiseCalls): the theorem is not claimed for this load.
 	OutsidePremise []string
@@ -1058,11 +1060,11 @@ func (s *supervisor) entry(pid int, t *thread, regs unix.PtraceRegs) error {
 		if s.options.OnInject != nil {
 			inj := Injection{HookForm: form, Program: name, Func: entry, Type: ebpf.ProgramType(u32(attr, 0)), Hooks: result.Hooks, Skipped: result.Skipped, Stack: stack,
 				Build: rewrite.build, Labels: rewrite.labels, OutsidePremise: premise}
-			// bpf_prog_info starts with type and id.
-			if info, err := r.info(uint32(ret), 8); err != nil {
+			// bpf_prog_info starts with type, id and the 8-byte tag.
+			if info, err := r.info(uint32(ret), 16); err != nil {
 				s.log("program %q: cannot query program ID: %v", name, err)
 			} else {
-				inj.ProgID = u32(info, 4)
+				inj.ProgID, inj.Tag = u32(info, 4), hex.EncodeToString(info[8:16])
 			}
 			if r.broken != nil {
 				return r.broken

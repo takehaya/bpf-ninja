@@ -106,6 +106,14 @@ func rootFlags() []cli.Flag {
 			Name:  "json",
 			Usage: "emit --list-progs / --list-funcs / --list-params output as JSON on stdout instead of human-readable text on stderr",
 		},
+		&cli.StringFlag{
+			Name:  "site",
+			Usage: "capture at one injected site: a label or pc from the file inject-run --hooks-json wrote (needs --hooks-json and one -p); sets --func to the site's hook and adds --arg-filter site==PC, ANDed with other --arg-filter",
+		},
+		&cli.StringFlag{
+			Name:  "hooks-json",
+			Usage: "with --site, the file inject-run --hooks-json wrote; its entry for -p must have the loaded program's tag",
+		},
 		&cli.StringSliceFlag{
 			Name:  "arg-filter",
 			Usage: "filter by function argument value (requires --func or an entry function with filterable parameters); format: param=value (or ==), param!=value, param>=val, param<=val, param=min..max; also param->member.member with constant array indexes as in param->member[N].member, param[0], status.ret and status.flags at a generated hook, be16/32/64(value) for equality, pointer=null/!=null, or @NAME to match against a --set pinned-map set",
@@ -609,6 +617,9 @@ func run(ctx context.Context, cmd *cli.Command) error {
 			_ = in.Program.Close()
 		}
 	}()
+	if err := expandSite(cmd, infos); err != nil {
+		return err
+	}
 
 	// --json only shapes the --list-* output; on a normal capture run it
 	// would silently do nothing while pcap still streamed to stdout. Reject

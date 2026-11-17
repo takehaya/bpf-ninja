@@ -5,15 +5,18 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/asm"
 	"github.com/cilium/ebpf/btf"
+	"github.com/cilium/ebpf/rlimit"
 	"github.com/takehaya/bpf-ninja/pkg/syscallhook"
 )
 
@@ -29,8 +32,9 @@ type sitesResult struct {
 // bpf_ktime_get_ns twice with bpf_jiffies64 between them and returns the
 // value at key 0 of sessions. With changed, one instruction before the
 // second clock call differs. It writes a sitesResult to path; a refused load
-// is written as its error.
-func loadSitesProgram(t *testing.T, path string, changed bool) {
+// is written as its error. With loaded, it calls loaded with the program
+// before it writes the result.
+func loadSitesProgram(t *testing.T, path string, changed bool, loaded func(*ebpf.Program)) {
 	u32 := &btf.Int{Name: "u32", Size: 4}
 	m, err := ebpf.NewMap(&ebpf.MapSpec{Name: "sessions", Type: ebpf.Hash, KeySize: 4, ValueSize: 4, MaxEntries: 1, Key: u32, Value: u32})
 	if err != nil {
@@ -80,6 +84,9 @@ func loadSitesProgram(t *testing.T, path string, changed bool) {
 		for _, f := range funcs {
 			out.Funcs = append(out.Funcs, f.Func.Name)
 		}
+		if loaded != nil {
+			loaded(p)
+		}
 	} else {
 		out.Error = err.Error()
 	}
@@ -96,7 +103,7 @@ func loadSitesProgram(t *testing.T, path string, changed bool) {
 // fingerprints, and the original loads; with --fail-closed the load fails.
 func TestBpfSitesSelection(t *testing.T) {
 	if out := os.Getenv("BPF_NINJA_SITES_CHILD"); out != "" {
-		loadSitesProgram(t, out, os.Getenv("BPF_NINJA_SITES_CHANGED") != "")
+		loadSitesProgram(t, out, os.Getenv("BPF_NINJA_SITES_CHANGED") != "", nil)
 		return
 	}
 	if os.Geteuid() != 0 {
@@ -212,4 +219,103 @@ func TestBpfSitesSelection(t *testing.T) {
 	if !strings.Contains(r.Error, "operation not permitted") || len(file.Refused) == 0 || len(file.Programs) != 0 {
 		t.Errorf("--fail-closed: %+v, hooks file %+v", r, file)
 	}
+}
+
+// captureSite captures at the clock site labelled site with --site while
+// prog runs: the hook reports both clock calls, the capture only the one at
+// site, once per run. Three runs leave the capture of four packets running;
+// the fourth ends it.
+func captureSite(t *testing.T, prog *ebpf.Program, hooks, site string) {
+	if err := rlimit.RemoveMemlock(); err != nil {
+		t.Fatal(err)
+	}
+	info, err := prog.Info()
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, _ := info.ID()
+	pcap := filepath.Join(filepath.Dir(hooks), "site.pcapng")
+	c := startCapture(t, "-p", fmt.Sprint(id), "--hooks-json", hooks, "--site", site, "-w", pcap, "-c", "4", "--no-cpu-affinity", "-v")
+	c.waitFor("capturing (")
+	runs := func(n int) {
+		for range n {
+			if _, _, err := prog.Test(make([]byte, 64)); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	runs(3)
+	select {
+	case err := <-c.done:
+		c.restore()
+		t.Fatalf("the capture ended after three runs (%v): the filter let the other clock call through", err)
+	case <-time.After(time.Second):
+	}
+	runs(1)
+	stderr := c.finish()
+	if n := len(epbInterfaces(t, pcap)); n != 4 {
+		t.Errorf("%d packets, want 4\n%s", n, stderr)
+	}
+	if !strings.Contains(stderr, fmt.Sprintf("attach target: prog id=%d func=\"ninja_bpf_ktime_get_ns\"", id)) {
+		t.Errorf("no attach to the clock hook:\n%s", stderr)
+	}
+}
+
+// Capture by label: the ready rule hooks both clock calls through one hook;
+// --site with the second call's label from the hooks file captures only
+// that call. The capture runs in the loader while its program is loaded.
+func TestBpfSitesCapture(t *testing.T) {
+	if out := os.Getenv("BPF_NINJA_SITES_CHILD"); out != "" {
+		var capture func(*ebpf.Program)
+		if site := os.Getenv("BPF_NINJA_SITES_SITE"); site != "" { // not while listing
+			capture = func(p *ebpf.Program) { captureSite(t, p, os.Getenv("BPF_NINJA_SITES_HOOKS"), site) }
+		}
+		loadSitesProgram(t, out, false, capture)
+		return
+	}
+	if os.Geteuid() != 0 {
+		t.Skip("requires root and BPF privileges")
+	}
+	t.Setenv("BPF_NINJA_INJECT_CONFIG", "")
+	dir := t.TempDir()
+	child := []string{"--", os.Args[0], "-test.run=^TestBpfSitesCapture$"}
+	run := func(name string, flags ...string) {
+		t.Helper()
+		t.Setenv("BPF_NINJA_SITES_CHILD", filepath.Join(dir, name+".out"))
+		if err := newRootCommand().Run(context.Background(), append(append([]string{"bpf-ninja", "inject-run"}, flags...), child...)); err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if _, err := os.Stat(filepath.Join(dir, name+".out")); err != nil {
+			t.Fatalf("%s: the loader did not finish: %v", name, err)
+		}
+	}
+	sites := filepath.Join(dir, "sites.json")
+	run("list", "--lookups-json", sites)
+	data, err := os.ReadFile(sites)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var listing lookupsFileJSON
+	if err := json.Unmarshal(data, &listing); err != nil || len(listing.Programs) != 1 {
+		t.Fatalf("listing: %v", err)
+	}
+	var clock []string
+	for _, site := range listing.Programs[0].CallSites {
+		if site.Call == "bpf_ktime_get_ns" {
+			clock = append(clock, site.Label)
+		}
+	}
+	if len(clock) != 2 {
+		t.Fatalf("clock labels %v", clock)
+	}
+	encoded, _ := json.Marshal([]syscallhook.Rule{listing.Programs[0].Rule})
+	config, hooks := filepath.Join(dir, "rules.json"), filepath.Join(dir, "hooks.json")
+	if err := os.WriteFile(config, encoded, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("BPF_NINJA_SITES_HOOKS", hooks)
+	t.Setenv("BPF_NINJA_SITES_SITE", clock[1])
+	run("capture", "--config", config, "--hooks-json", hooks)
+	data, _ = os.ReadFile(hooks)
+	t.Logf("hooks:\n%s", data)
 }

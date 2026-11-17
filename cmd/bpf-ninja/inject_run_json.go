@@ -41,13 +41,15 @@ type refusedJSON struct {
 // tracee could not query it. OutsidePremise, "calls NAME, ...", marks a load
 // whose original program calls a denied callee: the theorem is not claimed
 // for it. Build is the listing fingerprint of the original program, as the
-// lookups file gives it; every site then carries its label.
+// lookups file gives it; every site then carries its label. Tag is the
+// loaded program's kernel tag, which capture --site compares.
 type injectedProgJSON struct {
 	Program  string               `json:"program"`
 	Func     string               `json:"func"`
 	Type     string               `json:"type"`
 	ProgID   uint32               `json:"prog_id"`
 	Build    string               `json:"build,omitempty"`
+	Tag      string               `json:"tag,omitempty"`
 	CtxType  string               `json:"ctx_type"`
 	HookForm syscallhook.HookForm `json:"hook_form"`
 	Hooks    []hookJSON           `json:"hooks"`
@@ -221,7 +223,7 @@ func hookKind(hook inject.LookupHook) string {
 
 func injectionJSON(inj syscallhook.Injection) injectedProgJSON {
 	out := injectedProgJSON{HookForm: inj.HookForm, Program: inj.Program, Func: inj.Func, Type: inj.Type.String(), ProgID: inj.ProgID,
-		Build: inj.Build, CtxType: inject.ContextType(inj.Type), Hooks: []hookJSON{}, Skipped: []hookSiteJSON{}}
+		Build: inj.Build, Tag: inj.Tag, CtxType: inject.ContextType(inj.Type), Hooks: []hookJSON{}, Skipped: []hookSiteJSON{}}
 	if len(inj.OutsidePremise) != 0 {
 		out.OutsidePremise = "calls " + strings.Join(inj.OutsidePremise, ", ")
 	}
