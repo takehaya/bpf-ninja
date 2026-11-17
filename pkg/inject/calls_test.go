@@ -175,7 +175,7 @@ func TestCallRefusals(t *testing.T) {
 		{"map helper", func(r *LookupRequest) { r.Calls = []string{"bpf_map_update_elem"} }, `Calls name "bpf_map_update_elem" cannot be hooked: a map helper: the rule's maps and ops observe it`},
 		{"tail call", func(r *LookupRequest) { r.Calls = []string{"bpf_tail_call"} }, `Calls name "bpf_tail_call" cannot be hooked: a tail call: the rule's tail_calls observes it`},
 		{"unspec", func(r *LookupRequest) { r.Calls = []string{"bpf_unspec"} }, `Calls name "bpf_unspec" cannot be hooked: not a callable helper`},
-		{"pointer kind", func(r *LookupRequest) { r.Calls = []string{"bpf_get_listener_sock"} }, `Calls name "bpf_get_listener_sock" cannot be hooked: ` + noPointerTest},
+		{"pointer kind", func(r *LookupRequest) { r.Calls = []string{"bpf_get_local_storage"} }, `Calls name "bpf_get_local_storage" cannot be hooked: ` + noPointerTest},
 		{"native stack", func(r *LookupRequest) { r.Calls = []string{"bpf_get_stackid"} },
 			`Calls name "bpf_get_stackid" cannot be hooked: reads native code addresses or branch records, which inserted code may change`},
 		{"denied kfunc", func(r *LookupRequest) { r.Calls = []string{"bpf_throw"} }, `Calls name "bpf_throw" cannot be hooked: does not return`},

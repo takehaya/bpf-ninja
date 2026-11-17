@@ -38,10 +38,10 @@ def allowed_skip(package, test, output, kernel):
         if test == "TestBpfLookupHooksNetfilter":
             return kernel == "6.1" and "BPF_PROG_TYPE_NETFILTER not supported" in output
         # The kfunc tests skip on kernels without their kfuncs: 6.1 has none of
-        # bpf_dynptr_from_xdp, bpf_task_from_pid and bpf_get_kmem_cache, which
-        # appears in 6.13.
+        # bpf_dynptr_from_xdp, bpf_task_from_pid, bpf_cgroup_from_id and
+        # bpf_get_kmem_cache, which appears in 6.13.
         if test in {"TestBpfCallKfuncScalar", "TestBpfCallKfuncDynptrSlice", "TestBpfCallKfuncAcquired",
-                    "TestBpfCallKfuncAcquiredMissingRelease"} and "kernel lacks kfunc" in output:
+                    "TestBpfCallKfuncAcquiredMissingRelease", "TestBpfCallAllPointerCgrpStorageGet"} and "kernel lacks kfunc" in output:
             return kernel == "6.1"
         if test == "TestBpfCallKfuncPointer" and "kernel lacks kfunc" in output:
             return kernel in {"6.1", "6.6", "6.12"}
@@ -76,6 +76,11 @@ def allowed_skip(package, test, output, kernel):
             "TestBpfCallHookRowLoadBytesMapUntrusted", "TestBpfCallAllPointerSkFullsock", "TestBpfCallAllPointerTcpSock",
             "TestBpfCallAllPointerRingbufReserve", "TestBpfCallAllPointerThisCpuPtr", "TestBpfCallAllPointerKptrXchg",
             "TestBpfCallKfuncPointer", "TestBpfCallKfuncDynptrSlice", "TestBpfCallKfuncAcquired",
+            "TestBpfCallAllPointerGetListenerSock", "TestBpfCallAllPointerSkcToTcp6Sock", "TestBpfCallAllPointerSkcToTcpSock",
+            "TestBpfCallAllPointerSkcToTcpTimewaitSock", "TestBpfCallAllPointerSkcToTcpRequestSock",
+            "TestBpfCallAllPointerSkcToUdp6Sock", "TestBpfCallAllPointerSkcToUnixSock", "TestBpfCallAllPointerSkcToMptcpSock",
+            "TestBpfCallAllPointerSkStorageGet", "TestBpfCallAllPointerPerCpuPtr", "TestBpfCallAllPointerDynptrData",
+            "TestBpfCallAllPointerGetCurrentTaskBtf", "TestBpfCallAllPointerTaskPtRegs", "TestBpfCallAllPointerCgrpStorageGet",
         } and "kernel lacks arg:untrusted" in output
     # The record tests at untrusted and non-static dispatch hooks need
     # arg:untrusted, which 6.15 and older reject; the static dispatch case

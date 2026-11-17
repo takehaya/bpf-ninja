@@ -48,8 +48,14 @@ var callTable = []CallRow{
 
 // pointerResults are the helpers with a pointer result and no row that get
 // the result-only pointer hook. A pointer kind is listed only when its kernel
-// test (calls_all_kernel_test.go) passes on 6.1, 6.12, 6.18 and 7.0.
-var pointerResults = []string{"bpf_sk_fullsock", "bpf_tcp_sock", "bpf_ringbuf_reserve", "bpf_this_cpu_ptr", "bpf_kptr_xchg"}
+// test (calls_all_kernel_test.go, calls_helpers_kernel_test.go) passes on 6.1,
+// 6.12, 6.18 and 7.0 where the helper exists. Off: bpf_get_local_storage,
+// bpf_inode_storage_get and bpf_sock_from_file, which neither XDP nor tc may
+// call, and bpf_task_storage_get, which tc may call only from 6.18.
+var pointerResults = []string{"bpf_sk_fullsock", "bpf_tcp_sock", "bpf_ringbuf_reserve", "bpf_this_cpu_ptr", "bpf_kptr_xchg",
+	"bpf_get_listener_sock", "bpf_skc_to_tcp6_sock", "bpf_skc_to_tcp_sock", "bpf_skc_to_tcp_timewait_sock", "bpf_skc_to_tcp_request_sock",
+	"bpf_skc_to_udp6_sock", "bpf_skc_to_unix_sock", "bpf_skc_to_mptcp_sock", "bpf_sk_storage_get", "bpf_per_cpu_ptr", "bpf_dynptr_data",
+	"bpf_get_current_task_btf", "bpf_task_pt_regs", "bpf_cgrp_storage_get"}
 
 // noPointerTest is the reason a helper with a pointer result outside
 // pointerResults gets no hook.
