@@ -17,8 +17,25 @@ import (
 )
 
 // readyCalls are the callees the ready-rule loader calls: five with a
-// call-table row and bpf_get_numa_node_id, a helper without one.
+// call-table row and bpf_get_numa_node_id, a helper without one; on kernels
+// with it also the kernel function bpf_dynptr_from_xdp, which has no row
+// (see readyKfunc).
 var readyCalls = []string{"bpf_ktime_get_ns", "bpf_jiffies64", "bpf_get_prandom_u32", "bpf_get_smp_processor_id", "bpf_xdp_get_buff_len", "bpf_get_numa_node_id"}
+
+// readyKfunc is the BTF id of bpf_dynptr_from_xdp in the running kernel, or
+// false when it has none.
+func readyKfunc() (int64, bool) {
+	spec, err := btf.LoadKernelSpec()
+	if err != nil {
+		return 0, false
+	}
+	var fn *btf.Func
+	if spec.TypeByName("bpf_dynptr_from_xdp", &fn) != nil {
+		return 0, false
+	}
+	id, err := spec.TypeID(fn)
+	return int64(id), err == nil
+}
 
 // readyResult is what the ready-rule loader saw: the test run's action, the
 // map value afterwards and the names of the loaded program's functions.
@@ -29,7 +46,8 @@ type readyResult struct {
 }
 
 // loadReadyProgram is the loader: an XDP program that calls five row
-// callees and bpf_get_numa_node_id, which has no row, then returns the value
+// callees, bpf_get_numa_node_id, which has no row, and where the kernel has
+// it bpf_dynptr_from_xdp(ctx, 1, fp-24), which fails, then returns the value
 // at key 0 of sessions. It writes a readyResult to path.
 func loadReadyProgram(t *testing.T, path string) {
 	u32 := &btf.Int{Name: "u32", Size: 4}
@@ -53,13 +71,19 @@ func loadReadyProgram(t *testing.T, path string) {
 		asm.Mov.Imm(asm.R9, 0), asm.FnGetSmpProcessorId.Call(),
 		asm.Mov.Reg(asm.R1, asm.R6), asm.FnXdpGetBuffLen.Call(),
 		asm.Mov.Imm(asm.R9, 0), asm.FnGetNumaNodeId.Call(),
+	}
+	if id, ok := readyKfunc(); ok {
+		insns = append(insns, asm.Mov.Reg(asm.R1, asm.R6), asm.Mov.Imm(asm.R2, 1), asm.Mov.Reg(asm.R3, asm.RFP), asm.Add.Imm(asm.R3, -24),
+			asm.Instruction{OpCode: asm.OpCode(asm.JumpClass).SetJumpOp(asm.Call), Src: asm.PseudoKfuncCall, Constant: id})
+	}
+	insns = append(insns,
 		asm.StoreImm(asm.RFP, -4, 0, asm.Word),
 		asm.Mov.Reg(asm.R2, asm.RFP), asm.Add.Imm(asm.R2, -4),
 		asm.LoadMapPtr(asm.R1, m.FD()), asm.FnMapLookupElem.Call(),
 		asm.JEq.Imm(asm.R0, 0, "miss"),
 		asm.LoadMem(asm.R0, asm.R0, 0, asm.Word), asm.Return(),
 		asm.Mov.Imm(asm.R0, 1).WithSymbol("miss"), asm.Return(),
-	}
+	)
 	insns[0] = btf.WithFuncMetadata(insns[0].WithSymbol(fn.Name).WithSource(asm.Comment("ready loader")), fn)
 	p, err := ebpf.NewProgram(&ebpf.ProgramSpec{Name: "ready", Type: ebpf.XDP, License: "GPL", Instructions: insns})
 	if err != nil {
@@ -103,6 +127,10 @@ func TestBpfReadyRuleRoundTrip(t *testing.T) {
 		t.Skip("requires root and BPF privileges")
 	}
 	t.Setenv("BPF_NINJA_INJECT_CONFIG", "")
+	want := readyCalls
+	if _, ok := readyKfunc(); ok {
+		want = append(slices.Clone(readyCalls), "bpf_dynptr_from_xdp")
+	}
 	dir := t.TempDir()
 	child := []string{"--", os.Args[0], "-test.run=^TestBpfReadyRuleRoundTrip$"}
 	run := func(name string, flags ...string) readyResult {
@@ -144,7 +172,7 @@ func TestBpfReadyRuleRoundTrip(t *testing.T) {
 	if err := json.Unmarshal(data, &file); err != nil {
 		t.Fatal(err)
 	}
-	if file.Version != 3 || len(file.Programs) != 1 || !strings.HasPrefix(file.Programs[0].Build, "sha256:") || len(file.Programs[0].Labels) != 6 {
+	if file.Version != 3 || len(file.Programs) != 1 || !strings.HasPrefix(file.Programs[0].Build, "sha256:") || len(file.Programs[0].Labels) != len(want) {
 		t.Fatalf("listing:\n%s", data)
 	}
 	t.Logf("listing:\n%s", data)
@@ -186,13 +214,17 @@ func TestBpfReadyRuleRoundTrip(t *testing.T) {
 		if h.Kind == "call" && len(h.Sites) == 1 {
 			calls[h.Call] = true
 		}
+		// The kernel function's int result is narrower than the hook's u64 ret.
+		if h.Call == "bpf_dynptr_from_xdp" && (h.Ret != "scalar" || h.RetSize != 4) {
+			t.Errorf("kernel-function hook %+v", h)
+		}
 	}
-	for _, name := range readyCalls {
+	for _, name := range want {
 		if !calls[name] || !slices.Contains(ready.Funcs, "ninja_"+name) {
 			t.Errorf("%s: no hook (hooks %v, funcs %v)", name, calls, ready.Funcs)
 		}
 	}
-	if len(calls) != len(readyCalls) || !slices.Contains(ready.Funcs, "ninja_entry") || !slices.Contains(ready.Funcs, "ninja_sessions") {
+	if len(calls) != len(want) || !slices.Contains(ready.Funcs, "ninja_entry") || !slices.Contains(ready.Funcs, "ninja_sessions") {
 		t.Errorf("ready rule hooks: %v, funcs %v", calls, ready.Funcs)
 	}
 	// Delete one name.
