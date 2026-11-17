@@ -1314,8 +1314,12 @@ type transformed struct {
 	missFirst bool
 }
 
-// refusedLoad marks the kernel's refusal of a rewritten program.
-type refusedLoad struct{ error }
+// refusedLoad marks the kernel's refusal of a rewritten program; why is the
+// verifier's last log line when a load with a log of its own read it.
+type refusedLoad struct {
+	error
+	why string
+}
 
 func (e refusedLoad) Unwrap() error { return e.error }
 
@@ -1515,17 +1519,20 @@ func (s *supervisor) load(r *remote, attr []byte, name string, form HookForm, t 
 				}
 				why = lastLogLine(cstring(log))
 			}
-			return 0, cmp.Or(why, err.Error()), refusedLoad{fmt.Errorf("trial PROG_LOAD: %w", err)}
+			why = cmp.Or(why, err.Error())
+			return 0, why, refusedLoad{fmt.Errorf("trial PROG_LOAD: %w", err), why}
 		}
 		if !t.missFirst && missFirstDiffers(t.request, result) {
 			s.extra++
-			if s.hitJumpLimit(r, patched) {
+			hit, diagnosed := s.hitJumpLimit(r, patched)
+			if hit {
 				err = fmt.Errorf("%w: %w", errJumpLimit, err)
 			}
+			why = cmp.Or(why, diagnosed)
 		}
 		// Carry the summary so the caller can name the attempted hooks, and a
 		// hint when an untrusted-pointer ABI mismatch may be the cause.
-		return 0, why, refusedLoad{fmt.Errorf("transformed PROG_LOAD: %w%s", err, untrustedHint(form, result, err))}
+		return 0, why, refusedLoad{fmt.Errorf("transformed PROG_LOAD: %w%s", err, untrustedHint(form, result, err)), why}
 	}
 	return ret, "", nil
 }
@@ -1561,7 +1568,11 @@ func (s *supervisor) retryLoad(r *remote, attr []byte, rule Rule, form HookForm,
 		}
 		return t, err == nil, "", err
 	}
-	out, ret, err := degrade(sites, cause.Error(), trialBudget-s.extra, trial, func(t *transformed) (int64, error) {
+	why := cause.Error()
+	if refused := (refusedLoad{}); errors.As(cause, &refused) && refused.why != "" {
+		why = refused.why
+	}
+	out, ret, err := degrade(sites, why, trialBudget-s.extra, trial, func(t *transformed) (int64, error) {
 		ret, _, err := s.load(r, attr, rule.Program, form, t, false)
 		return ret, err
 	})
@@ -1594,11 +1605,13 @@ func missFirstDiffers(request inject.LookupRequestRaw, result *inject.LookupResu
 // errno cannot say: it differs across kernels and E2BIG also means the
 // instruction limit, and the loader's log may be off or end before the message.
 // A refused load binds no map, and this one does not touch the loader's log.
-func (s *supervisor) hitJumpLimit(r *remote, attr []byte) bool {
+// why is the log's last line (lastLogLine), when the repeated load was
+// refused too.
+func (s *supervisor) hitJumpLimit(r *remote, attr []byte) (hit bool, why string) {
 	const logSize = 64 << 10
 	logAddr, err := r.alloc(make([]byte, logSize))
 	if err != nil {
-		return false
+		return false, ""
 	}
 	trial := bytes.Clone(attr)
 	put32(trial, 24, 4) // BPF_LOG_STATS
@@ -1610,10 +1623,13 @@ func (s *supervisor) hitJumpLimit(r *remote, attr []byte) bool {
 		if closeErr = syscallError(closed, closeErr); closeErr != nil {
 			r.broken = fmt.Errorf("close repeated load fd: %w", closeErr)
 		}
-		return false
+		return false, ""
 	}
 	log, err := readMemory(r.pid, logAddr, logSize)
-	return err == nil && strings.Contains(cstring(log), "jumps is too complex")
+	if err != nil {
+		return false, ""
+	}
+	return strings.Contains(cstring(log), "jumps is too complex"), lastLogLine(cstring(log))
 }
 
 // untrustedHint explains how to load a program whose hooks take arg:untrusted
