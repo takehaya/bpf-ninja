@@ -432,3 +432,29 @@ func TestCallSitePositions(t *testing.T) {
 		})
 	}
 }
+
+// plannedArgs binds ArgArg to the entry value of R<ArgReg> in the key slot,
+// whatever the prelude check before it already guarantees.
+func TestPlannedArgsArgEntryValue(t *testing.T) {
+	const f = -8
+	b := &targetBinding{args: callABIs[1], sitePC: callSitePC, argReg: int(asm.R2), call: true}
+	at := func(key value) state {
+		s := initial()
+		ctx := value{id: int(asm.R6) + 1}
+		s.stack[f+slotContext] = cell{v: ctx, width: 8}
+		s.stack[f+slotKey] = cell{v: key, width: 8}
+		s.regs[asm.R1] = ctx
+		s.regs[asm.R2] = value{id: idImm32, ptr: callSitePC}
+		s.regs[asm.R3] = key
+		s.regs[asm.R4] = value{id: idResult}
+		s.regs[asm.R5] = value{id: idUndefined}
+		return s
+	}
+	if err := plannedArgs(at(value{id: int(asm.R2) + 1}), f, b); err != nil {
+		t.Errorf("entry R2 in the key slot: %v", err)
+	}
+	for _, key := range []value{{id: int(asm.R3) + 1}, {id: idResult}, {id: idFrame, ptr: f + slotKey, frame: true}} {
+		err := plannedArgs(at(key), f, b)
+		assertKind(t, err, HookArguments)
+	}
+}

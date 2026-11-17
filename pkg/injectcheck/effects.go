@@ -343,6 +343,10 @@ func plannedArgs(s state, f int, b *targetBinding) error {
 			ok = got == value{id: idResult}
 		case ArgArg:
 			// The key slot holds the argument register as it was at the call.
+			// The entry-value term is implied today: checkBefore admits only
+			// store(f+slotKey, R<ArgReg>) into the key slot before a call
+			// target, so got == v alone would do. It is kept as a second
+			// guard, and TestPlannedArgsArgEntryValue checks it on its own.
 			var v value
 			v, ok = slot(f + slotKey)
 			ok = ok && v == value{id: b.argReg + 1} && got == v
