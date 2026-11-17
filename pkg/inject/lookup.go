@@ -1,6 +1,7 @@
 package inject
 
 import (
+	"cmp"
 	"errors"
 	"bytes"
 	"crypto/sha256"
@@ -193,10 +194,14 @@ type LookupRequest struct {
 
 	SkipUnmatchedMaps bool // a Maps name matching no site is skipped, not refused; see Maps
 	// Drop maps a site's SitePC to the reason it gets no hook: the site is
-	// listed as skipped with that reason. An explicitly selected lookup
-	// (Site) is refused instead. Tail-call sites are dropped the same way.
+	// listed as skipped with that reason, "dropped" when it is empty. An
+	// explicitly selected lookup (Site) is refused instead. Tail-call sites
+	// are dropped the same way.
 	Drop map[uint32]string
 }
+
+// dropped is the reason of a site LookupRequest.Drop names with an empty one.
+const dropped = "dropped"
 
 // LookupWhen is a set of lookup results; see LookupRequest.Lookups.
 type LookupWhen string
@@ -1624,7 +1629,7 @@ func transformLookupProgramGuarded(insns asm.Instructions, typ ebpf.ProgramType,
 	}
 	for i, site := range sites {
 		if reason, ok := req.Drop[site.SitePC]; ok {
-			sites[i].Reason = reason
+			sites[i].Reason = cmp.Or(reason, dropped)
 			sites[i].generic, sites[i].typedOnly, sites[i].Generic = false, false, false // not for the generic hook either
 		}
 	}
@@ -1726,7 +1731,7 @@ func transformLookupProgramGuarded(insns asm.Instructions, typ ebpf.ProgramType,
 		for _, tail := range allTails {
 			if reason, ok := req.Drop[tail.SitePC]; ok {
 				site := tail.LookupSite
-				site.Reason = reason
+				site.Reason = cmp.Or(reason, dropped)
 				plan.skipped = append(plan.skipped, site)
 				continue
 			}
