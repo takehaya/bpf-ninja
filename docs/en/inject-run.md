@@ -32,6 +32,7 @@ bpf-ninja -p "$PROG_ID" --func "$HOOK" -c 10 -w hook.pcap
   It names every map with a call, each op the program calls as `op:any`, the entry, every callee that can be hooked and, when the program has one, the tail calls; see [Lookups file](#lookups-file).
 - To observe less, delete names from `maps`, `ops` or `calls`, or delete `entry` or `tail_calls`.
   In a rule written with `hook_prefix`, a missing or empty list hooks nothing of its kind, so deleting a name never adds a hook.
+  In `sites.only` it does: deleting the last entry of a hook's selection restores every site of that hook, because `only` narrows only the hooks it names a site of. An empty `only` or `except` list and an empty label are refused.
 - stderr reports each injection, for example `inject-run: program "xdp_ingress": injected hook "ninja_sessions" (lookup map "sessions", site pc 6), tracee fd 9`.
   If the kernel refuses the rewritten program, `inject-run` drops sites until a rewrite loads; see [Refused rewrites](#refused-rewrites).
   If `inject-run` cannot rewrite a load at all, it logs `injection skipped` and lets the original program load.
