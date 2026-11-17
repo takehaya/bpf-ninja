@@ -14,11 +14,11 @@ Each substituted instruction stream that the checker can pair is checked by `pkg
 Run as root.
 
 ```sh
-# 1. List the programs and map calls the loader loads. Nothing is rewritten.
+# 1. List the programs the loader loads, with every map, helper, kernel-function and tail call. Nothing is rewritten.
 bpf-ninja inject-run --lookups-json lookups.json -- ./loader
 
-# 2. Take the suggested rule and load with hooks.
-jq '[.programs[0].rule]' lookups.json > rules.json
+# 2. Take the ready rules, delete the names you do not want, and load with hooks.
+jq '[.programs[].rule]' lookups.json > rules.json
 bpf-ninja inject-run --config rules.json --hooks-json hooks.json -- ./loader
 
 # 3. In another terminal, while the loader runs, capture the packets that reach a hook.
@@ -28,7 +28,10 @@ bpf-ninja -p "$PROG_ID" --func "$HOOK" -c 10 -w hook.pcap
 ```
 
 - `inject-run` obtains each function's stack floor from a trial verifier load; see [Stack floor](#stack-floor).
-- The suggested rule uses `auto` with the hook prefix `ninja`, so a lookup on the map `sessions` gets the hook `ninja_sessions`.
+- The ready rule uses `auto` with the hook prefix `ninja`, so a lookup on the map `sessions` gets the hook `ninja_sessions`.
+  It names every map with a call, each op the program calls as `op:any`, the entry, every callee with a hook form and, when the program has one, the tail calls; see [Lookups file](#lookups-file).
+- To observe less, delete names from `maps`, `ops` or `calls`, or delete `entry` or `tail_calls`.
+  In a rule written with `hook_prefix`, a missing or empty list hooks nothing of its kind, so deleting a name never adds a hook.
 - stderr reports each injection, for example `inject-run: program "xdp_ingress": injected hook "ninja_sessions" (lookup map "sessions", site pc 6), tracee fd 9`.
   If `inject-run` cannot rewrite a load, it logs `injection skipped` and lets the original program load.
 
@@ -131,13 +134,14 @@ The hook receives the call's result as `ret` and, for a callee with a memory arg
 | `bpf_xdp_ct_lookup`, `bpf_skb_ct_lookup` | `(ctx, u32 site, const struct bpf_ct_opts *arg, const void *ret)` | the options (R4), with the error the lookup set | the connection pointer; test it for NULL, it cannot be read through |
 
 - Only the names above are accepted; any other name, an empty name or a name given twice is a configuration error.
+  The [lookups file](#lookups-file) lists every callee of a program in `callees`; a callee without a hook form has a `reason`.
 - A name the program never calls adds no hook.
 - `calls` works on its own and with `map`, `auto`, `entry` and `tail_calls`, but not with `dispatch`.
 - `ops`, `maps`, `func`, `line`, `all_matches`, `site_pcs` and `copy_read_only` select map calls and do not apply to `calls`.
 - A call site that cannot be hooked runs unchanged and is listed in `skipped` with a reason, which for the cases below starts with `call:`: a call right before or after another call, a call that is the first instruction of its function, a function without a context or without stack room for the slots, an argument size that is not a constant, or a program that calls `bpf_spin_lock`, `bpf_preempt_disable` or `bpf_res_spin_lock*`.
   If no call site and no other hook is left, the transformation fails with `no call site is instrumented (N skipped)`.
 - When `arg` cannot be typed, and on every hook whose `ret` is a pointer, `arg` is `const void *` with its size in the `bpf-ninja:arg_size=N` decl tag, as on other untrusted hooks. On kernels without `arg:untrusted`, or with `static_untrusted`, such a hook is static and keeps the typed prototype.
-- `inject-run` reads the running kernel's BTF once, when a rule has `calls`, to name kfunc calls and type their arguments.
+- `inject-run` reads the running kernel's BTF once, when a rule has `calls` or `--lookups-json` is given, to name kfunc calls and type their arguments.
   If it cannot, it logs `kernel BTF unavailable: kernel-function calls are not hooked` with the cause, and a program that calls a kfunc gets no call hooks.
 - A program that calls a kernel function from a module, such as conntrack on most distribution kernels, gets no call hooks, its helper call sites included.
 
@@ -353,7 +357,7 @@ Choose an ELF and types that describe the live map, including CO-RE or loader ad
 ### Command line
 
 ```text
-bpf-ninja inject-run [--config FILE] [--fail-closed] [--hooks-json FILE] [--lookups-json FILE] [--stop-every-syscall] -- TARGET [ARGS...]
+bpf-ninja inject-run [--config FILE] [--fail-closed] [--hooks-json FILE] [--lookups-json FILE [--lookups-kinds KINDS]] [--stop-every-syscall] -- TARGET [ARGS...]
 ```
 
 | Flag | Meaning |
@@ -361,7 +365,8 @@ bpf-ninja inject-run [--config FILE] [--fail-closed] [--hooks-json FILE] [--look
 | `--config FILE` | Rules file (JSON). Without it, the environment variable `BPF_NINJA_INJECT_CONFIG` holds the JSON itself. |
 | `--fail-closed` | Refuse a matched load with `EPERM` when transformation, checking, or the substituted kernel load fails, or when the checker is not applicable. By default a failed check loads the original program, while a checker-inapplicable transformed program loads without validation. |
 | `--hooks-json FILE` | Write the injected programs and their hooks to FILE. See [Hooks file](#hooks-file). |
-| `--lookups-json FILE` | Write every XDP, tc, cgroup_skb and netfilter program the target loads, with its map calls and a suggested rule. Rules are then optional. See [Lookups file](#lookups-file). |
+| `--lookups-json FILE` | Write every XDP, tc, cgroup_skb and netfilter program the target loads, with its map, helper, kernel-function and tail calls and a ready rule. Rules are then optional. See [Lookups file](#lookups-file). |
+| `--lookups-kinds KINDS` | With `--lookups-json`: the comma-separated kinds to list and name in each rule, from `lookups`, `map_calls`, `helpers`, `kfuncs`, `tail_calls` and `entry`. The default is all. `lookups` alone writes a `hook` rule for the maps with lookups. |
 | `--stop-every-syscall` | Stop the target at the entry and exit of every syscall instead of only at program and BTF loads. See [Syscall stops](#syscall-stops). |
 
 - Flags before `--` belong to `inject-run`; the command and arguments after it belong to the target.
@@ -387,15 +392,16 @@ A rule whose `program` never loads produces no diagnostic at all.
 | Key | Type | Default | Meaning | Constraints |
 |---|---|---|---|---|
 | `program` | string | required | The program to rewrite: its kernel name or its entry function name. | Kernel names have at most 15 characters; a function name can be longer. One rule per program. |
-| `hook` | string | required | The hook name. With `auto`, `entry`, `tail_calls`, `calls` or `ops`, the prefix of the hook names. With `dispatch`, the name of the one hook. | A C identifier. It must leave room for the longest suffix within 127 bytes; see [Hook names](#hook-names). |
+| `hook_prefix` | string | `hook_prefix` or `hook` is required | The prefix of the hook names; the lookup hook of a `map` rule and the one hook of a `dispatch` rule carry no suffix. A rule written with `hook_prefix` states every kind: a missing or empty `maps`, `ops` or `calls` hooks nothing of that kind, and a `map` rule needs `ops`. | As `hook`. With `hook`, both must be equal. |
+| `hook` | string | `hook_prefix` or `hook` is required | The hook name. With `auto`, `entry`, `tail_calls`, `calls` or `ops`, the prefix of the hook names. With `dispatch`, the name of the one hook. In a rule written with `hook`, `maps` and `ops` keep the defaults below. | A C identifier. It must leave room for the longest suffix within 127 bytes; see [Hook names](#hook-names). |
 | `map` | string | none | Observe lookups on this map, by exact kernel map name. | Not with `auto`. A rule needs one of `map`, `auto`, `entry`, `tail_calls` or `calls`. |
 | `func` | string | none | With `map`: only lookups in this BTF function. | Needs `map`. |
 | `line` | integer | none | With `map`: only lookups on this source line. | Needs `map`. |
 | `all_matches` | bool | false | With `map`: take every matching lookup instead of requiring exactly one. | Needs `map`. Not with `site_pcs`. |
 | `site_pcs` | integer array | none | With `map`: take the lookups at these load-time instruction indexes. | Needs `map`. Not with `all_matches`. Each PC must be a lookup that matches the other filters, and must appear once. |
 | `auto` | bool | false | Instrument every supported call of the observed ops (lookups by default, or the ops that `ops` lists), with one hook per map and op. | Not with `map`, `func`, `line`, `all_matches` or `site_pcs`. |
-| `maps` | string array | every map | With `auto`: only calls on these maps, by exact kernel name. Calls on other maps run unchanged. | Needs `auto`. Names must be unique, and each must match a call the rule observes. |
-| `ops` | string array | `["lookup"]` | The calls and results that call a hook; see the [ops table](#choose-the-maps-and-operations-to-observe). | Needs `map` or `auto`. Ops other than `lookup` need `auto`. Each op appears once, so `lookup:hit` and `lookup:miss` together are refused; use `lookup:any`. |
+| `maps` | string array | every map; none with `hook_prefix` | With `auto`: only calls on these maps, by exact kernel name. Calls on other maps run unchanged. | Needs `auto`. Names must be unique, and each must match a call the rule observes. |
+| `ops` | string array | `["lookup"]`; none with `hook_prefix` | The calls and results that call a hook; see the [ops table](#choose-the-maps-and-operations-to-observe). | Needs `map` or `auto`. Ops other than `lookup` need `auto`. Each op appears once, so `lookup:hit` and `lookup:miss` together are refused; use `lookup:any`. |
 | `entry` | bool | false | Add `HOOK_entry(ctx)` at program start. | |
 | `tail_calls` | bool | false | Add `HOOK_tail_call(ctx, site, index)` after each failed tail call. | The program must call `bpf_tail_call`. |
 | `calls` | string array | none | Add `HOOK_<name>` after every call of each named helper or kernel function; see [Observe helper and kernel-function calls](#observe-helper-and-kernel-function-calls). | Names from that section's table, each once. Not with `dispatch`. |
@@ -598,11 +604,12 @@ The marks describe this program load only; a configuration change can make the s
 ### Lookups file
 
 `--lookups-json FILE` lists every XDP, tc, cgroup_skb and netfilter program the target loads with BTF, whether or not a rule selects it.
-Use it to write a rule before a run that injects:
+Use it to write the rules for a run that injects: take the ready rules, delete what you do not want to observe, and load.
 
 ```sh
 bpf-ninja inject-run --lookups-json lookups.json -- ./loader
-jq '[.programs[].rule | .dispatch = true | .maps = ["sessions"]]' lookups.json > rules.json
+jq '[.programs[].rule]' lookups.json > rules.json
+# Delete names from maps, ops or calls, or delete entry or tail_calls.
 bpf-ninja inject-run --config rules.json --hooks-json hooks.json -- ./loader
 ```
 
@@ -612,13 +619,46 @@ It writes the file like the hooks file: the file exists before the target starts
 
 ```json
 {
-  "version": 2,
+  "version": 3,
   "programs": [
     {
       "program": "p",
       "func": "entry_with_long_name",
       "type": "XDP",
       "ctx_type": "xdp_md",
+      "build": "sha256:93b64442cc32a9c427e8656fa7f209a09bd1d40fb397f972534cbcf6a26c46aa",
+      "maps": [
+        {"name": "sessions", "type": "Hash", "sites": [6], "ops": ["lookup"]}
+      ],
+      "lookups": [
+        {"kind": "lookup", "pc": 6, "map": "sessions", "func": "entry_with_long_name", "file": "p.c", "line": 41,
+         "label": "sessions@entry_with_long_name:41", "frame": "entry_with_long_name", "floor": -8}
+      ],
+      "calls": [
+        {"kind": "lookup", "pc": 6, "map": "sessions", "func": "entry_with_long_name", "file": "p.c", "line": 41,
+         "label": "sessions@entry_with_long_name:41", "frame": "entry_with_long_name", "floor": -8}
+      ],
+      "callees": [
+        {"name": "bpf_ktime_get_ns", "kind": "helper", "ret": "scalar", "typed": true, "sites": [10]},
+        {"name": "bpf_get_numa_node_id", "kind": "helper", "ret": "scalar", "typed": false, "sites": [12],
+         "reason": "no hook form yet"}
+      ],
+      "call_sites": [
+        {"kind": "call", "pc": 10, "call": "bpf_ktime_get_ns", "func": "entry_with_long_name", "file": "p.c", "line": 44,
+         "label": "bpf_ktime_get_ns@entry_with_long_name:44", "ctx_source": "entry", "frame": "entry_with_long_name", "floor": -8},
+        {"kind": "call", "pc": 12, "call": "bpf_get_numa_node_id", "func": "entry_with_long_name", "file": "p.c", "line": 45,
+         "label": "bpf_get_numa_node_id@entry_with_long_name:45", "frame": "entry_with_long_name", "floor": -8,
+         "reason": "no hook form yet"}
+      ],
+      "rule": {
+        "program": "entry_with_long_name",
+        "auto": true,
+        "maps": ["sessions"],
+        "entry": true,
+        "calls": ["bpf_ktime_get_ns"],
+        "ops": ["lookup:any"],
+        "hook_prefix": "ninja"
+      },
       "stack": {
         "source": "verifier",
         "kernel": "7.0.0",
@@ -628,23 +668,6 @@ It writes the file like the hooks file: the file exists before the target starts
            "text_exact": true, "floor": -8,
            "slots": {"ctx": -16, "key": -24, "result": -32, "map": -40, "value": -48}}
         ]
-      },
-      "maps": [
-        {"name": "sessions", "type": "Hash", "sites": [6], "ops": ["lookup"]}
-      ],
-      "lookups": [
-        {"kind": "lookup", "pc": 6, "map": "sessions", "func": "entry_with_long_name",
-         "frame": "entry_with_long_name", "floor": -8}
-      ],
-      "calls": [
-        {"kind": "lookup", "pc": 6, "map": "sessions", "func": "entry_with_long_name",
-         "frame": "entry_with_long_name", "floor": -8}
-      ],
-      "rule": {
-        "program": "entry_with_long_name",
-        "auto": true,
-        "maps": ["sessions"],
-        "hook": "ninja"
       }
     }
   ]
@@ -653,14 +676,24 @@ It writes the file like the hooks file: the file exists before the target starts
 
 | Field | Meaning |
 |---|---|
+| `version` | 3. It changes only when a field changes meaning or is removed; new fields can appear. `--list-maps --lookups-json` reads versions 1 to 3. |
+| `build` | The listing fingerprint: a SHA-256 over the instructions as the loader passed them (map fds zeroed, map-value offsets kept), the name and type of each map reference, every site with its label, and the BTF functions with their instruction ranges. A rebuilt program, another kernel or a loader that relocates differently per load gives another fingerprint. |
 | `maps` | Every map the program references. Maps with lookups come first, in the order of their first lookup, with each lookup's `pc` in `sites`. The others follow by name. `ops` lists the ops called on each map. |
 | `lookups` | The lookup calls, with the fields of a hooks-file site. |
 | `calls` | Every lookup, per-CPU lookup, update, delete, push, pop and peek call, with the op as `kind`. |
+| `callees` | Every helper and kernel function the program calls, other than the map helpers and `bpf_tail_call`: `kind` is `helper` or `kfunc`, `module` the fd-array offset of a module's kernel function, `ret` the result (`scalar`, `pointer` or `void`), and `sites` the `pc` of each call. `typed` callees have a hook form and may be named in `calls`. Any other callee has a `reason`: `no hook form yet`, or why it is never hooked, such as a callback, a lock, a call that does not return or a call the verifier rewrites. |
+| `call_sites` | The calls of `callees`, with `kind` `call` and the callee in `call`. A site of a `typed` callee has the `reason` a rule naming it would see. |
+| `tail_calls` | The `bpf_tail_call` sites. |
+| `label` on every site | A name for the site: `NAME@FUNC:LINE`, or `NAME@FUNC+SLOT` without line info, where SLOT counts instruction slots from the function's first instruction. NAME is the map of a lookup (`any` for a map known only at run time), `MAP.OP` for another map call, the callee of a call, or `tail_call`. Sites with the same label get `#2`, `#3` in `pc` order. |
 | `reason` on a lookup or call | `auto` would skip it, unless it also has `"generic": true`, which means `auto` sends it to the generic hook. A site without a reason passed discovery and has a usable frame floor; whether its slots fit is decided only when `auto` selects (see [Map listing of a running program](#map-listing-of-a-running-program)). |
 | `ctx_source` on a lookup or call | The proven source used to initialize the site's frame: `entry`, `r6` through `r9`, or an aligned slot such as `fp-80`. It is omitted when no source was proven. |
 | `frame`, `floor` on a lookup or call | The function frame that owns the site and the floor used to place its spill slots. |
 | `stack` | The trial load's verifier accounting. A function with `skip_reason` is not instrumented, and when it is the entry function the whole program is not; see [Stack floor](#stack-floor). `dead` means the verifier omitted that function from this load. When `source` is `verifier`, every lookup or call in a function with either mark, or missing from `functions`, has the reason `stack floor unavailable for this function` and no `generic`: `auto` skips it, even where the generic hook could take it. When the trial load failed, `source` is `unavailable` and `error` gives the cause; `inject-run` then loads the program unchanged, and every lookup and call has the reason `stack audit unavailable` and no `generic`. |
-| `rule` | A rule that instruments the lookups on every named map. Its `program` is the entry function name. Edit `maps`, and add `ops`, `dispatch`, `entry` or `tail_calls` as needed. |
+| `rule` | A ready rule written with `hook_prefix`, whose `program` is the entry function name. It names every named map with a call of a listed op, each such op as `op:any`, the `typed` callees in `calls`, `entry`, and `tail_calls` when the program calls `bpf_tail_call`. It never sets `dispatch`. Delete names to observe less; a missing or empty list hooks nothing of its kind. |
+
+`--lookups-kinds` picks the kinds that `callees`, `call_sites`, `tail_calls` and `rule` cover: `lookups` (lookup ops), `map_calls` (the other map ops), `helpers`, `kfuncs`, `tail_calls` and `entry`.
+`maps`, `lookups` and `calls` are always written.
+With `--lookups-kinds lookups` alone, `rule` is the `hook` rule that instruments the lookups on every named map, and the new arrays are left out.
 
 A program loaded twice is listed twice.
 

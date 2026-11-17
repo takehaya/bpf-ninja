@@ -321,8 +321,8 @@ wrong.
   and module BTF index with O's, and the load's `fd_array`, which the capture
   does not record, is taken to be the same. `bpf_throw`, kfuncs that take a
   callback and kfuncs the verifier rewrites at the call do not meet this,
-  and regionval cannot tell them apart. The proof in `dafny/sim` does not
-  cover a site centred on a kfunc.
+  and regionval cannot tell them apart. The proof in `dafny/sim` admits a
+  kfunc call as the centre of a site; a wrapper site's centre is a helper call.
 - **The original program is valid.** O passed the verifier, so it never reads
   r1 to r5 after a call before writing them. The liveness used by `P9` relies
   on this and on a table of argument counts for common helpers (unknown helpers

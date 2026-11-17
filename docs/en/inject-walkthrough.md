@@ -149,10 +149,12 @@ prog 464334  entry
   {"kind": "pop", "pc": 30, "map": "recent", "func": "entry", "file": "prog.c", "line": 36},
   {"kind": "lookup", "pc": 37, "map": "stats", "func": "entry", "file": "prog.c", "line": 37}
 ],
-"rule": {"program": "entry", "auto": true, "maps": ["stats"], "hook": "ninja"}
+"rule": {"program": "entry", "auto": true, "maps": ["stats", "recent", "seen"], "entry": true,
+         "ops": ["lookup:any", "push:any", "pop:any", "peek:any"], "hook_prefix": "ninja"}
 ```
 
-The starting rule names only the maps with lookups, because a rule without `ops` observes lookups only.
+The ready rule names every map with a call, each op as `op:any`, and the entry.
+Loaded as it is, it hooks all of them; deleting a name or `entry` hooks less, never more.
 
 ## 2. Write the rule
 
