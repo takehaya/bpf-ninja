@@ -182,7 +182,7 @@ API エラーは `errors.As` で次のように区別でき、どちらも安定
 | 結果 | 型 | CLI 終了コード | 例 |
 | --- | --- | --- | --- |
 | 受理 | nil | 0 | 検査規則をすべて満たす |
-| 入力エラー | `*InputError` | 2 | JSON 不正、必須フィールドの欠落・null、元命令列・対応表の空値、対応表の長さ・順序不正、hook 範囲の不正・重なり、target plan の欠落・不正・重複、[-512,0] 外の床、不正な元 register・CFG、未対応 format |
+| 入力エラー | `*InputError` | 2 | JSON 不正、必須フィールドの欠落・null、元命令列・対応表の空値、対応表の長さ・順序不正、hook 範囲の不正・重なり、target plan の欠落・不正・重複、変換器が計画しない位置の call target (callback または context を渡される関数の先頭命令、別の call の直前・直後)、callback を実行・登録する helper の call target、callee が読まない register を渡す call target、[-512,0] 外の床、不正な元 register・CFG、未対応 format |
 | 変換の拒否 | `*Rejection` | 1 | 命令・reference・辺の変更、計画外の call または計画済み call の欠落、挿入 store・分岐・register effect・hook の違反、metadata の変更、関連付け済み map |
 
 decode・file・usage エラーは stderr に出し、validation が見つけた構造上の入力エラーは JSON verdict も返す。

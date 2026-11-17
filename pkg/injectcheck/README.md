@@ -175,7 +175,7 @@ The trusted premises, including targets, are echoed with the verdict.
 | Outcome | Type | CLI exit | Examples |
 | --- | --- | --- | --- |
 | Accepted | nil | 0 | All checked rules hold |
-| Input error | `*InputError` | 2 | Malformed JSON; missing/null required field; empty original/mapping; mapping length/order error; invalid/overlapping hook ranges; absent or malformed target plan; floor outside [-512,0]; invalid original register or CFG; unsupported format |
+| Input error | `*InputError` | 2 | Malformed JSON; missing/null required field; empty original/mapping; mapping length/order error; invalid/overlapping hook ranges; absent or malformed target plan; a call target the transformer never plans (at the first instruction of a callback or of a function the context is passed to, or right before or after another call), at a helper that runs or registers a callback, or passing a register its callee does not read; floor outside [-512,0]; invalid original register or CFG; unsupported format |
 | Rejected transformation | `*Rejection` | 1 | Changed instruction/reference/edge; unplanned call or missing planned call; unsafe inserted store, branch, register effect or hook; metadata change; associated map |
 
 Decode/file/usage errors go to stderr; structural input errors found by validation also receive a JSON verdict.
