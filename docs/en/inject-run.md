@@ -134,14 +134,21 @@ The hook receives the call's result as `ret` and, for a callee with a memory arg
 | `bpf_fib_lookup` | `(ctx, u32 site, const struct bpf_fib_lookup *arg, u64 ret)` | the lookup parameters (R2), after the lookup has filled them in | the lookup result code |
 | `bpf_xdp_ct_lookup`, `bpf_skb_ct_lookup` | `(ctx, u32 site, const struct bpf_ct_opts *arg, const void *ret)` | the options (R4), with the error the lookup set | the connection pointer; test it for NULL, it cannot be read through |
 | any other helper with an integer result, such as `bpf_get_numa_node_id` or `bpf_redirect` | `(ctx, u32 site, u64 ret)` | none | the value |
-| `bpf_sk_fullsock`, `bpf_tcp_sock`, `bpf_ringbuf_reserve`, `bpf_this_cpu_ptr`, `bpf_kptr_xchg` | `(ctx, u32 site, const void *ret)` | none | the pointer; test it for NULL, it cannot be read through |
+| `bpf_sk_fullsock`, `bpf_tcp_sock`, `bpf_ringbuf_reserve`, `bpf_this_cpu_ptr`, `bpf_kptr_xchg`, `bpf_get_listener_sock`, the `bpf_skc_to_*` casts, `bpf_sk_storage_get`, `bpf_cgrp_storage_get`, `bpf_per_cpu_ptr`, `bpf_dynptr_data`, `bpf_get_current_task_btf`, `bpf_task_pt_regs` | `(ctx, u32 site, const void *ret)` | none | the pointer; test it for NULL, it cannot be read through |
+| any other kernel function with an integer or enum result, such as `bpf_dynptr_from_xdp` | `(ctx, u32 site, u64 ret)` | none | the value; a result narrower than 8 bytes fills only the low bytes (see below) |
+| any other kernel function with a pointer result, `void *` included, such as `bpf_dynptr_slice` or `bpf_task_from_pid` | `(ctx, u32 site, const void *ret)` | none | the pointer; test it for NULL, it cannot be read through |
 
-- Besides the callees with a row above, `calls` accepts every helper by its kernel name, except:
-  - helpers that run or register a callback, take or release a lock, do not return, or return nothing;
+- Besides the callees with a row above, `calls` accepts every helper, and every kernel function of the running kernel or of a module whose BTF the program passes in its fd array, by its kernel name, except:
+  - callees that run or register a callback (for a kernel function, any parameter that points to a function prototype), take or release a lock or a critical section, do not return, or return nothing;
+  - iterator kernel functions (`bpf_iter_*_new`, `_next`, `_destroy`), the kernel functions the verifier lets run with a lock held (`bpf_list_*`, `bpf_rbtree_*` and others), allocation (`bpf_obj_new_impl` and its relatives), the casts `bpf_cast_to_kern_ctx` and `bpf_rdonly_cast`, and the calls the verifier inlines or refuses;
   - `bpf_get_stack`, `bpf_get_stackid`, `bpf_get_task_stack`, `bpf_get_branch_snapshot` and `bpf_get_func_ip`, which read native code addresses or branch records that the inserted code may change;
   - the map helpers and `bpf_tail_call`, which `ops` and `tail_calls` observe;
-  - helpers with a pointer result other than the five in the table: each pointer kind is enabled only with a kernel test.
-- Such a name is refused with `Calls name "NAME" cannot be hooked: REASON`. A kernel function needs a row; any other name, an empty name or a name given twice is a configuration error.
+  - helpers with a pointer result other than those in the table (`bpf_get_local_storage`, `bpf_inode_storage_get`, `bpf_sock_from_file` and `bpf_task_storage_get`): each helper's pointer kind is enabled only with a kernel test.
+- Such a name is refused with `Calls name "NAME" cannot be hooked: REASON`. An empty name or a name given twice is a configuration error.
+- A name that is neither a helper nor a kernel function can be told apart only with the kernel's BTF, so the configuration check accepts it and the load refuses it: `Calls name "NAME" is not supported: it is neither a helper nor a kernel function of the running kernel or of a module BTF the program passes`. The program then loads without hooks, or is refused with `--fail-closed`.
+- A kernel function's integer result narrower than 8 bytes fills only the low bytes of `ret`; the bytes above it are not part of the result. The hooks file gives the width as `ret_size`, and a capture records only those bytes.
+  A filter compares all 64 bits of `ret`, so write such a result as an unsigned number of its width: a failing `int` result, -22, is `--arg-filter 'ret==0xffffffea'` (or `ret==4294967274`), not `ret==-22`, which compares with 0xffffffffffffffea.
+  On x86-64 the bytes above a 32-bit result reached the hook as zero; for a 1- or 2-byte result they are not guaranteed, so a filter on such a result may not match.
   The [lookups file](#lookups-file) lists every callee of a program in `callees`; a callee that cannot be hooked has a `reason`.
 - A name the program never calls adds no hook.
 - `calls` works on its own and with `map`, `auto`, `entry` and `tail_calls`, but not with `dispatch`.
@@ -154,7 +161,7 @@ The hook receives the call's result as `ret` and, for a callee with a memory arg
 - When `arg` cannot be typed, and on every hook whose `ret` is a pointer, `arg` is `const void *` with its size in the `bpf-ninja:arg_size=N` decl tag, as on other untrusted hooks. On kernels without `arg:untrusted`, or with `static_untrusted`, such a hook is static and keeps the typed prototype.
 - `inject-run` reads the running kernel's BTF once, when a rule has `calls` or `--lookups-json` is given, to name kfunc calls and type their arguments.
   If it cannot, it logs `kernel BTF unavailable: kernel-function calls are not hooked` with the cause, and a program that calls a kfunc gets no call hooks.
-- A program that calls a kernel function from a module, such as conntrack on most distribution kernels, gets no call hooks, its helper call sites included.
+- A kernel function from a module, such as conntrack on most distribution kernels, is named through the module's BTF, which the program passes in its fd array. If `inject-run` cannot read it, it logs `module BTF at fd_array offset N unavailable`, and the program gets no call hooks, its helper call sites included.
 
 The word "calls" also appears elsewhere with another meaning: `calls` in the [lookups file](#lookups-file) lists map helper calls, and `calls` in [`--list-maps`](#map-listing-of-a-running-program) lists the BPF functions a function calls.
 
@@ -597,6 +604,7 @@ If a rewrite fails, `inject-run` reports it on stderr and keeps running the targ
 | `hooks[].call` | The callee of a `call` hook, such as `bpf_fib_lookup`. |
 | `hooks[].arg_reg`, `arg_type`, `arg_size` | The `arg` parameter of a `call` hook: the callee's argument register (1 to 5), the struct name of what `arg` points to, and its size in bytes. `arg_type` is absent when `arg` is plain bytes; all three are absent when the hook has no `arg`. |
 | `hooks[].ret` | `scalar` (`u64 ret`) or `pointer` (`const void *ret`, compared with NULL only) on a `call` hook. |
+| `hooks[].ret_size` | On a `scalar` call hook of a kernel function whose integer result is narrower than 8 bytes: the result's width in bytes. Only the low `ret_size` bytes of `ret` are the result. |
 | `stack` | The trial load's verifier accounting and the exact per-function floors used by this injection. |
 | `hooks[].sites` | The calls that call the hook, in instruction order: `kind` (`lookup`, `update`, `delete`, `push`, `pop`, `peek`, `tail_call`, `call` or `entry`), `pc` (the `site` argument, or the low 32 bits of `info`), and `map`, `call` (the callee of a `call` site), `func`, `file`, `line`, `ctx_source`, `frame` and `floor` where known. `ctx_source` is `entry`, `r6` through `r9`, or an aligned frame slot such as `fp-80`. `frame` owns the stack slots and `floor` is the value used for them. A dispatch hook lists the entry call first, as `pc` 4294967295. |
 | `hooks[].untrusted` | The hook takes `arg:untrusted` pointers: its key and value are `const void *`. |
@@ -690,7 +698,7 @@ It writes the file like the hooks file: the file exists before the target starts
 | `maps` | Every map the program references. Maps with lookups come first, in the order of their first lookup, with each lookup's `pc` in `sites`. The others follow by name. `ops` lists the ops called on each map. |
 | `lookups` | The lookup calls, with the fields of a hooks-file site. |
 | `calls` | Every lookup, per-CPU lookup, update, delete, push, pop and peek call, with the op as `kind`. |
-| `callees` | Every helper and kernel function the program calls, other than the map helpers and `bpf_tail_call`: `kind` is `helper` or `kfunc`, `module` the fd-array offset of a module's kernel function, `ret` the result (`scalar`, `pointer` or `void`), and `sites` the `pc` of each call. A callee without a `reason` may be named in `calls`; `typed` ones have a row and a typed hook, the other helpers the result-only hook. Any other callee has a `reason`: `no hook form yet` for a kernel function without a row, or why it is never hooked, such as a callback, a lock, a call that does not return, a call the verifier rewrites or a pointer kind without a kernel test. |
+| `callees` | Every helper and kernel function the program calls, other than the map helpers and `bpf_tail_call`: `kind` is `helper` or `kfunc`, `module` the fd-array offset of a module's kernel function, `ret` the result (`scalar`, `pointer` or `void`), and `sites` the `pc` of each call. A callee without a `reason` may be named in `calls`; `typed` ones have a row and a typed hook, the other helpers and kernel functions the result-only hook. Any other callee has a `reason` that says why it is never hooked, such as a callback, a lock, a call that does not return or returns nothing, a call the verifier rewrites, a pointer kind without a kernel test, or a kernel function whose prototype is not in the kernel BTF at hand. |
 | `call_sites` | The calls of `callees`, with `kind` `call` and the callee in `call`. A site of a callee that may be named has the `reason` a rule naming it would see. |
 | `tail_calls` | The `bpf_tail_call` sites. |
 | `label` on every site | A name for the site: `NAME@FUNC:LINE`, or `NAME@FUNC+SLOT` without line info, where SLOT counts instruction slots from the function's first instruction. NAME is the map of a lookup (`any` for a map known only at run time), `MAP.OP` for another map call, the callee of a call, or `tail_call`. Sites with the same label get `#2`, `#3` in `pc` order. |
@@ -922,6 +930,10 @@ In both modes, cancelling or killing `inject-run` kills the target, and with the
 - A program with an indirect jump (`BPF_JA|BPF_X`) is never rewritten, so its sites are not observed and it does not appear in `--lookups-json`.
 - A program that a rule matches or `--lookups-json` discovers, and that references a `BPF_MAP_TYPE_INSN_ARRAY` map without an indirect jump, fails to load under `inject-run`, even when failing open.
   A successful trial load binds the array, so the loads that follow get `EBUSY`; the loader may report a different final error after retrying.
+- A result-only call hook sees the result only; arguments are captured only for the callees with a row. A pointer result shows only whether it is NULL and is never recorded.
+- Callees that return nothing, run or register a callback, lock, iterator and allocation kernel functions, casts, and a tail call that succeeds are not hooked.
+- Kernel-function calls are named through the running kernel's BTF, and a module's kernel function through the module BTF in the load's fd array. A kernel-function call that cannot be named is not hooked, and the program gets no call hooks at all.
+- The region validator treats a kernel-function call as reading r1 to r5, and the load-time checker does not see kernel-function names: the deny list for kernel functions is enforced by the transformer alone.
 - The integration tests use a Go loader built on cilium/ebpf.
   C and libbpf loaders go through the same syscall path but have no integration test.
 
