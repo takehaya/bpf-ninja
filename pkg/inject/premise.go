@@ -65,7 +65,10 @@ func helperPremise(name string) string {
 // names the function together with where it is defined: KernelHome for
 // vmlinux, or the module whose BTF the load passes (nf_conntrack builds
 // nf_conntrack_bpf.c into vmlinux or into its module). A call counts as
-// reviewed only when both match.
+// reviewed only when both match. This binds the BTF definition the call
+// names, not the code that runs: the verifier takes the address by the
+// global name (add_kfunc_call, kallsyms_lookup_name), so it assumes that no
+// other loaded module defines a symbol of that name.
 var reviewedKfuncs = map[kfuncHome]string{
 	{KernelHome, "bpf_xdp_ct_lookup"}:     "net/netfilter/nf_conntrack_bpf.c:325 (:327)",
 	{KernelHome, "bpf_skb_ct_lookup"}:     "net/netfilter/nf_conntrack_bpf.c:391 (:395)",

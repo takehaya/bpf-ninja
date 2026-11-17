@@ -996,7 +996,9 @@ The claim assumes that the original program's behaviour does not depend on its o
 - The stack slots the tool reserves lie below every access the original program makes; the [stack audit](#stack-floor) checks this before every rewrite.
 - The same inputs and state include concurrent updates by other programs and by user space, and the random number stream. Time is not part of them: the clock helpers stay callable and may return other values.
 - The verifier treats both programs alike where it rewrites calls (fast-call patterns, hidden arguments).
-- Every kernel function the program calls has been checked against the premise, where it is defined: a check names the function together with vmlinux or the module whose BTF the load passes, and a function of the same name defined elsewhere is not checked.
+- Every kernel function the program calls has been checked against the premise.
+  A review record is keyed by the function's name and by the kernel BTF that defines it: vmlinux, or the module whose BTF the load passes, under the name the kernel gives that module. A call counts as checked only when both match.
+  This establishes which BTF definition the call names, not which code runs: the kernel checks the call against that BTF, then finds the function's address by its global name, in vmlinux first and then in the loaded modules, the most recently loaded first. So the premise also assumes that no other loaded module defines a symbol of that name.
   Checked today are `bpf_xdp_ct_lookup`, `bpf_skb_ct_lookup` and `bpf_ct_release`, in vmlinux and in the `nf_conntrack` module.
   The XDP receive-metadata functions are not, because the verifier substitutes the driver's own function for them, and a driver's function can run other code; `not_reviewed` says so next to their names. `inject-run` does not name the driver.
 
