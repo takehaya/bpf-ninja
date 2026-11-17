@@ -147,19 +147,24 @@ Nested invocations would need separate state, and an entry hook reached through 
 
 ## Observe helper and kernel-function calls
 
-A rule's `calls` key (see [inject-run.md](inject-run.md)) adds one hook per named callee, called right after every call of it.
-The hook's parameters are `ctx`, `site` and, depending on the callee, `arg` and `ret`:
+A rule's `calls` key (see [inject-run.md](inject-run.md#observe-helper-and-kernel-function-calls)) adds one hook per named callee, `HOOK_<name>`, called right after every call of it.
+An observer attaches to it by name like to a map hook.
+The hook has one of three prototypes:
 
-| Callee | Hook parameters | What the observer gets |
+| Hook | Prototype | Callees |
 | --- | --- | --- |
-| Result only (`bpf_ktime_get_ns`, `bpf_jiffies64`, `bpf_get_prandom_u32`) | `ctx, u32 site, u64 ret` | the result |
-| Memory argument and integer result (`bpf_fib_lookup`) | `ctx, u32 site, const T *arg, u64 ret` | the argument as the callee left it, and the result |
-| Pointer result (`bpf_xdp_ct_lookup`, `bpf_skb_ct_lookup`) | `ctx, u32 site, const T *arg, const void *ret` | the options struct, and whether the result is null |
+| Typed argument | `ctx, u32 site, const T *arg, u64 ret` | `bpf_fib_lookup` (`T` is `struct bpf_fib_lookup`); `bpf_skb_load_bytes`, `bpf_xdp_load_bytes` and `bpf_probe_read_kernel`, whose `arg` is `struct { u8 bytes[N]; }`; and the XDP receive-metadata kernel functions `bpf_xdp_metadata_rx_timestamp`, `bpf_xdp_metadata_rx_hash` and `bpf_xdp_metadata_rx_vlan_tag` (`T` is `u64`, `u32` or `u16`, from the kernel prototype) |
+| Result-only scalar | `ctx, u32 site, u64 ret` | every other helper or kernel function with an integer result, such as `bpf_ktime_get_ns` |
+| Result-only pointer | `ctx, u32 site, const void *ret` | helpers and kernel functions with a pointer result |
 
-`T` is the named struct, for example `struct bpf_fib_lookup`.
-A pointer-result hook, and a hook whose argument cannot be typed, is static and keeps this prototype on kernels without `arg:untrusted`.
-On kernels with it, such a hook takes `const void *arg` with a `bpf-ninja:arg_size=N` decl tag instead; set `static_untrusted` in the rule to keep the typed prototype there.
-An observer reads `site` as argument 1 and `arg` and `ret` as the following arguments, as with the map hooks above.
+The socket and conntrack lookups have a pointer result and an argument: `ctx, u32 site, const void *arg, const void *ret`.
+The hooks file gives each call hook's `arg_reg`, `arg_type`, `arg_size`, `ret`, `ret_size`, `ret_signed` and `ret_type`.
+
+- Read each argument as a `u64` with `bpf_get_func_arg`: `site` is argument 1, then `arg` when the hook has one, then `ret`. The kernel tests' observers read call hooks this way.
+- `arg` is the address of the callee's argument as the callee left it; read `arg_size` bytes through it with `bpf_probe_read_kernel`.
+- A scalar `ret` is the result. When the hooks file gives `ret_size`, only that many low bytes count, sign-extended when `ret_signed` is true.
+- A pointer `ret` is NULL when the call failed. Behind it is the kernel struct that `ret_type` names; read its fields with `bpf_probe_read_kernel`, as the capture does for `ret->FIELD`.
+- A hook with a pointer, or an `arg` that cannot be typed, takes `const void *` pointers under `arg:untrusted`, or is static on kernels without that tag or with `static_untrusted`. At a static hook every argument, `ctx` included, is a `u64`; read memory with `bpf_probe_read_kernel` there too.
 
 The CLI covers the common selections:
 
@@ -169,12 +174,13 @@ bpf-ninja -p "$PROG_ID" --func ninja_bpf_fib_lookup --arg-filter 'arg->ifindex=4
 bpf-ninja -p "$PROG_ID" --func ninja_bpf_xdp_ct_lookup --arg-filter 'ret=null' -w miss.pcapng
 ```
 
-An integer `ret` compares as a number at the width of the callee's result, sign-extended when the result is signed, so `ret=-22` matches a failing `int` result as well as a 64-bit `-22`; a pointer `ret` compares only with `null`.
+An integer `ret` compares as a number at the width of the callee's result, sign-extended when the result is signed, so `ret=-22` matches a failing `int` result; a pointer `ret` compares with `null`, and a typed one also through `ret->FIELD`.
 An 8-byte `ret` (every helper, and a `long` kernel function) compares unsigned: `ret<=-1` matches every call.
 `arg->member` selects a member of a typed `arg`, and `arg->bytes[i]` a byte of a sized `const void *arg`.
-`--record entry` writes `site`, `ret` as a decimal, signed for a signed result, and the members of `arg`, for example `site=560 ret=0 arg->family=2 ... arg->ifindex=4`; a sized `const void *arg` is written as hex (`arg=0200...`) and one without a size tag is left out.
-`--record filter` also writes an integer `ret` as a decimal, signed for a signed result.
-A pointer `ret` is never recorded: `entry` leaves it out and `filter` writes only `ret=null` or `ret!=null`, so the address does not reach the file.
+`--record entry` writes `site`, `ret` as a decimal, and the members of `arg`, for example `site=560 ret=0 arg->family=2 ... arg->ifindex=4`; a sized `const void *arg` is written as hex (`arg=0200...`) and one without a size tag is left out.
+`--record filter` also writes an integer `ret` as a decimal.
+A result narrower than 8 bytes is written at its width, signed for a signed result; an 8-byte result is written as a signed 64-bit decimal (`ret=-1`), although a filter compares it unsigned.
+The address in a pointer `ret` is never recorded: `entry` leaves it out, and `filter` writes `ret=null` or `ret!=null` and the fields its condition names.
 
 ## VM verification
 

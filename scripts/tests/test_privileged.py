@@ -42,6 +42,26 @@ class AuditTests(unittest.TestCase):
             self.assertFalse(module.allowed_skip(*key, reason, "6.6"))
             self.assertFalse(module.allowed_skip(*key, "unexpected verifier failure", "6.1"))
 
+    def test_device_bound_skips_require_veth_or_kfunc(self):
+        for test in ("TestBpfDevBoundTrialLoad", "TestBpfCallHookRowXdpRxHash", "TestBpfCallHookRowXdpRxVlanTag"):
+            self.assertTrue(module.allowed_skip(module.INJECT, test, "veth unavailable (operation not supported)", "6.12"))
+            self.assertTrue(module.allowed_skip(module.INJECT, test, "kernel lacks kfunc x", "6.1"))
+            self.assertFalse(module.allowed_skip(module.INJECT, test, "kernel lacks kfunc x", "6.12"))
+            self.assertFalse(module.allowed_skip(module.INJECT, test, "unexpected verifier failure", "6.1"))
+        self.assertTrue(module.allowed_skip(module.INJECT, "TestBpfCallHookRowXdpRxVlanTag", "tcx unavailable to tag", "6.6"))
+        self.assertFalse(module.allowed_skip(module.INJECT, "TestBpfCallHookRowXdpRxVlanTag", "tcx unavailable to tag", "6.12"))
+        for test in ("TestIntegrationDevBound", "TestIntegrationDevBound/device-bound",
+                     "TestIntegrationDevBound/offload"):
+            self.assertTrue(module.allowed_skip(module.SYSCALLHOOK, test, "veth unavailable (x)", "6.12"))
+            self.assertFalse(module.allowed_skip(module.SYSCALLHOOK, test, "veth unavailable (x)", None))
+            self.assertFalse(module.allowed_skip(module.SYSCALLHOOK, test, "unexpected verifier failure", None))
+            reason = "kernel lacks kfunc bpf_xdp_metadata_rx_timestamp: not found"
+            self.assertTrue(module.allowed_skip(module.SYSCALLHOOK, test, reason, "6.1"))
+            self.assertFalse(module.allowed_skip(module.SYSCALLHOOK, test, reason, "6.6"))
+            self.assertFalse(module.allowed_skip(module.SYSCALLHOOK, test, reason, None))
+        self.assertFalse(module.allowed_skip(module.SYSCALLHOOK, "TestIntegrationDevBound/other",
+                                             "veth unavailable (x)", None))
+
     def test_subtest_skip_is_not_hidden_by_parent_pass(self):
         package, test = module.PROGRAM, "TestBpfFilterSetTC"
         events = [{"Package": package, "Test": test+"/F1", "Action": "skip"},
@@ -68,6 +88,12 @@ class AuditTests(unittest.TestCase):
         self.assertFalse(module.allowed_skip(module.PROGRAM, tests[0], reason, None))
         self.assertTrue(module.allowed_skip(module.COMMAND, "TestBpfRetMember", reason, None))
         self.assertFalse(module.allowed_skip(module.COMMAND, "TestOther", reason, None))
+        test = "TestBpfDevBoundCapture"
+        self.assertTrue(module.allowed_skip(module.COMMAND, test, "veth unavailable (operation not supported)", "7.0"))
+        self.assertFalse(module.allowed_skip(module.COMMAND, test, "veth unavailable (operation not supported)", None))
+        self.assertTrue(module.allowed_skip(module.COMMAND, test, "kernel lacks kfunc bpf_xdp_metadata_rx_hash: x", "6.1"))
+        self.assertFalse(module.allowed_skip(module.COMMAND, test, "kernel lacks kfunc bpf_xdp_metadata_rx_hash: x", "6.6"))
+        self.assertFalse(module.allowed_skip(module.COMMAND, test, "the loader skipped", "7.0"))
 
     def test_reentry_skip_requires_subtest_kernel_and_reason(self):
         reason = "neither tcx nor clsact available (operation not supported)"
@@ -193,7 +219,7 @@ class RunnerTests(unittest.TestCase):
         binary = [*module.SYSCALLHOOK_TESTS, *module.SYSCALLHOOK_UNPRIVILEGED, "TestConfig", "TestBPFStopFilterCommands"]
         stops = "".join(f"--- PASS: {name} (0.01s)\n" for name in module.SYSCALLHOOK_TESTS if name.startswith("TestBPFStops"))
         every_passed = ("--- PASS: TestBpfAutoStatic (0.01s)\n--- PASS: TestIntegrationMapTypes (0.01s)\n--- PASS: TestIntegrationLoader (0.01s)\n--- PASS: TestIntegrationIndirectJump (0.01s)\n--- PASS: TestIntegrationJumpLimit (0.01s)\n--- PASS: TestIntegrationInjectHold (0.01s)\n"
-                        "--- PASS: TestIntegrationRetry (0.01s)\n--- PASS: TestIntegrationRetryPreempt (0.01s)\n"
+                        "--- PASS: TestIntegrationRetry (0.01s)\n--- PASS: TestIntegrationRetryPreempt (0.01s)\n--- PASS: TestIntegrationDevBound (0.01s)\n--- PASS: TestIntegrationVerifierRefused (0.01s)\n"
                         "--- PASS: TestBpfFdArray (0.01s)\n--- PASS: TestBpfLoaderLogSmall (0.01s)\n--- PASS: TestBpfTailCallReachabilityProbe (0.01s)\n")
         passed = every_passed + stops
         for output, code, expected in (
@@ -215,13 +241,18 @@ class RunnerTests(unittest.TestCase):
              "=== RUN   TestIntegrationIndirectJump\n--- PASS: TestIntegrationIndirectJump (0.01s)\n"
              "=== RUN   TestIntegrationJumpLimit\n--- PASS: TestIntegrationJumpLimit (0.01s)\n"
              "=== RUN   TestIntegrationInjectHold\n--- PASS: TestIntegrationInjectHold (0.01s)\n"
-             "--- PASS: TestIntegrationRetry (0.01s)\n--- PASS: TestIntegrationRetryPreempt (0.01s)\n"
+             "--- PASS: TestIntegrationRetry (0.01s)\n--- PASS: TestIntegrationRetryPreempt (0.01s)\n--- PASS: TestIntegrationDevBound (0.01s)\n--- PASS: TestIntegrationVerifierRefused (0.01s)\n"
              "--- PASS: TestBpfFdArray (0.01s)\n--- PASS: TestBpfLoaderLogSmall (0.01s)\n--- PASS: TestBpfTailCallReachabilityProbe (0.01s)\n" + stops, 0, 0),
             # Kernels before 6.10 lack bpf_preempt_disable.
             (passed.replace("--- PASS: TestIntegrationRetryPreempt (0.01s)\n",
                             "=== RUN   TestIntegrationRetryPreempt\n"
                             "    retry_integration_linux_amd64_test.go:209: kernel lacks bpf_preempt_disable: not found\n"
                             "--- SKIP: TestIntegrationRetryPreempt (0.01s)\n"), 0, 0),
+            # The host job is the device-bound loader's only CI run: a missing veth fails it.
+            (passed.replace("--- PASS: TestIntegrationDevBound (0.01s)\n",
+                            "=== RUN   TestIntegrationDevBound\n"
+                            "    devbound_integration_linux_amd64_test.go:140: veth unavailable (operation not supported)\n"
+                            "--- SKIP: TestIntegrationDevBound (0.01s)\n"), 0, 1),
             (passed.replace("--- PASS: TestIntegrationRetry (0.01s)\n", "--- SKIP: TestIntegrationRetry (0.01s)\n"), 0, 1),
             (passed.replace("--- PASS: TestBPFStopsFallback (0.01s)\n", ""), 0, 1),
             (passed, 1, 1),
@@ -265,7 +296,7 @@ class RunnerTests(unittest.TestCase):
 
     def test_syscallhook_every_syscall_pass_is_a_gate(self):
         every = ("--- PASS: TestBpfAutoStatic (0.01s)\n--- PASS: TestIntegrationMapTypes (0.01s)\n--- PASS: TestIntegrationLoader (0.01s)\n--- PASS: TestIntegrationIndirectJump (0.01s)\n--- PASS: TestIntegrationJumpLimit (0.01s)\n--- PASS: TestIntegrationInjectHold (0.01s)\n"
-                 "--- PASS: TestIntegrationRetry (0.01s)\n--- PASS: TestIntegrationRetryPreempt (0.01s)\n"
+                 "--- PASS: TestIntegrationRetry (0.01s)\n--- PASS: TestIntegrationRetryPreempt (0.01s)\n--- PASS: TestIntegrationDevBound (0.01s)\n--- PASS: TestIntegrationVerifierRefused (0.01s)\n"
                  "--- PASS: TestBpfFdArray (0.01s)\n--- PASS: TestBpfLoaderLogSmall (0.01s)\n--- PASS: TestBpfTailCallReachabilityProbe (0.01s)\n")
         default = every + "".join(
             f"--- PASS: {name} (0.01s)\n" for name in module.SYSCALLHOOK_TESTS if name.startswith("TestBPFStops")

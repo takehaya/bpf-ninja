@@ -118,12 +118,17 @@ type Injection struct {
 	// OutsidePremise names the denied callees the original program calls
 	// (inject.PremiseCalls): the theorem is not claimed for this load.
 	OutsidePremise []string
+	// NotReviewed names the kernel functions the original program calls
+	// that have no review record (inject.NotReviewed): the theorem is
+	// claimed only for loads without them.
+	NotReviewed []string
 }
 
 // Refusal is a matched load that ended without hooks; Reason is the message.
 // Cause is what ended it: "sites" (the rule's sites refused the load),
-// "stack" (the stack audit was unavailable), "analysis" (the stack analysis
-// cannot take the program: see unanalysable), "verifier" (the verifier
+// "stack" (the kernel cannot give the stack audit: errAuditUnavailable),
+// "analysis" (any other error of the stack analysis: see unanalysable),
+// "verifier" (the verifier
 // refused the trial load of the original program), "checker" (the load-time
 // checker refused the rewrite), "retry" (the kernel refused the rewrite and
 // the retry loaded none), "loader_log" (the rewrite passes with a log of its
@@ -204,6 +209,11 @@ type supervisor struct {
 }
 
 var errTrialVerifier = errors.New("trial load was rejected by the verifier")
+
+// errAuditUnavailable marks a stack audit the kernel cannot give: the program
+// is offloaded, the trial load failed other than in the verifier, or the
+// kernel did not return the loaded program's functions.
+var errAuditUnavailable = errors.New("stack audit unavailable")
 
 var errIndirectJump = errors.New("indirect jump")
 
@@ -366,22 +376,24 @@ func failedLoad(f loadFailure, failClosed bool, rule Rule) (step loadStep, cause
 
 // refuseOriginal says whether a matched load whose rewrite did not load is
 // refused instead of loading the original: always with failClosed, and when
-// the kernel cannot give the stack audit (stackErr) for a rule that names its
-// one site with map, which must be hooked. A rule with calls, entry or
-// tail_calls and no auto loads the original like an auto rule. A program the
-// verifier refuses, or one the analysis cannot take (unanalysable), loads as
-// the original under every rule.
+// the kernel cannot give the stack audit (errAuditUnavailable) for a rule
+// that names its one site with map, which must be hooked. A rule with calls,
+// entry or tail_calls and no auto loads the original like an auto rule. A
+// program the verifier refuses, or one the analysis cannot take
+// (unanalysable), loads as the original under every rule.
 func refuseOriginal(failClosed bool, rule Rule, stackErr error) bool {
-	return failClosed || stackErr != nil && !rule.Auto && rule.Map != "" && !errors.Is(stackErr, errTrialVerifier) && !unanalysable(stackErr)
+	return failClosed || errors.Is(stackErr, errAuditUnavailable) && !rule.Auto && rule.Map != ""
 }
 
-// unanalysable says whether the stack audit failed because the program is
-// one the analysis cannot take: it refused the program (inject.ErrRefused),
-// panicked on it (errAnalysisPanic) or cannot run its trial load
-// (errIndirectJump). No rewrite of such a program is possible at all, unlike
-// an audit the kernel cannot give.
+// unanalysable says whether the stack audit failed in the analysis of the
+// program rather than in the kernel: every error of preloadDepths but an
+// audit the kernel cannot give (errAuditUnavailable) and a trial the
+// verifier refused (errTrialVerifier). Among them are the analysis's own
+// refusals (inject.ErrRefused and the plain errors of the stack-depth and
+// frame-floor steps), a panic in it (errAnalysisPanic) and a trial load it
+// cannot run (errIndirectJump). No rewrite of such a program is possible.
 func unanalysable(stackErr error) bool {
-	return errors.Is(stackErr, inject.ErrRefused) || errors.Is(stackErr, errAnalysisPanic) || errors.Is(stackErr, errIndirectJump)
+	return stackErr != nil && !errors.Is(stackErr, errAuditUnavailable) && !errors.Is(stackErr, errTrialVerifier)
 }
 
 func retryOriginalOrRefuse(failClosed bool, retry func() (int64, error)) (int64, error) {
@@ -1207,7 +1219,9 @@ func (s *supervisor) entry(pid int, t *thread, regs unix.PtraceRegs) error {
 				s.log("program %q: injection skipped: %v", name, injectErr)
 			}
 		}
-		refuse := step == stepRefuse
+		// --fail-closed refuses every load that ends without hooks, whatever
+		// step the last decision gave.
+		refuse := s.options.FailClosed || step == stepRefuse
 		ret, err = retryOriginalOrRefuse(refuse, func() (int64, error) {
 			// Substituted attrs and buffers live in scratch memory, so the original
 			// registers, attr and input buffers still describe the unchanged load.
@@ -1232,9 +1246,12 @@ func (s *supervisor) entry(pid int, t *thread, regs unix.PtraceRegs) error {
 		if len(premise) != 0 {
 			s.log("program %q: outside the theorem's premise: calls %s", name, strings.Join(premise, ", "))
 		}
+		if len(rewrite.unread) != 0 {
+			s.log("program %q: kernel functions without a review record: calls %s", name, strings.Join(rewrite.unread, ", "))
+		}
 		if s.options.OnInject != nil {
 			inj := Injection{HookForm: form, Program: name, Func: entry, Type: ebpf.ProgramType(u32(attr, 0)), Hooks: result.Hooks, Skipped: result.Skipped, Stack: stack,
-				Build: rewrite.build, Labels: rewrite.labels, OutsidePremise: premise}
+				Build: rewrite.build, Labels: rewrite.labels, OutsidePremise: premise, NotReviewed: rewrite.unread}
 			// bpf_prog_info starts with type, id and the 8-byte tag.
 			if info, err := r.info(uint32(ret), 16); err != nil {
 				s.log("program %q: cannot query program ID: %v", name, err)
@@ -1431,9 +1448,57 @@ func stackDepths(log string) (depths []int, err error) {
 	return depths, err
 }
 
+// statsLog points attr's verifier log at a BPF_LOG_STATS buffer of size
+// bytes at addr and returns attr. Every other field stays, so a trial is
+// bound to the loader's device (prog_flags at 44, prog_ifindex at 64).
+func statsLog(attr []byte, size uint32, addr uint64) []byte {
+	put32(attr, 24, 4) // BPF_LOG_STATS
+	put32(attr, 28, size)
+	put64(attr, 32, addr)
+	return attr
+}
+
+// offloadAudit is the error of a load whose stack the kernel does not
+// account locally: an offload request, or an attr too short to tell.
+func offloadAudit(attr []byte) error {
+	if len(attr) < 68 || offloaded(attr) {
+		return fmt.Errorf("%w: offloaded programs do not expose local verifier stack accounting", errAuditUnavailable)
+	}
+	return nil
+}
+
+// trialLoadError is the error of a stack trial the kernel refused with
+// loadErr and log: errTrialVerifier for EACCES or EINVAL when the log has a
+// line other than the statistics the kernel prints after every check,
+// refused or not (the verifier's reason), or no line at all (the kernel
+// refused the program before the verifier ran, as for a device that is
+// gone); the original then gets the kernel's own error. Else
+// errAuditUnavailable.
+func trialLoadError(loadErr error, log string) error {
+	if (errors.Is(loadErr, unix.EACCES) || errors.Is(loadErr, unix.EINVAL)) && (strings.TrimSpace(log) == "" || !statsOnly(log)) {
+		return fmt.Errorf("%w: %v: %s", errTrialVerifier, loadErr, strings.TrimSpace(log))
+	}
+	if log != "" {
+		return fmt.Errorf("%w: trial PROG_LOAD: %w: %s", errAuditUnavailable, loadErr, strings.TrimSpace(log))
+	}
+	return fmt.Errorf("%w: trial PROG_LOAD: %w", errAuditUnavailable, loadErr)
+}
+
+// statsOnly says whether every line of a verifier log is one of the
+// statistics lines print_verification_stats writes with BPF_LOG_STATS.
+func statsOnly(log string) bool {
+	for line := range strings.Lines(log) {
+		line = strings.TrimSpace(line)
+		if line != "" && !strings.HasPrefix(line, "verification time ") && !strings.HasPrefix(line, "stack depth ") && !strings.HasPrefix(line, "processed ") {
+			return false
+		}
+	}
+	return true
+}
+
 func (s *supervisor) preloadDepths(r *remote, attr []byte, rounding int) (report inject.StackReport, err error) {
-	if len(attr) < 68 || u32(attr, 64) != 0 {
-		return report, fmt.Errorf("offloaded programs do not expose local verifier stack accounting")
+	if err := offloadAudit(attr); err != nil {
+		return report, err
 	}
 	spec, err := s.programBTF(r, attr)
 	if err != nil {
@@ -1453,10 +1518,7 @@ func (s *supervisor) preloadDepths(r *remote, attr []byte, rounding int) (report
 	if err != nil {
 		return report, err
 	}
-	trial := bytes.Clone(attr)
-	put32(trial, 24, 4) // BPF_LOG_STATS
-	put32(trial, 28, logSize)
-	put64(trial, 32, logAddr)
+	trial := statsLog(bytes.Clone(attr), logSize, logAddr)
 	fd, loadErr := r.bpf(unix.BPF_PROG_LOAD, trial)
 	readLog := func() (string, error) {
 		logBytes, readErr := readMemory(r.pid, logAddr, logSize)
@@ -1470,13 +1532,7 @@ func (s *supervisor) preloadDepths(r *remote, attr []byte, rounding int) (report
 		if readErr != nil {
 			return report, readErr
 		}
-		if (errors.Is(loadErr, unix.EACCES) || errors.Is(loadErr, unix.EINVAL)) && !strings.Contains(log, "processed") {
-			return report, fmt.Errorf("%w: %v: %s", errTrialVerifier, loadErr, strings.TrimSpace(log))
-		}
-		if log != "" {
-			return report, fmt.Errorf("trial PROG_LOAD: %w: %s", loadErr, strings.TrimSpace(log))
-		}
-		return report, fmt.Errorf("trial PROG_LOAD: %w", loadErr)
+		return report, trialLoadError(loadErr, log)
 	}
 	err = withTrialProgram(fd, func(fd int64) error {
 		closed, closeErr := r.call(unix.SYS_CLOSE, uint64(fd))
@@ -1492,7 +1548,7 @@ func (s *supervisor) preloadDepths(r *remote, attr []byte, rounding int) (report
 		}
 		records, infoErr := r.progFuncInfo(uint32(fd))
 		if infoErr != nil {
-			return infoErr
+			return fmt.Errorf("%w: %w", errAuditUnavailable, infoErr)
 		}
 		names, namesErr := loadedFunctionNames(records, spec)
 		if namesErr != nil {
@@ -1552,6 +1608,7 @@ type transformed struct {
 	build     string            // the listing fingerprint of the original
 	labels    map[uint32]string // the listing's site labels by pc
 	premise   []string          // inject.PremiseCalls of the original, named with the load's kernel and module BTF
+	unread    []string          // inject.NotReviewed of the original, named the same way
 }
 
 // sitesRefusal is a load a rule's sites refused (Sites.drop).
@@ -1671,7 +1728,8 @@ func (s *supervisor) rewriteLoad(raw, listed inject.RawProgram, entry string, ru
 		return nil, "", err
 	}
 	t = &transformed{result: result, request: request, original: raw.Instructions, missFirst: missFirst, retry: drop != nil,
-		build: list.Fingerprint, labels: list.Labels, premise: inject.PremiseCalls(raw.Instructions, listed.Kernel, listed.Modules)}
+		build: list.Fingerprint, labels: list.Labels, premise: inject.PremiseCalls(raw.Instructions, listed.Kernel, listed.Modules),
+		unread: inject.NotReviewed(raw.Instructions, listed.Kernel, listed.Modules)}
 	t.cert, t.premises, err = loadCheckInputs(raw.Instructions, result, request.Stack, stack)
 	if errors.Is(err, inject.ErrCheckerNotApplicable) && drop == nil {
 		s.log("program %q: %v; load not validated", rule.Program, err)
@@ -1741,9 +1799,7 @@ func (s *supervisor) load(r *remote, attr []byte, name string, form HookForm, t 
 		if logAddr, err = r.alloc(make([]byte, logSize)); err != nil {
 			return 0, "", err
 		}
-		put32(patched, 24, 4) // BPF_LOG_STATS; verifier errors print at any level
-		put32(patched, 28, logSize)
-		put64(patched, 32, logAddr)
+		statsLog(patched, logSize, logAddr) // verifier errors print at any level
 	}
 	// Preserve kernel output fields (currently log_true_size) in the caller's attr.
 	addr, err := r.alloc(patched)
@@ -1922,10 +1978,7 @@ func (s *supervisor) hitJumpLimit(r *remote, attr []byte) (hit bool, why string)
 	if err != nil {
 		return false, ""
 	}
-	trial := bytes.Clone(attr)
-	put32(trial, 24, 4) // BPF_LOG_STATS
-	put32(trial, 28, logSize)
-	put64(trial, 32, logAddr)
+	trial := statsLog(bytes.Clone(attr), logSize, logAddr)
 	fd, err := r.bpf(unix.BPF_PROG_LOAD, trial)
 	if err == nil {
 		closed, closeErr := r.call(unix.SYS_CLOSE, uint64(fd))

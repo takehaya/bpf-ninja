@@ -1,7 +1,8 @@
 # Walkthrough: observe the map calls of a loaded program
 
 This walkthrough takes a small XDP program from "which maps does it use?" to a live trace of its queue pushes and pops, using `--list-maps`, a rule for `inject-run`, and an fentry observer.
-Every output below was recorded on a 7.0 host with the program and loader shown here; long file paths are shortened to `prog.c`.
+The last step shows the same flow for a helper call.
+Every output in steps 1 to 6 was recorded on a 7.0 host with the program and loader shown here; long file paths are shortened to `prog.c`.
 Nothing is attached to an interface: the loader runs the program with `BPF_PROG_TEST_RUN`.
 The program, the loader, the observer and the rule are in [examples/inject-walkthrough](../../examples/inject-walkthrough), with the commands to build and run them.
 
@@ -413,6 +414,38 @@ rec_pols_update	site=30 status=0x00000002fffffffe key->policy_index=5 value->pol
 The `filter.pcapng` comments were `value->pol_rc=3 key->policy_index=2` and `value->pol_rc=4 key->policy_index=3`.
 Select packets by a value with `-Y 'frame.comment matches "value->pol_rc=3( |$)"'`; `contains` would also match `value->pol_rc=30`.
 `entry` puts whole map values into the file, so use `filter` or a small `--record-max` when the values hold data that should not leave the host.
+
+## 7. Observe a helper call
+
+`prog.c` calls no helper or kernel function other than the map helpers, so its listing has no `callees` and its ready rule no `calls`.
+For a program that does, the same three steps apply.
+The listing below comes from the discovery code run on a test program, `xdp_ingress`, which looks up `sessions`, reads the clock twice, reads the NUMA node and takes a spin lock; it has no line info, so the labels give instruction slots:
+
+```json
+"callees": [
+  {"name": "bpf_ktime_get_ns", "kind": "helper", "ret": "scalar", "typed": false, "sites": [8, 12]},
+  {"name": "bpf_get_numa_node_id", "kind": "helper", "ret": "scalar", "typed": false, "sites": [10]},
+  {"name": "bpf_spin_lock", "kind": "helper", "ret": "void", "typed": false, "sites": [14],
+   "reason": "takes or releases a lock or a critical section"}
+],
+"call_sites": [
+  {"kind": "call", "pc": 8, "call": "bpf_ktime_get_ns", "func": "xdp_ingress", "label": "bpf_ktime_get_ns@xdp_ingress+8", "ctx_source": "entry"},
+  ...
+],
+"rule": {"program": "xdp_ingress", "auto": true, "maps": ["sessions"], "entry": true,
+  "calls": ["bpf_ktime_get_ns", "bpf_get_numa_node_id"], "ops": ["lookup:any"], "hook_prefix": "ninja"}
+```
+
+- The ready rule names the two callees without a `reason`; the spin lock is never hooked.
+- Loaded with this rule, each named callee gets one hook after every call of it: `ninja_bpf_ktime_get_ns(ctx, u32 site, u64 ret)` sees the clock value in `ret`, and `site` is the call's `pc`.
+- Capture at that hook as at a map hook, or at one call with `--site`:
+
+```sh
+bpf-ninja -p "$PROG_ID" --func ninja_bpf_ktime_get_ns --arg-echo -c 5 'site' 'ret'
+bpf-ninja -p "$PROG_ID" --hooks-json hooks.json --site 'bpf_ktime_get_ns@xdp_ingress+12' -w clock.pcap
+```
+
+[Observe helper and kernel-function calls](inject-run.md#observe-helper-and-kernel-function-calls) lists the callees whose hook also receives a memory argument, such as `bpf_fib_lookup`.
 
 ## See also
 

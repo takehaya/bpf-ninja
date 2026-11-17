@@ -11,7 +11,7 @@ tcpdump cannot show what an XDP or tc program did to a packet, and cBPF filters 
 - Filters use a built-in DSL that walks through encapsulations, such as `eth/ipv4/udp/vxlan/eth/ipv4/tcp`.
 - Output is pcap-ng, to stdout or to per-CPU files.
 - The tcpdump syntax (`--cbpf`, through [cbpfc](https://github.com/cloudflare/cbpfc)) is kept for compatibility in an optional libpcap build and is planned for removal.
-- The experimental [`inject-run`](docs/en/inject-run.md) adds hooks to selected XDP, tc, cgroup_skb or netfilter programs as an unmodified loader loads them (Linux x86-64).
+- The experimental [`inject-run`](docs/en/inject-run.md) adds hooks after map, helper and kernel-function calls in selected XDP, tc, cgroup_skb or netfilter programs as an unmodified loader loads them (Linux x86-64).
 
 [Documentation / ドキュメント](docs/README.md) · [日本語の導入](docs/ja/getting-started.md) · [Examples](docs/ja/examples/README.md)
 
@@ -418,7 +418,8 @@ sudo bpf-ninja -i eth0 --mode xdp --set "sids=/sys/fs/bpf/sids" \
 
 ## Load-time hooks
 
-`inject-run` starts an unmodified BPF loader and adds hooks to selected XDP, tc, cgroup_skb or netfilter programs as it loads them.
+`inject-run` starts an unmodified BPF loader and adds hooks to selected XDP, tc, cgroup_skb or netfilter programs as it loads them: after map calls, helper calls and kernel-function calls, at program entry and after failed tail calls.
+`inject-run --lookups-json` lists every call of each program the loader loads, with a ready rule to edit; `--site` then captures at one listed call.
 It is experimental and runs on Linux x86-64 only.
 `--list-progs --list-maps` shows the map operations of a loaded program.
 
@@ -454,6 +455,8 @@ Specify exactly one of `-i`, `-p` or `--cgroup`.
 | `--list-progs` | List reachable freplace, tail-call, and redirect-map targets and exit | entry, exit |
 | `--list-maps` | With `--list-progs`, also list each function's calls and the maps it uses, with the op (`lookup`, `update`, `delete`, `tail_call`, ...) and source line, read from the loaded program's translated instructions (needs root) | entry, exit |
 | `--lookups-json` | With `--list-maps`, read the file `inject-run --lookups-json` wrote and mark each map use with its load-time site and why it cannot be instrumented | entry, exit |
+| `--site` | Capture at one injected site: a label or `pc` from the file `inject-run --hooks-json` wrote. Needs `--hooks-json` and one `-p`; selects the site's hook, adds `--arg-filter site==PC`, and does not follow reloads. See [Capture packets at a hook](docs/en/inject-run.md#capture-packets-at-a-hook) | entry, exit |
+| `--hooks-json` | With `--site`, the file `inject-run --hooks-json` wrote; its entry for `-p` must have the loaded program's tag | entry, exit |
 | `--list-params` | List integer and pointer parameters for the target function (requires `--func` or an EXT entry with filterable parameters) | entry, exit |
 | `--members` | With `--list-params`, show the pointee member tree or scalar `[0]` expression, layout, and filter/echo eligibility | entry, exit |
 | `--members-depth` | Maximum named member levels for `--list-params --members` (default 3, range 1–32); omitted branches are marked | entry, exit |

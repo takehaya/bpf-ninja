@@ -147,6 +147,11 @@ func TestBpfLoaderLogSmall(t *testing.T) {
 				if !strings.Contains(logs.String(), "trial PROG_LOAD: permission denied; retrying with fewer sites") {
 					t.Fatal("the retry did not run on the trial's refusal")
 				}
+				// The log trial is charged to the retry's budget, after the
+				// jump-limit check of the refused load.
+				if !strings.Contains(logs.String(), "(budget 24, 2 used before)") {
+					t.Fatal("the log trial was not charged to the trial budget")
+				}
 			} else if !strings.Contains(logs.String(), "the loader's verifier log buffer is too small") {
 				t.Fatal("no message that the loader's log buffer is too small")
 			}

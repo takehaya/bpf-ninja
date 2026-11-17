@@ -274,7 +274,8 @@ bpf-ninja reads the target program's BTF and locates the selected function's pro
 It finds the parameter's argument index, unwraps typedefs and qualifiers to identify its pointer target, and walks struct/union members by name.
 Anonymous members promote names into the enclosing scope.
 Member offsets accumulate from the original pointee; the final integer or enum supplies the width and signedness.
-This uses the loaded program's types, not a guessed C layout or a same-named kernel type.
+For `arg` this uses the loaded program's types, not a guessed C layout or a same-named kernel type.
+A typed call-hook `ret` is the exception: its type is the kernel struct or union that the hook's `ret_type` tag names, looked up by that name in the running kernel's BTF, vmlinux first, else the one module that defines it (see [Read fields behind a call hook's pointer result](#read-fields-behind-a-call-hooks-pointer-result)).
 
 The generated entry/exit probe retrieves the argument pointer, checks for null, adds the resolved offset, and reads the member with the kernel-read helper `bpf_probe_read_kernel`.
 It reads exactly 1, 2, 4, or 8 bytes, then sign-extends signed values or zero-extends unsigned values for comparisons and echo.

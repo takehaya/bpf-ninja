@@ -202,9 +202,10 @@ func kfuncRet(ins *asm.Instruction, kernel *btf.Spec, modules map[int16]*btf.Spe
 // UnnamedKfunc stands in PremiseCalls for kernel-function calls that could not be named.
 const UnnamedKfunc = "a kernel function that could not be named"
 
-// PremiseCalls returns the names of the helpers and kernel functions on the
-// deny list (denyReason), and of the kernel functions whose prototype takes a
-// callback (protoTakesCallback), that insns call anywhere, in call order without
+// PremiseCalls returns the names of the helpers that helperPremise marks,
+// of the kernel functions on the deny list (denyReason), and of the kernel
+// functions whose prototype takes a callback (protoTakesCallback), that
+// insns call anywhere, in call order without
 // repeats. The equivalence theorem assumes the original program calls none of
 // them. The transform adds no helper or kernel-function call, so a rewritten
 // program gives the same names as its original. A kernel-function call that
@@ -217,44 +218,41 @@ func PremiseCalls(insns asm.Instructions, kernel *btf.Spec, modules map[int16]*b
 		if !ins.IsBuiltinCall() && !ins.IsKfuncCall() {
 			continue
 		}
-		name, callback := "", false
+		name, marked := "", false
 		if h, ok := helperByID(ins.Constant); ins.IsBuiltinCall() && ok {
 			name = h.Name
+			marked = helperPremise(name) != ""
 		} else if ins.IsKfuncCall() {
 			var named bool
 			if _, name, named = callee(ins, kernel, modules); !named {
-				name = UnnamedKfunc
-			} else if proto := kfuncProto(ins, kernel, modules); proto != nil {
-				callback = protoTakesCallback(proto)
+				name, marked = UnnamedKfunc, true
+			} else if proto := kfuncProto(ins, kernel, modules); proto != nil && protoTakesCallback(proto) || denyReason(name) != "" {
+				marked = true
 			}
 		}
-		if name != "" && (name == UnnamedKfunc || callback || denyReason(name) != "") && !slices.Contains(names, name) {
+		if marked && !slices.Contains(names, name) {
 			names = append(names, name)
 		}
 	}
 	return names
 }
 
-// denyReason says why a callee is never hooked by name, or "".
+// denyReason says why a callee is never hooked by name, or "": a helper
+// that helperPremise marks, or one of the kernel functions below.
 func denyReason(name string) string {
 	has := func(prefix string) bool { return strings.HasPrefix(name, prefix) }
 	switch {
-	case name == "bpf_spin_lock" || name == "bpf_spin_unlock" || has("bpf_res_spin_lock") || has("bpf_res_spin_unlock") ||
+	case helperPremise(name) != "":
+		return helperPremise(name)
+	case has("bpf_res_spin_lock") || has("bpf_res_spin_unlock") ||
 		name == "bpf_preempt_disable" || name == "bpf_preempt_enable" || name == "bpf_rcu_read_lock" || name == "bpf_rcu_read_unlock" ||
 		name == "bpf_local_irq_save" || name == "bpf_local_irq_restore":
-		return "takes or releases a lock or a critical section"
-	case slices.Contains([]string{"bpf_for_each_map_elem", "bpf_loop", "bpf_find_vma", "bpf_user_ringbuf_drain", "bpf_timer_set_callback",
-		"bpf_rbtree_add_impl", "bpf_wq_set_callback", "bpf_wq_set_callback_impl", "bpf_task_work_schedule_signal",
+		return premiseLockReason
+	case slices.Contains([]string{"bpf_rbtree_add_impl", "bpf_wq_set_callback", "bpf_wq_set_callback_impl", "bpf_task_work_schedule_signal",
 		"bpf_task_work_schedule_signal_impl", "bpf_task_work_schedule_resume", "bpf_task_work_schedule_resume_impl"}, name):
 		return callbackReason
 	case name == "bpf_throw":
 		return "does not return"
-	case slices.Contains([]string{"bpf_get_stack", "bpf_get_stackid", "bpf_get_task_stack", "bpf_get_branch_snapshot", "bpf_get_func_ip"}, name):
-		return "reads native code addresses or branch records, which inserted code may change"
-	case name == "bpf_perf_event_read" || name == "bpf_perf_event_read_value":
-		// XDP and tc reach both through bpf_base_func_proto with CAP_PERFMON
-		// (7.0); the event counts on the current CPU, inserted code included.
-		return "reads a perf event counter, which counts inserted code too"
 	case has("bpf_iter_") && (strings.HasSuffix(name, "_new") || strings.HasSuffix(name, "_next") || strings.HasSuffix(name, "_destroy")):
 		return "an iterator: the verifier forks and prunes loop states at its next"
 	case has("bpf_list_") || has("bpf_rbtree_") || name == "bpf_refcount_acquire_impl" || has("bpf_stream_") ||

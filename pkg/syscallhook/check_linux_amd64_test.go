@@ -91,7 +91,7 @@ func TestCallxCheckPolicy(t *testing.T) {
 // audit is unavailable; a rule with calls, entry or tail_calls and no auto
 // loads the original like an auto rule, and --fail-closed refuses every kind.
 func TestRefuseOriginal(t *testing.T) {
-	audit := fmt.Errorf("offloaded programs do not expose local verifier stack accounting")
+	audit := offloadAudit(nil)
 	for _, tc := range []struct {
 		name       string
 		rule       Rule
@@ -123,7 +123,7 @@ func TestRefuseOriginal(t *testing.T) {
 
 // Every matched load that ends without hooks names what ended it.
 func TestRefusalCause(t *testing.T) {
-	audit := fmt.Errorf("offloaded programs do not expose local verifier stack accounting")
+	audit := offloadAudit(nil)
 	refused := refusedLoad{error: fmt.Errorf("transformed PROG_LOAD: permission denied")}
 	for _, tc := range []struct {
 		err, stackErr error
@@ -183,7 +183,7 @@ func TestLoaderLog(t *testing.T) {
 // load: retry, original or refuse, with the cause, and the outcome once the
 // original load returned.
 func TestFailedLoad(t *testing.T) {
-	audit := fmt.Errorf("offloaded programs do not expose local verifier stack accounting")
+	audit := offloadAudit(nil)
 	analysis := deadRegisterStackErr(t)
 	panicked := guard("parsing verifier stats", func() error { panic("boom") })
 	verifier := fmt.Errorf("%w: x", errTrialVerifier)
@@ -276,5 +276,88 @@ func TestSkipMatched(t *testing.T) {
 	}
 	if !strings.Contains(logs.String(), "injection skipped: ambiguous program selectors") {
 		t.Fatalf("log %q", logs.String())
+	}
+}
+
+// Every error the stack audit can return is classified in one place: only an
+// audit the kernel cannot give refuses the load under a map rule; a trial the
+// verifier refused and every error of the analysis load the original.
+func TestStackErrorClass(t *testing.T) {
+	analysisErr := func(err error) error {
+		t.Helper()
+		if err == nil {
+			t.Fatal("the analysis step returned no error")
+		}
+		return err
+	}
+	raw := deadRegisterProgram(t, asm.R1)
+	_, noDepth := stackDepths("processed 3 insns (limit 1000000)")
+	_, depthCount := frameFloors([]int{8, 8}, []string{"p"}, raw, inject.KernelInfo{Major: 7})
+	_, ambiguous := frameFloors([]int{8, 8}, []string{"p", "p"}, raw, inject.KernelInfo{Major: 7})
+	_, badDepth := frameFloors([]int{600}, []string{"p"}, raw, inject.KernelInfo{Major: 7})
+	_, absent := frameFloors([]int{8}, []string{"q"}, raw, inject.KernelInfo{Major: 7})
+	offload := make([]byte, 128)
+	put32(offload, 64, 3)
+	const refusedStats = "verification time 6 usec\nstack depth 0\nprocessed 1 insns (limit 1000000) max_states_per_insn 0 total_states 0 peak_states 0 mark_read 0\n"
+	refusedLog := "0: R1=ctx() R10=fp0\n0: (95) exit\nR0 !read_ok\n" + refusedStats
+	mapRule := Rule{Program: "p", HookPrefix: "h", Map: "m"}
+	for _, tc := range []struct {
+		name     string
+		stackErr error
+		step     loadStep
+		cause    string
+	}{
+		{"offload", offloadAudit(offload), stepRefuse, "stack"},
+		{"short-attr", offloadAudit(make([]byte, 64)), stepRefuse, "stack"},
+		{"trial-enomem", trialLoadError(unix.ENOMEM, ""), stepRefuse, "stack"},
+		{"func-info", fmt.Errorf("%w: %w", errAuditUnavailable, unix.EFAULT), stepRefuse, "stack"},
+		{"trial-verifier", trialLoadError(unix.EACCES, "R0 !read_ok"), stepOriginal, "verifier"},
+		// The kernel prints the statistics after a refused check as well.
+		{"trial-verifier-stats", trialLoadError(unix.EACCES, refusedLog), stepOriginal, "verifier"},
+		{"trial-einval-stats", trialLoadError(unix.EINVAL, "func#0 @0\n"+refusedStats), stepOriginal, "verifier"},
+		// Refused before the verifier ran (a device that is gone): the original loads.
+		{"trial-einval-no-log", trialLoadError(unix.EINVAL, ""), stepOriginal, "verifier"},
+		// The check passed and the load failed later.
+		{"trial-einval-stats-only", trialLoadError(unix.EINVAL, refusedStats), stepRefuse, "stack"},
+		{"trial-eperm-log", trialLoadError(unix.EPERM, refusedLog), stepRefuse, "stack"},
+		{"no-depth-line", analysisErr(noDepth), stepOriginal, "analysis"},
+		{"depth-count", analysisErr(depthCount), stepOriginal, "analysis"},
+		{"ambiguous-name", analysisErr(ambiguous), stepOriginal, "analysis"},
+		{"bad-depth", analysisErr(badDepth), stepOriginal, "analysis"},
+		{"absent-function", analysisErr(absent), stepOriginal, "analysis"},
+		{"refused", deadRegisterStackErr(t), stepOriginal, "analysis"},
+		{"panic", guard("parsing verifier stats", func() error { panic("boom") }), stepOriginal, "analysis"},
+		{"indirect-jump", fmt.Errorf("%w at instruction 3 is unsupported", errIndirectJump), stepOriginal, "analysis"},
+		{"reading-log", fmt.Errorf("reading verifier stats: %w", unix.ESRCH), stepOriginal, "analysis"},
+	} {
+		step, cause := failedLoad(loadFailure{err: fmt.Errorf("stack depth unavailable: %w", tc.stackErr), stackErr: tc.stackErr}, false, mapRule)
+		if step != tc.step || cause != tc.cause {
+			t.Errorf("%s (%v): step %d cause %q, want step %d cause %q", tc.name, tc.stackErr, step, cause, tc.step, tc.cause)
+		}
+	}
+}
+
+// A trial keeps the loader's device binding: statsLog changes only the log
+// fields of a cloned attr, and preloadDepths refuses an offload request
+// before it touches the tracee, but not a device-bound load.
+func TestTrialKeepsDevice(t *testing.T) {
+	attr := make([]byte, progAttrSize)
+	put32(attr, 44, devBoundOnly)
+	put32(attr, 64, 3)
+	put32(attr, 24, 1)
+	trial := statsLog(bytes.Clone(attr), 64<<10, 0x1000)
+	if u32(trial, 44) != devBoundOnly || u32(trial, 64) != 3 || u32(trial, 24) != 4 || u32(trial, 28) != 64<<10 || u64(trial, 32) != 0x1000 {
+		t.Fatalf("trial attr flags %#x ifindex %d log %d/%d/%#x", u32(trial, 44), u32(trial, 64), u32(trial, 24), u32(trial, 28), u64(trial, 32))
+	}
+	if u32(attr, 24) != 1 {
+		t.Fatal("statsLog changed the loader's attr")
+	}
+	offload := make([]byte, progAttrSize)
+	put32(offload, 64, 3)
+	if _, err := (&supervisor{}).preloadDepths(nil, offload, 0); !errors.Is(err, errAuditUnavailable) || !strings.Contains(err.Error(), "offloaded programs do not expose") {
+		t.Fatalf("offload request: %v", err)
+	}
+	if err := offloadAudit(attr); err != nil {
+		t.Fatalf("device-bound load: %v", err)
 	}
 }
