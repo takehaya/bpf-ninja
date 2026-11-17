@@ -68,7 +68,8 @@ func resolveSite(data []byte, path string, progID uint32, tag, site string) ([]s
 }
 
 // expandSite turns --site and --hooks-json into --func for the hooks that
-// report the site and --arg-filter site==PC, ANDed with the user's filters.
+// report the site and --arg-filter site==PC, ANDed with the user's filters,
+// and --no-follow.
 func expandSite(cmd *cli.Command, infos []*attach.ProgInfo) error {
 	site, path := cmd.String("site"), cmd.String("hooks-json")
 	switch {
@@ -99,6 +100,11 @@ func expandSite(cmd *cli.Command, infos []*attach.ProgInfo) error {
 		if err := cmd.Set("func", hook); err != nil {
 			return err
 		}
+	}
+	// The pc names the site in this load only; a reload may put another
+	// call there, so the capture does not follow the hook.
+	if err := cmd.Set("no-follow", "true"); err != nil {
+		return err
 	}
 	return cmd.Set("arg-filter", fmt.Sprintf("site==%d", pc))
 }

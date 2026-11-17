@@ -256,6 +256,9 @@ func captureSite(t *testing.T, prog *ebpf.Program, hooks, site string) {
 	if n := len(epbInterfaces(t, pcap)); n != 4 {
 		t.Errorf("%d packets, want 4\n%s", n, stderr)
 	}
+	if strings.Contains(stderr, "follow_attached") {
+		t.Errorf("a --site capture follows reloads:\n%s", stderr)
+	}
 	if !strings.Contains(stderr, fmt.Sprintf("attach target: prog id=%d func=\"ninja_bpf_ktime_get_ns\"", id)) {
 		t.Errorf("no attach to the clock hook:\n%s", stderr)
 	}

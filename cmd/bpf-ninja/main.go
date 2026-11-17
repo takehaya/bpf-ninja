@@ -108,7 +108,7 @@ func rootFlags() []cli.Flag {
 		},
 		&cli.StringFlag{
 			Name:  "site",
-			Usage: "capture at one injected site: a label or pc from the file inject-run --hooks-json wrote (needs --hooks-json and one -p); sets --func to the site's hook and adds --arg-filter site==PC, ANDed with other --arg-filter",
+			Usage: "capture at one injected site: a label or pc from the file inject-run --hooks-json wrote (needs --hooks-json and one -p); sets --func to the site's hook, adds --arg-filter site==PC, ANDed with other --arg-filter, and does not follow reloads",
 		},
 		&cli.StringFlag{
 			Name:  "hooks-json",
