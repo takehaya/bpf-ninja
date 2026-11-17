@@ -21,16 +21,14 @@ type extensionLink struct {
 }
 
 func extensionLinks() ([]extensionLink, error) {
-	it := new(link.Iterator)
-	defer it.Close()
 	var edges []extensionLink
-	for it.Next() {
+	err := forEachLink(nextLink, func(id link.ID, l link.Link) error {
 		// Link exposes FD but not the common header separately from detailed
 		// Info. Read that header first so unrelated link implementations'
 		// Info errors cannot prevent capture.
-		fdLink, ok := it.Link.(interface{ FD() int })
+		fdLink, ok := l.(interface{ FD() int })
 		if !ok {
-			return nil, fmt.Errorf("link %d does not expose an FD for freplace checks", it.ID)
+			return fmt.Errorf("link %d does not expose an FD for freplace checks", id)
 		}
 		var header struct{ Type, ID, Program uint32 }
 		// The BPF ABI stores this pointer as a u64; keep its address stable
@@ -44,40 +42,80 @@ func extensionLinks() ([]extensionLink, error) {
 		_, _, errno := unix.Syscall(unix.SYS_BPF, unix.BPF_OBJ_GET_INFO_BY_FD, uintptr(unsafe.Pointer(&attr)), unsafe.Sizeof(attr))
 		pinned.Unpin()
 		if errno == unix.ENOENT {
-			continue
+			return nil
 		}
 		if errno != 0 {
-			return nil, fmt.Errorf("reading link %d header for freplace checks: %w", it.ID, errno)
+			return fmt.Errorf("reading link %d header for freplace checks: %w", id, errno)
 		}
 		if link.Type(header.Type) != link.TracingType {
-			continue
+			return nil
 		}
 		p, err := ebpf.NewProgramFromID(ebpf.ProgramID(header.Program))
 		if errors.Is(err, os.ErrNotExist) {
-			continue
+			return nil
 		}
 		if err != nil {
-			return nil, err
+			return err
 		}
 		typ := p.Type()
 		_ = p.Close()
 		if typ != ebpf.Extension {
-			continue
+			return nil
 		}
-		info, err := it.Link.Info()
+		info, err := l.Info()
 		if errors.Is(err, os.ErrNotExist) {
-			continue
+			return nil
 		}
 		if err != nil {
-			return nil, fmt.Errorf("reading link info: %w", err)
+			return fmt.Errorf("reading link info: %w", err)
 		}
 		tr := info.Tracing()
 		if tr == nil || tr.TargetObjectId == 0 {
-			continue
+			return nil
 		}
 		edges = append(edges, extensionLink{uint32(info.Program), tr.TargetObjectId, btf.TypeID(tr.TargetBtfId)})
+		return nil
+	})
+	return edges, err
+}
+
+type nextLinkFunc func(link.ID) (link.ID, link.Link, error)
+
+func nextLink(after link.ID) (link.ID, link.Link, error) {
+	attr := struct{ ID, NextID uint32 }{ID: uint32(after)}
+	_, _, errno := unix.Syscall(unix.SYS_BPF, unix.BPF_LINK_GET_NEXT_ID, uintptr(unsafe.Pointer(&attr)), unsafe.Sizeof(attr))
+	if errno == unix.ENOENT {
+		return 0, nil, nil
 	}
-	return edges, it.Err()
+	if errno != 0 {
+		return 0, nil, fmt.Errorf("get next link ID: %w", errno)
+	}
+	id := link.ID(attr.NextID)
+	l, err := link.NewFromID(id)
+	return id, l, err
+}
+
+func forEachLink(next nextLinkFunc, visit func(link.ID, link.Link) error) error {
+	var id link.ID
+	for {
+		var l link.Link
+		var err error
+		id, l, err = next(id)
+		if id == 0 {
+			return err
+		}
+		if errors.Is(err, os.ErrNotExist) || errors.Is(err, unix.EAGAIN) {
+			continue
+		}
+		if err != nil {
+			return fmt.Errorf("get link for ID %d: %w", id, err)
+		}
+		err = visit(id, l)
+		_ = l.Close()
+		if err != nil {
+			return err
+		}
+	}
 }
 
 func selectHookType(id uint32, actual ebpf.ProgramType, edges []extensionLink, resolve func(uint32) (ebpf.ProgramType, error)) (ebpf.ProgramType, error) {
