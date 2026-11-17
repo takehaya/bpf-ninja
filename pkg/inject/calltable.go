@@ -53,7 +53,14 @@ var callTable = []CallRow{
 // 6.12, 6.18 and 7.0 where the helper exists and XDP or tc may call it
 // (bpf_task_storage_get: tc from 6.18). Off: bpf_get_local_storage,
 // bpf_inode_storage_get and bpf_sock_from_file, which neither XDP nor tc may
-// call.
+// call. The pointer rows of callTable get the same hook when their sites do
+// not agree on one argument size (calls_fallback_kernel_test.go).
+//
+// Kernel functions have no such list: kfuncRow gives every pointer result
+// the result-only hook. That hook is static with an empty body or takes a
+// global arg:untrusted parameter, so the worst a new kind can do is a
+// verifier refusal, which the load retry turns into a dropped site; and the
+// set of kernel functions is open, so a list could never be complete.
 var pointerResults = []string{"bpf_sk_fullsock", "bpf_tcp_sock", "bpf_ringbuf_reserve", "bpf_this_cpu_ptr", "bpf_kptr_xchg",
 	"bpf_get_listener_sock", "bpf_skc_to_tcp6_sock", "bpf_skc_to_tcp_sock", "bpf_skc_to_tcp_timewait_sock", "bpf_skc_to_tcp_request_sock",
 	"bpf_skc_to_udp6_sock", "bpf_skc_to_unix_sock", "bpf_skc_to_mptcp_sock", "bpf_sk_storage_get", "bpf_per_cpu_ptr", "bpf_dynptr_data",
