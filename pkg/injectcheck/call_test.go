@@ -217,12 +217,21 @@ func TestCallSiteRejects(t *testing.T) {
 	}
 }
 
+// callbackHelperIDs are the helpers with an ARG_PTR_TO_FUNC argument in Linux
+// 6.12.111 and 7.0.13 (for_each_map_elem, timer_set_callback, find_vma, loop,
+// user_ringbuf_drain), written out so that the test does not take the list
+// from the function it tests.
+var callbackHelperIDs = map[int64]bool{164: true, 170: true, 180: true, 181: true, 209: true}
+
 // Every helper outside the map helpers and the tail call stays a call-target
 // centre, except the ones that run or register a callback and id 0, which is
 // not a helper.
 func TestCallSiteHelperCentres(t *testing.T) {
 	for id := int64(0); id <= 211; id++ {
 		fn := asm.BuiltinFunc(id)
+		if callbackHelper(fn) != callbackHelperIDs[id] {
+			t.Errorf("callbackHelper(%v) = %v, want %v", fn, callbackHelper(fn), callbackHelperIDs[id])
+		}
 		counts, err := callCase{"entry", fn.Call(), 0}.build(nil).check()
 		want := ""
 		switch {
@@ -230,7 +239,7 @@ func TestCallSiteHelperCentres(t *testing.T) {
 			want = "helper id 0, which is not a helper"
 		case supportedHelper(fn.Call()):
 			want = "not a call of a helper outside the map helpers"
-		case callbackHelper(fn):
+		case callbackHelperIDs[id]:
 			want = fn.String() + ", which runs or registers a callback"
 		}
 		if want == "" {
