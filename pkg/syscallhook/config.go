@@ -250,17 +250,56 @@ func ParseConfig(r io.Reader) ([]Rule, error) {
 	}
 	// The key hook_prefix marks a rule that states every kind; empty, it would
 	// read as a hook rule, whose empty maps and ops select everything.
-	var keys []map[string]json.RawMessage
-	_ = json.Unmarshal(data, &keys) // decoded above
-	for i, rule := range keys {
-		if v, ok := rule["hook_prefix"]; ok && (string(v) == `""` || string(v) == "null") {
-			return nil, fmt.Errorf("rule %d: hook_prefix is empty; give the prefix or remove the key", i)
-		}
+	// encoding/json matches it in any case, and the last of repeated keys wins.
+	if err := checkHookPrefixKeys(data); err != nil {
+		return nil, err
 	}
 	if err := Validate(rules); err != nil {
 		return nil, err
 	}
 	return uniqueRules(rules), nil
+}
+
+// checkHookPrefixKeys refuses a rule of data, a JSON array that decoded
+// into rules, whose hook_prefix key, in any case, is empty or null or is
+// given more than once.
+func checkHookPrefixKeys(data []byte) error {
+	d := json.NewDecoder(bytes.NewReader(data))
+	if _, err := d.Token(); err != nil { // [
+		return fmt.Errorf("injection config: %w", err)
+	}
+	for i := 0; d.More(); i++ {
+		if tok, err := d.Token(); err != nil || tok == nil { // { or null
+			if err != nil {
+				return fmt.Errorf("injection config: %w", err)
+			}
+			continue
+		}
+		given := 0
+		for d.More() {
+			key, err := d.Token()
+			if err != nil {
+				return fmt.Errorf("injection config: %w", err)
+			}
+			var v json.RawMessage
+			if err := d.Decode(&v); err != nil {
+				return fmt.Errorf("injection config: %w", err)
+			}
+			if name, _ := key.(string); !strings.EqualFold(name, "hook_prefix") {
+				continue
+			}
+			if given++; given > 1 {
+				return fmt.Errorf("rule %d: hook_prefix is given more than once (keys match in any case)", i)
+			}
+			if string(v) == `""` || string(v) == "null" {
+				return fmt.Errorf("rule %d: hook_prefix is empty; give the prefix or remove the key", i)
+			}
+		}
+		if _, err := d.Token(); err != nil { // }
+			return fmt.Errorf("injection config: %w", err)
+		}
+	}
+	return nil
 }
 
 // uniqueRules drops each rule identical to an earlier one; Validate accepts
