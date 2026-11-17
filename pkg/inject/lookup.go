@@ -2006,6 +2006,10 @@ func transformLookupProgramGuarded(insns asm.Instructions, typ ebpf.ProgramType,
 	if broken != "" {
 		return nil, plan, refuse("%s", broken)
 	}
+	// With no call group left to drop, the hooks that remain still count.
+	if n := funcCount(spliced); n > maxFuncs {
+		return nil, plan, refuse("the program would have %d functions, more than the kernel's %d", n, maxFuncs)
+	}
 	if len(hooks) == 0 {
 		return nil, plan, refuse("no hook is left to generate (%d skipped)", len(plan.skipped))
 	}

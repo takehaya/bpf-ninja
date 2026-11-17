@@ -1,8 +1,10 @@
 package inject
 
 import (
+	"errors"
 	"fmt"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/cilium/ebpf"
@@ -147,6 +149,21 @@ func TestNoUncalledHook(t *testing.T) {
 				t.Fatalf("functions nothing calls: %v", left)
 			}
 		})
+	}
+}
+
+// Past the kernel's 256 functions with no call group left to drop, the
+// transform refuses instead of emitting a program the kernel rejects.
+func TestFunctionLimitWithoutCallGroups(t *testing.T) {
+	req := callReq("bpf_get_numa_node_id", "bpf_jiffies64")
+	req.Entry = true
+	plan, err := transformLookup(manyFuncsFixture(255), req)
+	if !errors.Is(err, ErrRefused) || !strings.Contains(err.Error(), "the program would have 257 functions, more than the kernel's 256") || len(plan.skipped) != 2 {
+		t.Fatalf("err %v skipped %+v", err, plan.skipped)
+	}
+	// One function fewer fits with the entry hook alone.
+	if plan, err := transformLookup(manyFuncsFixture(254), req); err != nil || len(plan.hooks) != 1 || plan.hooks[0].Kind != HookEntry {
+		t.Fatalf("err %v hooks %+v", err, plan.hooks)
 	}
 }
 
