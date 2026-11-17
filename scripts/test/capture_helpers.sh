@@ -43,6 +43,9 @@ capture_run() {
         failed=1
     elif ! "$sender" "$packets"; then
         echo "test traffic failed" >&2
+        if declare -F capture_failure_diagnostics >/dev/null; then
+            capture_failure_diagnostics
+        fi
         failed=1
     fi
     if [[ $failed -eq 1 ]]; then
