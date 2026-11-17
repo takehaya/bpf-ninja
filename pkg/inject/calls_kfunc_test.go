@@ -159,11 +159,13 @@ func TestCallKfuncResultOnly(t *testing.T) {
 		t.Errorf("k_voidp: hook %+v", h)
 	}
 	// Without the module BTF the module kfunc cannot be named: its site is
-	// skipped with that reason and the rule keeps its other hooks.
+	// skipped with that reason, its name is listed as one this load does not
+	// have, and the rule keeps its other hooks.
 	req.Modules = nil
 	plan, err = transformLookup(kfuncCallsFixture(t, kernel, module), req)
-	if err != nil || len(plan.hooks) != len(req.Calls)-1 || len(plan.skipped) != 1 ||
-		plan.skipped[0].Reason != "call: a kernel-function call that cannot be named" {
+	if err != nil || len(plan.hooks) != len(req.Calls)-1 || len(plan.skipped) != 2 ||
+		plan.skipped[0].Reason != "call: a kernel-function call that cannot be named" ||
+		!UnknownCallsName(plan.skipped[1]) || plan.skipped[1].Call != "m_int" {
 		t.Errorf("without Modules: err %v hooks %+v skipped %+v", err, plan.hooks, plan.skipped)
 	}
 }

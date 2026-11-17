@@ -60,7 +60,10 @@ type injectedProgJSON struct {
 	Skipped  []hookSiteJSON       `json:"skipped"`
 	// SkippedMaps lists the maps names of a hook_prefix rule that match no
 	// site: they have no pc, so they are not in Skipped.
-	SkippedMaps    []skippedMapJSON    `json:"skipped_maps,omitempty"`
+	SkippedMaps []skippedMapJSON `json:"skipped_maps,omitempty"`
+	// SkippedCalls lists the calls names of a rule that are neither a helper
+	// nor a kernel function of the load: they have no pc either.
+	SkippedCalls   []skippedCallJSON   `json:"skipped_calls,omitempty"`
 	OutsidePremise string              `json:"outside_premise,omitempty"`
 	Stack          *inject.StackReport `json:"stack,omitempty"`
 	// DeadCheckError names hook comparisons that failed. Those hooks and any
@@ -106,6 +109,11 @@ type hookJSON struct {
 // skippedMapJSON is a maps name that matches no site, and why.
 type skippedMapJSON struct {
 	Map    string `json:"map"`
+	Reason string `json:"reason"`
+}
+
+type skippedCallJSON struct {
+	Name   string `json:"name"`
 	Reason string `json:"reason"`
 }
 
@@ -329,6 +337,10 @@ func injectionJSON(inj syscallhook.Injection) injectedProgJSON {
 	for _, site := range inj.Skipped {
 		if site.Op == "" && site.SitePC == 0 && site.MapName != "" { // see syscallhook's unmatchedMapsName
 			out.SkippedMaps = append(out.SkippedMaps, skippedMapJSON{Map: site.MapName, Reason: site.Reason})
+			continue
+		}
+		if inject.UnknownCallsName(site) {
+			out.SkippedCalls = append(out.SkippedCalls, skippedCallJSON{Name: site.Call, Reason: site.Reason})
 			continue
 		}
 		kind := site.Op

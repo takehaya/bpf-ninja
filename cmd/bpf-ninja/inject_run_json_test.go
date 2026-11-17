@@ -236,6 +236,16 @@ func TestInjectionJSONSkippedMaps(t *testing.T) {
 	}
 }
 
+// A calls name that is neither a helper nor a kernel function of the load
+// has no pc either: it is listed in skipped_calls.
+func TestInjectionJSONSkippedCalls(t *testing.T) {
+	out, err := json.Marshal(injectionJSON(syscallhook.Injection{Program: "p", Type: ebpf.XDP,
+		Skipped: []inject.LookupSite{{Call: "bpf_jifies64", Reason: "no such name"}}}))
+	if err != nil || !strings.Contains(string(out), `"skipped":[],"skipped_calls":[{"name":"bpf_jifies64","reason":"no such name"}]`) {
+		t.Errorf("%s %v", out, err)
+	}
+}
+
 func mustRead(t *testing.T, path string) string {
 	t.Helper()
 	data, err := os.ReadFile(path)

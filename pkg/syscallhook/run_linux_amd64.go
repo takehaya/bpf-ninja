@@ -1886,7 +1886,7 @@ func (s *supervisor) retryLoad(r *remote, attr []byte, rule Rule, form HookForm,
 		return 0, out.art, err
 	}
 	for i, site := range out.art.result.Skipped {
-		if reason, ok := out.dropped[site.SitePC]; ok && !unmatchedMapsName(site) {
+		if reason, ok := out.dropped[site.SitePC]; ok && !unmatchedMapsName(site) && !inject.UnknownCallsName(site) {
 			out.art.result.Skipped[i].Reason = reason
 		}
 	}
@@ -2040,6 +2040,10 @@ func hookSummary(result *inject.LookupResultRaw) string {
 	for _, site := range result.Skipped {
 		if unmatchedMapsName(site) {
 			fmt.Fprintf(&b, "; skipped map %q (%s)", site.MapName, site.Reason)
+			continue
+		}
+		if inject.UnknownCallsName(site) {
+			fmt.Fprintf(&b, "; skipped call %q (%s)", site.Call, site.Reason)
 			continue
 		}
 		fmt.Fprintf(&b, "; skipped pc %d (%s)", site.SitePC, site.Reason)

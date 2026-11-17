@@ -169,7 +169,8 @@ func TestCallRefusals(t *testing.T) {
 		want string
 	}{
 		{"dispatch", func(r *LookupRequest) { r.Dispatch = true }, "Calls does not combine with Dispatch"},
-		{"unknown", func(r *LookupRequest) { r.Calls, r.Kernel = []string{"bpf_dynptr_from_xdp"}, testKernelSpec(t) }, "no call site is instrumented (0 skipped)"},
+		{"unknown", func(r *LookupRequest) { r.Calls, r.Kernel = []string{"bpf_dynptr_from_xdp"}, testKernelSpec(t) },
+			`no call site is instrumented (1 skipped); Calls names that are neither a helper nor a kernel function of this load: "bpf_dynptr_from_xdp"`},
 		{"lock", func(r *LookupRequest) { r.Calls = []string{"bpf_spin_lock"} }, `Calls name "bpf_spin_lock" cannot be hooked: takes or releases a lock or a critical section`},
 		{"callback", func(r *LookupRequest) { r.Calls = []string{"bpf_loop"} }, `Calls name "bpf_loop" cannot be hooked: runs or registers a callback`},
 		{"void", func(r *LookupRequest) { r.Calls = []string{"bpf_ringbuf_submit"} }, `Calls name "bpf_ringbuf_submit" cannot be hooked: returns nothing`},
@@ -266,13 +267,25 @@ func TestCallWithAutoAndNames(t *testing.T) {
 }
 
 // A Calls name the program does not call, or that the kernel does not have,
-// is no refusal: the rule hooks the callees it does call.
+// is no refusal: the rule hooks the callees it does call. A known name the
+// program does not call is silent; a name that is neither a helper nor a
+// kernel function of the load is listed once, without a site, and named
+// when the rule ends with nothing to hook.
 func TestCallUnknownNameNoSite(t *testing.T) {
-	req := callReq("bpf_jiffies64", "bpf_dynptr_from_xdp", "bpf_get_numa_node_id")
+	// The test kernel has no bpf_dynptr_from_xdp; bpf_get_numa_node_id is a
+	// helper the fixture does not call.
+	req := callReq("bpf_jiffies64", "bpf_dynptr_from_xdp", "bpf_get_numa_node_id", "bpf_get_prandom_u23")
 	req.Kernel = testKernelSpec(t)
 	plan, err := transformLookup(scalarFixture(), req)
-	if err != nil || len(plan.hooks) != 1 || plan.hooks[0].Call != "bpf_jiffies64" || len(plan.skipped) != 0 {
+	want := LookupSite{Call: "bpf_get_prandom_u23", Reason: `Calls name "bpf_get_prandom_u23" is neither a helper nor a kernel function of this load`}
+	if err != nil || len(plan.hooks) != 1 || plan.hooks[0].Call != "bpf_jiffies64" || len(plan.skipped) != 2 || plan.skipped[1] != want ||
+		plan.skipped[0].Call != "bpf_dynptr_from_xdp" || !UnknownCallsName(plan.skipped[0]) || !UnknownCallsName(plan.skipped[1]) {
 		t.Fatalf("err %v hooks %+v skipped %+v", err, plan.hooks, plan.skipped)
+	}
+	_, err = transformLookup(scalarFixture(), callReq("bpf_get_prandom_u23", "bpf_dynptr_from_xdp"))
+	if !errors.Is(err, ErrRefused) || !strings.Contains(err.Error(),
+		`no call site is instrumented (2 skipped); Calls names that are neither a helper nor a kernel function of this load: "bpf_get_prandom_u23", "bpf_dynptr_from_xdp"`) {
+		t.Fatalf("err %v", err)
 	}
 }
 

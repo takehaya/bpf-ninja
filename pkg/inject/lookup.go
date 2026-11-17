@@ -290,6 +290,31 @@ func checkOps(req LookupRequest) error {
 	return nil
 }
 
+// unknownCalls lists, without a site, each Calls name that is neither a
+// helper nor a kernel function of this load (namedCall gives no row and no
+// reason) and names none of the call sites the rule hooks or skips: it has
+// no site in this program, but a misspelt name must not pass unseen. A known
+// name the program does not call is not listed.
+func unknownCalls(req LookupRequest, groups []lookupGroup, skipped []LookupSite) []LookupSite {
+	var out []LookupSite
+	for _, name := range req.Calls {
+		if slices.ContainsFunc(groups, func(g lookupGroup) bool { return g.call != nil && g.call.Name == name }) ||
+			slices.ContainsFunc(skipped, func(site LookupSite) bool { return site.Call == name }) {
+			continue
+		}
+		if row, reason := namedCall(name, req.Kernel, req.Modules); row == nil && reason == "" {
+			out = append(out, LookupSite{Call: name, Reason: fmt.Sprintf("Calls name %q is neither a helper nor a kernel function of this load", name)})
+		}
+	}
+	return out
+}
+
+// UnknownCallsName reports a skipped entry of unknownCalls: no op, no pc
+// and a callee name.
+func UnknownCallsName(site LookupSite) bool {
+	return site.Op == "" && site.SitePC == 0 && site.Call != ""
+}
+
 // normal is w with the empty set spelled LookupHit.
 func (w LookupWhen) normal() LookupWhen {
 	if w == "" {
@@ -1680,6 +1705,8 @@ func transformLookupProgramGuarded(insns asm.Instructions, typ ebpf.ProgramType,
 	}
 	callGroups, callSkipped := selectCalls(callSites, req, types)
 	plan.skipped = append(plan.skipped, callSkipped...)
+	unknown := unknownCalls(req, callGroups, callSkipped)
+	plan.skipped = append(plan.skipped, unknown...)
 	if err := CheckLookupStack(req); err != nil {
 		return nil, plan, err
 	}
@@ -1722,7 +1749,14 @@ func transformLookupProgramGuarded(insns asm.Instructions, typ ebpf.ProgramType,
 	groups = append(kept, callGroups...)
 	noCalls := func() error {
 		if len(req.Calls) != 0 && len(groups) == 0 && !req.Entry && !req.TailCalls {
-			return refuse("no call site is instrumented (%d skipped)", len(plan.skipped))
+			names := ""
+			for _, site := range unknown {
+				names += fmt.Sprintf(", %q", site.Call)
+			}
+			if names != "" {
+				names = "; Calls names that are neither a helper nor a kernel function of this load: " + names[2:]
+			}
+			return refuse("no call site is instrumented (%d skipped)%s", len(plan.skipped), names)
 		}
 		return nil
 	}
