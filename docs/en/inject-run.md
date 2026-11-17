@@ -339,6 +339,12 @@ The hook receives the call's result as `ret` and, for a callee with a memory arg
   A kernel function from a module, such as conntrack on most distribution kernels, is named through the module's BTF, which the program passes in its fd array.
   If either cannot be read, `inject-run` logs `kernel BTF unavailable: kernel-function calls are not hooked: ERR` or `module BTF at fd_array offset N unavailable: its kernel-function calls are not hooked: ERR`, and each such call is skipped as one that cannot be named.
 
+#### XDP receive metadata
+
+`bpf_xdp_metadata_rx_timestamp`, `bpf_xdp_metadata_rx_hash` and `bpf_xdp_metadata_rx_vlan_tag` return a status and write the value through a pointer, so their hooks take `(ctx, u32 site, const T *arg, u64 ret)`: `arg` is the first value buffer (R2) after the call, typed by the kernel prototype as `u64` (timestamp), `u32` (hash) or `__be16` (VLAN protocol, in network byte order), and `ret` is the `int` status.
+A capture reads the value as `arg[0]` in `--arg-filter`, `--arg-echo` and `--record`, such as `--arg-filter 'ret==0' --arg-echo 'arg[0]'`; the hash's `rss_type` and the VLAN TCI are not captured.
+The program must be loaded bound to its device (`prog_ifindex` with `BPF_F_XDP_DEV_BOUND_ONLY`, as these kernel functions require); its trial load stays bound to the same device. A program loaded for hardware offload (`prog_ifindex` without that flag) still gets no hooks. A value buffer that is not on the program's own stack makes `arg` the untyped `const void *` described above, read as `arg->bytes[N]`.
+
 #### Read fields behind a pointer result
 
 When a callee's pointer result has a known type, the hook's decl tag `bpf-ninja:ret_type=NAME` and the hooks file's `ret_type` name the kernel struct or union it points to, such as `nf_conn` for `bpf_xdp_ct_lookup`.
@@ -999,7 +1005,7 @@ In both modes, cancelling or killing `inject-run` kills the target, and with the
   Each input buffer can be at most 16 MiB, and the attr at most 4096 bytes.
   `inject-run` refuses loads with kernel-side CO-RE records, map references by fd-array index, tokens, signatures or other unknown extensions.
   An fd array of module BTF for kernel-function calls passes through unchanged.
-- A device-bound XDP program (loaded with `prog_ifindex`, as the XDP metadata kernel functions require) gets no hooks: its trial load reports no stack depth, so every site has the reason `stack audit unavailable`.
+- An offloaded XDP program (loaded with `prog_ifindex` and without `BPF_F_XDP_DEV_BOUND_ONLY`) gets no hooks: its trial load reports no stack depth, so every site has the reason `stack audit unavailable`. A device-bound program that the host runs is hooked like any other; see [XDP receive metadata](#xdp-receive-metadata).
 - A program with an indirect jump (`BPF_JA|BPF_X`) is never rewritten, so its sites are not observed and it does not appear in `--lookups-json`.
 - A program that a rule matches or `--lookups-json` discovers, and that references a `BPF_MAP_TYPE_INSN_ARRAY` map without an indirect jump, fails to load under `inject-run`, even when failing open.
   A successful trial load binds the array, so the loads that follow get `EBUSY`; the loader may report a different final error after retrying.
