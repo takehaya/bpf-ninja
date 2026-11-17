@@ -20,9 +20,10 @@ import (
 // the selector fields must be empty, and Hook is the prefix of the per-map
 // hook names (see inject.LookupRequest); Maps limits Auto to the named maps.
 // Entry and TailCalls add the Hook_entry and Hook_tail_call hooks and allow a
-// rule without lookups. Calls names helpers, and kernel functions from the
-// call table (inject.SupportedCalls); each named callee gets one hook,
-// Hook_<name>, after every call of it, and also allows a rule without lookups.
+// rule without lookups. Calls names helpers and kernel functions; each named
+// callee gets one hook, Hook_<name>, after every call of it, and also allows a
+// rule without lookups. A name that is not a helper is checked against the
+// kernel BTF of the load, not here.
 // CopyReadOnly passes stack copies of BPF_F_RDONLY_PROG map values to typed
 // hooks, and StaticUntrusted gives the hooks that would take arg:untrusted
 // pointers static linkage (see inject.LookupRequest); without it, Run probes

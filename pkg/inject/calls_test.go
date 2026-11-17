@@ -167,8 +167,8 @@ func TestCallRefusals(t *testing.T) {
 		want string
 	}{
 		{"dispatch", func(r *LookupRequest) { r.Dispatch = true }, "Calls does not combine with Dispatch"},
-		{"unknown", func(r *LookupRequest) { r.Calls = []string{"bpf_dynptr_from_xdp"} },
-			`Calls name "bpf_dynptr_from_xdp" is not supported: it is neither a helper nor a kernel function with a row (bpf_xdp_ct_lookup, bpf_skb_ct_lookup)`},
+		{"unknown", func(r *LookupRequest) { r.Calls, r.Kernel = []string{"bpf_dynptr_from_xdp"}, testKernelSpec(t) },
+			`Calls name "bpf_dynptr_from_xdp" is not supported: it is neither a helper nor a kernel function of the running kernel or of a module BTF the program passes`},
 		{"lock", func(r *LookupRequest) { r.Calls = []string{"bpf_spin_lock"} }, `Calls name "bpf_spin_lock" cannot be hooked: takes or releases a lock or a critical section`},
 		{"callback", func(r *LookupRequest) { r.Calls = []string{"bpf_loop"} }, `Calls name "bpf_loop" cannot be hooked: runs or registers a callback`},
 		{"void", func(r *LookupRequest) { r.Calls = []string{"bpf_ringbuf_submit"} }, `Calls name "bpf_ringbuf_submit" cannot be hooked: returns nothing`},
@@ -190,7 +190,8 @@ func TestCallRefusals(t *testing.T) {
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("err = %v, want %q", err, tc.want)
 			}
-			if tc.name != "no site" {
+			// Without kernel BTF a configuration check cannot tell an unknown name from a kernel function.
+			if tc.name != "no site" && tc.name != "unknown" {
 				if err := ValidateRaw(LookupRequestRaw{HookName: req.HookName, Dispatch: req.Dispatch, Calls: req.Calls, Stack: req.Stack}); err == nil || !strings.Contains(err.Error(), tc.want) {
 					t.Fatalf("ValidateRaw: %v", err)
 				}

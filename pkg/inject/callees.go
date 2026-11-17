@@ -50,9 +50,6 @@ type CallDiscovery struct {
 	Fingerprint string
 }
 
-// noHookForm is the Reason of a kernel function the call table has no row for.
-const noHookForm = "no hook form yet"
-
 // DiscoverCallSitesRaw lists the helper, kernel-function and tail-call sites of
 // p and labels them together with mapCalls, the program's DiscoverMapCallsRaw.
 // p.Kernel and p.Modules name kernel-function calls; without them such a call
@@ -64,7 +61,17 @@ func DiscoverCallSitesRaw(p RawProgram, mapCalls []LookupSite) (CallDiscovery, e
 		return CallDiscovery{}, err
 	}
 	// The sites of callees with a row, with the reasons a rule naming them would see.
-	known, err := discoverSites(insns, p.Type, resolve, LookupRequest{Calls: slices.Concat(SupportedCalls(), hookableHelpers()), Kernel: p.Kernel, Modules: p.Modules})
+	calls := slices.Concat(SupportedCalls(), hookableHelpers())
+	for i := range insns {
+		if ins := &insns[i]; ins.IsKfuncCall() {
+			if _, name, _ := callee(ins, p.Kernel, p.Modules); !slices.Contains(calls, name) {
+				if row, _ := kfuncRow(name, kfuncProto(ins, p.Kernel, p.Modules)); row != nil {
+					calls = append(calls, name)
+				}
+			}
+		}
+	}
+	known, err := discoverSites(insns, p.Type, resolve, LookupRequest{Calls: calls, Kernel: p.Kernel, Modules: p.Modules})
 	if err != nil {
 		return CallDiscovery{}, err
 	}
@@ -151,49 +158,28 @@ func calleeOf(ins *asm.Instruction, kernel *btf.Spec, modules map[int16]*btf.Spe
 	switch {
 	case !named:
 		c.Reason = "a kernel-function call that cannot be named"
-	case row != nil:
-	case denyReason(c.Name) != "":
-		c.Reason = denyReason(c.Name)
-	case c.Ret == RetVoid:
-		c.Reason = "returns nothing"
-	case c.Ret == RetUnsupported:
-		c.Reason = "not a callable helper"
-	default:
-		c.Reason = noHookForm
+	case row == nil:
+		_, c.Reason = kfuncRow(c.Name, kfuncProto(ins, kernel, modules))
 	}
 	return c
 }
 
-// kfuncRet is the result kind of a raw kernel-function call's BTF prototype,
-// modifiers and typedefs skipped: an integer or enum is a scalar, any pointer
-// a pointer, none void; "" when the prototype cannot be read.
+// kfuncRet is the result kind of a kernel-function call's BTF prototype
+// (kfuncProto), modifiers and typedefs skipped: an integer or enum is a
+// scalar, any pointer a pointer, none void; "" when the prototype cannot be
+// read.
 func kfuncRet(ins *asm.Instruction, kernel *btf.Spec, modules map[int16]*btf.Spec) CalleeRet {
-	spec := kernel
-	if ins.Offset != 0 {
-		spec = modules[ins.Offset]
-	}
-	if spec == nil || ins.Reference() != "" {
-		return ""
-	}
-	typ, err := spec.TypeByID(btf.TypeID(ins.Constant))
-	fn, ok := typ.(*btf.Func)
-	if err != nil || !ok {
-		return ""
-	}
-	proto, ok := fn.Type.(*btf.FuncProto)
-	if !ok {
+	proto := kfuncProto(ins, kernel, modules)
+	if proto == nil {
 		return ""
 	}
 	switch btf.UnderlyingType(proto.Return).(type) {
-	case *btf.Void:
+	case *btf.Void, nil:
 		return RetVoid
 	case *btf.Pointer:
 		return RetPointer
 	case *btf.Int, *btf.Enum:
 		return RetScalar
-	}
-	if proto.Return == nil {
-		return RetVoid
 	}
 	return ""
 }

@@ -37,6 +37,14 @@ def allowed_skip(package, test, output, kernel):
             return "set BPF_NINJA_VALIDATE_OBJECTS, BPF_NINJA_VALIDATE_CENSUS and BPF_NINJA_VALIDATE_OUTPUT" in output
         if test == "TestBpfLookupHooksNetfilter":
             return kernel == "6.1" and "BPF_PROG_TYPE_NETFILTER not supported" in output
+        # The kfunc tests skip on kernels without their kfuncs: 6.1 has none of
+        # bpf_dynptr_from_xdp, bpf_task_from_pid and bpf_get_kmem_cache, which
+        # appears in 6.13.
+        if test in {"TestBpfCallKfuncScalar", "TestBpfCallKfuncDynptrSlice", "TestBpfCallKfuncAcquired",
+                    "TestBpfCallKfuncAcquiredMissingRelease"} and "kernel lacks kfunc" in output:
+            return kernel == "6.1"
+        if test == "TestBpfCallKfuncPointer" and "kernel lacks kfunc" in output:
+            return kernel in {"6.1", "6.6", "6.12"}
         # 7.3 rejects a tail call reachable from a bpf_loop callback outright.
         if test in {"TestBpfStackLimitsAcrossCalls/callback", "TestBpfStackLimitsAcrossCalls/callback-global"}:
             return kernel == "7.3-rc4" and "kernel forbids tail calls in callbacks" in output
@@ -67,6 +75,7 @@ def allowed_skip(package, test, output, kernel):
             "TestBpfCallHookFibUntrusted", "TestBpfCallHookCtUntrusted", "TestBpfCallHookRowSkUntrusted",
             "TestBpfCallHookRowLoadBytesMapUntrusted", "TestBpfCallAllPointerSkFullsock", "TestBpfCallAllPointerTcpSock",
             "TestBpfCallAllPointerRingbufReserve", "TestBpfCallAllPointerThisCpuPtr", "TestBpfCallAllPointerKptrXchg",
+            "TestBpfCallKfuncPointer", "TestBpfCallKfuncDynptrSlice", "TestBpfCallKfuncAcquired",
         } and "kernel lacks arg:untrusted" in output
     # The record tests at untrusted and non-static dispatch hooks need
     # arg:untrusted, which 6.15 and older reject; the static dispatch case

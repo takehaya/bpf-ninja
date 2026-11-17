@@ -104,9 +104,14 @@ func selectCalls(sites []discoveredLookup, req LookupRequest, types *btf.Spec) (
 func callHook(group lookupGroup, ctx btf.Type, req LookupRequest) (asm.Instructions, LookupHook) {
 	row := group.call
 	plan := LookupHook{Name: group.name, Kind: HookCall, When: string(CallAny), SiteArg: true, Sites: publicLookupSites(group.sites),
-		Call: row.Name, RetPtr: row.RetPtr}
+		Call: row.Name, RetPtr: row.RetPtr, RetSize: row.RetSize}
 	if row.ArgReg == 0 && !row.RetPtr {
-		return pointerHook(group.name, ctx, nil, true, false, "ret"), plan
+		hook := pointerHook(group.name, ctx, nil, true, false, "ret")
+		if row.RetSize != 0 {
+			fn := btf.FuncMetadata(&hook[0])
+			fn.Tags = append(fn.Tags, hookabi.SizeTag("ret", row.RetSize))
+		}
+		return hook, plan
 	}
 	if row.ArgReg == 0 {
 		ret := []btf.FuncParam{{Name: "ret", Type: &btf.Void{}}}

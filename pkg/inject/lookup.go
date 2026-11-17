@@ -274,10 +274,11 @@ func checkOps(req LookupRequest) error {
 		if name == "" || slices.Contains(req.Calls[:i], name) {
 			return refuse("Calls names must be non-empty and unique; got %q", name)
 		}
-		if row, reason := namedCall(name); row == nil && reason != "" {
+		// Without kernel BTF (a configuration check) a name that is not a helper may still be a kernel function.
+		if row, reason := namedCall(name, req.Kernel, req.Modules); row == nil && reason != "" {
 			return refuse("Calls name %q cannot be hooked: %s", name, reason)
-		} else if row == nil {
-			return refuse("Calls name %q is not supported: it is neither a helper nor a kernel function with a row (%s)", name, strings.Join(kfuncRows(), ", "))
+		} else if row == nil && req.Kernel != nil {
+			return refuse("Calls name %q is not supported: it is neither a helper nor a kernel function of the running kernel or of a module BTF the program passes", name)
 		}
 	}
 	return nil
@@ -384,6 +385,7 @@ type LookupHook struct {
 	ArgType   string `json:",omitempty"` // BTF struct name of arg's pointee; "" with ArgReg != 0: struct { u8 bytes[ArgSize]; }
 	ArgSize   uint32 `json:",omitempty"` // size of arg's pointee in bytes
 	RetPtr    bool   `json:",omitempty"` // ret is const void *; false: u64 ret
+	RetSize   uint32 `json:",omitempty"` // byte size of the callee's integer result when narrower than 8: only its low bytes are the result
 }
 
 // LookupResult reports the selected original sites and the transformed clone.
@@ -667,9 +669,11 @@ func discoverSites(insns asm.Instructions, typ ebpf.ProgramType, resolve lookupM
 		}
 		var row *CallRow
 		if op == "" && len(req.Calls) != 0 && (ins.IsBuiltinCall() || ins.IsKfuncCall()) {
-			r, _, _ := callee(ins, req.Kernel, req.Modules)
+			r, name, _ := callee(ins, req.Kernel, req.Modules)
 			if r == nil && ins.IsBuiltinCall() {
 				r, _ = helperCall(asm.BuiltinFunc(ins.Constant))
+			} else if r == nil && name != "" {
+				r, _ = kfuncRow(name, kfuncProto(ins, req.Kernel, req.Modules))
 			}
 			if r != nil && slices.Contains(req.Calls, r.Name) {
 				op, row = HookCall, r

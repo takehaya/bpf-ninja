@@ -2,6 +2,7 @@ package inject
 
 import (
 	"fmt"
+	"maps"
 	"slices"
 	"strings"
 
@@ -18,6 +19,7 @@ type CallRow struct {
 	SizeReg asm.Register    // register holding the argument's size in bytes at the call
 	ArgType string          // struct name looked up for the pointee
 	Writes  bool            // the callee's own argument check is a write on every supported kernel
+	RetSize uint32          // byte size of a kernel function's integer result narrower than 8 bytes; 0: 8
 }
 
 // callTable lists the callees LookupRequest.Calls may name. A row is never
@@ -84,9 +86,11 @@ func helperCall(id asm.BuiltinFunc) (row *CallRow, reason string) {
 }
 
 // namedCall is helperCall for a rule's Calls name: the row of a kernel
-// function with a row, else of the helper of that name. A kernel function
-// without a row gets its deny reason, any other name a nil row and "".
-func namedCall(name string) (*CallRow, string) {
+// function with a row, else of the helper of that name, else kfuncRow of the
+// kernel function of that name in kernel or one of modules. Without kernel, or
+// for a name neither has, a denied name gets its deny reason and any other
+// name a nil row and "".
+func namedCall(name string, kernel *btf.Spec, modules map[int16]*btf.Spec) (*CallRow, string) {
 	for i := range callTable {
 		if callTable[i].Name == name {
 			return &callTable[i], ""
@@ -95,7 +99,98 @@ func namedCall(name string) (*CallRow, string) {
 	if id := slices.IndexFunc(helperTable[:], func(h helperRow) bool { return h.Name == name }); id >= 0 {
 		return helperCall(asm.BuiltinFunc(id))
 	}
+	if proto := kfuncByName(name, kernel, modules); proto != nil {
+		return kfuncRow(name, proto)
+	}
 	return nil, denyReason(name)
+}
+
+// kfuncRow returns the row a call of the kernel function name without a row
+// gets when a rule names it: a result-only row, RetPtr for any pointer result
+// (void * included) and RetSize for an integer or enum narrower than 8 bytes.
+// Otherwise the row is nil and reason says why: the deny list, a parameter
+// that points to a function prototype (the verifier's callback test), no
+// result, or a prototype that cannot be read (proto nil).
+func kfuncRow(name string, proto *btf.FuncProto) (row *CallRow, reason string) {
+	if reason := denyReason(name); reason != "" {
+		return nil, reason
+	}
+	if proto == nil {
+		return nil, "its prototype is not in the kernel BTF at hand"
+	}
+	for _, p := range proto.Params {
+		if ptr, ok := btf.UnderlyingType(p.Type).(*btf.Pointer); ok {
+			if _, ok := btf.UnderlyingType(ptr.Target).(*btf.FuncProto); ok {
+				return nil, "runs or registers a callback"
+			}
+		}
+	}
+	var size uint32
+	switch ret := btf.UnderlyingType(proto.Return).(type) {
+	case *btf.Pointer:
+		return &CallRow{Name: name, RetPtr: true}, ""
+	case *btf.Int:
+		size = ret.Size
+	case *btf.Enum:
+		size = ret.Size
+	case *btf.Void, nil:
+		return nil, "returns nothing"
+	default:
+		return nil, "its result is neither an integer nor a pointer"
+	}
+	row = &CallRow{Name: name}
+	if size < 8 {
+		row.RetSize = size
+	}
+	return row, ""
+}
+
+// kfuncProto is the BTF prototype of a kernel-function call: by the BTF id
+// ins.Constant in kernel, or for a module kfunc in modules[ins.Offset]; by
+// name (kfuncByName) when the call carries a reference (ELF path). nil when
+// it cannot be read.
+func kfuncProto(ins *asm.Instruction, kernel *btf.Spec, modules map[int16]*btf.Spec) *btf.FuncProto {
+	if ins.Reference() != "" {
+		return kfuncByName(ins.Reference(), kernel, nil)
+	}
+	spec := kernel
+	if ins.Offset != 0 {
+		spec = modules[ins.Offset]
+	}
+	if spec == nil {
+		return nil
+	}
+	typ, err := spec.TypeByID(btf.TypeID(ins.Constant))
+	if fn, ok := typ.(*btf.Func); err == nil && ok {
+		proto, _ := fn.Type.(*btf.FuncProto)
+		return proto
+	}
+	return nil
+}
+
+// kfuncByName is the prototype of the function name in kernel, else in the
+// module BTF of modules (split on kernel) in offset order; nil when none has
+// it. This is the BTF a load passes: a module kfunc the program does not
+// reference in its fd_array is not found.
+func kfuncByName(name string, kernel *btf.Spec, modules map[int16]*btf.Spec) *btf.FuncProto {
+	specs := []*btf.Spec{kernel}
+	for _, off := range slices.Sorted(maps.Keys(modules)) {
+		specs = append(specs, modules[off])
+	}
+	for _, spec := range specs {
+		if spec == nil {
+			continue
+		}
+		types, _ := spec.AnyTypesByName(name)
+		for _, typ := range types {
+			if fn, ok := typ.(*btf.Func); ok {
+				if proto, ok := fn.Type.(*btf.FuncProto); ok {
+					return proto
+				}
+			}
+		}
+	}
+	return nil
 }
 
 // hookableHelpers returns the names of the helpers a rule's Calls may name, in id order.
@@ -103,17 +198,6 @@ func hookableHelpers() []string {
 	var names []string
 	for id := range helperTable {
 		if row, _ := helperCall(asm.BuiltinFunc(id)); row != nil {
-			names = append(names, row.Name)
-		}
-	}
-	return names
-}
-
-// kfuncRows returns the names of the kernel functions of callTable in table order.
-func kfuncRows() []string {
-	var names []string
-	for _, row := range callTable {
-		if row.Helper == 0 {
 			names = append(names, row.Name)
 		}
 	}
