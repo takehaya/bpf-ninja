@@ -33,7 +33,8 @@ func TestResolveSite(t *testing.T) {
 	}{
 		{8, "0123456789abcdef", "2", "--site: hooks.json has no program with prog_id 8"},
 		{7, "fedcba9876543210", "2", "--site: hooks.json lists prog_id 7 with tag 0123456789abcdef but the loaded program has tag fedcba9876543210; the file is from another load"},
-		{7, "0123456789abcdef", "bpf_ktime_get_ns@p:9", `--site: no site "bpf_ktime_get_ns@p:9" in program 7`},
+		{7, "0123456789abcdef", "bpf_ktime_get_ns@p:9", `--site: "bpf_ktime_get_ns@p:9" names 2 sites; give one of bpf_ktime_get_ns@p:9#1 bpf_ktime_get_ns@p:9#2`},
+		{7, "0123456789abcdef", "bpf_ktime_get_ns@p:", `--site: no site "bpf_ktime_get_ns@p:" in program 7`},
 		{7, "0123456789abcdef", "3", `--site: no site "3" in program 7`},
 		{7, "0123456789abcdef", "4294967295", `--site: no site "4294967295" in program 7`},
 	} {

@@ -3,9 +3,11 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"maps"
 	"os"
 	"slices"
 	"strconv"
+	"strings"
 
 	"github.com/takehaya/bpf-ninja/internal/attach"
 	"github.com/urfave/cli/v3"
@@ -59,6 +61,28 @@ func resolveSite(data []byte, path string, progID uint32, tag, site string) ([]s
 				hooks, pc = append(hooks, hook.Name), s.PC
 				break
 			}
+		}
+	}
+	if len(hooks) == 0 && !byPC {
+		// A base label names every copy that carries it with a #N suffix.
+		// The argument filters are ANDed and have no or, so one capture
+		// cannot take several sites: name the copies to choose from.
+		copies := map[uint32]string{}
+		for _, hook := range prog.Hooks {
+			for _, s := range hook.Sites {
+				if n, ok := strings.CutPrefix(s.Label, site+"#"); ok && s.Kind != "entry" {
+					if _, err := strconv.ParseUint(n, 10, 32); err == nil {
+						copies[s.PC] = s.Label
+					}
+				}
+			}
+		}
+		if len(copies) != 0 {
+			labels := make([]string, 0, len(copies))
+			for _, pc := range slices.Sorted(maps.Keys(copies)) {
+				labels = append(labels, copies[pc])
+			}
+			return nil, 0, fmt.Errorf("--site: %q names %d sites; give one of %s", site, len(labels), strings.Join(labels, " "))
 		}
 	}
 	if len(hooks) == 0 {
