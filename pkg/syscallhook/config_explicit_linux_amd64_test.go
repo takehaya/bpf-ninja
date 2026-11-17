@@ -23,8 +23,8 @@ func TestConfigHookPrefix(t *testing.T) {
 		`[{"program":"p","auto":true,"maps":["a"],"ops":["lookup"],"hook":"h","hook_prefix":"h"}]`: "",
 		`[{"program":"p","auto":true,"hook":"a","hook_prefix":"b"}]`:                               `rule 0: hook and hook_prefix are both given and differ ("a" and "b"); keep hook_prefix`,
 		`[{"program":"p","auto":true}]`:                                                            "rule 0: hook_prefix is required",
-		// A map rule observes no lookup without ops, which a single-site selection refuses.
-		`[{"program":"p","map":"m","hook_prefix":"h"}]`: "Lookups none selects no lookup",
+		// A map rule names its one site itself: without ops it observes that lookup.
+		`[{"program":"p","map":"m","hook_prefix":"h"}]`: "",
 	} {
 		_, err := ParseConfig(strings.NewReader(input))
 		if want == "" && err != nil || want != "" && (err == nil || !strings.Contains(err.Error(), want)) {
@@ -32,7 +32,7 @@ func TestConfigHookPrefix(t *testing.T) {
 		}
 	}
 	// The single hook of map and dispatch rules is named by either key.
-	for _, rule := range []string{`"map":"m","ops":["lookup"]`, `"auto":true,"maps":["m"],"ops":["lookup"],"dispatch":true`} {
+	for _, rule := range []string{`"map":"m","ops":["lookup"]`, `"map":"m"`, `"auto":true,"maps":["m"],"ops":["lookup"],"dispatch":true`} {
 		var a, b []Rule
 		if err := json.Unmarshal([]byte(`[{"program":"p",`+rule+`,"hook":"h"}]`), &a); err != nil {
 			t.Fatal(err)
@@ -40,7 +40,7 @@ func TestConfigHookPrefix(t *testing.T) {
 		if err := json.Unmarshal([]byte(`[{"program":"p",`+rule+`,"hook_prefix":"h"}]`), &b); err != nil {
 			t.Fatal(err)
 		}
-		if got, want := b[0].request(), a[0].request(); got.HookName != "h" || got.Lookups != want.Lookups || !slices.Equal(got.Maps, want.Maps) {
+		if got, want := b[0].request(), a[0].request(); got.HookName != "h" || got.Lookups != want.Lookups || !slices.Equal(got.Maps, want.Maps) || got.Site.MapName != want.Site.MapName {
 			t.Errorf("%s: %+v, want %+v", rule, got, want)
 		}
 	}
@@ -173,8 +173,8 @@ func TestExplicitRuleNeverWidens(t *testing.T) {
 		}
 	}
 	// Removing names one at a time, down to none, never hooks more sites
-	// than the last accepted rule before it. A rule may be refused on the
-	// way: a maps name with no call of the listed ops is a loud error.
+	// than the rule before it. A maps name with no call of the listed ops is
+	// skipped, so the only refusal on the way is a rule that hooks nothing.
 	var shrink func(r Rule, have int)
 	shrink = func(r Rule, have int) {
 		for _, list := range []*[]string{&r.Maps, &r.Ops, &r.Calls} {
@@ -185,7 +185,7 @@ func TestExplicitRuleNeverWidens(t *testing.T) {
 				*l = slices.Delete(*l, i, i+1)
 				got, err := explicitHooks(t, raw, next)
 				switch {
-				case err != nil && !strings.Contains(err.Error(), "matches no") && !strings.Contains(err.Error(), "nothing"):
+				case err != nil && !strings.Contains(err.Error(), "nothing"):
 					t.Errorf("%+v: %v", next, err)
 				case err != nil:
 					got = have
@@ -197,4 +197,52 @@ func TestExplicitRuleNeverWidens(t *testing.T) {
 		}
 	}
 	shrink(ready, all)
+}
+
+// A maps name with no call of the listed ops: a hook_prefix rule skips it
+// with the reason and keeps every other hook; a hook rule still refuses.
+func TestExplicitRuleSkipsUnmatchedMap(t *testing.T) {
+	raw := explicitRuleProgram(t)
+	stack := inject.StackAudit{Frames: map[string]int16{"p": -8}, Source: "verifier", FrameRounding: 16}
+	explicit := Rule{Program: "p", Auto: true, Maps: []string{"a", "b"}, Ops: []string{"lookup:any"}, Calls: []string{"bpf_ktime_get_ns"}, HookPrefix: "ninja"}
+	req := explicit.request()
+	req.Stack = stack
+	result, err := inject.TransformLookupRaw(raw, req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Hooks) != 3 || !slices.ContainsFunc(result.Skipped, func(s inject.LookupSite) bool {
+		return s.MapName == "b" && s.Reason == `Maps name "b" matches no lookup`
+	}) {
+		t.Fatalf("hooks %+v skipped %+v", result.Hooks, result.Skipped)
+	}
+	old := explicit
+	old.HookPrefix, old.Hook = "", "ninja"
+	req = old.request()
+	req.Stack = stack
+	if _, err := inject.TransformLookupRaw(raw, req); err == nil || !strings.Contains(err.Error(), `Maps name "b" matches no lookup`) {
+		t.Fatalf("hook rule: %v", err)
+	}
+}
+
+// A single-site map rule without ops gives the same bytes with hook_prefix as with hook.
+func TestExplicitMapRuleSameBytes(t *testing.T) {
+	raw := explicitRuleProgram(t)
+	var out [2][]byte
+	for i, r := range []Rule{{Program: "p", Map: "a", Hook: "h"}, {Program: "p", Map: "a", HookPrefix: "h"}} {
+		req := r.request()
+		req.Stack = inject.StackAudit{Frames: map[string]int16{"p": -8}, Source: "verifier", FrameRounding: 16}
+		result, err := inject.TransformLookupRaw(raw, req)
+		if err != nil {
+			t.Fatalf("%+v: %v", r, err)
+		}
+		var buf bytes.Buffer
+		if err := result.Instructions.Marshal(&buf, wire); err != nil {
+			t.Fatal(err)
+		}
+		out[i] = buf.Bytes()
+	}
+	if !bytes.Equal(out[0], out[1]) {
+		t.Fatal("hook_prefix map rule differs from the hook spelling")
+	}
 }

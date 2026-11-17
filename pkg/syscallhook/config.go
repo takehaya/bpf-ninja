@@ -83,8 +83,9 @@ type MapBTF struct {
 func (r Rule) request() inject.LookupRequestRaw {
 	ops, _ := parseOps(r.Ops) // Validate reports the error
 	maps := r.Maps
-	if r.HookPrefix != "" && (len(r.Ops) == 0 || r.Map == "" && len(r.Maps) == 0) {
-		// An explicit rule without ops, or an auto rule without maps, observes no map call.
+	if r.HookPrefix != "" && r.Map == "" && (len(r.Ops) == 0 || len(r.Maps) == 0) {
+		// An explicit rule without ops or maps observes no map call; a map
+		// rule names its one site itself and observes it without ops.
 		maps, ops = nil, ruleOps{lookups: inject.LookupNone}
 	}
 	return inject.LookupRequestRaw{
@@ -104,6 +105,9 @@ func (r Rule) request() inject.LookupRequestRaw {
 		Peeks:           ops.peeks,
 		HookName:        cmp.Or(r.HookPrefix, r.Hook),
 		Calls:           r.Calls,
+
+		// An explicit rule skips a maps name with no call of its ops.
+		SkipUnmatchedMaps: r.HookPrefix != "",
 	}
 }
 

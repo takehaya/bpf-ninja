@@ -84,7 +84,9 @@ func (s LookupSelector) empty() bool {
 //
 // Maps limits Auto to lookups on the named maps (exact kernel names); the
 // others are reported in Skipped. A name that matches no discovered lookup is
-// a refusal, so a typo cannot silently instrument nothing. A lookup whose map
+// a refusal, so a typo cannot silently instrument nothing; with
+// SkipUnmatchedMaps it is reported in Skipped instead (a site with only
+// MapName and Reason), so deleting an op never turns the other hooks off. A lookup whose map
 // is known only at run time has no name and is never selected.
 //
 // The hooks take the entry function's context: struct xdp_md * in an XDP
@@ -187,6 +189,8 @@ type LookupRequest struct {
 	Calls           []string            // helper names, and kernel-function names from the call table; each gets PREFIX_<name>; see CallRow
 	Kernel          *btf.Spec           // kernel BTF for naming kfunc calls by id and for typing arguments; nil is allowed
 	Modules         map[int16]*btf.Spec // module BTF (split on Kernel) by a kfunc call's fd_array offset; a missing offset leaves the call unnamed
+
+	SkipUnmatchedMaps bool // a Maps name matching no site is skipped, not refused; see Maps
 }
 
 // LookupWhen is a set of lookup results; see LookupRequest.Lookups.
@@ -1400,6 +1404,10 @@ func selectLookups(sites []discoveredLookup, req LookupRequest, reserved []strin
 				what := "lookup"
 				if req.mapCalls() {
 					what = "map call"
+				}
+				if req.SkipUnmatchedMaps {
+					skipped = append(skipped, LookupSite{MapName: name, Reason: fmt.Sprintf("Maps name %q matches no %s", name, what)})
+					continue
 				}
 				return nil, nil, refuse("Maps name %q matches no %s", name, what)
 			}
