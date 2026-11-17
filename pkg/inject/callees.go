@@ -184,6 +184,32 @@ func kfuncRet(ins *asm.Instruction, kernel *btf.Spec, modules map[int16]*btf.Spe
 	return ""
 }
 
+// PremiseCalls returns the names of the helpers and kernel functions on the
+// deny list (denyReason) that insns call anywhere, in call order without
+// repeats. The equivalence theorem assumes the original program calls none of
+// them. The transform adds no helper or kernel-function call, so a rewritten
+// program gives the same names as its original. A kernel-function call that
+// kernel and modules cannot name is not seen.
+func PremiseCalls(insns asm.Instructions, kernel *btf.Spec, modules map[int16]*btf.Spec) []string {
+	var names []string
+	for i := range insns {
+		ins := &insns[i]
+		if !ins.IsBuiltinCall() && !ins.IsKfuncCall() {
+			continue
+		}
+		name := ""
+		if h, ok := helperByID(ins.Constant); ins.IsBuiltinCall() && ok {
+			name = h.Name
+		} else if ins.IsKfuncCall() {
+			_, name, _ = callee(ins, kernel, modules)
+		}
+		if name != "" && denyReason(name) != "" && !slices.Contains(names, name) {
+			names = append(names, name)
+		}
+	}
+	return names
+}
+
 // denyReason says why a callee is never hooked by name, or "".
 func denyReason(name string) string {
 	has := func(prefix string) bool { return strings.HasPrefix(name, prefix) }

@@ -217,3 +217,38 @@ func TestDiscoverKfuncCallees(t *testing.T) {
 		t.Fatalf("sites %+v", d.Sites)
 	}
 }
+
+// A load whose original program calls a denied helper or kernel function
+// anywhere names those callees once each; one without names none.
+func TestPremiseCalls(t *testing.T) {
+	kernel := kfuncKernelSpec(t)
+	insns := asm.Instructions{
+		asm.FnKtimeGetNs.Call(), asm.FnSpinLock.Call(), testKfunc(t, kernel, "bpf_iter_x_new"),
+		asm.FnSpinLock.Call(), testKfunc(t, kernel, "k_int"), asm.FnLoop.Call(), asm.FnMapLookupElem.Call(),
+	}
+	if got := PremiseCalls(insns, kernel, nil); !slices.Equal(got, []string{"bpf_spin_lock", "bpf_iter_x_new", "bpf_loop"}) {
+		t.Errorf("premise calls %v", got)
+	}
+	// Without kernel BTF the kernel-function call cannot be named.
+	if got := PremiseCalls(insns, nil, nil); !slices.Equal(got, []string{"bpf_spin_lock", "bpf_loop"}) {
+		t.Errorf("without kernel BTF: %v", got)
+	}
+	if got := PremiseCalls(insns[:1], kernel, nil); got != nil {
+		t.Errorf("clean program: %v", got)
+	}
+}
+
+// A rewritten program names the same denied callees as its original: a
+// program that takes a spin lock, hooked outside the locked region.
+func TestPremiseCallsAfterTransform(t *testing.T) {
+	req := LookupRequestRaw{HookName: "obs", Calls: []string{"bpf_get_numa_node_id"}, Stack: StackAudit{LowestOffset: -64}}
+	raw := rawLookupFixture(t, spinLockFixture(), "p", true)
+	got, err := TransformLookupRaw(raw, req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"bpf_spin_lock", "bpf_spin_unlock"}
+	if before, after := PremiseCalls(raw.Instructions, nil, nil), PremiseCalls(got.Instructions, nil, nil); !slices.Equal(before, want) || !slices.Equal(after, want) {
+		t.Errorf("premise calls before %v, after %v", before, after)
+	}
+}

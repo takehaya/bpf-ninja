@@ -446,6 +446,7 @@ Go core validates is not validated and has rule `dafny`.
 
 `dafny/sim` proves the step from windows to whole runs.
 If `Validate` returns `Validated` for every inserted window with the spec `dafny/contract` chooses for its kind, the structural conditions hold, and the premises in `Premises.dfy` hold (the original program has the required instruction shape, `E0Shape`, and uses only the modelled callback helpers, `S0`; its admissible runs end normally, `E0` with `A1b`; stack accesses respect their frame floors, `A1a`; helper argument tables cover the arguments read, `A3b`; the observer changes only its own state, `A5`; lookup oracle answers are independent of frame depth and wrappers, `A8`; and the rewritten program fits the kernel's instruction limit, `Loadable`), the rewritten program ends with the same observation as the original for the same admissible input and oracle answers: how the run ends, segment-local memory, the final map state, and the trace of original events.
+A further premise is not modelled: the original program contains no call on the transformer's deny list (callees that run or register callbacks, take or release locks or critical sections, or read native code addresses or branch records). inject-run still hooks such a program outside those calls, but marks the load in the hooks file (`outside_premise`) as one the theorem is not claimed for.
 
 - `Model.dfy` is the semantics of both programs: frames and bpf-to-bpf calls,
   `bpf_loop` and `bpf_for_each_map_elem` callbacks, tail calls, hooks and the
