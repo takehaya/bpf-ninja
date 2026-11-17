@@ -5,6 +5,8 @@ package syscallhook
 import (
 	"bytes"
 	"errors"
+	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/cilium/ebpf"
@@ -51,34 +53,93 @@ func deadRegisterProgram(t *testing.T, reg asm.Register) inject.RawProgram {
 	return inject.RawProgram{Instructions: raw, Type: ebpf.XDP, BTF: types, FuncInfo: fi, LineInfo: li, Maps: map[int32]inject.RawMap{}}
 }
 
-// A panic in the analysis of one load is an error on the fallback path, not
-// the end of the supervisor: the listing, the rewrite and the stack
-// accounting of a program with a register field above 10 return errors.
-func TestAnalysisPanicIsError(t *testing.T) {
-	s := &supervisor{probeTailCallReachability: func() error { return nil }}
+// A program with a register field above 10 is refused by the analyses
+// themselves (inject.ErrRefused): the listing, the rewrite and the stack
+// accounting return the ordinary refusal, not a panic the guard caught.
+func TestAnalysisRefusesDeadRegister(t *testing.T) {
+	var logs bytes.Buffer
+	s := &supervisor{probeTailCallReachability: func() error { return nil }, options: Options{Log: &logs}}
 	for reg := asm.Register(11); reg <= 15; reg++ {
 		raw := deadRegisterProgram(t, reg)
+		ordinary := func(what string, err error) {
+			t.Helper()
+			if !errors.Is(err, inject.ErrRefused) || errors.Is(err, errAnalysisPanic) {
+				t.Errorf("r%d %s: %v, want an ordinary refusal", reg, what, err)
+			}
+		}
+		_, _, err := listing(raw)
+		ordinary("listing", err)
+		for _, rule := range []Rule{{Program: "p", HookPrefix: "h", Entry: true}, {Program: "p", HookPrefix: "h", Calls: []string{"bpf_ktime_get_ns"}}} {
+			_, _, err = s.rewrite(raw, raw, "p", rule, HookForm{}, inject.StackReport{Source: "verifier"}, false, nil)
+			ordinary(fmt.Sprintf("rewrite %+v", rule), err)
+		}
+		_, err = frameFloors([]int{8}, []string{"p"}, raw, inject.KernelInfo{Major: 7})
+		ordinary("stack accounting", err)
+	}
+}
+
+// A panic in the analysis of one load is an error on the fallback path, not
+// the end of the supervisor: each guarded step returns errAnalysisPanic when
+// the analysis it runs panics.
+func TestAnalysisPanicIsError(t *testing.T) {
+	var logs bytes.Buffer
+	s := &supervisor{probeTailCallReachability: func() error { return nil }, options: Options{Log: &logs}}
+	raw := deadRegisterProgram(t, asm.R9)
+	boom := func() { panic("boom") }
+	for _, tc := range []struct {
+		name   string
+		inject func() func() // replaces one analysis with a panic, returns the undo
+		run    func() error
+	}{
+		{"parse", func() func() {
+			old := parseStackDepths
+			parseStackDepths = func(string) ([]int, error) { boom(); return nil, nil }
+			return func() { parseStackDepths = old }
+		}, func() error { _, err := stackDepths("stack depth 8"); return err }},
+		{"frames", func() func() {
+			old := frameFloorsRaw
+			frameFloorsRaw = func([]int, []string, inject.RawProgram, inject.KernelInfo) (inject.StackReport, error) {
+				boom()
+				return inject.StackReport{}, nil
+			}
+			return func() { frameFloorsRaw = old }
+		}, func() error {
+			_, err := frameFloors([]int{8}, []string{"p"}, raw, inject.KernelInfo{Major: 7})
+			return err
+		}},
+		{"listing", func() func() {
+			old := discoverMapCallsRaw
+			discoverMapCallsRaw = func(inject.RawProgram) ([]inject.LookupSite, error) { boom(); return nil, nil }
+			return func() { discoverMapCallsRaw = old }
+		}, func() error { _, _, err := listing(raw); return err }},
+		{"rewrite", func() func() {
+			old := transformLookupRaw
+			transformLookupRaw = func(inject.RawProgram, inject.LookupRequestRaw, func() error) (*inject.LookupResultRaw, error) {
+				boom()
+				return nil, nil
+			}
+			return func() { transformLookupRaw = old }
+		}, func() error {
+			_, _, err := s.rewrite(raw, raw, "p", Rule{Program: "p", HookPrefix: "h", Entry: true}, HookForm{}, inject.StackReport{Source: "verifier"}, false, nil)
+			return err
+		}},
+	} {
+		if err := tc.run(); errors.Is(err, errAnalysisPanic) {
+			t.Fatalf("%s: panics without an injected panic: %v", tc.name, err)
+		}
+		undo := tc.inject()
 		var err error
 		func() {
+			defer undo()
 			defer func() {
 				if p := recover(); p != nil {
-					t.Fatalf("r%d: panic escaped: %v", reg, p)
+					t.Fatalf("%s: panic escaped: %v", tc.name, p)
 				}
 			}()
-			if _, _, err = listing(raw); err == nil {
-				t.Errorf("r%d: listing accepted the program", reg)
-			}
-			for _, rule := range []Rule{{Program: "p", HookPrefix: "h", Entry: true}, {Program: "p", HookPrefix: "h", Calls: []string{"bpf_ktime_get_ns"}}} {
-				if _, _, err = s.rewrite(raw, raw, "p", rule, HookForm{}, inject.StackReport{Source: "verifier"}, false, nil); err == nil {
-					t.Errorf("r%d %+v: rewrite accepted the program", reg, rule)
-				}
-			}
-			if _, err = frameFloors([]int{8}, []string{"p"}, raw, inject.KernelInfo{Major: 7}); err == nil {
-				t.Errorf("r%d: stack accounting accepted the program", reg)
-			}
+			err = tc.run()
 		}()
-	}
-	if err := guard("x", func() error { panic("boom") }); !errors.Is(err, errAnalysisPanic) {
-		t.Fatalf("guard: %v", err)
+		if !errors.Is(err, errAnalysisPanic) || !strings.Contains(err.Error(), "boom") {
+			t.Errorf("%s: %v, want errAnalysisPanic", tc.name, err)
+		}
 	}
 }

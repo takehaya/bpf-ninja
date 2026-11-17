@@ -94,7 +94,7 @@ func (r Rule) validateSites() error {
 // sites check both call it, so they compute the same fingerprint.
 func listing(raw inject.RawProgram) (calls []inject.LookupSite, sites inject.CallDiscovery, err error) {
 	err = guard("listing the load", func() (err error) {
-		if calls, err = inject.DiscoverMapCallsRaw(raw); err != nil {
+		if calls, err = discoverMapCallsRaw(raw); err != nil {
 			return err
 		}
 		sites, err = inject.DiscoverCallSitesRaw(raw, calls)

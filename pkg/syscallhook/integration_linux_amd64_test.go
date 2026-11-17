@@ -76,6 +76,8 @@ func TestIntegrationLoader(t *testing.T) {
 		{"preload-analysis-closed", "refused", true, unanalysable, func(r *Rule) {}},
 		// The verifier refuses the trial load of the original: it loads unchanged under every rule.
 		{"preload-verifier", "plain", false, fmt.Errorf("%w: forced", errTrialVerifier), func(r *Rule) {}},
+		// A library caller's identical rules are one rule.
+		{"duplicate", "hook", true, nil, func(r *Rule) {}},
 		// A second rule selects the same load by its BTF entry name.
 		{"ambiguous", "plain", false, nil, func(r *Rule) {}},
 		{"ambiguous-closed", "refused", true, nil, func(r *Rule) {}},
@@ -109,6 +111,9 @@ func TestIntegrationLoader(t *testing.T) {
 			var discovered []Discovery
 			var refusals []Refusal
 			rules := []Rule{rule}
+			if tc.name == "duplicate" {
+				rules = append(rules, rule)
+			}
 			if strings.HasPrefix(tc.name, "ambiguous") {
 				other := rule
 				other.Program = "entry_with_long_name"

@@ -50,7 +50,9 @@ func TestBpfFdArray(t *testing.T) {
 			var logs bytes.Buffer
 			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 			defer cancel()
-			code, err := Run(ctx, []string{os.Args[0], "-test.run=^TestBpfFdArray$"}, Options{Rules: []Rule{testRule()}, Stdout: out, Stderr: out, Log: &logs})
+			var refusals []Refusal
+			code, err := Run(ctx, []string{os.Args[0], "-test.run=^TestBpfFdArray$"}, Options{Rules: []Rule{testRule()}, Stdout: out, Stderr: out, Log: &logs,
+				OnRefuse: func(r Refusal) { refusals = append(refusals, r) }})
 			data, _ := os.ReadFile(out.Name())
 			t.Logf("supervisor:\n%sloader:\n%s", &logs, data)
 			if err != nil || code != 0 || !strings.Contains(string(data), tc.want) {
@@ -58,6 +60,16 @@ func TestBpfFdArray(t *testing.T) {
 			}
 			if tc.mode == "idx" && !strings.Contains(logs.String(), "map load by fd_array index") {
 				t.Fatal("no fd_array index refusal logged")
+			}
+			// The load left unchanged at its entry stop is reported once its
+			// exit stop shows that the original loaded.
+			want := 0
+			if tc.mode == "idx" {
+				want = 1
+			}
+			if len(refusals) != want || want == 1 && (refusals[0].Cause != "transform" || refusals[0].Outcome != "original_loaded" ||
+				!strings.Contains(refusals[0].Reason, "map load by fd_array index")) {
+				t.Fatalf("refusals %+v", refusals)
 			}
 		})
 	}

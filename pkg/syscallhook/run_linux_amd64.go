@@ -221,6 +221,15 @@ func guard(what string, f func() error) (err error) {
 	return f()
 }
 
+// The analyses the guarded steps run; a test replaces each with a panic to
+// pin its guard.
+var (
+	parseStackDepths    = inject.ParseStackDepths
+	frameFloorsRaw      = inject.FrameFloorsRaw
+	discoverMapCallsRaw = inject.DiscoverMapCallsRaw
+	transformLookupRaw  = inject.TransformLookupRawGuarded
+)
+
 // errJumpLimit marks a rewritten load the verifier refused for too long a
 // sequence of pending jumps.
 var errJumpLimit = errors.New("verifier jump sequence limit")
@@ -300,12 +309,45 @@ func loadModuleBTF(id btf.ID, base *btf.Spec) (*btf.Spec, error) {
 	return h.Spec(base)
 }
 
-// loaderLogFull says whether a real load failed with ENOSPC while the loader
-// asked for a verifier log (log_level 1 or 2): its log buffer was too small.
-// A trial, with a log of its own, would pass, so the retry would drop sites
-// for a refusal no verifier gave; the original loads instead.
-func loaderLogFull(err error, attr []byte) bool {
-	return errors.Is(err, unix.ENOSPC) && len(attr) >= 28 && u32(attr, 24)&3 != 0
+// loaderLog says whether the loader asked for a verifier log (log_level 1
+// or 2) in attr. A real load then fails with ENOSPC when the log does not fit
+// its buffer, whatever the verifier decided.
+func loaderLog(attr []byte) bool {
+	return len(attr) >= 28 && u32(attr, 24)&3 != 0
+}
+
+// loadStep is what happens next to a matched load whose rewrite did not load.
+type loadStep int
+
+const (
+	stepOriginal loadStep = iota // the original program loads
+	stepRefuse                   // the load is refused with EPERM
+	stepRetry                    // the retry looks for a rewrite with fewer sites (retryLoad)
+)
+
+// loadFailure is a matched load whose rewrite did not load: err is why,
+// stackErr the stack audit's error, loaderLog says that the loader asked for
+// a verifier log (loaderLog) and retried that the retry ran.
+type loadFailure struct {
+	err, stackErr      error
+	loaderLog, retried bool
+}
+
+// failedLoad decides what happens to the load f describes: the retry, once,
+// for a rewrite the kernel refused, else the original or, by refuseOriginal,
+// a refusal. cause is the Refusal.Cause (refusalCause) of a load that ends
+// without hooks. An ENOSPC with the loader's log is not retried: the
+// loader's log buffer was too small, and the trials, with a log of their
+// own, would drop sites for a refusal no verifier gave.
+func failedLoad(f loadFailure, failClosed bool, rule Rule) (step loadStep, cause string) {
+	if f.stackErr == nil && !f.retried && errors.As(f.err, &refusedLoad{}) && !(f.loaderLog && errors.Is(f.err, unix.ENOSPC)) {
+		return stepRetry, ""
+	}
+	cause = refusalCause(f.err, f.stackErr, f.retried)
+	if refuseOriginal(failClosed, rule, f.stackErr) {
+		return stepRefuse, cause
+	}
+	return stepOriginal, cause
 }
 
 // refuseOriginal says whether a matched load whose rewrite did not load is
@@ -1098,7 +1140,6 @@ func (s *supervisor) entry(pid int, t *thread, regs unix.PtraceRegs) error {
 	var entry string
 	var injectErr error
 	branches := ""
-	retried := false
 	s.extra = 0
 	if stackErr != nil {
 		injectErr = fmt.Errorf("stack depth unavailable: %w", stackErr)
@@ -1109,10 +1150,16 @@ func (s *supervisor) entry(pid int, t *thread, regs unix.PtraceRegs) error {
 			branches = ", lookup branches miss-first"
 			ret, rewrite, entry, injectErr = s.transformLoad(r, attr, *rule, form, stack, true)
 		}
-		if errors.As(injectErr, &refusedLoad{}) && r.broken == nil && !loaderLogFull(injectErr, attr) {
+	}
+	step, cause := stepOriginal, ""
+	if injectErr != nil && r.broken == nil {
+		failure := loadFailure{err: injectErr, stackErr: stackErr, loaderLog: loaderLog(attr)}
+		if step, cause = failedLoad(failure, s.options.FailClosed, *rule); step == stepRetry {
 			s.log("program %q: %v; retrying with fewer sites", name, injectErr)
-			retried = true
 			ret, rewrite, injectErr = s.retryLoad(r, attr, *rule, form, stack, rewrite, injectErr)
+			if failure.err, failure.retried = injectErr, true; injectErr != nil {
+				step, cause = failedLoad(failure, s.options.FailClosed, *rule)
+			}
 		}
 	}
 	if r.broken != nil {
@@ -1132,7 +1179,7 @@ func (s *supervisor) entry(pid int, t *thread, regs unix.PtraceRegs) error {
 				s.log("program %q: injection skipped: %v", name, injectErr)
 			}
 		}
-		refuse := refuseOriginal(s.options.FailClosed, *rule, stackErr)
+		refuse := step == stepRefuse
 		ret, err = retryOriginalOrRefuse(refuse, func() (int64, error) {
 			// Substituted attrs and buffers live in scratch memory, so the original
 			// registers, attr and input buffers still describe the unchanged load.
@@ -1144,7 +1191,7 @@ func (s *supervisor) entry(pid int, t *thread, regs unix.PtraceRegs) error {
 		}
 		if s.options.OnRefuse != nil {
 			s.options.OnRefuse(Refusal{Program: name, Func: cmp.Or(entry, entryName), Reason: injectErr.Error(),
-				Cause: refusalCause(injectErr, stackErr, retried), Outcome: refusalOutcome(refuse, ret)})
+				Cause: cause, Outcome: refusalOutcome(refuse, ret)})
 		}
 	} else {
 		s.log("program %q: injected %s, tracee fd %d%s", name, summary, ret, branches)
@@ -1340,10 +1387,20 @@ func withTrialProgram(fd int64, closeFD func(int64) error, work func() error) (e
 // frameFloors is inject.FrameFloorsRaw with a panic as an error (see guard).
 func frameFloors(depths []int, names []string, raw inject.RawProgram, kernel inject.KernelInfo) (report inject.StackReport, err error) {
 	err = guard("matching stack depths to functions", func() (err error) {
-		report, err = inject.FrameFloorsRaw(depths, names, raw, kernel)
+		report, err = frameFloorsRaw(depths, names, raw, kernel)
 		return err
 	})
 	return report, err
+}
+
+// stackDepths parses the stack depths of a verifier stats log
+// (inject.ParseStackDepths); a panic in it is an error (see guard).
+func stackDepths(log string) (depths []int, err error) {
+	err = guard("parsing verifier stats", func() (err error) {
+		depths, err = parseStackDepths(log)
+		return err
+	})
+	return depths, err
 }
 
 func (s *supervisor) preloadDepths(r *remote, attr []byte, rounding int) (report inject.StackReport, err error) {
@@ -1401,11 +1458,8 @@ func (s *supervisor) preloadDepths(r *remote, attr []byte, rounding int) (report
 		if readErr != nil {
 			return readErr
 		}
-		var depths []int
-		if parseErr := guard("parsing verifier stats", func() (err error) {
-			depths, err = inject.ParseStackDepths(log)
-			return err
-		}); parseErr != nil {
+		depths, parseErr := stackDepths(log)
+		if parseErr != nil {
 			return parseErr
 		}
 		records, infoErr := r.progFuncInfo(uint32(fd))
@@ -1416,7 +1470,6 @@ func (s *supervisor) preloadDepths(r *remote, attr []byte, rounding int) (report
 		if namesErr != nil {
 			return namesErr
 		}
-		var parseErr error
 		report, parseErr = frameFloors(depths, names, raw, runningKernelInfo())
 		report.FrameRounding = rounding
 		return parseErr
@@ -1585,7 +1638,7 @@ func (s *supervisor) rewriteLoad(raw, listed inject.RawProgram, entry string, ru
 	request.MissFirst = missFirst
 	request.Stack = inject.StackAudit{Frames: stack.Frames(), Source: stack.Source, FrameRounding: stack.FrameRounding}
 	injectcheck.Label(raw.Instructions)
-	result, err := inject.TransformLookupRawGuarded(raw, request, s.probeTailCallReachability)
+	result, err := transformLookupRaw(raw, request, s.probeTailCallReachability)
 	if err != nil {
 		return nil, "", err
 	}
