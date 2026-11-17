@@ -72,7 +72,7 @@ func TestHookSummary(t *testing.T) {
 	}
 }
 
-// Kernel BTF is loaded only for a rule with calls; a failed load is logged
+// Kernel BTF is loaded only for a rule with calls or a listing; a failed load is logged
 // and leaves it nil: a program without kernel-function calls keeps its
 // helper call hooks, and one with such a call gets no call hooks.
 func TestLoadKernel(t *testing.T) {
@@ -90,9 +90,13 @@ func TestLoadKernel(t *testing.T) {
 		{"no calls", noCalls, nil, nil, 0, ""},
 		{"calls", withCalls, nil, spec, 1, ""},
 		{"unavailable", withCalls, errors.New("no vmlinux"), nil, 1, "inject-run: kernel BTF unavailable: kernel-function calls are not hooked: no vmlinux\n"},
+		{"listing", nil, nil, spec, 1, ""},
 	} {
 		var log bytes.Buffer
 		s := supervisor{options: Options{Rules: tc.rules, Log: &log}}
+		if tc.rules == nil {
+			s.options.OnDiscover = func(Discovery) {}
+		}
 		loads := 0
 		s.loadKernel(func() (*btf.Spec, error) {
 			loads++

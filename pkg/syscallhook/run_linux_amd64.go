@@ -74,7 +74,10 @@ type Options struct {
 // inject.DiscoverLookupsRaw), all its map calls with lookups among them
 // (inject.DiscoverMapCallsRaw), and the kinds of the maps it references, by
 // kernel map name. Program is the kernel program name and Func the entry
-// function.
+// function. CallSites lists every other helper and kernel-function call, with
+// labels for every site and the listing fingerprint
+// (inject.DiscoverCallSitesRaw); kernel functions are named only when the
+// running kernel's BTF loaded.
 type Discovery struct {
 	Program, Func string
 	Type          ebpf.ProgramType
@@ -82,6 +85,7 @@ type Discovery struct {
 	Calls         []inject.LookupSite
 	Maps          map[string]ebpf.MapType
 	Stack         inject.StackReport
+	CallSites     inject.CallDiscovery
 }
 
 // Injection describes one successful injected load. Program is the kernel
@@ -135,11 +139,12 @@ func (s *supervisor) log(format string, args ...any) {
 	_, _ = fmt.Fprintf(s.options.Log, "inject-run: "+format+"\n", args...)
 }
 
-// loadKernel sets s.kernel once, only when a rule has calls. Without kernel
-// BTF the transform cannot name a kfunc call and skips every call site of a
-// program that makes one; programs without kfunc calls are unaffected.
+// loadKernel sets s.kernel once, only when a rule has calls or loads are
+// listed. Without kernel BTF the transform cannot name a kfunc call and skips
+// every call site of a program that makes one; programs without kfunc calls
+// are unaffected.
 func (s *supervisor) loadKernel(load func() (*btf.Spec, error)) {
-	if !slices.ContainsFunc(s.options.Rules, func(r Rule) bool { return len(r.Calls) != 0 }) {
+	if s.options.OnDiscover == nil && !slices.ContainsFunc(s.options.Rules, func(r Rule) bool { return len(r.Calls) != 0 }) {
 		return
 	}
 	spec, err := load()
@@ -1258,7 +1263,17 @@ func (s *supervisor) discover(r *remote, attr []byte, name string, stack inject.
 	if err != nil {
 		return err
 	}
-	d := Discovery{Program: name, Func: entry, Type: raw.Type, Calls: calls, Maps: map[string]ebpf.MapType{}, Stack: stack}
+	raw.Kernel = s.kernel
+	if s.kernel != nil {
+		raw.Modules = s.moduleBTFs(raw.Instructions, fdArray(attr),
+			func(addr, size uint64) ([]byte, error) { return readMemory(r.pid, addr, size) },
+			func(fd uint32) ([]byte, error) { return r.info(fd, 32) }, loadModuleBTF)
+	}
+	callSites, err := inject.DiscoverCallSitesRaw(raw, calls)
+	if err != nil {
+		return err
+	}
+	d := Discovery{Program: name, Func: entry, Type: raw.Type, Calls: calls, Maps: map[string]ebpf.MapType{}, Stack: stack, CallSites: callSites}
 	for _, site := range calls {
 		if site.Op == inject.HookLookup {
 			d.Lookups = append(d.Lookups, site)
