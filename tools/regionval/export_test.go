@@ -223,3 +223,67 @@ func TestExportPlantedSTX(t *testing.T) {
 		}
 	}
 }
+
+// testdata/export/callsite holds hand-built pairs (spike-notes/mkcaptures.py)
+// with the result-only and the argument-and-result sequences around calls
+// that are not map lookups. The clean ones are validated with these window
+// kinds; each planted one is rejected by exactly the rule given.
+// clean-kfunc-arg uses BTF id 1, bpf_map_lookup_elem's helper id: a kfunc
+// centre gets no RB or HS check although its hook names parameters key and
+// value. A kfunc call away from the centre is refused by the allowlist (C6).
+// clean-helper-then-kfunc keeps the run between a helper call and a
+// following kfunc call as the helper's postlude.
+var callsiteWant = map[string]string{
+	"clean-helper-result":     "", // bpf_ktime_get_ns
+	"clean-helper-arg":        "", // bpf_fib_lookup, r2 saved
+	"clean-kfunc-result":      "", // BTF id 60001, off 0
+	"clean-kfunc-arg":         "", // BTF id 1, off 1 (module BTF), r2 saved
+	"clean-helper-then-kfunc": "",
+	"PL-kfunc-R0":             "R0",           // r0 = 0 instead of the reload of the result
+	"PL-kfunc-R15":            "R15",          // r2 += 8 after it is saved, before the call
+	"PL-kfunc-twice":          "C6",           // the original call again after the centre
+	"PL-kfunc-C1":             "C1",           // the result slot at r10-56, above the floor -64
+	"PL-kfunc-P7":             "P7",           // a store in the hook body
+	"PL-kfunc-C2":             "C2",           // r6 = 0 before the window exit
+	"PL-kfunc-kappa":          "struct:kappa", // the centre's BTF id is 2, O's is 1
+	"PL-kfunc-C5-other":       "C6",           // a kfunc call in the entry prologue
+	"PL-kfunc-imm12-noR0":     "site",         // BTF id 12, result-only, no r0 reload
+}
+
+func TestCallSites(t *testing.T) {
+	fs, _ := filepath.Glob(filepath.Join(exportDir, "callsite", "*.json"))
+	if len(fs) != len(callsiteWant) {
+		t.Errorf("%d callsite files, want %d", len(fs), len(callsiteWant))
+	}
+	for _, f := range fs {
+		id := strings.TrimSuffix(filepath.Base(f), ".json")
+		want, ok := callsiteWant[id]
+		if !ok {
+			t.Errorf("%s: no expected rule", id)
+			continue
+		}
+		r := Run(f)
+		var got []string
+		if !r.Structure.OK {
+			got = []string{"struct:" + r.Structure.Stage}
+		}
+		for _, w := range r.Windows {
+			if !w.Validated {
+				got = append(got, w.Rule)
+			}
+		}
+		if want == "" {
+			kinds := map[string]int{}
+			for _, w := range r.Windows {
+				kinds[w.CoreKind]++
+			}
+			if !r.Validated || len(got) != 0 || kinds["site"] != 1 || kinds["prologue-P1"] != 1 || kinds["hook-P7"] != 1 || len(kinds) != 3 {
+				t.Errorf("%s: validated %v, rejected by %v, kinds %v", id, r.Validated, got, kinds)
+			}
+			continue
+		}
+		if r.Validated || !slices.Equal(got, []string{want}) {
+			t.Errorf("%s: rejected by %v, want exactly [%s] (%+v)", id, got, want, r.Windows)
+		}
+	}
+}

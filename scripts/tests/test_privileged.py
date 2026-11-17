@@ -49,6 +49,22 @@ class AuditTests(unittest.TestCase):
                   {"Package": package, "Action": "pass"}]
         self.assertTrue(module.audit(events, {(package, test)}, "6.12"))
 
+    def test_indirect_jump_skip_requires_exact_test_and_reason(self):
+        reason = "kernel lacks BPF_MAP_TYPE_INSN_ARRAY: creating map: invalid argument"
+        self.assertTrue(module.allowed_skip(module.SYSCALLHOOK, "TestIntegrationIndirectJump", reason, "6.1"))
+        self.assertFalse(module.allowed_skip(module.SYSCALLHOOK, "TestIntegrationIndirectJump", "map failed", "6.1"))
+        self.assertFalse(module.allowed_skip(module.SYSCALLHOOK, "TestOther", reason, "6.1"))
+
+    def test_conntrack_module_skip_is_specific(self):
+        reason = "skipping: kfunc bpf_xdp_ct_lookup is only in nf_conntrack module BTF"
+        tests = ("TestBpfCallHookCtXDP", "TestBpfCallHookCtTC", "TestBpfCallHookCtUntrusted",
+                 "TestBpfCallHookCtNoRelease", "TestBpfCallFixtureCtXDP", "TestBpfCallFixtureCtTC")
+        for test in tests:
+            self.assertTrue(module.allowed_skip(module.INJECT, test, reason, None))
+            self.assertFalse(module.allowed_skip(module.INJECT, test, "kfunc bpf_xdp_ct_lookup: not found", None))
+        self.assertFalse(module.allowed_skip(module.INJECT, "TestOther", reason, None))
+        self.assertFalse(module.allowed_skip(module.PROGRAM, tests[0], reason, None))
+
     def test_reentry_skip_requires_subtest_kernel_and_reason(self):
         reason = "neither tcx nor clsact available (operation not supported)"
         for parent in ("TestBpfGatedReentry", "TestBpfExtensionReentry"):

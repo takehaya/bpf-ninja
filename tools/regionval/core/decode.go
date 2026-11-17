@@ -67,6 +67,7 @@ func (x Insn) JumpTarget() int {
 
 func (x Insn) IsHelperCall() bool { return x.Op == OpCall && x.Src == 0 }
 func (x Insn) IsPseudoCall() bool { return x.Op == OpCall && x.Src == 1 }
+func (x Insn) IsKfuncCall() bool  { return x.Op == OpCall && x.Src == 2 }    // imm: BTF id, off: BTF fd index
 func (x Insn) IsFuncRef() bool    { return x.Op == OpLdImm64 && x.Src == 4 } // RFC §5.4 Table 12 src 0x4
 
 // CallTarget is the raw target of a pseudo call or function reference, raw + 1 + imm.

@@ -36,7 +36,8 @@ func (l *Layout) CheckBlock(b []byte) error {
 // --arg-filter expression syntax (value->action, key->dport, value[0]); a
 // field whose read failed shows "?". Integers are decimal, signed ones
 // sign-extended, except an entry block's status and info, which are 0x%016x so
-// their halves stay readable; byte arrays and unions are hex. Pointers stored inside a
+// their halves stay readable, and a u64 named ret (a call hook's result), which
+// is signed so an error code reads ret=-22; byte arrays and unions are hex. Pointers stored inside a
 // key or value are not rendered.
 func (l *Layout) Comment(b []byte) (string, error) {
 	c, err := l.AppendComment(nil, b)
@@ -105,7 +106,7 @@ func (l *Layout) AppendComment(dst []byte, b []byte) ([]byte, error) {
 				c.raw(f.Name, "=null")
 			case f.Pointer:
 				c.raw(f.Name, "!=null")
-			case f.Signed:
+			case f.Signed, f.Name == "ret" && f.Size == 8:
 				c.int(f.Name, int64(v))
 			default:
 				c.uint(f.Name, v)
@@ -124,6 +125,8 @@ func (l *Layout) AppendComment(dst []byte, b []byte) ([]byte, error) {
 		switch {
 		case valid&bit == 0:
 			c.raw(name, "=?")
+		case s.Name == "ret":
+			c.int(name, int64(v))
 		case word:
 			c.word(name, v)
 		default:
@@ -440,7 +443,9 @@ func (l *Layout) MaxCommentLen() int {
 	if l.Site.Present() {
 		add(len("site") + 1 + maxUintDigits)
 	}
-	if l.Status.Present() {
+	if l.Status.Name == "ret" {
+		add(len("ret=") + maxUintDigits) // int64 min is 20 characters too
+	} else if l.Status.Present() {
 		add(len(l.Status.Name) + len("=0x") + 16)
 	}
 	for _, v := range []Bytes{l.Key, l.Value} {

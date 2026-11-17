@@ -145,6 +145,36 @@ These times include intervening map calls and observer overhead; they measure ne
 The per-CPU slot suits this fixture's single, non-nested invocation per CPU.
 Nested invocations would need separate state, and an entry hook reached through a tail call resets the timestamp.
 
+## Observe helper and kernel-function calls
+
+A rule's `calls` key (see [inject-run.md](inject-run.md)) adds one hook per named callee, called right after every call of it.
+The hook's parameters are `ctx`, `site` and, depending on the callee, `arg` and `ret`:
+
+| Callee | Hook parameters | What the observer gets |
+| --- | --- | --- |
+| Result only (`bpf_ktime_get_ns`, `bpf_jiffies64`, `bpf_get_prandom_u32`) | `ctx, u32 site, u64 ret` | the result |
+| Memory argument and integer result (`bpf_fib_lookup`) | `ctx, u32 site, const T *arg, u64 ret` | the argument as the callee left it, and the result |
+| Pointer result (`bpf_xdp_ct_lookup`, `bpf_skb_ct_lookup`) | `ctx, u32 site, const T *arg, const void *ret` | the options struct, and whether the result is null |
+
+`T` is the named struct, for example `struct bpf_fib_lookup`.
+A pointer-result hook, and a hook whose argument cannot be typed, is static and keeps this prototype on kernels without `arg:untrusted`.
+On kernels with it, such a hook takes `const void *arg` with a `bpf-ninja:arg_size=N` decl tag instead; set `static_untrusted` in the rule to keep the typed prototype there.
+An observer reads `site` as argument 1 and `arg` and `ret` as the following arguments, as with the map hooks above.
+
+The CLI covers the common selections:
+
+```sh
+bpf-ninja -p "$PROG_ID" --func ninja_bpf_fib_lookup --arg-filter 'ret!=0' -w fib.pcapng
+bpf-ninja -p "$PROG_ID" --func ninja_bpf_fib_lookup --arg-filter 'arg->ifindex=4' --arg-echo
+bpf-ninja -p "$PROG_ID" --func ninja_bpf_xdp_ct_lookup --arg-filter 'ret=null' -w miss.pcapng
+```
+
+An integer `ret` compares as a number, and `ret=-22` matches the 64-bit value of `-22`; a pointer `ret` compares only with `null`.
+`arg->member` selects a member of a typed `arg`, and `arg->bytes[i]` a byte of a sized `const void *arg`.
+`--record entry` writes `site`, `ret` as a signed decimal and the members of `arg`, for example `site=560 ret=0 arg->family=2 ... arg->ifindex=4`; a sized `const void *arg` is written as hex (`arg=0200...`) and one without a size tag is left out.
+`--record filter` also writes an integer `ret` as a signed decimal.
+A pointer `ret` is never recorded: `entry` leaves it out and `filter` writes only `ret=null` or `ret!=null`, so the address does not reach the file.
+
 ## VM verification
 
 On 2026-10-29, the following checks passed in KVM VMs with 2 GiB RAM and two CPUs.

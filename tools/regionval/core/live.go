@@ -28,10 +28,22 @@ var helperArgs = map[int32]int{
 	2:   4, // map_update_elem(map, key, value, flags)
 	3:   2, // map_delete_elem(map, key)
 	5:   0, // ktime_get_ns()
+	7:   0, // get_prandom_u32()
 	8:   0, // get_smp_processor_id()
+	26:  4, // skb_load_bytes(skb, offset, to, len)
+	34:  1, // get_hash_recalc(skb)
 	44:  2, // xdp_adjust_head(xdp_md, delta)
+	46:  1, // get_socket_cookie(ctx)
+	69:  4, // fib_lookup(ctx, params, plen, flags)
+	84:  5, // sk_lookup_tcp(ctx, tuple, tuple_size, netns, flags)
+	85:  5, // sk_lookup_udp(ctx, tuple, tuple_size, netns, flags)
+	99:  5, // skc_lookup_tcp(ctx, tuple, tuple_size, netns, flags)
+	113: 3, // probe_read_kernel(dst, size, unsafe_ptr)
+	118: 0, // jiffies64()
 	164: 4, // for_each_map_elem(map, callback_fn, callback_ctx, flags)
 	181: 4, // loop(nr_loops, callback_fn, callback_ctx, flags)
+	188: 1, // xdp_get_buff_len(xdp_md)
+	189: 4, // xdp_load_bytes(xdp_md, offset, buf, len)
 }
 
 func bit(r uint8) uint16 { return 1 << r }

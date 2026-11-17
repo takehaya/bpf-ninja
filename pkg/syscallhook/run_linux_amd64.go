@@ -119,6 +119,8 @@ type supervisor struct {
 	// filterPending waits for the first syscall-exit stop to install the filter.
 	filterPending bool
 	filtered      bool
+	// kernel is the running kernel's BTF for rules with calls; nil without.
+	kernel *btf.Spec
 }
 
 var errTrialVerifier = errors.New("trial load was rejected by the verifier")
@@ -131,6 +133,75 @@ var errJumpLimit = errors.New("verifier jump sequence limit")
 
 func (s *supervisor) log(format string, args ...any) {
 	_, _ = fmt.Fprintf(s.options.Log, "inject-run: "+format+"\n", args...)
+}
+
+// loadKernel sets s.kernel once, only when a rule has calls. Without kernel
+// BTF the transform cannot name a kfunc call and skips every call site of a
+// program that makes one; programs without kfunc calls are unaffected.
+func (s *supervisor) loadKernel(load func() (*btf.Spec, error)) {
+	if !slices.ContainsFunc(s.options.Rules, func(r Rule) bool { return len(r.Calls) != 0 }) {
+		return
+	}
+	spec, err := load()
+	if err != nil {
+		s.log("kernel BTF unavailable: kernel-function calls are not hooked: %v", err)
+		return
+	}
+	s.kernel = spec
+}
+
+// moduleBTFs returns the module BTF, split on s.kernel, of each distinct
+// nonzero offset of a kfunc call in insns, keyed by that offset: as in the
+// verifier, the u32 at fdArray + 4*offset is a module BTF fd of the tracee.
+// read reads tracee memory, info returns the fd's 32-byte bpf_btf_info and
+// load opens a kernel BTF by id. An offset that fails is left out and logged,
+// so its calls stay unnamed and the load goes on.
+func (s *supervisor) moduleBTFs(insns asm.Instructions, fdArray uint64, read func(addr, size uint64) ([]byte, error),
+	info func(fd uint32) ([]byte, error), load func(id btf.ID, base *btf.Spec) (*btf.Spec, error)) map[int16]*btf.Spec {
+	var modules map[int16]*btf.Spec
+	failed := map[int16]bool{}
+	for i := range insns {
+		off := insns[i].Offset
+		if !insns[i].IsKfuncCall() || off == 0 || modules[off] != nil || failed[off] {
+			continue
+		}
+		spec, err := func() (*btf.Spec, error) {
+			if off < 0 || fdArray == 0 {
+				return nil, fmt.Errorf("no fd_array entry")
+			}
+			fd, err := read(fdArray+4*uint64(off), 4)
+			if err != nil {
+				return nil, err
+			}
+			bi, err := info(u32(fd, 0))
+			if err != nil {
+				return nil, err
+			}
+			if u32(bi, 28) != 1 {
+				return nil, fmt.Errorf("fd %d is not a kernel BTF", u32(fd, 0))
+			}
+			return load(btf.ID(u32(bi, 12)), s.kernel)
+		}()
+		if err != nil {
+			failed[off] = true
+			s.log("module BTF at fd_array offset %d unavailable: its kernel-function calls are not hooked: %v", off, err)
+			continue
+		}
+		if modules == nil {
+			modules = map[int16]*btf.Spec{}
+		}
+		modules[off] = spec
+	}
+	return modules
+}
+
+func loadModuleBTF(id btf.ID, base *btf.Spec) (*btf.Spec, error) {
+	h, err := btf.NewHandleFromID(id)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = h.Close() }()
+	return h.Spec(base)
 }
 
 func retryOriginalOrRefuse(failClosed bool, retry func() (int64, error)) (int64, error) {
@@ -306,6 +377,7 @@ func run(ctx context.Context, argv []string, opts Options, probeUntrusted, probe
 	}
 	s := supervisor{probeUntrusted: sync.OnceValue(probeUntrusted), probeTailCallReachability: sync.OnceValue(probeTailCallReachability),
 		options: opts, btf: make(map[uint32]rememberedBTF), filterPending: !opts.EverySyscall && !testEverySyscall}
+	s.loadKernel(btf.LoadKernelSpec)
 	exitCode := 0
 	pending := map[int]struct{}{}
 	recordLeftThreads := func() {
@@ -835,7 +907,14 @@ func (s *supervisor) entry(pid int, t *thread, regs unix.PtraceRegs) error {
 	if rule == nil && !discover {
 		return nil
 	}
-	if err := parseProgAttr(attr); err != nil {
+	err = parseProgAttr(attr)
+	if err == nil && fdArray(attr) != 0 {
+		var insns []byte
+		if insns, err = readMemory(pid, u64(attr, 8), uint64(u32(attr, 4))*8); err == nil {
+			err = fdArrayMapIndex(insns)
+		}
+	}
+	if err != nil {
 		if rule == nil {
 			s.log("program %q: lookup discovery skipped: %v", name, err)
 			return nil
@@ -1212,6 +1291,14 @@ func (s *supervisor) transformLoad(r *remote, attr []byte, rule Rule, form HookF
 	if err != nil {
 		return 0, nil, "", err
 	}
+	if len(rule.Calls) > 0 {
+		raw.Kernel = s.kernel // only a rule with calls names kfunc calls and types their arguments
+		if s.kernel != nil {
+			raw.Modules = s.moduleBTFs(raw.Instructions, fdArray(attr),
+				func(addr, size uint64) ([]byte, error) { return readMemory(r.pid, addr, size) },
+				func(fd uint32) ([]byte, error) { return r.info(fd, 32) }, loadModuleBTF)
+		}
+	}
 	if err := supplyMapTypes(&raw, rule); err != nil {
 		return 0, nil, "", err
 	}
@@ -1472,6 +1559,11 @@ func extractRaw(r *remote, attr []byte, spec *btf.Spec) (inject.RawProgram, erro
 	insns, err := readMemory(r.pid, u64(attr, 8), uint64(u32(attr, 4))*8)
 	if err != nil {
 		return p, err
+	}
+	if fdArray(attr) != 0 {
+		if err := fdArrayMapIndex(insns); err != nil {
+			return p, err
+		}
 	}
 	p.Instructions, err = asm.AppendInstructions(nil, bytes.NewReader(insns), wire, "linux")
 	if err != nil {

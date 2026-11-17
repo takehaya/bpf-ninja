@@ -46,6 +46,8 @@ type RawProgram struct {
 	FuncInfo     []byte
 	LineInfo     []byte
 	Maps         map[int32]RawMap
+	Kernel       *btf.Spec           // see LookupRequest.Kernel; transformLookupRawGuarded copies it into the request
+	Modules      map[int16]*btf.Spec // see LookupRequest.Modules; copied like Kernel
 }
 
 // LookupRequestRaw selects sites in a single raw program. The caller certifies
@@ -69,6 +71,7 @@ type LookupRequestRaw struct {
 	Peeks           CallWhen   // see LookupRequest.Peeks
 	HookName        string
 	Stack           StackAudit
+	Calls           []string // see LookupRequest.Calls
 }
 
 // LookupResultRaw contains a transformed instruction slice and matching load
@@ -110,15 +113,16 @@ type LookupResultRaw struct {
 func (r LookupRequestRaw) Request() LookupRequest {
 	return LookupRequest{Site: r.Site, Auto: r.Auto, Maps: r.Maps, Entry: r.Entry, TailCalls: r.TailCalls,
 		CopyReadOnly: r.CopyReadOnly, StaticUntrusted: r.StaticUntrusted, Dispatch: r.Dispatch, MissFirst: r.MissFirst, Lookups: r.Lookups, Updates: r.Updates, Deletes: r.Deletes,
-		Pushes: r.Pushes, Pops: r.Pops, Peeks: r.Peeks, HookName: r.HookName, Stack: r.Stack}
+		Pushes: r.Pushes, Pops: r.Pops, Peeks: r.Peeks, HookName: r.HookName, Stack: r.Stack, Calls: r.Calls}
 }
 
 // hookSuffix is the longest fixed suffix the transform appends to HookName
 // for req: none with Dispatch, whose one hook is HookName itself,
 // "_tail_call" with TailCalls, "_entry" with Entry, "_0" with Auto, whose
 // per-map names that would pass MaxHookName fall back to HOOKNAME_<index> (a
-// group whose name still does not fit is skipped), and "_miss", "_update" or
-// "_delete" after a map's name for the ops r observes.
+// group whose name still does not fit is skipped), "_miss", "_update" or
+// "_delete" after a map's name for the ops r observes, and "_" plus each
+// Calls name.
 func hookSuffix(r LookupRequest) string {
 	if r.Dispatch {
 		return ""
@@ -142,6 +146,9 @@ func hookSuffix(r LookupRequest) string {
 	}
 	if r.Entry {
 		suffixes = append(suffixes, "_entry")
+	}
+	for _, name := range r.Calls {
+		suffixes = append(suffixes, "_"+name)
 	}
 	return slices.MaxFunc(suffixes, func(a, b string) int { return len(a) - len(b) })
 }
@@ -222,7 +229,10 @@ func transformLookupRawGuarded(p RawProgram, req LookupRequestRaw, probe func() 
 			}
 		}
 	}
-	out, plan, err := transformLookupProgramGuarded(insns, p.Type, types, resolve, req.Request(), probe)
+	r := req.Request()
+	r.Kernel = p.Kernel
+	r.Modules = p.Modules
+	out, plan, err := transformLookupProgramGuarded(insns, p.Type, types, resolve, r, probe)
 	if err != nil {
 		return nil, err
 	}

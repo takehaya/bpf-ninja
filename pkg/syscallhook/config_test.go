@@ -170,6 +170,45 @@ func TestConfig(t *testing.T) {
 	}
 }
 
+// calls is accepted alone and with every key that adds hooks; the
+// program-independent refusals come from inject.ValidateRaw.
+func TestConfigCalls(t *testing.T) {
+	calls := `"calls":["bpf_fib_lookup","bpf_ktime_get_ns","bpf_xdp_ct_lookup"]`
+	for _, keys := range []string{
+		calls,
+		calls + `,"map":"sessions"`,
+		calls + `,"auto":true`,
+		calls + `,"entry":true`,
+		calls + `,"tail_calls":true`,
+		calls + `,"auto":true,"entry":true,"tail_calls":true,"static_untrusted":true`,
+	} {
+		rules, err := ParseConfig(strings.NewReader(`[{"program":"p",` + keys + `,"hook":"h"}]`))
+		if err != nil {
+			t.Errorf("%s: %v", keys, err)
+			continue
+		}
+		if got := rules[0].request().Calls; !slices.Equal(got, []string{"bpf_fib_lookup", "bpf_ktime_get_ns", "bpf_xdp_ct_lookup"}) {
+			t.Errorf("%s: request Calls = %q", keys, got)
+		}
+	}
+	supported := strings.Join(inject.SupportedCalls(), ", ")
+	for keys, want := range map[string]string{
+		`"calls":[]`:                                  "rule 0: program and one of map, auto, entry, tail_calls or calls are required",
+		`"calls":["bpf_map_lookup_elem"]`:             `rule 0: inject: refused: Calls name "bpf_map_lookup_elem" is not supported; supported calls: ` + supported,
+		`"calls":["bpf_fib_lookup","bpf_fib_lookup"]`: `rule 0: inject: refused: Calls names must be non-empty and unique; got "bpf_fib_lookup"`,
+		`"calls":[""]`:                                `rule 0: inject: refused: Calls names must be non-empty and unique; got ""`,
+		`"calls":["bpf_fib_lookup"],"auto":true,"dispatch":true`: "rule 0: inject: refused: Calls does not combine with Dispatch",
+		`"calls":["bpf_fib_lookup"],"ops":["lookup"]`:            "rule 0: ops applies to the hooks of map or auto",
+		`"calls":["bpf_fib_lookup"],"maps":["m"]`:                "rule 0: maps filters auto and needs it",
+		`"calls":["bpf_fib_lookup"],"func":"f"`:                  "rule 0: func, line, all_matches and site_pcs filter map and cannot be used with auto or without map",
+	} {
+		_, err := ParseConfig(strings.NewReader(`[{"program":"p",` + keys + `,"hook":"h"}]`))
+		if err == nil || err.Error() != want {
+			t.Errorf("%s: error = %v, want %q", keys, err, want)
+		}
+	}
+}
+
 func validAttr() []byte {
 	b := make([]byte, 168)
 	put32(b, 0, 6)
@@ -203,7 +242,7 @@ func TestProgAttr(t *testing.T) {
 		value uint32
 	}{
 		{4, 0}, {4, ^uint32(0)}, {72, 0}, {76, 12}, {88, ^uint32(0)}, {92, 20}, {104, ^uint32(0)},
-		{116, 1}, {120, 1}, {128, 1}, {136, 1}, {144, 1}, {148, 1}, {152, 1}, {160, 1}, {164, 1},
+		{116, 1}, {128, 1}, {136, 1}, {144, 1}, {152, 1}, {160, 1}, {164, 1},
 	} {
 		b := validAttr()
 		put32(b, field.off, field.value)
@@ -222,6 +261,46 @@ func TestProgAttr(t *testing.T) {
 	}
 	if err := parseProgAttr(b[:108]); err != nil {
 		t.Fatal(err)
+	}
+	// fd_array and fd_array_cnt pass through unchanged.
+	b = validAttr()
+	put64(b, 120, 0x45678901)
+	put32(b, 148, 2)
+	if err := parseProgAttr(b); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestFdArrayMapIndex(t *testing.T) {
+	ldImm64 := func(src byte) []byte { return []byte{0x18, 1 | src<<4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0} }
+	exit := []byte{0x95, 0, 0, 0, 0, 0, 0, 0}
+	// Map fd, map value, BTF id and func: the raw path resolves or keeps these.
+	// A kfunc call with a nonzero offset (module BTF by index) is accepted too.
+	kfunc := []byte{0x85, 2 << 4, 1, 0, 7, 0, 0, 0}
+	ok := append(append(append(append(append(ldImm64(1), ldImm64(2)...), ldImm64(3)...), ldImm64(4)...), kfunc...), exit...)
+	if err := fdArrayMapIndex(ok); err != nil {
+		t.Fatal(err)
+	}
+	for _, src := range []byte{5, 6} {
+		prog := append(append(append([]byte{}, exit...), ldImm64(src)...), exit...)
+		if err := fdArrayMapIndex(prog); err == nil || !strings.Contains(err.Error(), "instruction 1") {
+			t.Errorf("src %d: err=%v", src, err)
+		}
+	}
+}
+
+// A load whose attr ends before fd_array has no fd array: parseProgAttr
+// accepts attrs from 108 bytes on, and the field ends at 128.
+func TestFdArrayShortAttr(t *testing.T) {
+	for _, n := range []int{108, 112, 116, 120, 124, 127} {
+		if got := fdArray(make([]byte, n)); got != 0 {
+			t.Errorf("attr of %d bytes: fd_array %#x, want 0", n, got)
+		}
+	}
+	attr := make([]byte, 128)
+	attr[120] = 0x10
+	if got := fdArray(attr); got != 0x10 {
+		t.Errorf("attr of 128 bytes: fd_array %#x, want 0x10", got)
 	}
 }
 

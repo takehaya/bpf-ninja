@@ -17,7 +17,16 @@ SYSCALLHOOK = "github.com/takehaya/bpf-ninja/pkg/syscallhook"
 
 
 def allowed_skip(package, test, output, kernel):
+    if package == SYSCALLHOOK:
+        return test == "TestIntegrationIndirectJump" and "kernel lacks BPF_MAP_TYPE_INSN_ARRAY" in output
     if package == INJECT:
+        # These tests require conntrack kfuncs in vmlinux BTF. The test checks
+        # module BTF before emitting this reason.
+        if test in {
+            "TestBpfCallHookCtXDP", "TestBpfCallHookCtTC", "TestBpfCallHookCtUntrusted",
+            "TestBpfCallHookCtNoRelease", "TestBpfCallFixtureCtXDP", "TestBpfCallFixtureCtTC",
+        } and "is only in nf_conntrack module BTF" in output:
+            return True
         # The native control shape falls through on kernels that lose tail-call
         # reachability; the guarded refusal test covers those kernels instead.
         if test == "TestBpfTailCallInSubprogram":
@@ -54,6 +63,8 @@ def allowed_skip(package, test, output, kernel):
             "TestBpfSpecialFieldsLookup", "TestBpfSockHashUpdateTC", "TestBpfQueueOpsDispatch",
             "TestBpfQueueOpsInner", "TestBpfReadOnlyArg", "TestBpfReadOnlyArgShapes", "TestBpfReadOnlyArgCalls",
             "TestBpfReadOnlyKconfigArg", "TestBpfLookupWrapperGeneric",
+            "TestBpfCallHookFibUntrusted", "TestBpfCallHookCtUntrusted", "TestBpfCallHookRowSkUntrusted",
+            "TestBpfCallHookRowLoadBytesMapUntrusted",
         } and "kernel lacks arg:untrusted" in output
     # The record tests at untrusted and non-static dispatch hooks need
     # arg:untrusted, which 6.15 and older reject; the static dispatch case
