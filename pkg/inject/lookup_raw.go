@@ -332,6 +332,11 @@ func prepareRawLookup(p RawProgram) (asm.Instructions, *btf.Spec, lookupMapResol
 	indices := make(map[uint32]int)
 	it := insns.Iterate()
 	for it.Next() {
+		// The analyses index per-register state by these fields; the kernel
+		// checks them only on the paths it visits.
+		if it.Ins.Dst > asm.R10 || it.Ins.Src > asm.R10 {
+			return nil, nil, nil, refuse("instruction at %d has register field dst %d src %d past r10", it.Offset, it.Ins.Dst, it.Ins.Src)
+		}
 		indices[uint32(it.Offset)] = it.Index
 		*it.Ins = btf.WithFuncMetadata(it.Ins.WithSource(nil), nil)
 	}
