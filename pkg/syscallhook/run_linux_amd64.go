@@ -1406,8 +1406,9 @@ func (s *supervisor) transform(r *remote, attr []byte, rule Rule, form HookForm,
 // load (see retry) carries a log of its own and closes the program it
 // loaded; when the kernel refuses it, why is the verifier's last log line.
 // The caller's attr and log are untouched. Otherwise the load is the one the
-// tracee asked for, and a refusal is repeated once to see whether the jump
-// limit caused it (hitJumpLimit). A refusal is a refusedLoad.
+// tracee asked for, and a refusal of a rewrite without dropped sites is
+// repeated once to see whether the jump limit caused it (hitJumpLimit). A
+// refusal is a refusedLoad.
 func (s *supervisor) load(r *remote, attr []byte, name string, form HookForm, t *transformed, trial bool) (ret int64, why string, err error) {
 	result := t.result
 	// Load BTF inside the tracee. A supervisor-owned fd is not a valid substitute
@@ -1522,7 +1523,9 @@ func (s *supervisor) load(r *remote, attr []byte, name string, form HookForm, t 
 			why = cmp.Or(why, err.Error())
 			return 0, why, refusedLoad{fmt.Errorf("trial PROG_LOAD: %w", err), why}
 		}
-		if !t.missFirst && missFirstDiffers(t.request, result) {
+		// Not after the retry: its rewrite is final, and the load would go
+		// past the budget.
+		if !t.missFirst && t.request.Drop == nil && missFirstDiffers(t.request, result) {
 			s.extra++
 			hit, diagnosed := s.hitJumpLimit(r, patched)
 			if hit {
