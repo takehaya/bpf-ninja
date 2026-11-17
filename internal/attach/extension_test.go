@@ -3,6 +3,7 @@ package attach
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -34,13 +35,51 @@ func TestForEachLinkSkipsVanishedIDs(t *testing.T) {
 		t.Fatalf("calls %d, error %v; want 3, nil", calls, err)
 	}
 
-	err = forEachLink(func(link.ID) (link.ID, link.Link, error) {
+	err = forEachLink(func(after link.ID) (link.ID, link.Link, error) {
+		if after == 12 {
+			return 0, nil, nil
+		}
 		return 12, nil, unix.EPERM
 	}, func(link.ID, link.Link) error { return nil })
 	if !errors.Is(err, unix.EPERM) {
 		t.Fatalf("non-race error %v, want EPERM", err)
 	}
 }
+
+// An error of the next-ID step (EPERM without CAP_SYS_ADMIN) and an error of
+// visit stop the walk with that error: the capture refuses rather than
+// check against a partial list of links.
+func TestForEachLinkStopsOnErrors(t *testing.T) {
+	err := forEachLink(func(link.ID) (link.ID, link.Link, error) {
+		return 0, nil, fmt.Errorf("get next link ID: %w", unix.EPERM)
+	}, func(link.ID, link.Link) error {
+		t.Fatal("visited a link after the next-ID step failed")
+		return nil
+	})
+	if !errors.Is(err, unix.EPERM) {
+		t.Fatalf("next-ID error %v, want EPERM", err)
+	}
+
+	stop := errors.New("visit failed")
+	visits := 0
+	err = forEachLink(func(after link.ID) (link.ID, link.Link, error) {
+		if after >= 11 {
+			return 0, nil, nil
+		}
+		return after + 10, &testLink{}, nil
+	}, func(link.ID, link.Link) error {
+		visits++
+		return stop
+	})
+	if !errors.Is(err, stop) || visits != 1 {
+		t.Fatalf("visit error %v after %d visits, want %v after 1", err, visits, stop)
+	}
+}
+
+// testLink is a link.Link whose Close does nothing.
+type testLink struct{ link.Link }
+
+func (*testLink) Close() error { return nil }
 
 func TestSelectHookType(t *testing.T) {
 	edges := []extensionLink{{10, 20, 3}, {10, 21, 4}, {11, 22, 3}}

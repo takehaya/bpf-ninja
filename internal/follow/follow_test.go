@@ -245,6 +245,9 @@ func TestAnnounceUnresponsiveAndGone(t *testing.T) {
 	}
 }
 
+// TestAnnounceDropsUnresponsiveCapture checks that a capture that stops
+// reading is dropped at the first write that misses the deadline: the
+// announcements after it notify nobody and take no deadline each.
 func TestAnnounceDropsUnresponsiveCapture(t *testing.T) {
 	const announcements = 500
 	opts := testOptions(t)
@@ -277,11 +280,17 @@ func TestAnnounceDropsUnresponsiveCapture(t *testing.T) {
 		<-acksDone
 		close(done)
 	}()
+	// Each acknowledged announcement takes about the ack's delay; the drop
+	// costs one deadline, and a few more are slack.
 	select {
 	case <-done:
-	case <-time.After((announcements + 1) * opts.Deadline):
+	case <-time.After(announcements*2*time.Millisecond + 10*opts.Deadline):
 		_ = silent.conn.Close()
-		t.Fatal("Announce blocked while writing to an unresponsive capture")
+		t.Fatal("Announce blocked while writing to an unresponsive capture, or waited the deadline after the drop")
+	}
+	waitSubscribers(t, s, 0)
+	if notified, _ := s.Announce(announcements+1, []string{"hook_a"}); notified != 0 {
+		t.Fatalf("the dropped capture was notified again (%d)", notified)
 	}
 }
 
