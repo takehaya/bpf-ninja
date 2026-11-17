@@ -191,6 +191,10 @@ type LookupRequest struct {
 	Modules         map[int16]*btf.Spec // module BTF (split on Kernel) by a kfunc call's fd_array offset; a missing offset leaves the call unnamed
 
 	SkipUnmatchedMaps bool // a Maps name matching no site is skipped, not refused; see Maps
+	// Drop maps a site's SitePC to the reason it gets no hook: the site is
+	// listed as skipped with that reason. An explicitly selected lookup
+	// (Site) is refused instead. Tail-call sites are dropped the same way.
+	Drop map[uint32]string
 }
 
 // LookupWhen is a set of lookup results; see LookupRequest.Lookups.
@@ -1598,6 +1602,12 @@ func transformLookupProgramGuarded(insns asm.Instructions, typ ebpf.ProgramType,
 			sites[i].generic, sites[i].typedOnly, sites[i].Generic = false, false, false // not for the generic hook either
 		}
 	}
+	for i, site := range sites {
+		if reason, ok := req.Drop[site.SitePC]; ok {
+			sites[i].Reason = reason
+			sites[i].generic, sites[i].typedOnly, sites[i].Generic = false, false, false // not for the generic hook either
+		}
+	}
 	if req.Dispatch && req.CopyReadOnly {
 		return nil, plan, refuse("Dispatch passes untrusted pointers; it does not combine with CopyReadOnly")
 	}
@@ -1694,6 +1704,12 @@ func transformLookupProgramGuarded(insns asm.Instructions, typ ebpf.ProgramType,
 	var tails []tailCallSite
 	if req.TailCalls {
 		for _, tail := range allTails {
+			if reason, ok := req.Drop[tail.SitePC]; ok {
+				site := tail.LookupSite
+				site.Reason = reason
+				plan.skipped = append(plan.skipped, site)
+				continue
+			}
 			floor, ok := req.Stack.Frames[tail.FuncName]
 			if req.Stack.perFrame() && !ok {
 				site := tail.LookupSite

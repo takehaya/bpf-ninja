@@ -578,3 +578,62 @@ func TestCallNameRoomAndReserve(t *testing.T) {
 		}
 	}
 }
+
+// Drop takes the sites it names out of the request, whatever their kind,
+// and lists them as skipped with the given reason; the other sites keep
+// their hooks. An explicitly selected lookup is refused instead.
+func TestDrop(t *testing.T) {
+	const reason = "load: dropped by the caller"
+	sitePCs := func(plan lookupPlan) []uint32 {
+		var pcs []uint32
+		for _, h := range plan.hooks {
+			for _, s := range h.Sites {
+				pcs = append(pcs, s.SitePC)
+			}
+		}
+		return pcs
+	}
+	for _, tc := range []struct {
+		name string
+		spec func() *ebpf.CollectionSpec
+		req  LookupRequest
+	}{
+		{"calls", scalarFixture, callReq("bpf_jiffies64", "bpf_get_prandom_u32")},
+		{"auto lookups", multiLookupFixture, LookupRequest{ProgramName: "p", HookName: "obs", Auto: true, Entry: true, Stack: StackAudit{LowestOffset: -16}}},
+		{"generic lookup", mapInMapFixture, LookupRequest{ProgramName: "p", HookName: "obs", Auto: true, Entry: true, Stack: StackAudit{LowestOffset: -16}}},
+		{"tail calls", tailCallerFixture, LookupRequest{ProgramName: "caller", HookName: "h", TailCalls: true, Entry: true, Stack: StackAudit{LowestOffset: -8}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			full, err := transformLookup(tc.spec(), tc.req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			all := sitePCs(full)
+			if len(all) == 0 {
+				t.Fatalf("no site hooked: %+v", full.hooks)
+			}
+			req := tc.req
+			req.Drop = map[uint32]string{all[0]: reason}
+			plan, err := transformLookup(tc.spec(), req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := sitePCs(plan); !slices.Equal(got, all[1:]) {
+				t.Fatalf("hooked sites %v, want %v", got, all[1:])
+			}
+			i := slices.IndexFunc(plan.skipped, func(s LookupSite) bool { return s.SitePC == all[0] })
+			if i < 0 || plan.skipped[i].Reason != reason || len(plan.skipped) != len(full.skipped)+1 {
+				t.Fatalf("skipped %+v", plan.skipped)
+			}
+		})
+	}
+	req := LookupRequest{ProgramName: "p", HookName: "obs", Site: LookupSelector{MapName: "sessions"}, Stack: StackAudit{LowestOffset: -16}}
+	full, err := transformLookup(lookupFixture(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Drop = map[uint32]string{full.hooks[0].Sites[0].SitePC: reason}
+	if _, err := transformLookup(lookupFixture(), req); err == nil || !strings.Contains(err.Error(), reason) {
+		t.Fatalf("explicit site dropped: err = %v", err)
+	}
+}

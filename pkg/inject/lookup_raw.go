@@ -73,7 +73,8 @@ type LookupRequestRaw struct {
 	Stack           StackAudit
 	Calls           []string // see LookupRequest.Calls
 
-	SkipUnmatchedMaps bool // see LookupRequest.SkipUnmatchedMaps
+	SkipUnmatchedMaps bool              // see LookupRequest.SkipUnmatchedMaps
+	Drop              map[uint32]string // see LookupRequest.Drop
 }
 
 // LookupResultRaw contains a transformed instruction slice and matching load
@@ -116,7 +117,7 @@ func (r LookupRequestRaw) Request() LookupRequest {
 	return LookupRequest{Site: r.Site, Auto: r.Auto, Maps: r.Maps, Entry: r.Entry, TailCalls: r.TailCalls,
 		CopyReadOnly: r.CopyReadOnly, StaticUntrusted: r.StaticUntrusted, Dispatch: r.Dispatch, MissFirst: r.MissFirst, Lookups: r.Lookups, Updates: r.Updates, Deletes: r.Deletes,
 		Pushes: r.Pushes, Pops: r.Pops, Peeks: r.Peeks, HookName: r.HookName, Stack: r.Stack, Calls: r.Calls,
-		SkipUnmatchedMaps: r.SkipUnmatchedMaps}
+		SkipUnmatchedMaps: r.SkipUnmatchedMaps, Drop: r.Drop}
 }
 
 // hookSuffix is the longest fixed suffix the transform appends to HookName
