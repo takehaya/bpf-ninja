@@ -142,7 +142,7 @@ func TestModuleBTFs(t *testing.T) {
 	s := supervisor{options: Options{Log: &log}, kernel: &btf.Spec{}}
 	mod := &btf.Spec{}
 	reads, loads := 0, 0
-	got := s.moduleBTFs(insns, base, func(addr, size uint64) ([]byte, error) {
+	got, homes := s.moduleBTFs(insns, base, func(addr, size uint64) ([]byte, error) {
 		reads++
 		fd, ok := fds[addr]
 		if !ok || size != 4 {
@@ -151,15 +151,15 @@ func TestModuleBTFs(t *testing.T) {
 		b := make([]byte, 4)
 		put32(b, 0, fd)
 		return b, nil
-	}, func(fd uint32) ([]byte, error) { return infos[fd], nil }, func(id btf.ID, b *btf.Spec) (*btf.Spec, error) {
+	}, func(fd uint32) ([]byte, error) { return infos[fd], nil }, func(id btf.ID, b *btf.Spec) (*btf.Spec, string, error) {
 		loads++
 		if id != 110 || b != s.kernel {
-			return nil, errors.New("wrong id or base")
+			return nil, "", errors.New("wrong id or base")
 		}
-		return mod, nil
+		return mod, "nf_conntrack", nil
 	})
-	if len(got) != 1 || got[1] != mod || reads != 3 || loads != 1 {
-		t.Fatalf("modules=%v reads=%d loads=%d", got, reads, loads)
+	if len(got) != 1 || got[1] != mod || len(homes) != 1 || homes[1] != "nf_conntrack" || reads != 3 || loads != 1 {
+		t.Fatalf("modules=%v homes=%v reads=%d loads=%d", got, homes, reads, loads)
 	}
 	for _, want := range []string{"offset 2 unavailable: its kernel-function calls are not hooked: fd 11 is not a kernel BTF", "offset 3 unavailable", "offset -1 unavailable"} {
 		if !strings.Contains(log.String(), want) {
@@ -169,7 +169,7 @@ func TestModuleBTFs(t *testing.T) {
 	if n := strings.Count(log.String(), "\n"); n != 3 {
 		t.Errorf("%d log lines, want 3", n)
 	}
-	if got := s.moduleBTFs(insns, 0, nil, nil, nil); got != nil {
+	if got, _ := s.moduleBTFs(insns, 0, nil, nil, nil); got != nil {
 		t.Errorf("no fd_array: modules=%v", got)
 	}
 }

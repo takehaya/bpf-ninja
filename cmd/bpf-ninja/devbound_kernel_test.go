@@ -24,6 +24,8 @@ import (
 	"github.com/vishvananda/netlink"
 	"github.com/vishvananda/netns"
 	"golang.org/x/sys/unix"
+
+	"github.com/takehaya/bpf-ninja/pkg/inject"
 )
 
 // devBoundHook is the hook a ready rule gives the device-bound loader's call.
@@ -301,7 +303,7 @@ func TestBpfDevBoundCapture(t *testing.T) {
 	}
 	p := file.Programs[0]
 	i := slices.IndexFunc(p.Hooks, func(h hookJSON) bool { return h.Name == devBoundHook })
-	if i < 0 || p.Hooks[i].RetSize != 4 || !p.Hooks[i].RetSigned || p.Hooks[i].ArgReg != 2 || !strings.Contains(p.NotReviewed, "bpf_xdp_metadata_rx_hash") {
+	if i < 0 || p.Hooks[i].RetSize != 4 || !p.Hooks[i].RetSigned || p.Hooks[i].ArgReg != 2 || !strings.Contains(p.NotReviewed, "bpf_xdp_metadata_rx_hash"+inject.DriverNote) {
 		t.Fatalf("hook %s or not_reviewed missing:\n%s", devBoundHook, data)
 	}
 }

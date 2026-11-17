@@ -287,31 +287,31 @@ func (s *supervisor) loadKernel(load func() (*btf.Spec, error)) {
 // nonzero offset of a kfunc call in insns, keyed by that offset: as in the
 // verifier, the u32 at fdArray + 4*offset is a module BTF fd of the tracee.
 // read reads tracee memory, info returns the fd's 32-byte bpf_btf_info and
-// load opens a kernel BTF by id. An offset that fails is left out and logged,
+// load opens a kernel BTF by id and gives its module's name, which homes
+// keeps by the same offset. An offset that fails is left out and logged,
 // so its calls stay unnamed and the load goes on.
 func (s *supervisor) moduleBTFs(insns asm.Instructions, fdArray uint64, read func(addr, size uint64) ([]byte, error),
-	info func(fd uint32) ([]byte, error), load func(id btf.ID, base *btf.Spec) (*btf.Spec, error)) map[int16]*btf.Spec {
-	var modules map[int16]*btf.Spec
+	info func(fd uint32) ([]byte, error), load func(id btf.ID, base *btf.Spec) (*btf.Spec, string, error)) (modules map[int16]*btf.Spec, homes map[int16]string) {
 	failed := map[int16]bool{}
 	for i := range insns {
 		off := insns[i].Offset
 		if !insns[i].IsKfuncCall() || off == 0 || modules[off] != nil || failed[off] {
 			continue
 		}
-		spec, err := func() (*btf.Spec, error) {
+		spec, home, err := func() (*btf.Spec, string, error) {
 			if off < 0 || fdArray == 0 {
-				return nil, fmt.Errorf("no fd_array entry")
+				return nil, "", fmt.Errorf("no fd_array entry")
 			}
 			fd, err := read(fdArray+4*uint64(off), 4)
 			if err != nil {
-				return nil, err
+				return nil, "", err
 			}
 			bi, err := info(u32(fd, 0))
 			if err != nil {
-				return nil, err
+				return nil, "", err
 			}
 			if u32(bi, 28) != 1 {
-				return nil, fmt.Errorf("fd %d is not a kernel BTF", u32(fd, 0))
+				return nil, "", fmt.Errorf("fd %d is not a kernel BTF", u32(fd, 0))
 			}
 			return load(btf.ID(u32(bi, 12)), s.kernel)
 		}()
@@ -321,20 +321,27 @@ func (s *supervisor) moduleBTFs(insns asm.Instructions, fdArray uint64, read fun
 			continue
 		}
 		if modules == nil {
-			modules = map[int16]*btf.Spec{}
+			modules, homes = map[int16]*btf.Spec{}, map[int16]string{}
 		}
-		modules[off] = spec
+		modules[off], homes[off] = spec, home
 	}
-	return modules
+	return modules, homes
 }
 
-func loadModuleBTF(id btf.ID, base *btf.Spec) (*btf.Spec, error) {
+// loadModuleBTF opens the kernel BTF id, split on base, and gives the name
+// the kernel gives it: the module's.
+func loadModuleBTF(id btf.ID, base *btf.Spec) (*btf.Spec, string, error) {
 	h, err := btf.NewHandleFromID(id)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	defer func() { _ = h.Close() }()
-	return h.Spec(base)
+	info, err := h.Info()
+	if err != nil {
+		return nil, "", err
+	}
+	spec, err := h.Spec(base)
+	return spec, info.Name, err
 }
 
 // loaderLog says whether the loader asked for a verifier log (log_level 1
@@ -1621,7 +1628,8 @@ func (s *supervisor) discover(r *remote, attr []byte, name string, stack inject.
 	if err != nil {
 		return err
 	}
-	raw.Kernel, raw.Modules = s.kernel, s.programModules(r, attr, raw.Instructions)
+	raw.Kernel = s.kernel
+	raw.Modules, _ = s.programModules(r, attr, raw.Instructions)
 	calls, callSites, err := listing(raw)
 	if err != nil {
 		return err
@@ -1665,9 +1673,9 @@ func (e sitesRefusal) Unwrap() error { return e.error }
 
 // programModules returns the module BTFs of insns' kfunc calls when kernel
 // BTF loaded (see moduleBTFs).
-func (s *supervisor) programModules(r *remote, attr []byte, insns asm.Instructions) map[int16]*btf.Spec {
+func (s *supervisor) programModules(r *remote, attr []byte, insns asm.Instructions) (map[int16]*btf.Spec, map[int16]string) {
 	if s.kernel == nil {
-		return nil
+		return nil, nil
 	}
 	return s.moduleBTFs(insns, fdArray(attr),
 		func(addr, size uint64) ([]byte, error) { return readMemory(r.pid, addr, size) },
@@ -1720,25 +1728,28 @@ func (s *supervisor) transform(r *remote, attr []byte, rule Rule, form HookForm,
 		return nil, "", err
 	}
 	listed := raw
-	listed.Kernel, listed.Modules = s.kernel, s.programModules(r, attr, raw.Instructions)
+	var homes map[int16]string
+	listed.Kernel = s.kernel
+	listed.Modules, homes = s.programModules(r, attr, raw.Instructions)
 	if len(rule.Calls) > 0 {
 		raw.Kernel, raw.Modules = listed.Kernel, listed.Modules // only a rule with calls names kfunc calls and types their arguments
 	}
-	return s.rewrite(raw, listed, entry, rule, form, stack, missFirst, drop)
+	return s.rewrite(raw, listed, homes, entry, rule, form, stack, missFirst, drop)
 }
 
 // rewrite is the part of transform that issues no ptrace call: raw is the
-// load as the transform sees it and listed as a listing sees it. A panic in
-// it is an error (see guard).
-func (s *supervisor) rewrite(raw, listed inject.RawProgram, entry string, rule Rule, form HookForm, stack inject.StackReport, missFirst bool, drop map[uint32]string) (t *transformed, _ string, err error) {
+// load as the transform sees it and listed as a listing sees it, homes the
+// module names of listed.Modules (moduleBTFs). A panic in it is an error
+// (see guard).
+func (s *supervisor) rewrite(raw, listed inject.RawProgram, homes map[int16]string, entry string, rule Rule, form HookForm, stack inject.StackReport, missFirst bool, drop map[uint32]string) (t *transformed, _ string, err error) {
 	err = guard("rewriting the load", func() (err error) {
-		t, entry, err = s.rewriteLoad(raw, listed, entry, rule, form, stack, missFirst, drop)
+		t, entry, err = s.rewriteLoad(raw, listed, homes, entry, rule, form, stack, missFirst, drop)
 		return err
 	})
 	return t, entry, err
 }
 
-func (s *supervisor) rewriteLoad(raw, listed inject.RawProgram, entry string, rule Rule, form HookForm, stack inject.StackReport, missFirst bool, drop map[uint32]string) (t *transformed, _ string, err error) {
+func (s *supervisor) rewriteLoad(raw, listed inject.RawProgram, homes map[int16]string, entry string, rule Rule, form HookForm, stack inject.StackReport, missFirst bool, drop map[uint32]string) (t *transformed, _ string, err error) {
 	mapCalls, list, listErr := listing(listed)
 	if listErr != nil && rule.Sites != nil {
 		return nil, entry, sitesRefusal{fmt.Errorf("listing the load for the rule's sites: %w", listErr)}
@@ -1776,7 +1787,7 @@ func (s *supervisor) rewriteLoad(raw, listed inject.RawProgram, entry string, ru
 	}
 	t = &transformed{result: result, request: request, original: raw.Instructions, missFirst: missFirst, retry: drop != nil,
 		build: list.Fingerprint, labels: list.Labels, premise: inject.PremiseCalls(raw.Instructions, listed.Kernel, listed.Modules),
-		unread: inject.NotReviewed(raw.Instructions, listed.Kernel, listed.Modules)}
+		unread: inject.NotReviewed(raw.Instructions, listed.Kernel, listed.Modules, homes)}
 	t.cert, t.premises, err = loadCheckInputs(raw.Instructions, result, request.Stack, stack)
 	if errors.Is(err, inject.ErrCheckerNotApplicable) && drop == nil {
 		s.log("program %q: %v; load not validated", rule.Program, err)

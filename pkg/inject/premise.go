@@ -1,6 +1,7 @@
 package inject
 
 import (
+	"cmp"
 	"slices"
 
 	"github.com/cilium/ebpf/asm"
@@ -59,20 +60,42 @@ func helperPremise(name string) string {
 // branch records or counters to the program, nor runs or registers program
 // code, nor holds a lock across instructions. The conntrack lookups read
 // the time for timeouts, which the claim excludes by statement. A record
-// names one implementation: the XDP receive-metadata functions have none,
-// because the verifier substitutes the driver's function for them.
-var reviewedKfuncs = map[string]string{
-	"bpf_xdp_ct_lookup": "net/netfilter/nf_conntrack_bpf.c:325 (:327)",
-	"bpf_skb_ct_lookup": "net/netfilter/nf_conntrack_bpf.c:391 (:395)",
-	"bpf_ct_release":    "net/netfilter/nf_conntrack_bpf.c:440 (:445)",
+// names the function together with where it is defined: KernelHome for
+// vmlinux, or the module whose BTF the load passes (nf_conntrack builds
+// nf_conntrack_bpf.c into vmlinux or into its module). A call counts as
+// reviewed only when both match.
+var reviewedKfuncs = map[kfuncHome]string{
+	{KernelHome, "bpf_xdp_ct_lookup"}:     "net/netfilter/nf_conntrack_bpf.c:325 (:327)",
+	{KernelHome, "bpf_skb_ct_lookup"}:     "net/netfilter/nf_conntrack_bpf.c:391 (:395)",
+	{KernelHome, "bpf_ct_release"}:        "net/netfilter/nf_conntrack_bpf.c:440 (:445)",
+	{"nf_conntrack", "bpf_xdp_ct_lookup"}: "net/netfilter/nf_conntrack_bpf.c:325 (:327)",
+	{"nf_conntrack", "bpf_skb_ct_lookup"}: "net/netfilter/nf_conntrack_bpf.c:391 (:395)",
+	{"nf_conntrack", "bpf_ct_release"}:    "net/netfilter/nf_conntrack_bpf.c:440 (:445)",
 }
 
-// NotReviewed returns the names of the kernel functions insns calls that
-// have no review record (reviewedKfuncs), in call order without repeats; a
-// call that kernel and modules cannot name is UnnamedKfunc, never reviewed.
-// The claim is stated only for a load that calls none. Hooks do not depend
-// on it.
-func NotReviewed(insns asm.Instructions, kernel *btf.Spec, modules map[int16]*btf.Spec) []string {
+// kfuncHome is a kernel function's name and where it is defined: KernelHome
+// or a module's name.
+type kfuncHome struct{ home, name string }
+
+// KernelHome is where a kernel function of vmlinux is defined.
+const KernelHome = "vmlinux"
+
+// driverKfuncs are the kernel functions whose implementation the device's
+// driver supplies: the verifier puts the driver's function in their place.
+// They never count as reviewed.
+var driverKfuncs = []string{"bpf_xdp_metadata_rx_timestamp", "bpf_xdp_metadata_rx_hash", "bpf_xdp_metadata_rx_vlan_tag"}
+
+// DriverNote follows the name of a function of driverKfuncs in NotReviewed.
+const DriverNote = " (the device's driver supplies the implementation)"
+
+// NotReviewed returns the kernel functions insns calls that have no review
+// record (reviewedKfuncs) for where they are defined, in call order without
+// repeats. A call into module BTF is defined in moduleNames[offset]; one
+// whose name has a record elsewhere gets " (in HOME)", and a function of
+// driverKfuncs gets DriverNote. A call that kernel and modules cannot name
+// is UnnamedKfunc, never reviewed. The claim is stated only for a load that
+// calls none. Hooks do not depend on it.
+func NotReviewed(insns asm.Instructions, kernel *btf.Spec, modules map[int16]*btf.Spec, moduleNames map[int16]string) []string {
 	var names []string
 	for i := range insns {
 		ins := &insns[i]
@@ -80,14 +103,34 @@ func NotReviewed(insns asm.Instructions, kernel *btf.Spec, modules map[int16]*bt
 			continue
 		}
 		_, name, named := callee(ins, kernel, modules)
-		if !named {
+		home := KernelHome
+		if ins.Offset != 0 {
+			home = moduleNames[ins.Offset]
+		}
+		switch {
+		case !named:
 			name = UnnamedKfunc
-		} else if _, ok := reviewedKfuncs[name]; ok {
+		case slices.Contains(driverKfuncs, name):
+			name += DriverNote
+		case home != "" && reviewedKfuncs[kfuncHome{home, name}] != "":
 			continue
+		case hasRecord(name):
+			name += " (in " + cmp.Or(home, "a module not named") + ")"
 		}
 		if !slices.Contains(names, name) {
 			names = append(names, name)
 		}
 	}
 	return names
+}
+
+// hasRecord says whether a function called name has a review record
+// anywhere.
+func hasRecord(name string) bool {
+	for record := range reviewedKfuncs {
+		if record.name == name {
+			return true
+		}
+	}
+	return false
 }

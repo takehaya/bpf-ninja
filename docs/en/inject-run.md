@@ -717,7 +717,7 @@ If a rewrite fails, `inject-run` reports it on stderr and keeps running the targ
 | `skipped_maps` | The `maps` names of a `hook_prefix` rule that match no call the rule observes, each with `map` and `reason`. Absent when there is none. |
 | `skipped_calls` | The `calls` names of a rule that are neither a helper nor a kernel function of the load, each with `name` and `reason`. A known name the program does not call is not listed. Absent when there is none. |
 | `outside_premise` | `calls NAME, ...`: the calls of the original program that [the equivalence claim's premise](#equivalence-claim) rules out: the helpers it names, the kernel functions on the deny list of [Observe helper and kernel-function calls](#observe-helper-and-kernel-function-calls), and the kernel functions that take a callback. The claim does not hold for this load. Hooks at its other calls work as usual. A kernel-function call that could not be named is listed as `a kernel function that could not be named`, because it may be one of them. Absent when the program calls none. |
-| `not_reviewed` | `calls NAME, ...`: the kernel functions the original program calls whose implementation has not been checked against the premise, in call order; a call that could not be named is listed as `a kernel function that could not be named`. The claim is stated only for loads without this field. Hooks are placed as for any other load. Absent when every kernel function the program calls has been checked, or it calls none. |
+| `not_reviewed` | `calls NAME, ...`: the kernel functions the original program calls whose implementation has not been checked against the premise, in call order; a call that could not be named is listed as `a kernel function that could not be named`. A receive-metadata function is listed as, for example, `bpf_xdp_metadata_rx_hash (the device's driver supplies the implementation)`, and a checked function defined elsewhere than where it was checked as `NAME (in MODULE)`. The claim is stated only for loads without this field. Hooks are placed as for any other load. Absent when every kernel function the program calls has been checked, or it calls none. |
 | `dead_check_error` | Present when one or more hook comparisons failed. Affected hooks, and any site they may report, remain unmarked; independently confirmed absent hooks and sites can still be marked. Consumers must not guess from an unmarked result. |
 
 Treat a marked site as having no live observation point in this load, not as an attach failure.
@@ -991,8 +991,9 @@ The claim assumes that the original program's behaviour does not depend on its o
 - The stack slots the tool reserves lie below every access the original program makes; the [stack audit](#stack-floor) checks this before every rewrite.
 - The same inputs and state include concurrent updates by other programs and by user space, and the random number stream. Time is not part of them: the clock helpers stay callable and may return other values.
 - The verifier treats both programs alike where it rewrites calls (fast-call patterns, hidden arguments).
-- Every kernel function the program calls has been checked against the premise. Checked today are `bpf_xdp_ct_lookup`, `bpf_skb_ct_lookup` and `bpf_ct_release`.
-  The XDP receive-metadata functions are not, because the verifier substitutes the driver's own function for them, and a driver's function can run other code.
+- Every kernel function the program calls has been checked against the premise, where it is defined: a check names the function together with vmlinux or the module whose BTF the load passes, and a function of the same name defined elsewhere is not checked.
+  Checked today are `bpf_xdp_ct_lookup`, `bpf_skb_ct_lookup` and `bpf_ct_release`, in vmlinux and in the `nf_conntrack` module.
+  The XDP receive-metadata functions are not, because the verifier substitutes the driver's own function for them, and a driver's function can run other code; `not_reviewed` says so next to their names. `inject-run` does not name the driver.
 
 `inject-run` reports a load outside the premise in two fields of the [hooks file](#hooks-file), and in a log line each:
 
