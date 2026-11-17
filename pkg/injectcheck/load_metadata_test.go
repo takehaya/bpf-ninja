@@ -2,6 +2,8 @@ package injectcheck
 
 import (
 	"encoding/json"
+	"errors"
+	"strings"
 	"testing"
 
 	"github.com/cilium/ebpf"
@@ -109,6 +111,19 @@ func TestNilMetadataKey(t *testing.T) {
 			t.Fatalf("nil metadata key changed JSON: %s != %s", got, want)
 		}
 	})
+}
+
+// A register field above r10 in the transformed stream alone, as a loader
+// that rewrites its scratch memory could leave it, is refused before any
+// later step reads it.
+func TestInvalidTransformedRegister(t *testing.T) {
+	in, out, c := p6Pair(asm.Instructions{asm.Mov.Imm(asm.R1, 0), asm.Mov.Reg(asm.R0, asm.R3), asm.Return()})
+	out[c.Original[1]].Src = 13
+	_, err := checkFixture(in, out, c)
+	var rejection *Rejection
+	if !errors.As(err, &rejection) || rejection.Kind != RegisterInvalid || !strings.Contains(err.Error(), "transformed instruction 1") {
+		t.Fatalf("err %v", err)
+	}
 }
 
 func TestInvalidOriginalRegister(t *testing.T) {

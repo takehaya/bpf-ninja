@@ -283,6 +283,12 @@ func Check(in, out asm.Instructions, c Certificate, premises Premises) (Counts, 
 			return counts, inputError(InputRegister, "original instruction %d: invalid register dst=%d src=%d", i, a.Dst, a.Src)
 		}
 	}
+	// No later step indexes register state with a field past r10.
+	for j, a := range out {
+		if a.Dst > asm.RFP || a.Src > asm.RFP {
+			return fail(RegisterInvalid, "transformed instruction %d: invalid register dst=%d src=%d", j, a.Dst, a.Src)
+		}
+	}
 	if err := unassociated(in); err != nil {
 		return counts, fmt.Errorf("original: %w", err)
 	}
