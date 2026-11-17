@@ -23,8 +23,8 @@ def allowed_skip(package, test, output, kernel):
         if test in {
             "TestBpfCallHookCtXDP", "TestBpfCallHookCtTC", "TestBpfCallHookCtUntrusted",
             "TestBpfCallHookCtNoRelease", "TestBpfCallFixtureCtXDP", "TestBpfCallFixtureCtTC",
-        }:
-            return "is only in nf_conntrack module BTF" in output
+        } and "is only in nf_conntrack module BTF" in output:
+            return True
         # The native control shape falls through on kernels that lose tail-call
         # reachability; the guarded refusal test covers those kernels instead.
         if test == "TestBpfTailCallInSubprogram":
