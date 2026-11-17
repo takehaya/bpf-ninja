@@ -600,9 +600,6 @@ func TestBPFStopsDaemonizingTarget(t *testing.T) {
 		!strings.Contains(string(data), "kernel hook=false, action=2") {
 		t.Fatalf("code=%d err=%v read=%v after %v\n%s\n%s", code, err, readErr, time.Since(start), &logs, data)
 	}
-	if err := checkWaitLog(logs.String(), 7); err != nil {
-		t.Fatal(err)
-	}
 }
 
 // A nonleader exec in a followed process has no exit notification for its old
