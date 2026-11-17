@@ -131,6 +131,7 @@ func TestRefusalCause(t *testing.T) {
 	}{
 		{sitesRefusal{fmt.Errorf("rule sites: pc 3 names no site of this program")}, nil, false, "sites"},
 		{fmt.Errorf("stack depth unavailable: %w", audit), audit, false, "stack"},
+		{fmt.Errorf("stack depth unavailable: %w", fmt.Errorf("%w: x", errTrialVerifier)), fmt.Errorf("%w: x", errTrialVerifier), false, "verifier"},
 		{fmt.Errorf("stack depth unavailable: %w", deadRegisterStackErr(t)), deadRegisterStackErr(t), false, "analysis"},
 		{checkerRejection{fmt.Errorf("checker rejected [x]: y")}, nil, false, "checker"},
 		{fmt.Errorf("%w; %w", refused, checkerRejection{fmt.Errorf("checker rejected the transform")}), nil, true, "checker"},
@@ -143,8 +144,19 @@ func TestRefusalCause(t *testing.T) {
 			t.Errorf("%v: cause %q, want %q", tc.err, got, tc.want)
 		}
 	}
-	if refusalOutcome(true) != "refused_fail_closed" || refusalOutcome(false) != "original_loaded" {
-		t.Fatal("outcomes")
+	// The outcome is what happened to the load.
+	for _, tc := range []struct {
+		refused bool
+		ret     int64
+		want    string
+	}{
+		{true, -int64(unix.EPERM), "load_refused"},
+		{false, 5, "original_loaded"},
+		{false, -int64(unix.EACCES), "original_refused"},
+	} {
+		if got := refusalOutcome(tc.refused, tc.ret); got != tc.want {
+			t.Errorf("refusalOutcome(%v, %d) = %q, want %q", tc.refused, tc.ret, got, tc.want)
+		}
 	}
 	if _, err := loadCheckPolicy(fmt.Errorf("bad"), false); !errors.As(err, &checkerRejection{}) {
 		t.Fatalf("loadCheckPolicy: %v", err)

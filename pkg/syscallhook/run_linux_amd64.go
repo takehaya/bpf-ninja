@@ -123,10 +123,14 @@ type Injection struct {
 // Refusal is a matched load that ended without hooks; Reason is the message.
 // Cause is what ended it: "sites" (the rule's sites refused the load),
 // "stack" (the stack audit was unavailable), "analysis" (the stack analysis
-// cannot take the program: see unanalysable), "checker" (the load-time
+// cannot take the program: see unanalysable), "verifier" (the verifier
+// refused the trial load of the original program), "checker" (the load-time
 // checker refused the rewrite), "retry" (the kernel refused the rewrite and
-// the retry loaded none) or "transform" (the load could not be rewritten).
-// Outcome is "original_loaded" or, with FailClosed, "refused_fail_closed".
+// the retry loaded none), "selector" (more than one rule matches the load) or
+// "transform" (the load could not be rewritten). Outcome is what happened:
+// "original_loaded", "original_refused" (the kernel refused the original
+// program as well) or "load_refused" (the supervisor refused the load: with
+// FailClosed, or for a map rule whose stack audit the kernel cannot give).
 type Refusal struct {
 	Program, Func, Reason string
 	Cause, Outcome        string
@@ -141,6 +145,8 @@ func refusalCause(err, stackErr error, retried bool) string {
 		return "sites"
 	case stackErr != nil && unanalysable(stackErr):
 		return "analysis"
+	case errors.Is(stackErr, errTrialVerifier):
+		return "verifier"
 	case stackErr != nil:
 		return "stack"
 	case errors.As(err, &checkerRejection{}) || errors.Is(err, inject.ErrCheckerNotApplicable):
@@ -151,10 +157,15 @@ func refusalCause(err, stackErr error, retried bool) string {
 	return "transform"
 }
 
-// refusalOutcome is the Refusal.Outcome of a load refuse says is refused.
-func refusalOutcome(refuse bool) string {
-	if refuse {
-		return "refused_fail_closed"
+// refusalOutcome is the Refusal.Outcome of a matched load that ended without
+// hooks: refused says the supervisor refused it, ret is the kernel's return
+// value for the original program otherwise.
+func refusalOutcome(refused bool, ret int64) string {
+	switch {
+	case refused:
+		return "load_refused"
+	case ret < 0:
+		return "original_refused"
 	}
 	return "original_loaded"
 }
@@ -170,6 +181,9 @@ type thread struct {
 	foreign bool
 	// traceExit asks for the exit stop of the bpf call stopped at seccomp.
 	traceExit bool
+	// refusal is a matched load left to run unchanged at its entry stop; it
+	// is reported at the exit stop, with the outcome the kernel gave.
+	refusal *Refusal
 }
 type supervisor struct {
 	probeUntrusted            func() error
@@ -614,7 +628,7 @@ func run(ctx context.Context, argv []string, opts Options, probeUntrusted, probe
 			if !ok {
 				continue
 			}
-			t.traceExit = t.btf != nil && !t.foreign && regs.Orig_rax == unix.SYS_BPF
+			t.traceExit = (t.btf != nil || t.refusal != nil) && !t.foreign && regs.Orig_rax == unix.SYS_BPF
 		case t.newborn && stopEvent:
 			t.newborn = false
 			// A new process: on the every-syscall path, only a clone without
@@ -976,7 +990,7 @@ func (s *supervisor) entry(pid int, t *thread, regs unix.PtraceRegs) error {
 	if command != unix.BPF_BTF_LOAD && command != unix.BPF_PROG_LOAD {
 		return nil
 	}
-	t.btf = nil
+	t.btf, t.refusal = nil, nil
 	if regs.Rdx > maxAttr {
 		return s.skipEntry(pid, regs, fmt.Errorf("attr exceeds %d bytes", maxAttr))
 	}
@@ -1012,7 +1026,7 @@ func (s *supervisor) entry(pid int, t *thread, regs unix.PtraceRegs) error {
 	}
 	rule, err := s.selectRule(name, entryName)
 	if err != nil {
-		return s.skipEntry(pid, regs, err)
+		return s.skipMatched(pid, t, regs, Refusal{Program: name, Func: entryName, Reason: err.Error(), Cause: "selector"})
 	}
 	discover := s.options.OnDiscover != nil && len(attr) >= 4 && inject.ContextType(ebpf.ProgramType(u32(attr, 0))) != ""
 	if rule == nil && !discover {
@@ -1030,13 +1044,7 @@ func (s *supervisor) entry(pid int, t *thread, regs unix.PtraceRegs) error {
 			s.log("program %q: lookup discovery skipped: %v", name, err)
 			return nil
 		}
-		if skipErr := s.skipEntry(pid, regs, err); skipErr != nil {
-			return skipErr
-		}
-		if s.options.OnRefuse != nil {
-			s.options.OnRefuse(Refusal{Program: name, Func: entryName, Reason: err.Error(), Cause: "transform", Outcome: refusalOutcome(s.options.FailClosed)})
-		}
-		return nil
+		return s.skipMatched(pid, t, regs, Refusal{Program: name, Func: entryName, Reason: err.Error(), Cause: "transform"})
 	}
 	r, err := beginRemote(pid, regs, true)
 	if err != nil {
@@ -1136,7 +1144,7 @@ func (s *supervisor) entry(pid int, t *thread, regs unix.PtraceRegs) error {
 		}
 		if s.options.OnRefuse != nil {
 			s.options.OnRefuse(Refusal{Program: name, Func: cmp.Or(entry, entryName), Reason: injectErr.Error(),
-				Cause: refusalCause(injectErr, stackErr, retried), Outcome: refusalOutcome(refuse)})
+				Cause: refusalCause(injectErr, stackErr, retried), Outcome: refusalOutcome(refuse, ret)})
 		}
 	} else {
 		s.log("program %q: injected %s, tracee fd %d%s", name, summary, ret, branches)
@@ -1165,6 +1173,22 @@ func (s *supervisor) entry(pid int, t *thread, regs unix.PtraceRegs) error {
 		}
 	}
 	return r.finish(ret)
+}
+
+// skipMatched ends a matched load that is not rewritten (skipEntry) and
+// reports it (OnRefuse): refused at once with FailClosed, else at its exit
+// stop, with the outcome of the unchanged load.
+func (s *supervisor) skipMatched(pid int, t *thread, regs unix.PtraceRegs, refusal Refusal) error {
+	if err := s.skipEntry(pid, regs, errors.New(refusal.Reason)); err != nil || s.options.OnRefuse == nil {
+		return err
+	}
+	if s.options.FailClosed {
+		refusal.Outcome = refusalOutcome(true, 0)
+		s.options.OnRefuse(refusal)
+		return nil
+	}
+	t.refusal = &refusal
+	return nil
 }
 
 func (s *supervisor) skipEntry(pid int, regs unix.PtraceRegs, cause error) error {
@@ -1215,6 +1239,12 @@ func readEntryName(pid int, attr []byte, spec *btf.Spec) (string, error) {
 }
 
 func (s *supervisor) exit(pid int, t *thread, regs unix.PtraceRegs) error {
+	if t.refusal != nil {
+		refusal := *t.refusal
+		t.refusal = nil
+		refusal.Outcome = refusalOutcome(false, int64(regs.Rax))
+		s.options.OnRefuse(refusal)
+	}
 	blob := t.btf
 	t.btf = nil
 	if uint32(regs.Rdi)&^bpfCommonAttrs != unix.BPF_BTF_LOAD || int64(regs.Rax) < 0 || len(blob) == 0 {

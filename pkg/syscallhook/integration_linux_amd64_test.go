@@ -74,6 +74,11 @@ func TestIntegrationLoader(t *testing.T) {
 		// A program the analysis cannot take loads as the original also under a map rule.
 		{"preload-analysis", "plain", false, unanalysable, func(r *Rule) {}},
 		{"preload-analysis-closed", "refused", true, unanalysable, func(r *Rule) {}},
+		// The verifier refuses the trial load of the original: it loads unchanged under every rule.
+		{"preload-verifier", "plain", false, fmt.Errorf("%w: forced", errTrialVerifier), func(r *Rule) {}},
+		// A second rule selects the same load by its BTF entry name.
+		{"ambiguous", "plain", false, nil, func(r *Rule) {}},
+		{"ambiguous-closed", "refused", true, nil, func(r *Rule) {}},
 		// The loader's map is BPF_F_RDONLY_PROG, whose hook becomes static.
 		{"static-untrusted", "hook-rdonly", true, nil, func(r *Rule) { r.Auto, r.Map, r.StaticUntrusted = true, "", true }},
 		// Static, so the dispatch hook loads on kernels without arg:untrusted
@@ -103,7 +108,13 @@ func TestIntegrationLoader(t *testing.T) {
 			var injected []Injection
 			var discovered []Discovery
 			var refusals []Refusal
-			opts := Options{Rules: []Rule{rule}, FailClosed: tc.closed, Stdout: out, Stderr: out, Log: &logs,
+			rules := []Rule{rule}
+			if strings.HasPrefix(tc.name, "ambiguous") {
+				other := rule
+				other.Program = "entry_with_long_name"
+				rules = append(rules, other)
+			}
+			opts := Options{Rules: rules, FailClosed: tc.closed, Stdout: out, Stderr: out, Log: &logs,
 				OnInject: func(inj Injection) { injected = append(injected, inj) },
 				OnRefuse: func(r Refusal) { refusals = append(refusals, r) }}
 			opts.preloadError = tc.preloadError
@@ -155,7 +166,7 @@ func TestIntegrationLoader(t *testing.T) {
 			// A matched load that ends without hooks is reported, with how it
 			// ended, once per BPF_PROG_LOAD: the loader repeats a refused load.
 			matched := tc.name != "unmatched" && tc.name != "discover-only"
-			want := map[bool]string{true: "refused_fail_closed", false: "original_loaded"}[tc.expected == "refused"]
+			want := map[bool]string{true: "load_refused", false: "original_loaded"}[tc.expected == "refused"]
 			if hooked := strings.HasPrefix(tc.expected, "hook"); hooked || !matched {
 				if len(refusals) != 0 {
 					t.Fatalf("refusals %+v", refusals)
@@ -802,6 +813,10 @@ func integrationCause(name string) string {
 	switch {
 	case strings.HasPrefix(name, "preload-analysis"):
 		return "analysis"
+	case name == "preload-verifier":
+		return "verifier"
+	case strings.HasPrefix(name, "ambiguous"):
+		return "selector"
 	case strings.HasPrefix(name, "preload"):
 		return "stack"
 	}
