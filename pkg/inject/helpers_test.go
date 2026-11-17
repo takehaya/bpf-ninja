@@ -41,6 +41,36 @@ func TestHelperTable(t *testing.T) {
 	}
 }
 
+// The generated type column: socket kinds take the kernel structs behind
+// them, a BTF-id kind its struct, and map values and memory stay untyped.
+func TestHelperRetTypes(t *testing.T) {
+	want := map[asm.BuiltinFunc]string{
+		asm.FnSkLookupTcp:         "sock",
+		asm.FnSkLookupUdp:         "sock",
+		asm.FnSkcLookupTcp:        "sock_common",
+		asm.FnTcpSock:             "tcp_sock",
+		asm.FnSkFullsock:          "sock",
+		asm.FnGetCurrentTaskBtf:   "task_struct",
+		asm.FnSkcToTcpSock:        "tcp_sock",
+		asm.FnMapLookupElem:       "",
+		asm.FnRingbufReserve:      "",
+		asm.FnThisCpuPtr:          "",
+		asm.FnDynptrData:          "",
+		asm.FnKptrXchg:            "",
+		asm.FnMapLookupPercpuElem: "",
+	}
+	for fn, typ := range want {
+		if row, _ := helperByID(int64(fn)); row.RetType != typ {
+			t.Errorf("%s: type %q, want %q", fn, row.RetType, typ)
+		}
+	}
+	for id, row := range helperTable {
+		if row.RetType != "" && row.Ret != RetPointer {
+			t.Errorf("id %d %s: type %q on a %s result", id, row.Name, row.RetType, row.Ret)
+		}
+	}
+}
+
 func TestHelperByID(t *testing.T) {
 	want := map[asm.BuiltinFunc]CalleeRet{
 		asm.FnTailCall:      RetVoid,

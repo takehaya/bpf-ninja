@@ -18,6 +18,18 @@
 // ARG_DONTCARE over all prototypes it joins, the union over its variants.
 // argoverrides.txt gives the count of an id that joins no prototype and
 // raises it where the helper reads registers its prototype does not declare.
+//
+// A pointer result's kernel type (the RetType column) comes from the same
+// prototypes: RET_PTR_TO_SOCKET is struct sock, RET_PTR_TO_SOCK_COMMON
+// struct sock_common, RET_PTR_TO_TCP_SOCK struct tcp_sock, and a
+// RET_PTR_TO_BTF_ID kind the struct its .ret_btf_id names in a BTF id list
+// (BTF_ID_LIST and BTF_ID, BTF_ID_LIST_SINGLE, or the BTF_SOCK_TYPE and
+// BTF_TRACING_TYPE tables of include/linux/btf_ids.h). Where the uapi header
+// comment declares the helper as returning a struct outside the bpf_ view
+// types, it must name the same struct. A helper is typed only when every
+// prototype it joins gives the same struct; map values, memory, dynptr data
+// and any other result stay untyped (""). An id whose kind is an override
+// stays untyped.
 package main
 
 import (
@@ -54,6 +66,8 @@ type helper struct {
 	Name string // without the bpf_ prefix
 	Kind string
 	Args int // argument registers read, r1 to rArgs
+	// RetType is the kernel struct behind a pointer result, "" when untyped.
+	RetType string
 }
 
 func main() {
@@ -86,7 +100,7 @@ func main() {
 		if len(diffs) > 0 {
 			os.Exit(1)
 		}
-		fmt.Printf("helpergen: %d helpers, kinds and argument counts equal\n", len(helpers))
+		fmt.Printf("helpergen: %d helpers, kinds, result types and argument counts equal\n", len(helpers))
 		return
 	}
 	src, err := render(helpers, version)
@@ -107,8 +121,11 @@ func main() {
 
 // String names the helper with the column it is compared on.
 func (h helper) String() string {
-	if h.Kind == "" {
+	switch {
+	case h.Kind == "":
 		return fmt.Sprintf("bpf_%s %d args", h.Name, h.Args)
+	case h.RetType != "":
+		return fmt.Sprintf("bpf_%s %s struct %s", h.Name, h.Kind, h.RetType)
 	}
 	return fmt.Sprintf("bpf_%s %s", h.Name, h.Kind)
 }
@@ -134,6 +151,8 @@ func load(ksrc string) ([]helper, string, error) {
 	}
 	protos := map[string]map[string]bool{} // proto name -> kinds
 	protoArgs := map[string]int{}          // proto name -> largest argument count
+	protoRets := map[string][]retDecl{}    // proto name -> result declarations of its variants
+	idLists := map[string][]string{}       // BTF id list name -> its struct names
 	joins := map[string]map[string]bool{}  // helper name -> proto names
 	err = filepath.WalkDir(ksrc, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -161,6 +180,12 @@ func load(ksrc string) ([]helper, string, error) {
 			for kind := range kinds {
 				add(protos, name, kind)
 			}
+		}
+		for name, decls := range parseProtoRets(src) {
+			protoRets[name] = append(protoRets[name], decls...)
+		}
+		for name, types := range parseIDLists(src) {
+			idLists[name] = types
 		}
 		for name, n := range parseProtoArgs(src) {
 			protoArgs[name] = max(protoArgs[name], n)
@@ -195,6 +220,16 @@ func load(ksrc string) ([]helper, string, error) {
 	if err := resolveArgs(helpers, protoArgs, joins, argOverrides); err != nil {
 		return nil, "", err
 	}
+	btfIDs, err := os.ReadFile(filepath.Join(ksrc, "include/linux/btf_ids.h"))
+	if err != nil {
+		return nil, "", err
+	}
+	for name, typ := range parseIDTables(string(btfIDs)) {
+		idLists[name] = []string{typ}
+	}
+	if err := resolveRetTypes(helpers, protoRets, joins, idLists, parseUAPIRetTypes(string(uapi)), overrides); err != nil {
+		return nil, "", err
+	}
 	return helpers, version, nil
 }
 
@@ -226,16 +261,22 @@ func add(m map[string]map[string]bool, k, v string) {
 }
 
 var (
-	versionRE = regexp.MustCompile(`(?m)^(VERSION|PATCHLEVEL|SUBLEVEL) = (\d+)$`)
-	mapperRE  = regexp.MustCompile(`FN\((\w+), (\d+), ##ctx\)`)
-	protoRE   = regexp.MustCompile(`(?s)struct\s+bpf_func_proto\s+(\w+)\s*=\s*\{(.*?)\};`)
-	retTypeRE = regexp.MustCompile(`\.ret_type\s*=\s*([^,}]+)`)
-	argTypeRE = regexp.MustCompile(`\.arg([1-5])_type\s*=\s*([^,}]+)`)
-	caseRE    = regexp.MustCompile(`(?m)^([ \t]*)case\s+BPF_FUNC_(\w+)\s*:`)
-	returnRE  = regexp.MustCompile(`\breturn\b([^;]*);`)
-	addrRE    = regexp.MustCompile(`&\s*(\w+)`)
-	tableRE   = regexp.MustCompile(`\{"bpf_(\w+)", (Ret\w+)\},\s*// (\d+)`)
-	argsRE    = regexp.MustCompile(`(\d+):\s*(\d),\s*// (\w+)`)
+	versionRE  = regexp.MustCompile(`(?m)^(VERSION|PATCHLEVEL|SUBLEVEL) = (\d+)$`)
+	mapperRE   = regexp.MustCompile(`FN\((\w+), (\d+), ##ctx\)`)
+	protoRE    = regexp.MustCompile(`(?s)struct\s+bpf_func_proto\s+(\w+)\s*=\s*\{(.*?)\};`)
+	retTypeRE  = regexp.MustCompile(`\.ret_type\s*=\s*([^,}]+)`)
+	argTypeRE  = regexp.MustCompile(`\.arg([1-5])_type\s*=\s*([^,}]+)`)
+	caseRE     = regexp.MustCompile(`(?m)^([ \t]*)case\s+BPF_FUNC_(\w+)\s*:`)
+	returnRE   = regexp.MustCompile(`\breturn\b([^;]*);`)
+	addrRE     = regexp.MustCompile(`&\s*(\w+)`)
+	tableRE    = regexp.MustCompile(`\{"bpf_(\w+)", (Ret\w+), "(\w*)"\},\s*// (\d+)`)
+	btfIDRE    = regexp.MustCompile(`\.ret_btf_id\s*=\s*([^,}]+)`)
+	idRE       = regexp.MustCompile(`BTF_ID\((\w+),\s*(\w+)\)`)
+	idSingleRE = regexp.MustCompile(`(?m)^BTF_ID_LIST_SINGLE\((\w+),\s*(\w+),\s*(\w+)\)`)
+	idTableRE  = regexp.MustCompile(`BTF_(?:SOCK|TRACING)_TYPE\((BTF_\w+),\s*(\w+)\)`)
+	idRefRE    = regexp.MustCompile(`^&\s*(\w+)\s*\[\s*(\w+)\s*\]$`)
+	uapiRetRE  = regexp.MustCompile(`(?m)^ \* struct (\w+) \*bpf_(\w+)\(`)
+	argsRE     = regexp.MustCompile(`(\d+):\s*(\d),\s*// (\w+)`)
 )
 
 func kernelVersion(ksrc string) (string, error) {
@@ -349,6 +390,157 @@ func parseJoins(src string) map[string]map[string]bool {
 		}
 	}
 	return out
+}
+
+// retDecl is the result declaration of one bpf_func_proto initialiser:
+// its .ret_type without the flags after "|", and its .ret_btf_id, "" when
+// absent.
+type retDecl struct {
+	Kind  string
+	BTFID string
+}
+
+// parseProtoRets returns the result declarations of each bpf_func_proto
+// initialiser name, one per variant in src.
+func parseProtoRets(src string) map[string][]retDecl {
+	out := map[string][]retDecl{}
+	for _, m := range protoRE.FindAllStringSubmatch(src, -1) {
+		d := retDecl{Kind: "RET_INTEGER"}
+		if r := retTypeRE.FindStringSubmatch(m[2]); r != nil {
+			d.Kind, _, _ = strings.Cut(r[1], "|")
+			d.Kind = strings.TrimSpace(d.Kind)
+		}
+		if r := btfIDRE.FindStringSubmatch(m[2]); r != nil {
+			d.BTFID = strings.TrimSpace(r[1])
+		}
+		out[m[1]] = append(out[m[1]], d)
+	}
+	return out
+}
+
+// parseIDLists returns the struct and union names of each BTF id list in
+// src, in list order: BTF_ID_LIST(name) and the BTF_ID lines right after
+// it, and BTF_ID_LIST_SINGLE(name, kind, type).
+func parseIDLists(src string) map[string][]string {
+	out := map[string][]string{}
+	for _, m := range idSingleRE.FindAllStringSubmatch(src, -1) {
+		out[m[1]] = []string{m[3]}
+	}
+	lines := strings.Split(src, "\n")
+	for i, line := range lines {
+		name, ok := strings.CutPrefix(strings.TrimSpace(line), "BTF_ID_LIST(")
+		if !ok || !strings.HasSuffix(name, ")") {
+			continue
+		}
+		var types []string
+		for _, next := range lines[i+1:] {
+			m := idRE.FindStringSubmatch(strings.TrimSpace(next))
+			if m == nil || !strings.HasPrefix(strings.TrimSpace(next), "BTF_ID(") {
+				break
+			}
+			types = append(types, m[2])
+		}
+		out[strings.TrimSuffix(name, ")")] = types
+	}
+	return out
+}
+
+// parseIDTables returns the struct of each enum name of the BTF_SOCK_TYPE
+// and BTF_TRACING_TYPE tables of include/linux/btf_ids.h, which index the
+// lists btf_sock_ids and btf_tracing_ids.
+func parseIDTables(src string) map[string]string {
+	out := map[string]string{}
+	for _, m := range idTableRE.FindAllStringSubmatch(src, -1) {
+		out[m[1]] = m[2]
+	}
+	return out
+}
+
+// parseUAPIRetTypes returns the struct each helper's prototype in the uapi
+// header comment returns a pointer to, by helper name without bpf_.
+func parseUAPIRetTypes(src string) map[string]string {
+	out := map[string]string{}
+	for _, m := range uapiRetRE.FindAllStringSubmatch(src, -1) {
+		out[m[2]] = m[1]
+	}
+	return out
+}
+
+// retType is the kernel struct behind a result declaration, "" for an
+// untyped one. lists holds the BTF id lists by name and the enum names of
+// the btf_ids.h tables, each with its one struct.
+func retType(d retDecl, lists map[string][]string) (string, error) {
+	switch strings.TrimSuffix(d.Kind, "_OR_NULL") {
+	case "RET_PTR_TO_SOCKET":
+		return "sock", nil
+	case "RET_PTR_TO_SOCK_COMMON":
+		return "sock_common", nil
+	case "RET_PTR_TO_TCP_SOCK":
+		return "tcp_sock", nil
+	case "RET_PTR_TO_BTF_ID", "RET_PTR_TO_BTF_ID_TRUSTED":
+	default:
+		return "", nil
+	}
+	if d.BTFID == "BPF_PTR_POISON" {
+		return "", nil // the type comes from the map's kptr field, not the prototype
+	}
+	m := idRefRE.FindStringSubmatch(d.BTFID)
+	if m == nil {
+		return "", fmt.Errorf("%s with .ret_btf_id %q, not &list[index]", d.Kind, d.BTFID)
+	}
+	if t := lists[m[2]]; len(t) == 1 && !isDigits(m[2]) {
+		return t[0], nil
+	}
+	n, err := strconv.Atoi(m[2])
+	if list, ok := lists[m[1]]; err == nil && ok && n < len(list) {
+		return list[n], nil
+	}
+	return "", fmt.Errorf("%s with .ret_btf_id %q: no such BTF id list entry", d.Kind, d.BTFID)
+}
+
+func isDigits(s string) bool {
+	_, err := strconv.Atoi(s)
+	return err == nil
+}
+
+// resolveRetTypes sets each pointer helper's RetType: the struct every
+// prototype it joins gives, "" when one is untyped or two disagree, and ""
+// for an id whose kind is an override. A uapi prototype returning a struct
+// outside the bpf_ view types must name the same struct.
+func resolveRetTypes(hs []helper, protoRets map[string][]retDecl, joins map[string]map[string]bool, lists map[string][]string,
+	uapi map[string]string, overrides map[int]string) error {
+	var problems []string
+	for i := range hs {
+		h := &hs[i]
+		h.RetType = ""
+		if h.Kind != kindPointer {
+			continue
+		}
+		types := map[string]bool{}
+		if _, ok := overrides[h.ID]; !ok {
+			for p := range joins[h.Name] {
+				for _, d := range protoRets[p] {
+					t, err := retType(d, lists)
+					if err != nil {
+						problems = append(problems, fmt.Sprintf("%d %s: %s: %v", h.ID, h.Name, p, err))
+					}
+					types[t] = true
+				}
+			}
+		}
+		if len(types) == 1 {
+			for t := range types {
+				h.RetType = t
+			}
+		}
+		if u, ok := uapi[h.Name]; ok && !strings.HasPrefix(u, "bpf_") && u != h.RetType {
+			problems = append(problems, fmt.Sprintf("%d %s: the uapi prototype returns struct %s, the kernel's prototypes give %q", h.ID, h.Name, u, h.RetType))
+		}
+	}
+	if len(problems) > 0 {
+		return fmt.Errorf("result types:\n\t%s", strings.Join(problems, "\n\t"))
+	}
+	return nil
 }
 
 // parseOverrides reads "id kind # reason" lines, at most one per id.
@@ -502,7 +694,7 @@ func render(hs []helper, version string) ([]byte, error) {
 	fmt.Fprintf(&b, "// helperTable is indexed by helper id. Generated from Linux %s.\n", version)
 	b.WriteString("var helperTable = [...]helperRow{\n")
 	for _, h := range hs {
-		fmt.Fprintf(&b, "{%q, %s}, // %d\n", "bpf_"+h.Name, h.Kind, h.ID)
+		fmt.Fprintf(&b, "{%q, %s, %q}, // %d\n", "bpf_"+h.Name, h.Kind, h.RetType, h.ID)
 	}
 	b.WriteString("}\n")
 	return format.Source(b.Bytes())
@@ -530,8 +722,8 @@ func renderArgs(hs []helper, version string) ([]byte, error) {
 func parseTable(src string) []helper {
 	var hs []helper
 	for _, m := range tableRE.FindAllStringSubmatch(src, -1) {
-		id, _ := strconv.Atoi(m[3])
-		hs = append(hs, helper{ID: id, Name: m[1], Kind: m[2]})
+		id, _ := strconv.Atoi(m[4])
+		hs = append(hs, helper{ID: id, Name: m[1], Kind: m[2], RetType: m[3]})
 	}
 	return hs
 }
@@ -552,7 +744,7 @@ func parseArgsTable(src string) []helper {
 func kindsOnly(hs []helper) []helper {
 	out := make([]helper, len(hs))
 	for i, h := range hs {
-		out[i] = helper{ID: h.ID, Name: h.Name, Kind: h.Kind}
+		out[i] = helper{ID: h.ID, Name: h.Name, Kind: h.Kind, RetType: h.RetType}
 	}
 	return out
 }
