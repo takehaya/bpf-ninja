@@ -246,7 +246,8 @@ func hookKind(hook inject.LookupHook) string {
 // --site filters on: a call or tail-call hook, and a typed hook of auto. A
 // generic or dispatch hook passes the site in info instead. A typed update,
 // delete, push, pop or peek hook exists only under auto and always takes the
-// site; SiteArg is set only on typed lookup hooks.
+// site, though the plan does not set its SiteArg; for a typed lookup hook
+// SiteArg decides.
 func siteParam(hook inject.LookupHook) bool {
 	switch {
 	case hook.Dispatch, hook.Generic, hook.Kind == inject.HookEntry:

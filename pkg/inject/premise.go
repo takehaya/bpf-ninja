@@ -114,7 +114,7 @@ func NotReviewed(insns asm.Instructions, kernel *btf.Spec, modules map[int16]*bt
 			name = UnnamedKfunc
 		case slices.Contains(driverKfuncs, name):
 			name += DriverNote
-		case home != "" && reviewedKfuncs[kfuncHome{home, name}] != "":
+		case reviewedKfuncs[kfuncHome{home, name}] != "":
 			continue
 		case hasRecord(name):
 			name += " (in " + cmp.Or(home, "a module not named") + ")"
