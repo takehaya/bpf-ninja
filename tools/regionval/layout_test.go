@@ -513,8 +513,11 @@ func TestCallSequences(t *testing.T) {
 }
 
 // Planted faults at kfunc centres. A kfunc whose BTF id is 12, the helper
-// id of bpf_tail_call, stays a site: as site-P4 its r0 would be free and
-// the missing reload would be accepted.
+// id of bpf_tail_call, reaches the cores as call 12 and is never validated:
+// rule site refuses a site window whose centre is the tail call before any
+// obligation is checked, so the fault is never looked at. Were the window
+// made site-P4 instead, its r0 would be free and the missing reload would be
+// accepted.
 func TestCallSequencesPlanted(t *testing.T) {
 	noR0 := callB(kfunc(1, 1))
 	noR0.t = slices.Clone(noR0.t)
@@ -528,7 +531,8 @@ func TestCallSequencesPlanted(t *testing.T) {
 	for _, c := range []struct {
 		name, rule string
 		p          pair
-	}{{"no R0 restore", "R0", noR0}, {"argument register clobbered", "R15", clobbered}, {"kfunc centre with immediate 12", "site", tail}} {
+	}{{"no R0 restore", "R0", noR0}, {"argument register clobbered", "R15", clobbered}, {"kfunc centre with immediate 12", "site", tail},
+		{"correct sequence at a kfunc with immediate 12", "site", callA(kfunc(12, 0))}} {
 		r := runFile(t, c.p.capture(t))
 		if got := rejectedBy(r); r.Validated || !slices.Equal(got, []string{c.rule}) {
 			t.Errorf("%s: rejected by %v, want [%s]: %+v", c.name, got, c.rule, r.Windows)

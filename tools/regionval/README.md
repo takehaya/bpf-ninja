@@ -282,7 +282,11 @@ other jump conditions, `ld_imm64`, `ld_abs` and `ld_ind`, kfunc calls,
 `callx` and `gotox`. Original instructions outside windows are only compared
 with O. The centre of a site window may be a kfunc call: `layout.go` hands
 it to both cores as a helper call with the same immediate (source 0, offset
-0), only when neither neighbouring original instruction is a call.
+0), only when neither neighbouring original instruction is a call. A kfunc
+whose BTF id is 12, the helper id of `bpf_tail_call`, is the exception: its
+window reaches the cores as a site around a tail call, which rule `site`
+refuses, so such a load is never validated, whether or not the inserted code
+is correct.
 
 ## What it trusts
 

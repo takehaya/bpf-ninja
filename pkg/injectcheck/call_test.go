@@ -129,7 +129,9 @@ var callCentres = []struct {
 }{
 	{"helper-A", asm.FnKtimeGetNs.Call(), 0},
 	{"helper-B", asm.FnFibLookup.Call(), int(asm.R2)},
-	// 12 is the tail-call helper's id: a kfunc with it keeps every call-site obligation.
+	// 12 is the tail-call helper's id. The checker treats a kfunc with it as
+	// any other kfunc and checks every call-site obligation; regionval never
+	// validates such a site, because its centre reaches the cores as call 12.
 	{"kfunc-A", kfuncCall(12), 0},
 	{"kfunc-B", kfuncCall(12), int(asm.R4)},
 }

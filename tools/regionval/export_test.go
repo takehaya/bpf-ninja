@@ -247,7 +247,7 @@ var callsiteWant = map[string]string{
 	"PL-kfunc-C2":             "C2",           // r6 = 0 before the window exit
 	"PL-kfunc-kappa":          "struct:kappa", // the centre's BTF id is 2, O's is 1
 	"PL-kfunc-C5-other":       "C6",           // a kfunc call in the entry prologue
-	"PL-kfunc-imm12-noR0":     "site",         // BTF id 12, result-only, no r0 reload
+	"PL-kfunc-imm12-site":     "site",         // BTF id 12: refused by its kind, as is a correct one; its r0 is also not reloaded
 }
 
 func TestCallSites(t *testing.T) {
