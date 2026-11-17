@@ -327,6 +327,8 @@ wrong.
   r1 to r5 after a call before writing them. The liveness used by `P9` relies
   on this and on a table of argument counts for common helpers (unknown helpers
   count as reading r1 to r5). The liveness is computed by `core/live.go`.
+  `make helpergen-check KSRC=<linux source tree>` at the repository root
+  compares the generated table with a kernel tree.
 - **Window cutting, kinds and the contract.** The code that cuts T into
   windows and assigns each window's kind (`layout.go`) is outside the proof,
   and so is `dafny/contract`, which makes the checks outside `Validate` and
