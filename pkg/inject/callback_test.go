@@ -176,7 +176,7 @@ func TestCallbackRelocationOverflow(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			ins := callbackLoad(asm.R2, 0, "")
 			before := ins
-			err := relocateOffset(&ins, tc.pc, tc.target, true)
+			err := relocateOffset(&ins, tc.pc, tc.pc, tc.target, true)
 			if tc.want {
 				if err != nil || ins.Constant != int64(tc.target)-int64(tc.pc)-1 {
 					t.Fatalf("ins=%v err=%v", ins, err)

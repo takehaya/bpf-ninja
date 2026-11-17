@@ -2667,7 +2667,7 @@ func spliceLookupCalls(input asm.Instructions, calls map[uint32]siteCall, stack 
 			if function {
 				to -= len(callbackPrologue[target]) // a callback is entered through its prologue
 			}
-			if err := relocateOffset(&ins, newPC, to, function); err != nil {
+			if err := relocateOffset(&ins, old, newPC, to, function); err != nil {
 				return nil, err
 			}
 		}

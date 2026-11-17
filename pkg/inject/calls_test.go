@@ -835,7 +835,8 @@ func branchFixture(pad int) *ebpf.CollectionSpec {
 
 // A branch that the call site's code pushes out of int16 range drops the
 // call sites, and the rule's other hooks stay; with nothing else to hook the
-// rule is refused as having no call site.
+// rule is refused as having no call site. The reason names the branch's
+// slot in the original program.
 func TestCallBranchRangeDropsCalls(t *testing.T) {
 	const pad = math.MaxInt16 - 5 // the branch offset is exactly MaxInt16
 	if off := branchFixture(pad).Programs["p"].Instructions[1].Offset; off != math.MaxInt16 {
@@ -848,7 +849,7 @@ func TestCallBranchRangeDropsCalls(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(plan.hooks) != 1 || plan.hooks[0].Kind != HookEntry || len(plan.skipped) != 1 || plan.skipped[0].Call != "bpf_ktime_get_ns" ||
-		plan.skipped[0].Reason != "branch at 4 overflows int16 after insertion" {
+		plan.skipped[0].Reason != "branch at 1 overflows int16 after insertion" {
 		t.Fatalf("hooks %+v skipped %+v", plan.hooks, plan.skipped)
 	}
 	req.Entry = false
@@ -862,7 +863,7 @@ func TestCallBranchRangeDropsCalls(t *testing.T) {
 	}
 	// The refusal itself keeps its text and stays a refusal.
 	var ins asm.Instruction
-	if err := relocateOffset(&ins, 0, math.MaxInt16+2, false); !errors.Is(err, ErrRefused) || err.Error() != "inject: refused: branch at 0 overflows int16 after insertion" {
+	if err := relocateOffset(&ins, 7, 0, math.MaxInt16+2, false); !errors.Is(err, ErrRefused) || err.Error() != "inject: refused: branch at 7 overflows int16 after insertion" {
 		t.Fatalf("err %v", err)
 	}
 }
