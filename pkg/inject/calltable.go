@@ -135,12 +135,8 @@ func kfuncRow(name string, proto *btf.FuncProto) (row *CallRow, reason string) {
 	if proto == nil {
 		return nil, "its prototype is not in the kernel BTF at hand"
 	}
-	for _, p := range proto.Params {
-		if ptr, ok := btf.UnderlyingType(p.Type).(*btf.Pointer); ok {
-			if _, ok := btf.UnderlyingType(ptr.Target).(*btf.FuncProto); ok {
-				return nil, "runs or registers a callback"
-			}
-		}
+	if protoTakesCallback(proto) {
+		return nil, callbackReason
 	}
 	var size uint32
 	var signed bool
@@ -161,6 +157,23 @@ func kfuncRow(name string, proto *btf.FuncProto) (row *CallRow, reason string) {
 		row.RetSize, row.RetSigned = size, signed
 	}
 	return row, ""
+}
+
+// callbackReason is the reason a callee that runs or registers a callback
+// gets no hook.
+const callbackReason = "runs or registers a callback"
+
+// protoTakesCallback reports a prototype with a parameter that points to a
+// function prototype, the verifier's callback test for a kernel function.
+func protoTakesCallback(proto *btf.FuncProto) bool {
+	for _, p := range proto.Params {
+		if ptr, ok := btf.UnderlyingType(p.Type).(*btf.Pointer); ok {
+			if _, ok := btf.UnderlyingType(ptr.Target).(*btf.FuncProto); ok {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // kfuncProto is the BTF prototype of a kernel-function call: by the BTF id

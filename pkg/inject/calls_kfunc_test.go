@@ -254,12 +254,14 @@ func TestPremiseCalls(t *testing.T) {
 	insns := asm.Instructions{
 		asm.FnKtimeGetNs.Call(), asm.FnSpinLock.Call(), testKfunc(t, kernel, "bpf_iter_x_new"),
 		asm.FnSpinLock.Call(), testKfunc(t, kernel, "k_int"), asm.FnLoop.Call(), asm.FnMapLookupElem.Call(),
+		testKfunc(t, kernel, "k_cb"), asm.FnPerfEventRead.Call(), asm.FnPerfEventReadValue.Call(),
 	}
-	if got := PremiseCalls(insns, kernel, nil); !slices.Equal(got, []string{"bpf_spin_lock", "bpf_iter_x_new", "bpf_loop"}) {
+	if got := PremiseCalls(insns, kernel, nil); !slices.Equal(got, []string{"bpf_spin_lock", "bpf_iter_x_new", "bpf_loop", "k_cb",
+		"bpf_perf_event_read", "bpf_perf_event_read_value"}) {
 		t.Errorf("premise calls %v", got)
 	}
 	// Without kernel BTF the kernel-function calls cannot be named, and say so once.
-	if got := PremiseCalls(insns, nil, nil); !slices.Equal(got, []string{"bpf_spin_lock", UnnamedKfunc, "bpf_loop"}) {
+	if got := PremiseCalls(insns, nil, nil); !slices.Equal(got, []string{"bpf_spin_lock", UnnamedKfunc, "bpf_loop", "bpf_perf_event_read", "bpf_perf_event_read_value"}) {
 		t.Errorf("without kernel BTF: %v", got)
 	}
 	if got := PremiseCalls(insns[:1], kernel, nil); got != nil {

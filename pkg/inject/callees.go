@@ -188,7 +188,8 @@ func kfuncRet(ins *asm.Instruction, kernel *btf.Spec, modules map[int16]*btf.Spe
 const UnnamedKfunc = "a kernel function that could not be named"
 
 // PremiseCalls returns the names of the helpers and kernel functions on the
-// deny list (denyReason) that insns call anywhere, in call order without
+// deny list (denyReason), and of the kernel functions whose prototype takes a
+// callback (protoTakesCallback), that insns call anywhere, in call order without
 // repeats. The equivalence theorem assumes the original program calls none of
 // them. The transform adds no helper or kernel-function call, so a rewritten
 // program gives the same names as its original. A kernel-function call that
@@ -201,16 +202,18 @@ func PremiseCalls(insns asm.Instructions, kernel *btf.Spec, modules map[int16]*b
 		if !ins.IsBuiltinCall() && !ins.IsKfuncCall() {
 			continue
 		}
-		name := ""
+		name, callback := "", false
 		if h, ok := helperByID(ins.Constant); ins.IsBuiltinCall() && ok {
 			name = h.Name
 		} else if ins.IsKfuncCall() {
 			var named bool
 			if _, name, named = callee(ins, kernel, modules); !named {
 				name = UnnamedKfunc
+			} else if proto := kfuncProto(ins, kernel, modules); proto != nil {
+				callback = protoTakesCallback(proto)
 			}
 		}
-		if name != "" && (name == UnnamedKfunc || denyReason(name) != "") && !slices.Contains(names, name) {
+		if name != "" && (name == UnnamedKfunc || callback || denyReason(name) != "") && !slices.Contains(names, name) {
 			names = append(names, name)
 		}
 	}
@@ -228,11 +231,15 @@ func denyReason(name string) string {
 	case slices.Contains([]string{"bpf_for_each_map_elem", "bpf_loop", "bpf_find_vma", "bpf_user_ringbuf_drain", "bpf_timer_set_callback",
 		"bpf_rbtree_add_impl", "bpf_wq_set_callback", "bpf_wq_set_callback_impl", "bpf_task_work_schedule_signal",
 		"bpf_task_work_schedule_signal_impl", "bpf_task_work_schedule_resume", "bpf_task_work_schedule_resume_impl"}, name):
-		return "runs or registers a callback"
+		return callbackReason
 	case name == "bpf_throw":
 		return "does not return"
 	case slices.Contains([]string{"bpf_get_stack", "bpf_get_stackid", "bpf_get_task_stack", "bpf_get_branch_snapshot", "bpf_get_func_ip"}, name):
 		return "reads native code addresses or branch records, which inserted code may change"
+	case name == "bpf_perf_event_read" || name == "bpf_perf_event_read_value":
+		// XDP and tc reach both through bpf_base_func_proto with CAP_PERFMON
+		// (7.0); the event counts on the current CPU, inserted code included.
+		return "reads a perf event counter, which counts inserted code too"
 	case has("bpf_iter_") && (strings.HasSuffix(name, "_new") || strings.HasSuffix(name, "_next") || strings.HasSuffix(name, "_destroy")):
 		return "an iterator: the verifier forks and prunes loop states at its next"
 	case has("bpf_list_") || has("bpf_rbtree_") || name == "bpf_refcount_acquire_impl" || has("bpf_stream_") ||
