@@ -98,13 +98,24 @@ func selectCalls(sites []discoveredLookup, req LookupRequest, types *btf.Spec) (
 // callHook generates the hook of a call group (shape S, M or P) and its plan
 // entry. A typed hook takes const T *arg; an untyped one takes const void *arg
 // tagged arg:untrusted with its size, or with StaticUntrusted keeps the typed
-// prototype and an empty body. A pointer result is always untyped.
+// prototype and an empty body. A pointer result is always untyped: a
+// result-only hook of a pointer takes const void *ret, tagged arg:untrusted
+// or, with StaticUntrusted, static with an empty body.
 func callHook(group lookupGroup, ctx btf.Type, req LookupRequest) (asm.Instructions, LookupHook) {
 	row := group.call
 	plan := LookupHook{Name: group.name, Kind: HookCall, When: string(CallAny), SiteArg: true, Sites: publicLookupSites(group.sites),
 		Call: row.Name, RetPtr: row.RetPtr}
-	if row.ArgReg == 0 {
+	if row.ArgReg == 0 && !row.RetPtr {
 		return pointerHook(group.name, ctx, nil, true, false, "ret"), plan
+	}
+	if row.ArgReg == 0 {
+		ret := []btf.FuncParam{{Name: "ret", Type: &btf.Void{}}}
+		if req.StaticUntrusted {
+			plan.Static = true
+			return staticHook(pointerHook(group.name, ctx, ret, true, false)), plan
+		}
+		plan.Untrusted = true
+		return pointerHook(group.name, ctx, ret, true, true), plan
 	}
 	plan.ArgReg, plan.ArgType, plan.ArgSize = int(row.ArgReg), group.argName, group.argSize
 	ptrs := []btf.FuncParam{{Name: "arg", Type: group.argType}}

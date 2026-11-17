@@ -167,7 +167,16 @@ func TestCallRefusals(t *testing.T) {
 		want string
 	}{
 		{"dispatch", func(r *LookupRequest) { r.Dispatch = true }, "Calls does not combine with Dispatch"},
-		{"unknown", func(r *LookupRequest) { r.Calls = []string{"bpf_trace_printk"} }, `Calls name "bpf_trace_printk" is not supported; supported calls: `},
+		{"unknown", func(r *LookupRequest) { r.Calls = []string{"bpf_dynptr_from_xdp"} },
+			`Calls name "bpf_dynptr_from_xdp" is not supported: it is neither a helper nor a kernel function with a row (bpf_xdp_ct_lookup, bpf_skb_ct_lookup)`},
+		{"lock", func(r *LookupRequest) { r.Calls = []string{"bpf_spin_lock"} }, `Calls name "bpf_spin_lock" cannot be hooked: takes or releases a lock or a critical section`},
+		{"callback", func(r *LookupRequest) { r.Calls = []string{"bpf_loop"} }, `Calls name "bpf_loop" cannot be hooked: runs or registers a callback`},
+		{"void", func(r *LookupRequest) { r.Calls = []string{"bpf_ringbuf_submit"} }, `Calls name "bpf_ringbuf_submit" cannot be hooked: returns nothing`},
+		{"map helper", func(r *LookupRequest) { r.Calls = []string{"bpf_map_update_elem"} }, `Calls name "bpf_map_update_elem" cannot be hooked: a map helper: the rule's maps and ops observe it`},
+		{"tail call", func(r *LookupRequest) { r.Calls = []string{"bpf_tail_call"} }, `Calls name "bpf_tail_call" cannot be hooked: a tail call: the rule's tail_calls observes it`},
+		{"unspec", func(r *LookupRequest) { r.Calls = []string{"bpf_unspec"} }, `Calls name "bpf_unspec" cannot be hooked: not a callable helper`},
+		{"pointer kind", func(r *LookupRequest) { r.Calls = []string{"bpf_get_listener_sock"} }, `Calls name "bpf_get_listener_sock" cannot be hooked: ` + noPointerTest},
+		{"denied kfunc", func(r *LookupRequest) { r.Calls = []string{"bpf_throw"} }, `Calls name "bpf_throw" cannot be hooked: does not return`},
 		{"repeated", func(r *LookupRequest) { r.Calls = []string{"bpf_jiffies64", "bpf_jiffies64"} }, `Calls names must be non-empty and unique; got "bpf_jiffies64"`},
 		{"empty", func(r *LookupRequest) { r.Calls = []string{""} }, `Calls names must be non-empty and unique; got ""`},
 		{"no site", func(r *LookupRequest) { r.Calls = []string{"bpf_fib_lookup"} }, "no call site is instrumented (0 skipped)"},

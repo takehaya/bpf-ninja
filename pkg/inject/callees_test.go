@@ -71,7 +71,7 @@ func TestDiscoverCallSitesRaw(t *testing.T) {
 	}
 	want := []Callee{
 		{Name: "bpf_ktime_get_ns", Kind: "helper", Ret: RetScalar, Typed: true, Sites: []uint32{8, 12}},
-		{Name: "bpf_get_numa_node_id", Kind: "helper", Ret: RetScalar, Sites: []uint32{10}, Reason: noHookForm},
+		{Name: "bpf_get_numa_node_id", Kind: "helper", Ret: RetScalar, Sites: []uint32{10}},
 		{Name: "bpf_spin_lock", Kind: "helper", Ret: RetVoid, Sites: []uint32{14}, Reason: "takes or releases a lock or a critical section"},
 	}
 	if !slices.EqualFunc(d.Callees, want, func(a, b Callee) bool {
@@ -79,8 +79,8 @@ func TestDiscoverCallSitesRaw(t *testing.T) {
 	}) {
 		t.Errorf("callees %+v, want %+v", d.Callees, want)
 	}
-	// A row callee's site carries the transform's reason: the program takes a lock.
-	if len(d.Sites) != 4 || d.Sites[0].Call != "bpf_ktime_get_ns" || d.Sites[0].Reason == "" || d.Sites[1].Reason != noHookForm {
+	// A hookable callee's site carries the transform's reason: the program takes a lock.
+	if len(d.Sites) != 4 || d.Sites[0].Call != "bpf_ktime_get_ns" || d.Sites[0].Reason == "" || d.Sites[1].Reason != d.Sites[0].Reason {
 		t.Errorf("sites %+v", d.Sites)
 	}
 	if len(d.TailCalls) != 1 || d.TailCalls[0].SitePC != 19 || d.TailCalls[0].Op != HookTailCall {

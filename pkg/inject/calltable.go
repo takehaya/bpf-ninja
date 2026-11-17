@@ -1,6 +1,8 @@
 package inject
 
 import (
+	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/cilium/ebpf/asm"
@@ -40,6 +42,82 @@ var callTable = []CallRow{
 	{Name: "bpf_fib_lookup", Helper: asm.FnFibLookup, ArgReg: asm.R2, SizeReg: asm.R3, ArgType: "bpf_fib_lookup", Writes: true},
 	{Name: "bpf_xdp_ct_lookup", RetPtr: true, ArgReg: asm.R4, SizeReg: asm.R5, ArgType: "bpf_ct_opts", Writes: true},
 	{Name: "bpf_skb_ct_lookup", RetPtr: true, ArgReg: asm.R4, SizeReg: asm.R5, ArgType: "bpf_ct_opts", Writes: true},
+}
+
+// pointerResults are the helpers with a pointer result and no row that get
+// the result-only pointer hook. A pointer kind is listed only when its kernel
+// test (calls_all_kernel_test.go) passes on 6.1, 6.12, 6.18 and 7.0.
+var pointerResults = []string{}
+
+// noPointerTest is the reason a helper with a pointer result outside
+// pointerResults gets no hook.
+const noPointerTest = "a pointer result of a kind no kernel test covers yet"
+
+// helperCall returns the row a call of helper id gets when a rule names it:
+// its call-table row, else a result-only row (no argument; RetPtr for a
+// pointer result). Otherwise the row is nil and reason says why.
+func helperCall(id asm.BuiltinFunc) (row *CallRow, reason string) {
+	for i := range callTable {
+		if callTable[i].Helper != 0 && callTable[i].Helper == id {
+			return &callTable[i], ""
+		}
+	}
+	h, ok := helperByID(int64(id))
+	_, mapCall := mapCallOps[id]
+	switch {
+	case !ok:
+		return nil, fmt.Sprintf("helper id %d is past the helper table", id)
+	case h.Ret == RetUnsupported:
+		return nil, "not a callable helper"
+	case mapCall:
+		return nil, "a map helper: the rule's maps and ops observe it"
+	case id == asm.FnTailCall:
+		return nil, "a tail call: the rule's tail_calls observes it"
+	case denyReason(h.Name) != "":
+		return nil, denyReason(h.Name)
+	case h.Ret == RetVoid:
+		return nil, "returns nothing"
+	case h.Ret == RetPointer && !slices.Contains(pointerResults, h.Name):
+		return nil, noPointerTest
+	}
+	return &CallRow{Name: h.Name, Helper: id, RetPtr: h.Ret == RetPointer}, ""
+}
+
+// namedCall is helperCall for a rule's Calls name: the row of a kernel
+// function with a row, else of the helper of that name. A kernel function
+// without a row gets its deny reason, any other name a nil row and "".
+func namedCall(name string) (*CallRow, string) {
+	for i := range callTable {
+		if callTable[i].Name == name {
+			return &callTable[i], ""
+		}
+	}
+	if id := slices.IndexFunc(helperTable[:], func(h helperRow) bool { return h.Name == name }); id >= 0 {
+		return helperCall(asm.BuiltinFunc(id))
+	}
+	return nil, denyReason(name)
+}
+
+// hookableHelpers returns the names of the helpers a rule's Calls may name, in id order.
+func hookableHelpers() []string {
+	var names []string
+	for id := range helperTable {
+		if row, _ := helperCall(asm.BuiltinFunc(id)); row != nil {
+			names = append(names, row.Name)
+		}
+	}
+	return names
+}
+
+// kfuncRows returns the names of the kernel functions of callTable in table order.
+func kfuncRows() []string {
+	var names []string
+	for _, row := range callTable {
+		if row.Helper == 0 {
+			names = append(names, row.Name)
+		}
+	}
+	return names
 }
 
 // SupportedCalls returns the names of callTable in table order.

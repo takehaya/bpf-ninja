@@ -15,8 +15,8 @@ import (
 
 // Callee is one helper or kernel function a program calls, outside the map
 // helpers and bpf_tail_call, which have their own kinds. Typed means the call
-// table has a row for it, so a rule's Calls may name it; Reason says why a
-// callee without a row gets no hook. Module is the fd_array offset of a module
+// table has a row for it, so its hook is typed; a rule's Calls may name every
+// callee without a Reason, which says why the callee gets no hook. Module is the fd_array offset of a module
 // kernel function, zero for vmlinux. Sites are its call sites' raw PCs.
 type Callee struct {
 	Name   string
@@ -37,7 +37,8 @@ type FuncRange struct {
 // CallDiscovery lists every helper and kernel-function call of one program
 // beside its map calls: Sites are the HookCall sites in PC order, a site of a
 // callee with a row carrying the transform's Reason and CtxSource, any other
-// site its callee's Reason; TailCalls are the bpf_tail_call sites. Labels names
+// site its callee's Reason (a helper without a row that may be hooked counts
+// as a callee with a row); TailCalls are the bpf_tail_call sites. Labels names
 // every site of the full discovery, map calls included, by PC (see SiteLabels),
 // and Fingerprint identifies the listing (see ListingFingerprint).
 type CallDiscovery struct {
@@ -49,7 +50,7 @@ type CallDiscovery struct {
 	Fingerprint string
 }
 
-// noHookForm is the Reason of a callee the call table has no row for.
+// noHookForm is the Reason of a kernel function the call table has no row for.
 const noHookForm = "no hook form yet"
 
 // DiscoverCallSitesRaw lists the helper, kernel-function and tail-call sites of
@@ -63,7 +64,7 @@ func DiscoverCallSitesRaw(p RawProgram, mapCalls []LookupSite) (CallDiscovery, e
 		return CallDiscovery{}, err
 	}
 	// The sites of callees with a row, with the reasons a rule naming them would see.
-	known, err := discoverSites(insns, p.Type, resolve, LookupRequest{Calls: SupportedCalls(), Kernel: p.Kernel, Modules: p.Modules})
+	known, err := discoverSites(insns, p.Type, resolve, LookupRequest{Calls: slices.Concat(SupportedCalls(), hookableHelpers()), Kernel: p.Kernel, Modules: p.Modules})
 	if err != nil {
 		return CallDiscovery{}, err
 	}
@@ -142,6 +143,8 @@ func calleeOf(ins *asm.Instruction, kernel *btf.Spec, modules map[int16]*btf.Spe
 			return c
 		}
 		c.Name, c.Ret = h.Name, h.Ret
+		_, c.Reason = helperCall(asm.BuiltinFunc(ins.Constant))
+		return c
 	} else if named {
 		c.Ret = kfuncRet(ins, kernel, modules)
 	}

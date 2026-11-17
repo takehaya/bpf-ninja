@@ -193,10 +193,10 @@ func TestConfigCalls(t *testing.T) {
 			t.Errorf("%s: request Calls = %q", keys, got)
 		}
 	}
-	supported := strings.Join(inject.SupportedCalls(), ", ")
 	for keys, want := range map[string]string{
 		`"calls":[]`:                                  "rule 0: program and one of map, auto, entry, tail_calls or calls are required",
-		`"calls":["bpf_map_lookup_elem"]`:             `rule 0: inject: refused: Calls name "bpf_map_lookup_elem" is not supported; supported calls: ` + supported,
+		`"calls":["bpf_map_lookup_elem"]`:             `rule 0: inject: refused: Calls name "bpf_map_lookup_elem" cannot be hooked: a map helper: the rule's maps and ops observe it`,
+		`"calls":["bpf_no_such_call"]`:                `rule 0: inject: refused: Calls name "bpf_no_such_call" is not supported: it is neither a helper nor a kernel function with a row (bpf_xdp_ct_lookup, bpf_skb_ct_lookup)`,
 		`"calls":["bpf_fib_lookup","bpf_fib_lookup"]`: `rule 0: inject: refused: Calls names must be non-empty and unique; got "bpf_fib_lookup"`,
 		`"calls":[""]`:                                `rule 0: inject: refused: Calls names must be non-empty and unique; got ""`,
 		`"calls":["bpf_fib_lookup"],"auto":true,"dispatch":true`: "rule 0: inject: refused: Calls does not combine with Dispatch",
