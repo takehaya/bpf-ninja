@@ -111,3 +111,36 @@ func TestDenyNativeAddressHelpers(t *testing.T) {
 		t.Error("bpf_get_attach_cookie is denied; it reads the attachment's cookie only")
 	}
 }
+
+// spinLockFixture (XDP) calls bpf_get_numa_node_id, takes the lock of
+// locked[0], increments its counter, releases the lock, calls
+// bpf_ktime_get_ns, stores the node and the counter in out slots 0 and 1
+// and returns XDP_PASS; XDP_DROP if the lookup fails.
+func spinLockFixture() *ebpf.CollectionSpec {
+	u32 := &btf.Int{Name: "u32", Size: 4}
+	u64 := &btf.Int{Name: "u64", Size: 8}
+	lock := &btf.Struct{Name: "bpf_spin_lock", Size: 4, Members: []btf.Member{{Name: "val", Type: u32}}}
+	value := &btf.Struct{Name: "locked_value", Size: 16, Members: []btf.Member{
+		{Name: "lock", Type: lock}, {Name: "pad", Type: u32, Offset: 32}, {Name: "cnt", Type: u64, Offset: 64}}}
+	insns := asm.Instructions{
+		asm.Mov.Reg(asm.R6, asm.R1),
+		asm.FnGetNumaNodeId.Call(),
+		asm.Mov.Reg(asm.R8, asm.R0),
+		asm.StoreImm(asm.RFP, -4, 0, asm.Word),
+		asm.Mov.Reg(asm.R2, asm.RFP), asm.Add.Imm(asm.R2, -4),
+		asm.LoadMapPtr(asm.R1, 0).WithReference("locked"), asm.FnMapLookupElem.Call(),
+		asm.JEq.Imm(asm.R0, 0, "drop"),
+		asm.Mov.Reg(asm.R7, asm.R0),
+		asm.Mov.Reg(asm.R1, asm.R7), asm.FnSpinLock.Call(),
+		asm.LoadMem(asm.R1, asm.R7, 8, asm.DWord), asm.Add.Imm(asm.R1, 1), asm.StoreMem(asm.R7, 8, asm.R1, asm.DWord),
+		asm.Mov.Reg(asm.R1, asm.R7), asm.FnSpinUnlock.Call(),
+		asm.Mov.Reg(asm.R9, asm.R8),
+		asm.FnKtimeGetNs.Call(),
+		asm.LoadMem(asm.R7, asm.R7, 8, asm.DWord),
+	}
+	insns = append(append(insns, outStore(0, asm.R9)...), outStore(1, asm.R7)...)
+	insns = append(insns, asm.Mov.Imm(asm.R0, 2), asm.Return(), asm.Mov.Imm(asm.R0, 1).WithSymbol("drop"), asm.Return())
+	spec := callFixtureSpec(ebpf.XDP, insns)
+	spec.Maps["locked"] = &ebpf.MapSpec{Name: "locked", Type: ebpf.Array, KeySize: 4, ValueSize: 16, MaxEntries: 1, Key: u32, Value: value}
+	return spec
+}

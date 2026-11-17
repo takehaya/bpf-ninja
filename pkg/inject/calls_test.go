@@ -199,19 +199,15 @@ func TestCallRefusals(t *testing.T) {
 	}
 }
 
-// A program that takes a spin lock gets no call hook at all.
-func TestCallBlockedBySpinLock(t *testing.T) {
-	spec := scalarFixture()
-	insns := spec.Programs["p"].Instructions
-	// A spin-lock call before the return, never reached on a load.
-	insns = slices.Insert(insns, len(insns)-1, asm.Mov.Imm(asm.R1, 0), asm.FnSpinLock.Call(), asm.Mov.Imm(asm.R0, 2))
-	spec.Programs["p"].Instructions = insns
-	plan, err := transformLookup(spec, callReq("bpf_jiffies64"))
-	if err == nil || !strings.Contains(err.Error(), "no call site is instrumented (1 skipped)") {
-		t.Fatalf("err = %v", err)
+// A program that takes a spin lock keeps its call hooks: the lock blocks
+// nothing, and the lock helpers themselves are never hooked.
+func TestCallNotBlockedBySpinLock(t *testing.T) {
+	plan, err := transformLookup(spinLockFixture(), callReq("bpf_get_numa_node_id", "bpf_ktime_get_ns"))
+	if err != nil {
+		t.Fatal(err)
 	}
-	if len(plan.skipped) != 1 || !strings.HasPrefix(plan.skipped[0].Reason, "call: the program calls bpf_spin_lock") {
-		t.Fatalf("skipped %+v", plan.skipped)
+	if len(plan.hooks) != 2 || len(plan.skipped) != 0 {
+		t.Fatalf("hooks %+v skipped %+v", plan.hooks, plan.skipped)
 	}
 }
 

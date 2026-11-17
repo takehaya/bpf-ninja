@@ -79,8 +79,9 @@ func TestDiscoverCallSitesRaw(t *testing.T) {
 	}) {
 		t.Errorf("callees %+v, want %+v", d.Callees, want)
 	}
-	// A hookable callee's site carries the transform's reason: the program takes a lock.
-	if len(d.Sites) != 4 || d.Sites[0].Call != "bpf_ktime_get_ns" || d.Sites[0].Reason == "" || d.Sites[1].Reason != d.Sites[0].Reason {
+	// A hookable callee's site carries the transform's reason, none here (a lock blocks nothing), and its context source.
+	if len(d.Sites) != 4 || d.Sites[0].Call != "bpf_ktime_get_ns" || d.Sites[0].Reason != "" || d.Sites[1].Reason != "" || d.Sites[1].CtxSource != "entry" ||
+		d.Sites[3].Reason != "takes or releases a lock or a critical section" {
 		t.Errorf("sites %+v", d.Sites)
 	}
 	if len(d.TailCalls) != 1 || d.TailCalls[0].SitePC != 19 || d.TailCalls[0].Op != HookTailCall {

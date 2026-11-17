@@ -206,26 +206,22 @@ func callArgType(row *CallRow, n uint32, prog, kernel *btf.Spec) (typ btf.Type, 
 }
 
 // callsBlocked returns why no call site of the program may be hooked, or "": the program calls
-// bpf_spin_lock, bpf_preempt_disable or a kfunc whose name starts with bpf_res_spin_lock, under which
-// a hook call may be refused, or holds a kfunc call that cannot be named (see callee).
+// bpf_preempt_disable, under which a hook call may be refused, or holds a kfunc call that cannot be
+// named (see callee). A spin lock blocks nothing: with a lock held the verifier accepts only
+// bpf_spin_unlock and the kfuncs it lets run under a lock, all denied by name, so no site that may be
+// hooked lies inside a locked region.
 func callsBlocked(insns asm.Instructions, kernel *btf.Spec, modules map[int16]*btf.Spec) string {
 	for i := range insns {
 		ins := &insns[i]
-		lock := ""
-		switch {
-		case ins.IsBuiltinCall() && asm.BuiltinFunc(ins.Constant) == asm.FnSpinLock:
-			lock = "bpf_spin_lock"
-		case ins.IsKfuncCall():
-			_, name, named := callee(ins, kernel, modules)
-			if !named {
-				return "call: a kernel-function call in the program cannot be named"
-			}
-			if name == "bpf_preempt_disable" || strings.HasPrefix(name, "bpf_res_spin_lock") {
-				lock = name
-			}
+		if !ins.IsKfuncCall() {
+			continue
 		}
-		if lock != "" {
-			return "call: the program calls " + lock + ", under which a hook call may be refused"
+		_, name, named := callee(ins, kernel, modules)
+		if !named {
+			return "call: a kernel-function call in the program cannot be named"
+		}
+		if name == "bpf_preempt_disable" {
+			return "call: the program calls " + name + ", under which a hook call may be refused"
 		}
 	}
 	return ""

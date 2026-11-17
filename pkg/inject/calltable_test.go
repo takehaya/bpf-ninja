@@ -238,9 +238,9 @@ func TestCallsBlocked(t *testing.T) {
 	}{
 		{"helpers only", prog(asm.FnKtimeGetNs.Call(), asm.FnMapLookupElem.Call()), nil, ""},
 		{"conntrack kfuncs by id", ct.Programs["p"].Instructions, kernel, ""},
-		{"spin lock", prog(asm.FnKtimeGetNs.Call(), asm.FnSpinLock.Call()), nil, "call: the program calls bpf_spin_lock, under which a hook call may be refused"},
+		{"spin lock", prog(asm.FnKtimeGetNs.Call(), asm.FnSpinLock.Call()), nil, ""},
 		{"preempt disable", prog(kfuncCall(-1).WithReference("bpf_preempt_disable")), nil, "call: the program calls bpf_preempt_disable, under which a hook call may be refused"},
-		{"res spin lock", prog(kfuncCall(-1).WithReference("bpf_res_spin_lock_irqsave")), nil, "call: the program calls bpf_res_spin_lock_irqsave, under which a hook call may be refused"},
+		{"res spin lock", prog(kfuncCall(-1).WithReference("bpf_res_spin_lock_irqsave")), nil, ""},
 		{"kfunc by id, nil kernel", ct.Programs["p"].Instructions, nil, "call: a kernel-function call in the program cannot be named"},
 		{"kfunc in a module", prog(asm.Instruction{OpCode: asm.OpCode(asm.JumpClass).SetJumpOp(asm.Call), Src: asm.PseudoKfuncCall, Constant: 5, Offset: 1}), kernel, "call: a kernel-function call in the program cannot be named"},
 	} {
