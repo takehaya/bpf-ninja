@@ -489,7 +489,7 @@ func SameComment(a, b *Layout) bool {
 		return true
 	}
 	sameScalar := func(x, y Scalar) bool {
-		return x.Present() == y.Present() && (!x.Present() || x.Name == y.Name && x.Size == y.Size)
+		return x.Present() == y.Present() && (!x.Present() || x.Name == y.Name && x.Size == y.Size && x.Signed == y.Signed)
 	}
 	sameBytes := func(x, y Bytes) bool {
 		return x.Present() == y.Present() && x.Len == y.Len &&
