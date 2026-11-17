@@ -283,6 +283,14 @@ func loadModuleBTF(id btf.ID, base *btf.Spec) (*btf.Spec, error) {
 	return h.Spec(base)
 }
 
+// loaderLogFull says whether a real load failed with ENOSPC while the loader
+// asked for a verifier log (log_level 1 or 2): its log buffer was too small.
+// A trial, with a log of its own, would pass, so the retry would drop sites
+// for a refusal no verifier gave; the original loads instead.
+func loaderLogFull(err error, attr []byte) bool {
+	return errors.Is(err, unix.ENOSPC) && len(attr) >= 28 && u32(attr, 24)&3 != 0
+}
+
 // refuseOriginal says whether a matched load whose rewrite did not load is
 // refused instead of loading the original: always with failClosed, and when
 // the stack audit is unavailable (stackErr) for a rule that names its one
@@ -1079,7 +1087,7 @@ func (s *supervisor) entry(pid int, t *thread, regs unix.PtraceRegs) error {
 			branches = ", lookup branches miss-first"
 			ret, rewrite, entry, injectErr = s.transformLoad(r, attr, *rule, form, stack, true)
 		}
-		if errors.As(injectErr, &refusedLoad{}) && r.broken == nil {
+		if errors.As(injectErr, &refusedLoad{}) && r.broken == nil && !loaderLogFull(injectErr, attr) {
 			s.log("program %q: %v; retrying with fewer sites", name, injectErr)
 			retried = true
 			ret, rewrite, injectErr = s.retryLoad(r, attr, *rule, form, stack, rewrite, injectErr)

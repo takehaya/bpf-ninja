@@ -144,3 +144,21 @@ func TestRefusalCause(t *testing.T) {
 		t.Fatalf("loadCheckPolicy: %v", err)
 	}
 }
+
+// A real load that failed with ENOSPC on the loader's own log is not
+// retried; ENOSPC without a log request, or another errno, is.
+func TestLoaderLogFull(t *testing.T) {
+	attr := make([]byte, 128)
+	refused := refusedLoad{error: fmt.Errorf("transformed PROG_LOAD: %w", unix.ENOSPC)}
+	if loaderLogFull(refused, attr) {
+		t.Fatal("no log requested")
+	}
+	put32(attr, 24, 1)
+	if !loaderLogFull(refused, attr) || loaderLogFull(refusedLoad{error: fmt.Errorf("transformed PROG_LOAD: %w", unix.EACCES)}, attr) {
+		t.Fatal("log level 1")
+	}
+	put32(attr, 24, 4) // BPF_LOG_STATS alone
+	if loaderLogFull(refused, attr) {
+		t.Fatal("stats only")
+	}
+}

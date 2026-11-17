@@ -58,7 +58,8 @@ type lookupsFileJSON struct {
 // and the tail calls of the listed kinds; every site carries a label.
 // With the kinds lookups alone, Rule instruments every named map with lookups,
 // as a hook rule. Otherwise it is a hook_prefix rule naming everything of the
-// listed kinds it can hook (see readyRule). The stack block records the
+// listed kinds it can hook (see readyRule), absent when that would name
+// nothing. The stack block records the
 // trial load's verifier-backed per-function floors.
 type discoveredProgJSON struct {
 	Program   string              `json:"program"`
@@ -72,7 +73,7 @@ type discoveredProgJSON struct {
 	Callees   []calleeJSON        `json:"callees,omitempty"`
 	CallSites []hookSiteJSON      `json:"call_sites,omitempty"`
 	TailCalls []hookSiteJSON      `json:"tail_calls,omitempty"`
-	Rule      syscallhook.Rule    `json:"rule"`
+	Rule      syscallhook.Rule    `json:"rule,omitzero"`
 	Stack     *inject.StackReport `json:"stack,omitempty"`
 }
 
@@ -203,6 +204,9 @@ func discoveryJSON(d syscallhook.Discovery, kinds map[string]bool) discoveredPro
 		return out
 	}
 	out.Rule = readyRule(out, d, kinds)
+	if r := out.Rule; len(r.Maps) == 0 && len(r.Calls) == 0 && !r.Entry && !r.TailCalls {
+		out.Rule = syscallhook.Rule{} // it would hook nothing: every load would refuse it
+	}
 	return out
 }
 

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"math/rand/v2"
 	"slices"
 	"strings"
 	"testing"
@@ -43,7 +44,9 @@ func (f *fakeLoader) trial(drop map[uint32]string) ([]uint32, bool, string, erro
 
 // refusing accepts a set unless it holds one of bad.
 func refusing(bad ...uint32) func([]uint32) bool {
-	return func(keep []uint32) bool { return !slices.ContainsFunc(keep, func(pc uint32) bool { return slices.Contains(bad, pc) }) }
+	return func(keep []uint32) bool {
+		return !slices.ContainsFunc(keep, func(pc uint32) bool { return slices.Contains(bad, pc) })
+	}
 }
 
 // testSites are sites 10, 20, ... of hooks h0, h1, ..., one each unless hook
@@ -66,15 +69,20 @@ func checkRetry(t *testing.T, f *fakeLoader, out retryResult[[]uint32], budget i
 	if out.trials != len(f.trials) || out.trials > budget {
 		t.Fatalf("trials %d, recorded %d, budget %d", out.trials, len(f.trials), budget)
 	}
-	if !slices.Equal(out.art, out.kept) || !slices.ContainsFunc(f.trials, func(tr fakeTrial) bool { return tr.ok && slices.Equal(tr.keep, out.art) }) {
+	// The kept sites are a set: the retry keeps them in the order it tried them.
+	sameSet := func(a, b []uint32) bool {
+		return slices.Equal(slices.Sorted(slices.Values(a)), slices.Sorted(slices.Values(b)))
+	}
+	if !sameSet(out.art, out.kept) || !slices.ContainsFunc(f.trials, func(tr fakeTrial) bool { return tr.ok && sameSet(tr.keep, out.art) }) {
 		t.Fatalf("kept %v was not accepted by a trial: %+v", out.art, f.trials)
 	}
-	// The first, real load was refused with every site.
+	// The first, real load was refused with every site; the base without any
+	// site was tried and loaded, or (bare) is the original.
 	var all []uint32
 	for _, site := range f.sites {
 		all = append(all, site.pc)
 	}
-	trials := append(slices.Clone(f.trials), fakeTrial{all, false})
+	trials := append(slices.Clone(f.trials), fakeTrial{all, false}, fakeTrial{nil, true})
 	for _, site := range f.sites {
 		_, dropped := out.dropped[site.pc]
 		if dropped == slices.Contains(out.kept, site.pc) {
@@ -89,6 +97,7 @@ func checkRetry(t *testing.T, f *fakeLoader, out retryResult[[]uint32], budget i
 		}
 		own := slices.ContainsFunc(trials, func(refused fakeTrial) bool {
 			return !refused.ok && slices.Contains(refused.keep, site.pc) && slices.ContainsFunc(trials, func(passed fakeTrial) bool {
+				// passed is the refused trial without site, as sets.
 				return passed.ok && len(passed.keep)+1 == len(refused.keep) &&
 					!slices.Contains(passed.keep, site.pc) && !slices.ContainsFunc(passed.keep, func(pc uint32) bool { return !slices.Contains(refused.keep, pc) })
 			})
@@ -281,5 +290,49 @@ func TestBaseHooksNothing(t *testing.T) {
 	}
 	if !baseHooksNothing(explicit, retrySites(explicit, true), false) {
 		t.Fatal("auto lookup: the base hooks something")
+	}
+}
+
+// Seeded random kernels, monotone and not, budgets and hook groupings: every
+// retry result satisfies checkRetry, and nothing loads only when no set
+// could (the base refused, or with bare every trial refused).
+func TestRetryProperty(t *testing.T) {
+	rng := rand.New(rand.NewPCG(1, 2))
+	for range 3000 {
+		n := 1 + rng.IntN(10)
+		hook := map[uint32]string{}
+		for i := range n {
+			hook[uint32(10*(i+1))] = []string{"a", "b", "c"}[rng.IntN(3)]
+		}
+		sites := testSites(n, hook)
+		bad := map[uint32]bool{}
+		for _, site := range sites {
+			bad[site.pc] = rng.IntN(4) == 0
+		}
+		p, q := sites[rng.IntN(n)].pc, sites[rng.IntN(n)].pc
+		pair, bare, baseRefused := rng.IntN(3) == 0 && p != q, rng.IntN(2) == 0, rng.IntN(20) == 0
+		accepts := func(keep []uint32) bool {
+			if len(keep) == 0 {
+				return !bare && !baseRefused
+			}
+			return !slices.ContainsFunc(keep, func(pc uint32) bool { return bad[pc] }) &&
+				(!pair || !slices.Contains(keep, p) || !slices.Contains(keep, q))
+		}
+		budget := 1 + rng.IntN(30)
+		f := &fakeLoader{sites: sites, accepts: accepts}
+		out, err := retry(sites, "refused all", budget, bare, f.trial)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if bare && slices.ContainsFunc(f.trials, func(tr fakeTrial) bool { return len(tr.keep) == 0 }) {
+			t.Fatalf("bare base tried: %+v", f.trials)
+		}
+		if !out.loaded {
+			if !bare && !baseRefused || slices.ContainsFunc(f.trials, func(tr fakeTrial) bool { return tr.ok }) {
+				t.Fatalf("nothing loaded: bare %v trials %+v", bare, f.trials)
+			}
+			continue
+		}
+		checkRetry(t, f, out, budget)
 	}
 }

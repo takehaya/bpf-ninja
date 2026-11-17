@@ -218,4 +218,12 @@ func TestDiscoveryJSONReadyRule(t *testing.T) {
 	if _, err := parseLookupsKinds("lookups,calls"); err == nil {
 		t.Error("accepted an unknown kind")
 	}
+	// A ready rule that would name nothing is left out of the listing.
+	k, _ := parseLookupsKinds("tail_calls")
+	bare := d
+	bare.CallSites.TailCalls = nil
+	out = discoveryJSON(bare, k)
+	if data, _ := json.Marshal(out); strings.Contains(string(data), `"rule"`) {
+		t.Errorf("empty ready rule written: %s", data)
+	}
 }

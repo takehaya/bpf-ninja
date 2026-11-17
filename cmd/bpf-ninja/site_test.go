@@ -14,7 +14,8 @@ func TestResolveSite(t *testing.T) {
 			{"kind":"call","pc":6,"label":"bpf_ktime_get_ns@p:9#2"}]},
 		{"name":"ninja_any","kind":"generic","sites":[{"kind":"lookup","pc":20,"label":"inner@p+20"}]},
 		{"name":"ninja","kind":"dispatch","sites":[{"kind":"lookup","pc":30,"label":"other@p+30"}]},
-		{"name":"ninja_flows","kind":"typed","sites":[{"kind":"lookup","pc":40,"label":"flows@p+40"}]}]}]}`
+		{"name":"ninja_flows","kind":"typed","sites":[{"kind":"lookup","pc":40,"label":"flows@p+40"}]},
+		{"name":"ninja_bpf_jiffies64","kind":"call","site_param":true,"sites":[{"kind":"call","pc":50,"label":"bpf_jiffies64@p:12#2"}]}]}]}`
 	for _, c := range []struct {
 		site  string
 		hooks []string
@@ -40,6 +41,7 @@ func TestResolveSite(t *testing.T) {
 		{7, "0123456789abcdef", "bpf_ktime_get_ns@p:", `--site: no site "bpf_ktime_get_ns@p:" in program 7`},
 		{7, "0123456789abcdef", "3", `--site: no site "3" in program 7`},
 		{7, "0123456789abcdef", "4294967295", `--site: no site "4294967295" in program 7`},
+		{7, "0123456789abcdef", "bpf_jiffies64@p:12", `--site: "bpf_jiffies64@p:12" names one site; give bpf_jiffies64@p:12#2`},
 		// A hook without a site parameter cannot be narrowed to one site.
 		{7, "0123456789abcdef", "inner@p+20", `--site: hook "ninja_any" is a generic hook, which has no site parameter; capture it with --func ninja_any`},
 		{7, "0123456789abcdef", "30", `--site: hook "ninja" is a dispatch hook, which has no site parameter; capture it with --func ninja`},

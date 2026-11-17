@@ -18,7 +18,7 @@ Run as root.
 bpf-ninja inject-run --lookups-json lookups.json -- ./loader
 
 # 2. Take the ready rules, delete the names you do not want, and load with hooks.
-jq '[.programs[].rule]' lookups.json > rules.json
+jq '[.programs[].rule | values]' lookups.json > rules.json
 bpf-ninja inject-run --config rules.json --hooks-json hooks.json -- ./loader
 
 # 3. In another terminal, while the loader runs, capture the packets that reach a hook.
@@ -29,7 +29,7 @@ bpf-ninja -p "$PROG_ID" --func "$HOOK" -c 10 -w hook.pcap
 
 - `inject-run` obtains each function's stack floor from a trial verifier load; see [Stack floor](#stack-floor).
 - The ready rule uses `auto` with the hook prefix `ninja`, so a lookup on the map `sessions` gets the hook `ninja_sessions`.
-  It names every map with a call, each op the program calls as `op:any`, the entry, every callee that can be hooked and, when the program has one, the tail calls; see [Lookups file](#lookups-file).
+  It names every named map with a call, each op the program calls as `op:any`, the entry, every callee that can be hooked and, when the program has one, the tail calls; see [Lookups file](#lookups-file).
 - To observe less, delete names from `maps`, `ops` or `calls`, or delete `entry` or `tail_calls`.
   In a rule written with `hook_prefix`, a missing or empty list hooks nothing of its kind, so deleting a name never adds a hook.
   In `sites.only` it does: deleting the last entry of a hook's selection restores every site of that hook, because `only` narrows only the hooks it names a site of. An empty `only` or `except` list and an empty label are refused.
@@ -671,7 +671,7 @@ Use it to write the rules for a run that injects: take the ready rules, delete w
 
 ```sh
 bpf-ninja inject-run --lookups-json lookups.json -- ./loader
-jq '[.programs[].rule]' lookups.json > rules.json
+jq '[.programs[].rule | values]' lookups.json > rules.json
 # Delete names from maps, ops or calls, or delete entry or tail_calls.
 bpf-ninja inject-run --config rules.json --hooks-json hooks.json -- ./loader
 ```
@@ -750,7 +750,7 @@ It writes the file like the hooks file: the file exists before the target starts
 | `ctx_source` on a lookup or call | The proven source used to initialize the site's frame: `entry`, `r6` through `r9`, or an aligned slot such as `fp-80`. It is omitted when no source was proven. |
 | `frame`, `floor` on a lookup or call | The function frame that owns the site and the floor used to place its spill slots. |
 | `stack` | The trial load's verifier accounting. A function with `skip_reason` is not instrumented, and when it is the entry function the whole program is not; see [Stack floor](#stack-floor). `dead` means the verifier omitted that function from this load. When `source` is `verifier`, every lookup or call in a function with either mark, or missing from `functions`, has the reason `stack floor unavailable for this function` and no `generic`: `auto` skips it, even where the generic hook could take it. When the trial load failed, `source` is `unavailable` and `error` gives the cause; `inject-run` then loads the program unchanged, and every lookup and call has the reason `stack audit unavailable` and no `generic`. |
-| `rule` | A ready rule written with `hook_prefix`, whose `program` is the entry function name. It names every named map with a call of a listed op, each such op as `op:any`, the callees without a `reason` in `calls`, `entry`, and `tail_calls` when the program calls `bpf_tail_call`. It never sets `dispatch`. Delete names to observe less; a missing or empty list hooks nothing of its kind. |
+| `rule` | A ready rule written with `hook_prefix`, whose `program` is the entry function name. It names every named map with a call of a listed op, each such op as `op:any`, the callees without a `reason` in `calls`, `entry`, and `tail_calls` when the program calls `bpf_tail_call`. It never sets `dispatch`. Absent when it would name nothing. Delete names to observe less; a missing or empty list hooks nothing of its kind. |
 
 `--lookups-kinds` picks the kinds that `callees`, `call_sites`, `tail_calls` and `rule` cover: `lookups` (lookup ops), `map_calls` (the other map ops), `helpers`, `kfuncs`, `tail_calls` and `entry`.
 `maps`, `lookups` and `calls` are always written.
@@ -864,12 +864,14 @@ It is a bounded heuristic, not a search for the one site at fault: a kernel may 
    When the base hooks nothing, as for a rule without `entry` and without a `map` lookup, the base is the original program: it is not loaded and does not count against the budget, and the search starts from it.
 3. Otherwise it keeps the longest prefix of the sites that loads with the sites kept so far (by bisection), drops the next site, tries the other sites of that site's hook together and then each alone, and then tries the kept sites plus the rest, until no site is left.
 4. A site is dropped only after a trial in which it was the one site added to sites that loaded. Its reason is `load: refused in this combination (the kept sites plus this one): MESSAGE`, with the verifier's last message, or the errno where no log was read. It says nothing about the site on its own.
-5. At most 24 extra verifications run per program load: every trial, and the repeated load of [Jump sequence limit](#jump-sequence-limit). When they are used up, the sites not kept by then are dropped with `load: not kept: the budget of 24 trial loads was used up`.
+5. Every trial, and the repeated load of [Jump sequence limit](#jump-sequence-limit), count against a budget of 24 verifications per program load. The miss-first rewrite of that section and the final load of the kept rewrite do not, so a refused load takes at most 26 verifications beyond the first rewrite. When the budget is used up, the sites not kept by then are dropped with `load: not kept: the budget of 24 trial loads was used up`.
 6. The last rewrite a trial accepted is loaded exactly as it was tried: the same sites, instructions and metadata, never a combination no trial loaded. If the kernel still refuses it, the original program loads, or the load fails with `EPERM` under `--fail-closed`.
+   A trial that fails other than by the kernel's refusal, for example because the load-time checker refuses its rewrite, ends the retry the same way, even when an earlier trial passed.
+   When the loader asked for a verifier log and the rewrite failed with `ENOSPC`, its log buffer was too small: there is no retry, and the original program loads.
 
 `--fail-closed` refuses the load only when no rewrite loads; dropped sites are accepted as skipped sites are.
 stderr names the requested and the kept sites and each dropped site with its reason, and the hooks file lists the dropped sites in `skipped`.
-Each trial costs one verification of the rewritten program, so a refused load of a large program can take up to 24 more verifications than before.
+Each trial costs one verification of the rewritten program, so a refused load of a large program can take up to 26 more verifications than before.
 
 With `--fail-closed`:
 

@@ -88,6 +88,9 @@ func resolveSite(data []byte, path string, progID uint32, tag, site string) ([]s
 			for _, pc := range slices.Sorted(maps.Keys(copies)) {
 				labels = append(labels, copies[pc])
 			}
+			if len(labels) == 1 {
+				return nil, 0, fmt.Errorf("--site: %q names one site; give %s", site, labels[0])
+			}
 			return nil, 0, fmt.Errorf("--site: %q names %d sites; give one of %s", site, len(labels), strings.Join(labels, " "))
 		}
 	}
