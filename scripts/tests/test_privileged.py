@@ -52,8 +52,13 @@ class AuditTests(unittest.TestCase):
         self.assertFalse(module.allowed_skip(module.INJECT, "TestBpfCallHookRowXdpRxVlanTag", "tcx unavailable to tag", "6.12"))
         for test in ("TestIntegrationDevBound", "TestIntegrationDevBound/device-bound",
                      "TestIntegrationDevBound/offload"):
-            self.assertTrue(module.allowed_skip(module.SYSCALLHOOK, test, "veth unavailable (x)", None))
+            self.assertTrue(module.allowed_skip(module.SYSCALLHOOK, test, "veth unavailable (x)", "6.12"))
+            self.assertFalse(module.allowed_skip(module.SYSCALLHOOK, test, "veth unavailable (x)", None))
             self.assertFalse(module.allowed_skip(module.SYSCALLHOOK, test, "unexpected verifier failure", None))
+            reason = "kernel lacks kfunc bpf_xdp_metadata_rx_timestamp: not found"
+            self.assertTrue(module.allowed_skip(module.SYSCALLHOOK, test, reason, "6.1"))
+            self.assertFalse(module.allowed_skip(module.SYSCALLHOOK, test, reason, "6.6"))
+            self.assertFalse(module.allowed_skip(module.SYSCALLHOOK, test, reason, None))
         self.assertFalse(module.allowed_skip(module.SYSCALLHOOK, "TestIntegrationDevBound/other",
                                              "veth unavailable (x)", None))
 
@@ -237,11 +242,11 @@ class RunnerTests(unittest.TestCase):
                             "=== RUN   TestIntegrationRetryPreempt\n"
                             "    retry_integration_linux_amd64_test.go:209: kernel lacks bpf_preempt_disable: not found\n"
                             "--- SKIP: TestIntegrationRetryPreempt (0.01s)\n"), 0, 0),
-            # Kernels without veth cannot run the device-bound loader.
+            # The host job is the device-bound loader's only CI run: a missing veth fails it.
             (passed.replace("--- PASS: TestIntegrationDevBound (0.01s)\n",
                             "=== RUN   TestIntegrationDevBound\n"
                             "    devbound_integration_linux_amd64_test.go:140: veth unavailable (operation not supported)\n"
-                            "--- SKIP: TestIntegrationDevBound (0.01s)\n"), 0, 0),
+                            "--- SKIP: TestIntegrationDevBound (0.01s)\n"), 0, 1),
             (passed.replace("--- PASS: TestIntegrationRetry (0.01s)\n", "--- SKIP: TestIntegrationRetry (0.01s)\n"), 0, 1),
             (passed.replace("--- PASS: TestBPFStopsFallback (0.01s)\n", ""), 0, 1),
             (passed, 1, 1),

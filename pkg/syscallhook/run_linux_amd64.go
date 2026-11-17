@@ -1439,6 +1439,16 @@ func stackDepths(log string) (depths []int, err error) {
 	return depths, err
 }
 
+// statsLog points attr's verifier log at a BPF_LOG_STATS buffer of size
+// bytes at addr and returns attr. Every other field stays, so a trial is
+// bound to the loader's device (prog_flags at 44, prog_ifindex at 64).
+func statsLog(attr []byte, size uint32, addr uint64) []byte {
+	put32(attr, 24, 4) // BPF_LOG_STATS
+	put32(attr, 28, size)
+	put64(attr, 32, addr)
+	return attr
+}
+
 // offloadAudit is the error of a load whose stack the kernel does not
 // account locally: an offload request, or an attr too short to tell.
 func offloadAudit(attr []byte) error {
@@ -1499,10 +1509,7 @@ func (s *supervisor) preloadDepths(r *remote, attr []byte, rounding int) (report
 	if err != nil {
 		return report, err
 	}
-	trial := bytes.Clone(attr)
-	put32(trial, 24, 4) // BPF_LOG_STATS
-	put32(trial, 28, logSize)
-	put64(trial, 32, logAddr)
+	trial := statsLog(bytes.Clone(attr), logSize, logAddr)
 	fd, loadErr := r.bpf(unix.BPF_PROG_LOAD, trial)
 	readLog := func() (string, error) {
 		logBytes, readErr := readMemory(r.pid, logAddr, logSize)
@@ -1781,9 +1788,7 @@ func (s *supervisor) load(r *remote, attr []byte, name string, form HookForm, t 
 		if logAddr, err = r.alloc(make([]byte, logSize)); err != nil {
 			return 0, "", err
 		}
-		put32(patched, 24, 4) // BPF_LOG_STATS; verifier errors print at any level
-		put32(patched, 28, logSize)
-		put64(patched, 32, logAddr)
+		statsLog(patched, logSize, logAddr) // verifier errors print at any level
 	}
 	// Preserve kernel output fields (currently log_true_size) in the caller's attr.
 	addr, err := r.alloc(patched)
@@ -1962,10 +1967,7 @@ func (s *supervisor) hitJumpLimit(r *remote, attr []byte) (hit bool, why string)
 	if err != nil {
 		return false, ""
 	}
-	trial := bytes.Clone(attr)
-	put32(trial, 24, 4) // BPF_LOG_STATS
-	put32(trial, 28, logSize)
-	put64(trial, 32, logAddr)
+	trial := statsLog(bytes.Clone(attr), logSize, logAddr)
 	fd, err := r.bpf(unix.BPF_PROG_LOAD, trial)
 	if err == nil {
 		closed, closeErr := r.call(unix.SYS_CLOSE, uint64(fd))

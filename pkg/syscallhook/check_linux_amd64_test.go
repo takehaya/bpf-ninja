@@ -336,3 +336,28 @@ func TestStackErrorClass(t *testing.T) {
 		}
 	}
 }
+
+// A trial keeps the loader's device binding: statsLog changes only the log
+// fields of a cloned attr, and preloadDepths refuses an offload request
+// before it touches the tracee, but not a device-bound load.
+func TestTrialKeepsDevice(t *testing.T) {
+	attr := make([]byte, progAttrSize)
+	put32(attr, 44, devBoundOnly)
+	put32(attr, 64, 3)
+	put32(attr, 24, 1)
+	trial := statsLog(bytes.Clone(attr), 64<<10, 0x1000)
+	if u32(trial, 44) != devBoundOnly || u32(trial, 64) != 3 || u32(trial, 24) != 4 || u32(trial, 28) != 64<<10 || u64(trial, 32) != 0x1000 {
+		t.Fatalf("trial attr flags %#x ifindex %d log %d/%d/%#x", u32(trial, 44), u32(trial, 64), u32(trial, 24), u32(trial, 28), u64(trial, 32))
+	}
+	if u32(attr, 24) != 1 {
+		t.Fatal("statsLog changed the loader's attr")
+	}
+	offload := make([]byte, progAttrSize)
+	put32(offload, 64, 3)
+	if _, err := (&supervisor{}).preloadDepths(nil, offload, 0); !errors.Is(err, errAuditUnavailable) || !strings.Contains(err.Error(), "offloaded programs do not expose") {
+		t.Fatalf("offload request: %v", err)
+	}
+	if err := offloadAudit(attr); err != nil {
+		t.Fatalf("device-bound load: %v", err)
+	}
+}

@@ -21,10 +21,12 @@ def allowed_skip(package, test, output, kernel):
     if package == COMMAND:
         return test == "TestBpfRetMember" and "is only in nf_conntrack module BTF" in output
     if package == SYSCALLHOOK:
-        # The device-bound loader needs veth, which the CI kernels lack.
+        # The device-bound loader needs veth, which the CI kernels lack; the
+        # host job (no kernel) has veth and is its only CI run. 6.1 lacks the kfunc.
         if test in {"TestIntegrationDevBound", "TestIntegrationDevBound/device-bound",
                     "TestIntegrationDevBound/offload"}:
-            return "veth unavailable" in output or "kernel lacks kfunc bpf_xdp_metadata_rx_" in output
+            return (kernel is not None and "veth unavailable" in output
+                    or kernel == "6.1" and "kernel lacks kfunc bpf_xdp_metadata_rx_" in output)
         return ((test == "TestIntegrationIndirectJump" and "kernel lacks BPF_MAP_TYPE_INSN_ARRAY" in output)
                 or (test == "TestIntegrationRetryPreempt" and "kernel lacks bpf_preempt_disable" in output))
     if package == INJECT:

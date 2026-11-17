@@ -247,6 +247,30 @@ func metadataKernelSpec(t testing.TB) *btf.Spec {
 	)
 }
 
+// A receive-metadata value buffer that is not on the program's own stack
+// (here the packet's data pointer) gets the untrusted hook, not the typed one.
+func TestCallHookMetadataArgNotStack(t *testing.T) {
+	spec := xdpMetadataFixture(kfuncCall(-1).WithReference("bpf_xdp_metadata_rx_timestamp"), false)
+	insns := spec.Programs["p"].Instructions
+	at := slices.IndexFunc(insns, func(ins asm.Instruction) bool {
+		return ins.Dst == asm.R2 && ins.Src == asm.RFP && ins.OpCode.ALUOp() == asm.Mov
+	})
+	if at < 0 {
+		t.Fatal("fixture has no R2 = R10")
+	}
+	insns[at] = asm.LoadMem(asm.R2, asm.R6, 0, asm.Word) // xdp_md->data
+	insns[at+1] = asm.Mov.Reg(asm.R2, asm.R2)
+	req := callReq("bpf_xdp_metadata_rx_timestamp")
+	req.Kernel = metadataKernelSpec(t)
+	plan, err := transformLookup(spec, req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.hooks) != 1 || !plan.hooks[0].Untrusted || plan.hooks[0].Static {
+		t.Fatalf("hooks %+v skipped %+v, want one untrusted hook", plan.hooks, plan.skipped)
+	}
+}
+
 // The receive-metadata rows take their first value argument, whose size the
 // prototype gives.
 func TestKfuncArg(t *testing.T) {
