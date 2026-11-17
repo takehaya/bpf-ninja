@@ -196,6 +196,7 @@ type fibVariant struct {
 // code as ret and the AF_INET family through arg.
 func testCallHookFib(t *testing.T, typ ebpf.ProgramType, name string, variants []fibVariant) {
 	testutil.SkipIfNotRoot(t)
+	isolatedNetNS(t)
 	kernel := kernelBTF(t)
 	type pair struct {
 		v                fibVariant

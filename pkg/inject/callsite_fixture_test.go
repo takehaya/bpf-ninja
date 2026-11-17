@@ -7,6 +7,7 @@ import (
 	"io"
 	"net"
 	"os"
+	"runtime"
 	"slices"
 	"testing"
 
@@ -15,6 +16,7 @@ import (
 	"github.com/cilium/ebpf/btf"
 	"github.com/takehaya/bpf-ninja/internal/testutil"
 	"github.com/vishvananda/netlink"
+	"github.com/vishvananda/netns"
 	"golang.org/x/sys/unix"
 )
 
@@ -369,6 +371,11 @@ func kernelKfunc(t *testing.T, name string) asm.Instruction {
 	}
 	var fn *btf.Func
 	if err := spec.TypeByName(name, &fn); err != nil {
+		module, moduleErr := btf.LoadKernelModuleSpec("nf_conntrack")
+		var moduleFn *btf.Func
+		if moduleErr == nil && module.TypeByName(name, &moduleFn) == nil {
+			t.Skipf("skipping: kfunc %s is only in nf_conntrack module BTF", name)
+		}
 		t.Fatalf("kfunc %s: %v", name, err)
 	}
 	id, err := spec.TypeID(fn)
@@ -376,6 +383,39 @@ func kernelKfunc(t *testing.T, name string) asm.Instruction {
 		t.Fatalf("kfunc %s: %v", name, err)
 	}
 	return kfuncCall(int64(id))
+}
+
+// isolatedNetNS keeps route-sensitive fixtures independent of the host routes.
+func isolatedNetNS(t *testing.T) {
+	t.Helper()
+	runtime.LockOSThread()
+	original, err := netns.Get()
+	if err != nil {
+		runtime.UnlockOSThread()
+		t.Fatal(err)
+	}
+	isolated, err := netns.New()
+	if err != nil {
+		_ = original.Close()
+		runtime.UnlockOSThread()
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := netns.Set(original); err != nil {
+			t.Errorf("restoring netns: %v", err)
+			return
+		}
+		_ = isolated.Close()
+		_ = original.Close()
+		runtime.UnlockOSThread()
+	})
+	lo, err := netlink.LinkByName("lo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := netlink.LinkSetUp(lo); err != nil {
+		t.Fatal(err)
+	}
 }
 
 // nfConnStatusOffset is the byte offset of status in the kernel's struct nf_conn.
@@ -505,6 +545,7 @@ func fibDevice(t *testing.T, name string) netlink.Link {
 // (0, forward) with the device's ifindex and the neighbour's MAC.
 func testCallFixtureFib(t *testing.T, typ ebpf.ProgramType, name string) {
 	testutil.SkipIfNotRoot(t)
+	isolatedNetNS(t)
 	colls := []*ebpf.Collection{loadCallFixture(t, fibFixture(typ)), loadCallFixture(t, fibSubprogFixture(typ))}
 	dev := fibDevice(t, name)
 	index := dev.Attrs().Index
@@ -556,7 +597,7 @@ func fibSteps(t *testing.T, index int, check func(step string, code uint64)) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = netlink.RouteDel(unreachable) }) // when a check fails before the next step
-	check("unreachable route", 2) // BPF_FIB_LKUP_RET_UNREACHABLE
+	check("unreachable route", 2)                           // BPF_FIB_LKUP_RET_UNREACHABLE
 	if err := errors.Join(netlink.RouteDel(unreachable),
 		netlink.RouteAdd(&netlink.Route{LinkIndex: index, Dst: dst, Gw: net.IP(fibGw[:])})); err != nil {
 		t.Fatal(err)

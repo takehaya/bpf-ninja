@@ -18,6 +18,13 @@ SYSCALLHOOK = "github.com/takehaya/bpf-ninja/pkg/syscallhook"
 
 def allowed_skip(package, test, output, kernel):
     if package == INJECT:
+        # These tests require conntrack kfuncs in vmlinux BTF. The test checks
+        # module BTF before emitting this reason.
+        if test in {
+            "TestBpfCallHookCtXDP", "TestBpfCallHookCtTC", "TestBpfCallHookCtUntrusted",
+            "TestBpfCallHookCtNoRelease", "TestBpfCallFixtureCtXDP", "TestBpfCallFixtureCtTC",
+        }:
+            return "is only in nf_conntrack module BTF" in output
         # The native control shape falls through on kernels that lose tail-call
         # reachability; the guarded refusal test covers those kernels instead.
         if test == "TestBpfTailCallInSubprogram":
