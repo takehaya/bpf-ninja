@@ -7,6 +7,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/takehaya/bpf-ninja/tools/regionval/core"
 )
 
 // exportDir holds synthetic captures: clean rewrites and rewrites with one
@@ -285,5 +287,48 @@ func TestCallSites(t *testing.T) {
 		if r.Validated || !slices.Equal(got, []string{want}) {
 			t.Errorf("%s: rejected by %v, want exactly [%s] (%+v)", id, got, want, r.Windows)
 		}
+	}
+}
+
+// CoreWindow patches a kfunc centre in the decoded instructions and
+// WindowBytes in the raw bytes. For every window of the callsite fixtures,
+// the clean and planted kfunc pairs among them, the bytes must decode to
+// the instructions CoreWindow gives, apart from the slot index Raw.
+func TestKfuncNormalisationsAgree(t *testing.T) {
+	fs, _ := filepath.Glob(filepath.Join(exportDir, "callsite", "*.json"))
+	kfuncSites := 0
+	for _, f := range fs {
+		c, err := LoadCapture(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		l, err := Analyze(c)
+		if err != nil {
+			continue // refused before windows are cut (struct:kappa)
+		}
+		for _, w := range l.Windows {
+			insns, _, _ := l.WindowBytes(w)
+			got, err := core.Decode(insns)
+			if err != nil {
+				t.Fatalf("%s %v: %v", f, w, err)
+			}
+			want := l.CoreWindow(w).Insns
+			if len(got) != len(want) {
+				t.Fatalf("%s %v: %d decoded, %d in CoreWindow", f, w, len(got), len(want))
+			}
+			for i := range got {
+				g, x := got[i], want[i]
+				g.Raw, x.Raw = 0, 0
+				if g != x {
+					t.Errorf("%s %v insn %d: bytes decode to %+v, CoreWindow has %+v", filepath.Base(f), w, i, g, x)
+				}
+			}
+			if l.kfuncSite(w) {
+				kfuncSites++
+			}
+		}
+	}
+	if kfuncSites < 10 {
+		t.Errorf("%d kfunc site windows in the callsite fixtures, want at least 10", kfuncSites)
 	}
 }
