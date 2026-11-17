@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 
 	"github.com/cilium/ebpf"
 	"github.com/takehaya/bpf-ninja/internal/attach"
@@ -28,17 +29,20 @@ type hooksFileJSON struct {
 }
 
 // injectedProgJSON is one successful injected load. ProgID is zero when the
-// tracee could not query it.
+// tracee could not query it. OutsidePremise, "calls NAME, ...", marks a load
+// whose original program calls a denied callee: the theorem is not claimed
+// for it.
 type injectedProgJSON struct {
-	Program  string               `json:"program"`
-	Func     string               `json:"func"`
-	Type     string               `json:"type"`
-	ProgID   uint32               `json:"prog_id"`
-	CtxType  string               `json:"ctx_type"`
-	HookForm syscallhook.HookForm `json:"hook_form"`
-	Hooks    []hookJSON           `json:"hooks"`
-	Skipped  []hookSiteJSON       `json:"skipped"`
-	Stack    *inject.StackReport  `json:"stack,omitempty"`
+	Program        string               `json:"program"`
+	Func           string               `json:"func"`
+	Type           string               `json:"type"`
+	ProgID         uint32               `json:"prog_id"`
+	CtxType        string               `json:"ctx_type"`
+	HookForm       syscallhook.HookForm `json:"hook_form"`
+	Hooks          []hookJSON           `json:"hooks"`
+	Skipped        []hookSiteJSON       `json:"skipped"`
+	OutsidePremise string               `json:"outside_premise,omitempty"`
+	Stack          *inject.StackReport  `json:"stack,omitempty"`
 	// DeadCheckError names hook comparisons that failed. Those hooks and any
 	// site they may report stay unmarked; independent known results remain.
 	DeadCheckError string `json:"dead_check_error,omitempty"`
@@ -198,6 +202,9 @@ func hookKind(hook inject.LookupHook) string {
 func injectionJSON(inj syscallhook.Injection) injectedProgJSON {
 	out := injectedProgJSON{HookForm: inj.HookForm, Program: inj.Program, Func: inj.Func, Type: inj.Type.String(), ProgID: inj.ProgID,
 		CtxType: inject.ContextType(inj.Type), Hooks: []hookJSON{}, Skipped: []hookSiteJSON{}}
+	if len(inj.OutsidePremise) != 0 {
+		out.OutsidePremise = "calls " + strings.Join(inj.OutsidePremise, ", ")
+	}
 	floors := make(map[string]int16, len(inj.Stack.Functions))
 	for _, frame := range inj.Stack.Functions {
 		floors[frame.Name] = frame.Floor

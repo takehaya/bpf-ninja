@@ -199,3 +199,15 @@ func TestInjectionJSONHookForm(t *testing.T) {
 		}
 	}
 }
+
+// A load whose original program calls a denied callee is marked once on its
+// program entry; any other load has no such field.
+func TestInjectionJSONOutsidePremise(t *testing.T) {
+	marked, err := json.Marshal(injectionJSON(syscallhook.Injection{Program: "p", Type: ebpf.XDP, OutsidePremise: []string{"bpf_spin_lock", "bpf_loop"}}))
+	if err != nil || !strings.Contains(string(marked), `"outside_premise":"calls bpf_spin_lock, bpf_loop"`) {
+		t.Errorf("marked: %s %v", marked, err)
+	}
+	if plain, _ := json.Marshal(injectionJSON(syscallhook.Injection{Program: "p", Type: ebpf.XDP})); strings.Contains(string(plain), "outside_premise") {
+		t.Errorf("unmarked: %s", plain)
+	}
+}

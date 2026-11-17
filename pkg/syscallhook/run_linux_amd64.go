@@ -104,6 +104,9 @@ type Injection struct {
 	Hooks         []inject.LookupHook
 	Skipped       []inject.LookupSite
 	Stack         inject.StackReport
+	// OutsidePremise names the denied callees the original program calls
+	// (inject.PremiseCalls): the theorem is not claimed for this load.
+	OutsidePremise []string
 }
 
 type rememberedBTF struct {
@@ -1029,8 +1032,13 @@ func (s *supervisor) entry(pid int, t *thread, regs unix.PtraceRegs) error {
 		}
 	} else {
 		s.log("program %q: injected %s, tracee fd %d%s", name, summary, ret, branches)
+		premise := inject.PremiseCalls(result.Instructions, s.kernel, nil)
+		if len(premise) != 0 {
+			s.log("program %q: outside the theorem's premise: calls %s", name, strings.Join(premise, ", "))
+		}
 		if s.options.OnInject != nil {
-			inj := Injection{HookForm: form, Program: name, Func: entry, Type: ebpf.ProgramType(u32(attr, 0)), Hooks: result.Hooks, Skipped: result.Skipped, Stack: stack}
+			inj := Injection{HookForm: form, Program: name, Func: entry, Type: ebpf.ProgramType(u32(attr, 0)), Hooks: result.Hooks, Skipped: result.Skipped, Stack: stack,
+				OutsidePremise: premise}
 			// bpf_prog_info starts with type and id.
 			if info, err := r.info(uint32(ret), 8); err != nil {
 				s.log("program %q: cannot query program ID: %v", name, err)
