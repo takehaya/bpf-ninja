@@ -2,11 +2,12 @@ package main
 
 import (
 	"slices"
+	"strings"
 	"testing"
 )
 
 func TestResolveSite(t *testing.T) {
-	const file = `{"version":2,"programs":[{"program":"p","prog_id":7,"tag":"0123456789abcdef","hooks":[
+	const file = `{"version":3,"programs":[{"program":"p","prog_id":7,"tag":"0123456789abcdef","hooks":[
 		{"name":"ninja_entry","kind":"entry","sites":[{"kind":"entry","pc":4294967295}]},
 		{"name":"ninja_sessions","kind":"typed","site_param":true,"sites":[{"kind":"lookup","pc":12,"label":"sessions@p+12"}]},
 		{"name":"ninja_sessions_miss","kind":"typed","site_param":true,"sites":[{"kind":"lookup","pc":12,"label":"sessions@p+12"}]},
@@ -50,5 +51,15 @@ func TestResolveSite(t *testing.T) {
 		if _, _, err := resolveSite([]byte(file), "hooks.json", c.progID, c.tag, c.site); err == nil || err.Error() != c.want {
 			t.Errorf("%d %s %s: %v, want %q", c.progID, c.tag, c.site, err, c.want)
 		}
+	}
+	// A version 2 file has no site_param: --site asks for a new one.
+	old := strings.Replace(file, `"version":3`, `"version":2`, 1)
+	if _, _, err := resolveSite([]byte(old), "hooks.json", 7, "0123456789abcdef", "2"); err == nil ||
+		err.Error() != "--site: hooks.json is a version 2 hooks file, written by an older build without site_param; write it again with this build's inject-run --hooks-json" {
+		t.Errorf("version 2: %v", err)
+	}
+	newer := strings.Replace(file, `"version":3`, `"version":4`, 1)
+	if _, _, err := resolveSite([]byte(newer), "hooks.json", 7, "0123456789abcdef", "2"); err == nil || err.Error() != "--site: hooks.json: unsupported version 4" {
+		t.Errorf("version 4: %v", err)
 	}
 }

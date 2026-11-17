@@ -47,7 +47,7 @@ func testInjectRunCommand(t *testing.T, every bool) {
 	if err := newRootCommand().Run(context.Background(), args("--hooks-json", hooks, "--", "/bin/true")); err != nil {
 		t.Fatal(err)
 	}
-	if data, err := os.ReadFile(hooks); err != nil || string(data) != "{\n  \"version\": 2,\n  \"programs\": []\n}\n" {
+	if data, err := os.ReadFile(hooks); err != nil || string(data) != "{\n  \"version\": 3,\n  \"programs\": []\n}\n" {
 		t.Fatalf("hooks file %q: %v", data, err)
 	}
 	// An unwritable path refuses before launching.
@@ -68,7 +68,7 @@ func testInjectRunCommand(t *testing.T, every bool) {
 	if err := newRootCommand().Run(context.Background(), args("--lookups-json", lookups, "--", "/bin/true")); err != nil {
 		t.Fatal(err)
 	}
-	if data, err := os.ReadFile(lookups); err != nil || string(data) != "{\n  \"version\": 3,\n  \"programs\": []\n}\n" {
+	if data, err := os.ReadFile(lookups); err != nil || string(data) != "{\n  \"version\": 4,\n  \"programs\": []\n}\n" {
 		t.Fatalf("lookups file %q: %v", data, err)
 	}
 	if err := newRootCommand().Run(context.Background(), args("--", "/bin/true")); err == nil {

@@ -182,7 +182,7 @@ func TestBpfReadyRuleRoundTrip(t *testing.T) {
 	if err := json.Unmarshal(data, &file); err != nil {
 		t.Fatal(err)
 	}
-	if file.Version != 3 || len(file.Programs) != 1 || !strings.HasPrefix(file.Programs[0].Build, "sha256:") || len(file.Programs[0].Labels) != len(want) {
+	if file.Version != lookupsJSONVersion || len(file.Programs) != 1 || !strings.HasPrefix(file.Programs[0].Build, "sha256:") || len(file.Programs[0].Labels) != len(want) {
 		t.Fatalf("listing:\n%s", data)
 	}
 	t.Logf("listing:\n%s", data)

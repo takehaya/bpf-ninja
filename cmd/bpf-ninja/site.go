@@ -16,6 +16,7 @@ import (
 // siteHooksFile is the part of an inject-run --hooks-json file that --site
 // reads.
 type siteHooksFile struct {
+	Version  int             `json:"version"`
 	Programs []siteHooksProg `json:"programs"`
 }
 
@@ -42,6 +43,14 @@ func resolveSite(data []byte, path string, progID uint32, tag, site string) ([]s
 	var file siteHooksFile
 	if err := json.Unmarshal(data, &file); err != nil {
 		return nil, 0, fmt.Errorf("--site: %s: %w", path, err)
+	}
+	// Version 3 records site_param; an older file has no such field, so it
+	// would refuse every hook as one without a site parameter.
+	if file.Version < hooksJSONVersion {
+		return nil, 0, fmt.Errorf("--site: %s is a version %d hooks file, written by an older build without site_param; write it again with this build's inject-run --hooks-json", path, file.Version)
+	}
+	if file.Version > hooksJSONVersion {
+		return nil, 0, fmt.Errorf("--site: %s: unsupported version %d", path, file.Version)
 	}
 	i := slices.IndexFunc(file.Programs, func(p siteHooksProg) bool {
 		return p.ProgID == progID

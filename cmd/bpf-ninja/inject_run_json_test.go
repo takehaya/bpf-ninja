@@ -160,7 +160,7 @@ func TestHooksWriter(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if f := read(); f.Version != 2 || f.Programs == nil || len(f.Programs) != 0 {
+	if f := read(); f.Version != hooksJSONVersion || f.Programs == nil || len(f.Programs) != 0 {
 		t.Fatalf("initial file: %+v", f)
 	}
 	for _, name := range []string{"a", "b"} {

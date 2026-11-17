@@ -72,7 +72,13 @@ func TestMatchLoadCalls(t *testing.T) {
 	if err := os.WriteFile(path, []byte(`{"version":4,"programs":[]}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := readLoadCalls(path); err != nil {
+		t.Errorf("version 4: %v", err)
+	}
+	if err := os.WriteFile(path, []byte(`{"version":5,"programs":[]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := readLoadCalls(path); err == nil {
-		t.Error("accepted version 4")
+		t.Error("accepted version 5")
 	}
 }

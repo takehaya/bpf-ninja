@@ -612,7 +612,7 @@ If a rewrite fails, `inject-run` reports it on stderr and keeps running the targ
 
 ```json
 {
-  "version": 2,
+  "version": 3,
   "programs": [
     {
       "program": "p",
@@ -647,7 +647,7 @@ If a rewrite fails, `inject-run` reports it on stderr and keeps running the targ
 
 | Field | Meaning |
 |---|---|
-| `version` | 2. It changes only when a field changes meaning or is removed; new fields can appear. |
+| `version` | 3. It changes only when a field changes meaning or is removed; new fields can appear. `--site` reads only version 3: a version 2 file lacks `site_param` and must be written again. |
 | `programs` | One entry per injected load, in load order; a program loaded twice appears twice. Loads that fell back or were refused are not listed. |
 | `refused` | The loads a rule matched that ended without hooks, each with `program`, `func`, `reason`, `cause` and `outcome`. `cause` is `sites` (the rule's [`sites`](#choose-sites-from-the-listing) refused the load), `stack` (the [stack audit](#stack-floor) was unavailable), `analysis` (the stack analysis cannot take the program), `verifier` (the verifier refused the trial load of the original program), `checker` (the [load-stream check](#load-stream-check) refused the rewrite), `retry` (the kernel refused the rewrite and the [retry](#refused-rewrites) loaded none), `loader_log` (the rewrite passes with a log of `inject-run`'s own but not with the loader's log buffer), `selector` (more than one rule matches the load) or `transform` (the load could not be rewritten). `outcome` is what happened to the load: `original_loaded`, `original_refused` (the kernel refused the original program as well) or `load_refused` (`inject-run` refused it: with `--fail-closed`, or for a `map` rule whose stack audit the kernel cannot give). Each such `BPF_PROG_LOAD` appears once, so a loader that repeats a refused load appears twice. Absent when there is none. |
 | `program`, `func` | The kernel program name and the entry function. |
@@ -706,7 +706,7 @@ It writes the file like the hooks file: the file exists before the target starts
 
 ```json
 {
-  "version": 3,
+  "version": 4,
   "programs": [
     {
       "program": "p",
@@ -761,7 +761,7 @@ It writes the file like the hooks file: the file exists before the target starts
 
 | Field | Meaning |
 |---|---|
-| `version` | 3. It changes only when a field changes meaning or is removed; new fields can appear. `--list-maps --lookups-json` reads versions 1 to 3. |
+| `version` | 4. It changes only when a field changes meaning or is removed; new fields can appear. `--list-maps --lookups-json` reads versions 1 to 4. |
 | `build` | The listing fingerprint: a SHA-256 over the instructions as the loader passed them (map fds zeroed, map-value offsets kept), the name and type of each map reference, every site with its label, and the BTF functions with their instruction ranges. A rebuilt program, another kernel or a loader that relocates differently per load gives another fingerprint. |
 | `maps` | Every map the program references. Maps with lookups come first, in the order of their first lookup, with each lookup's `pc` in `sites`. The others follow by name. `ops` lists the ops called on each map. |
 | `lookups` | The lookup calls, with the fields of a hooks-file site. |

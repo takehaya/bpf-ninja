@@ -21,7 +21,7 @@ import (
 )
 
 // hooksJSONVersion changes only when a field changes meaning or goes away.
-const hooksJSONVersion = 2
+const hooksJSONVersion = 3
 
 type hooksFileJSON struct {
 	Version  int                `json:"version"`

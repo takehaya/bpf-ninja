@@ -17,7 +17,7 @@ import (
 
 // lookupsJSONVersion changes only when a field changes meaning or goes away.
 // Version 3 made rule a hook_prefix rule that names every listed kind.
-const lookupsJSONVersion = 3
+const lookupsJSONVersion = 4
 
 // lookupsRuleHook is the hook name the suggested rules use.
 const lookupsRuleHook = "ninja"
