@@ -77,6 +77,20 @@ func (r Rule) validateSites() error {
 	return nil
 }
 
+// listing is the full discovery of raw as a lookups file lists it: the map
+// calls (inject.DiscoverMapCallsRaw) and every other site, with the labels
+// and the listing fingerprint of all of them (inject.DiscoverCallSitesRaw).
+// raw.Kernel and raw.Modules name kfunc calls. A listing and the load-time
+// sites check both call it, so they compute the same fingerprint.
+func listing(raw inject.RawProgram) ([]inject.LookupSite, inject.CallDiscovery, error) {
+	calls, err := inject.DiscoverMapCallsRaw(raw)
+	if err != nil {
+		return nil, inject.CallDiscovery{}, err
+	}
+	sites, err := inject.DiscoverCallSitesRaw(raw, calls)
+	return calls, sites, err
+}
+
 // dropReason is the reason a site left out by Sites is skipped with.
 const dropReason = "not selected by the rule's sites"
 

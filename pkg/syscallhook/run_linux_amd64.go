@@ -49,6 +49,11 @@ type Options struct {
 	// thread. Other target threads keep running until the supervisor handles
 	// their next stop, then wait behind this callback. It must not wait on the target.
 	OnInject func(Injection)
+	// OnRefuse, if set, is called on the tracing thread for each load a
+	// rule's sites refused (see Sites): the listing was of another build or
+	// an entry names no site of the program. The original program then
+	// loads, or the load is refused with FailClosed.
+	OnRefuse func(Refusal)
 	// OnDiscover, if set, is called on the tracing thread for every XDP, tc or
 	// cgroup_skb program load whose attr carries BTF, whether or not a rule selects it,
 	// before any transform. Rules may then be empty. It must not wait on the
@@ -95,7 +100,10 @@ type Discovery struct {
 // Injection describes one successful injected load. Program is the kernel
 // program name and Func the entry function. ProgID is the loaded program's
 // kernel ID, zero if the tracee could not query it. Hooks and Skipped are
-// the transform's (see inject.LookupResult).
+// the transform's (see inject.LookupResult). Build is the listing
+// fingerprint of the original program and Labels its site labels by pc, as
+// a listing of the same load gives them (inject.CallDiscovery); both are
+// empty when the listing failed.
 type Injection struct {
 	HookForm      HookForm
 	Program, Func string
@@ -104,9 +112,16 @@ type Injection struct {
 	Hooks         []inject.LookupHook
 	Skipped       []inject.LookupSite
 	Stack         inject.StackReport
+	Build         string
+	Labels        map[uint32]string
 	// OutsidePremise names the denied callees the original program calls
 	// (inject.PremiseCalls): the theorem is not claimed for this load.
 	OutsidePremise []string
+}
+
+// Refusal is a load a rule's sites refused; Reason is the message.
+type Refusal struct {
+	Program, Func, Reason string
 }
 
 type rememberedBTF struct {
@@ -149,12 +164,13 @@ func (s *supervisor) log(format string, args ...any) {
 	_, _ = fmt.Fprintf(s.options.Log, "inject-run: "+format+"\n", args...)
 }
 
-// loadKernel sets s.kernel once, only when a rule has calls or loads are
-// listed. Without kernel BTF the transform cannot name a kfunc call and skips
-// every call site of a program that makes one; programs without kfunc calls
-// are unaffected.
+// loadKernel sets s.kernel once, when there are rules or loads are listed:
+// a listing, and the site labels and fingerprint of an injected load, name
+// kfunc calls with it. Without kernel BTF the transform cannot name a kfunc
+// call and skips every call site of a program that makes one; programs
+// without kfunc calls are unaffected.
 func (s *supervisor) loadKernel(load func() (*btf.Spec, error)) {
-	if s.options.OnDiscover == nil && !slices.ContainsFunc(s.options.Rules, func(r Rule) bool { return len(r.Calls) != 0 }) {
+	if s.options.OnDiscover == nil && len(s.options.Rules) == 0 {
 		return
 	}
 	spec, err := load()
@@ -1020,6 +1036,9 @@ func (s *supervisor) entry(pid int, t *thread, regs unix.PtraceRegs) error {
 				s.log("program %q: injection skipped: %v", name, injectErr)
 			}
 		}
+		if errors.As(injectErr, &sitesRefusal{}) && s.options.OnRefuse != nil {
+			s.options.OnRefuse(Refusal{Program: name, Func: entry, Reason: injectErr.Error()})
+		}
 		refuse := s.options.FailClosed || stackErr != nil && !rule.Auto && !errors.Is(stackErr, errTrialVerifier) && !errors.Is(stackErr, errIndirectJump)
 		ret, err = retryOriginalOrRefuse(refuse, func() (int64, error) {
 			// Substituted attrs and buffers live in scratch memory, so the original
@@ -1038,7 +1057,7 @@ func (s *supervisor) entry(pid int, t *thread, regs unix.PtraceRegs) error {
 		}
 		if s.options.OnInject != nil {
 			inj := Injection{HookForm: form, Program: name, Func: entry, Type: ebpf.ProgramType(u32(attr, 0)), Hooks: result.Hooks, Skipped: result.Skipped, Stack: stack,
-				OutsidePremise: premise}
+				Build: rewrite.build, Labels: rewrite.labels, OutsidePremise: premise}
 			// bpf_prog_info starts with type and id.
 			if info, err := r.info(uint32(ret), 8); err != nil {
 				s.log("program %q: cannot query program ID: %v", name, err)
@@ -1281,17 +1300,8 @@ func (s *supervisor) discover(r *remote, attr []byte, name string, stack inject.
 	if err != nil {
 		return err
 	}
-	calls, err := inject.DiscoverMapCallsRaw(raw)
-	if err != nil {
-		return err
-	}
-	raw.Kernel = s.kernel
-	if s.kernel != nil {
-		raw.Modules = s.moduleBTFs(raw.Instructions, fdArray(attr),
-			func(addr, size uint64) ([]byte, error) { return readMemory(r.pid, addr, size) },
-			func(fd uint32) ([]byte, error) { return r.info(fd, 32) }, loadModuleBTF)
-	}
-	callSites, err := inject.DiscoverCallSitesRaw(raw, calls)
+	raw.Kernel, raw.Modules = s.kernel, s.programModules(r, attr, raw.Instructions)
+	calls, callSites, err := listing(raw)
 	if err != nil {
 		return err
 	}
@@ -1320,6 +1330,25 @@ type transformed struct {
 	premises  injectcheck.Premises
 	check     bool
 	missFirst bool
+	retry     bool              // a trial of the retry, with its own drop list
+	build     string            // the listing fingerprint of the original
+	labels    map[uint32]string // the listing's site labels by pc
+}
+
+// sitesRefusal is a load a rule's sites refused (Sites.drop).
+type sitesRefusal struct{ error }
+
+func (e sitesRefusal) Unwrap() error { return e.error }
+
+// programModules returns the module BTFs of insns' kfunc calls when kernel
+// BTF loaded (see moduleBTFs).
+func (s *supervisor) programModules(r *remote, attr []byte, insns asm.Instructions) map[int16]*btf.Spec {
+	if s.kernel == nil {
+		return nil
+	}
+	return s.moduleBTFs(insns, fdArray(attr),
+		func(addr, size uint64) ([]byte, error) { return readMemory(r.pid, addr, size) },
+		func(fd uint32) ([]byte, error) { return r.info(fd, 32) }, loadModuleBTF)
 }
 
 // refusedLoad marks the kernel's refusal of a rewritten program; why is the
@@ -1344,7 +1373,9 @@ func (s *supervisor) transformLoad(r *remote, attr []byte, rule Rule, form HookF
 }
 
 // transform rewrites the load without the sites of drop (see
-// inject.LookupRequest.Drop).
+// inject.LookupRequest.Drop) and without those the rule's sites leave out.
+// It lists the load as a listing would, for the hooks file and the sites
+// check; a sites rule whose listing differs gets a sitesRefusal.
 func (s *supervisor) transform(r *remote, attr []byte, rule Rule, form HookForm, stack inject.StackReport, missFirst bool, drop map[uint32]string) (t *transformed, entry string, err error) {
 	spec, err := s.programBTF(r, attr)
 	if err != nil {
@@ -1365,13 +1396,27 @@ func (s *supervisor) transform(r *remote, attr []byte, rule Rule, form HookForm,
 	if err != nil {
 		return nil, "", err
 	}
+	listed := raw
+	listed.Kernel, listed.Modules = s.kernel, s.programModules(r, attr, raw.Instructions)
 	if len(rule.Calls) > 0 {
-		raw.Kernel = s.kernel // only a rule with calls names kfunc calls and types their arguments
-		if s.kernel != nil {
-			raw.Modules = s.moduleBTFs(raw.Instructions, fdArray(attr),
-				func(addr, size uint64) ([]byte, error) { return readMemory(r.pid, addr, size) },
-				func(fd uint32) ([]byte, error) { return r.info(fd, 32) }, loadModuleBTF)
+		raw.Kernel, raw.Modules = listed.Kernel, listed.Modules // only a rule with calls names kfunc calls and types their arguments
+	}
+	mapCalls, list, listErr := listing(listed)
+	if listErr != nil && rule.Sites != nil {
+		return nil, entry, fmt.Errorf("listing the load for the rule's sites: %w", listErr)
+	}
+	if listErr != nil && drop == nil {
+		s.log("program %q: no site labels: %v", rule.Program, listErr)
+	}
+	request := rule.request()
+	request.Drop = drop
+	if rule.Sites != nil {
+		selected, err := rule.Sites.drop(list.Fingerprint, slices.Concat(mapCalls, list.Sites, list.TailCalls), list.Labels)
+		if err != nil {
+			return nil, entry, sitesRefusal{err}
 		}
+		maps.Copy(selected, drop) // the retry drops only sites the selection kept
+		request.Drop = selected
 	}
 	if err := supplyMapTypes(&raw, rule); err != nil {
 		return nil, "", err
@@ -1383,17 +1428,16 @@ func (s *supervisor) transform(r *remote, attr []byte, rule Rule, form HookForm,
 			}
 		}
 	}
-	request := rule.request()
 	request.StaticUntrusted = form.Form == "static"
 	request.MissFirst = missFirst
-	request.Drop = drop
 	request.Stack = inject.StackAudit{Frames: stack.Frames(), Source: stack.Source, FrameRounding: stack.FrameRounding}
 	injectcheck.Label(raw.Instructions)
 	result, err := inject.TransformLookupRawGuarded(raw, request, s.probeTailCallReachability)
 	if err != nil {
 		return nil, "", err
 	}
-	t = &transformed{result: result, request: request, original: raw.Instructions, missFirst: missFirst}
+	t = &transformed{result: result, request: request, original: raw.Instructions, missFirst: missFirst, retry: drop != nil,
+		build: list.Fingerprint, labels: list.Labels}
 	t.cert, t.premises, err = loadCheckInputs(raw.Instructions, result, request.Stack, stack)
 	if errors.Is(err, inject.ErrCheckerNotApplicable) && drop == nil {
 		s.log("program %q: %v; load not validated", rule.Program, err)
@@ -1533,7 +1577,7 @@ func (s *supervisor) load(r *remote, attr []byte, name string, form HookForm, t 
 		}
 		// Not after the retry: its rewrite is final, and the load would go
 		// past the budget.
-		if !t.missFirst && t.request.Drop == nil && missFirstDiffers(t.request, result) {
+		if !t.missFirst && !t.retry && missFirstDiffers(t.request, result) {
 			s.extra++
 			hit, diagnosed := s.hitJumpLimit(r, patched)
 			if hit {

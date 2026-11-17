@@ -246,3 +246,63 @@ func TestExplicitMapRuleSameBytes(t *testing.T) {
 		t.Fatal("hook_prefix map rule differs from the hook spelling")
 	}
 }
+
+// A rule's sites only remove hooks: with any single site selected or
+// excepted, by label or by number, the transform hooks a subset of the
+// sites the same rule hooks without sites, and never a site left out.
+func TestSitesNeverWiden(t *testing.T) {
+	raw := explicitRuleProgram(t)
+	mapCalls, list, err := listing(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	all := slices.Concat(mapCalls, list.Sites, list.TailCalls)
+	ready := Rule{Program: "p", Auto: true, Maps: []string{"a", "b"}, Ops: []string{"lookup:any", "update:any"},
+		Entry: true, Calls: []string{"bpf_ktime_get_ns"}, HookPrefix: "ninja"}
+	hooked := func(drop map[uint32]string) map[uint32]bool {
+		t.Helper()
+		req := ready.request()
+		req.Drop = drop
+		req.Stack = inject.StackAudit{Frames: map[string]int16{"p": -8}, Source: "verifier", FrameRounding: 16}
+		result, err := inject.TransformLookupRaw(raw, req)
+		if err != nil {
+			t.Fatalf("drop %v: %v", drop, err)
+		}
+		sites := map[uint32]bool{}
+		for _, hook := range result.Hooks {
+			for _, site := range hook.Sites {
+				sites[site.SitePC] = true
+			}
+		}
+		return sites
+	}
+	base := hooked(nil)
+	if len(all) != 3 || len(base) != 3 {
+		t.Fatalf("listing %+v, hooked %v: want 3 sites", all, base)
+	}
+	for _, site := range all {
+		pc := site.SitePC
+		for _, sel := range []Sites{{Only: []SiteRef{pcRef(pc)}}, {Only: []SiteRef{{Label: list.Labels[pc]}}},
+			{Except: []SiteRef{pcRef(pc)}}, {Except: []SiteRef{{Label: list.Labels[pc]}}}} {
+			sel.Build = list.Fingerprint
+			r := ready
+			r.Sites = &sel
+			if err := Validate([]Rule{r}); err != nil {
+				t.Fatal(err)
+			}
+			drop, err := sel.drop(list.Fingerprint, all, list.Labels)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got := hooked(drop)
+			for pc := range got {
+				if !base[pc] || drop[pc] != "" {
+					t.Errorf("%+v: hooks pc %d (dropped %q), not hooked without sites or left out", sel, pc, drop[pc])
+				}
+			}
+			if sel.Except != nil && got[pc] || sel.Only != nil && !got[pc] {
+				t.Errorf("%+v: hooked %v", sel, got)
+			}
+		}
+	}
+}
