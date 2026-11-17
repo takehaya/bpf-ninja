@@ -195,9 +195,10 @@ func dropCalls(groups []lookupGroup, skipped []LookupSite, reason string) ([]loo
 // RetryRank orders hooks by how far their sites are trusted, lowest first:
 // lookups 0, other map calls 1, tail calls 2, callees with a call-table row
 // 3, then result-only hooks of helpers with a scalar (4) or a pointer result
-// (5) and of kernel functions with a scalar (6) or a pointer result (7). The
-// load retry tries sites in this order, and the function-count limit drops
-// call groups from its end.
+// (5) and of kernel functions with a scalar (6) or a pointer result (7). A
+// row callee that fell back to the result-only hook (ArgReason) ranks by
+// that form. The load retry tries sites in this order, and the
+// function-count limit drops call groups from its end.
 func RetryRank(h LookupHook) int {
 	switch {
 	case h.Kind.MapCall():
@@ -206,7 +207,7 @@ func RetryRank(h LookupHook) int {
 		return 2
 	case h.Kind != HookCall:
 		return 0
-	case slices.ContainsFunc(callTable, func(row CallRow) bool { return row.Name == h.Call }):
+	case h.ArgReason == "" && slices.ContainsFunc(callTable, func(row CallRow) bool { return row.Name == h.Call }):
 		return 3
 	}
 	rank := 4
@@ -228,7 +229,9 @@ func dropLastCalls(groups []lookupGroup, skipped []LookupSite, n int, reason str
 			calls = append(calls, i)
 		}
 	}
-	rank := func(i int) int { return RetryRank(LookupHook{Kind: HookCall, Call: groups[i].call.Name, RetPtr: groups[i].call.RetPtr}) }
+	rank := func(i int) int {
+		return RetryRank(LookupHook{Kind: HookCall, Call: groups[i].call.Name, RetPtr: groups[i].call.RetPtr, ArgReason: groups[i].argReason})
+	}
 	slices.SortStableFunc(calls, func(a, b int) int {
 		if ra, rb := rank(a), rank(b); ra != rb {
 			return ra - rb

@@ -647,6 +647,35 @@ func TestRetryRank(t *testing.T) {
 	}
 }
 
+// A row callee that fell back to the result-only hook ranks by that form:
+// a helper with a scalar or pointer result, a kernel function with a pointer
+// result. The function limit then drops it like a helper without a row,
+// by first site within the rank.
+func TestRetryRankFallback(t *testing.T) {
+	for _, tc := range []struct {
+		h    LookupHook
+		rank int
+	}{
+		{LookupHook{Kind: HookCall, Call: "bpf_fib_lookup"}, 3},
+		{LookupHook{Kind: HookCall, Call: "bpf_fib_lookup", ArgReason: "two sizes"}, 4},
+		{LookupHook{Kind: HookCall, Call: "bpf_sk_lookup_tcp", RetPtr: true, ArgReason: "two sizes"}, 5},
+		{LookupHook{Kind: HookCall, Call: "bpf_xdp_ct_lookup", RetPtr: true, ArgReason: "two sizes"}, 7},
+	} {
+		if got := RetryRank(tc.h); got != tc.rank {
+			t.Errorf("RetryRank(%+v) = %d, want %d", tc.h, got, tc.rank)
+		}
+	}
+	group := func(name string, id asm.BuiltinFunc, pc uint32, argReason string) lookupGroup {
+		return lookupGroup{name: "obs_" + name, op: HookCall, call: &CallRow{Name: name, Helper: id}, argReason: argReason,
+			sites: []discoveredLookup{{LookupSite: LookupSite{Op: HookCall, Call: name, SitePC: pc}}}}
+	}
+	groups := []lookupGroup{group("bpf_get_numa_node_id", asm.FnGetNumaNodeId, 3, ""), group("bpf_fib_lookup", asm.FnFibLookup, 9, "two sizes")}
+	kept, skipped, dropped := dropLastCalls(groups, nil, 1, "limit")
+	if !dropped || len(kept) != 1 || kept[0].call.Name != "bpf_get_numa_node_id" || len(skipped) != 1 || skipped[0].Call != "bpf_fib_lookup" {
+		t.Fatalf("kept %+v skipped %+v", kept, skipped)
+	}
+}
+
 // spliceLookupCalls gives a call site with nothing to keep no prelude, also
 // at the start of a function: the function's symbol stays on the call.
 func TestCallEmptyPreludeAtFunctionStart(t *testing.T) {
