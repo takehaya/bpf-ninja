@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -20,6 +21,25 @@ import (
 
 // Layout extraction is deliberately separate from the checker decision. Labels
 // only propose a correspondence; the checker compares the actual instructions.
+// checkRewrite transforms spec for req, which must hook every name of
+// req.Calls, and checks the rewrite with injectcheck.Check. It returns the
+// hooks.
+func checkRewrite(t *testing.T, spec *ebpf.CollectionSpec, req LookupRequest) []LookupHook {
+	t.Helper()
+	in := slices.Clone(spec.Programs["p"].Instructions)
+	injectcheck.Label(spec.Programs["p"].Instructions)
+	plan, err := transformLookup(spec, req)
+	if err != nil || len(plan.hooks) != len(req.Calls) {
+		t.Fatalf("transform: %v, hooks %+v skipped %+v", err, plan.hooks, plan.skipped)
+	}
+	out := spec.Programs["p"].Instructions
+	cert, premises := validationCertificate(t, in, out, plan.hooks, req.Stack.LowestOffset)
+	if _, err := injectcheck.Check(in, out, cert, premises); err != nil {
+		t.Fatalf("checker: %v", err)
+	}
+	return plan.hooks
+}
+
 func validationCertificate(t *testing.T, in, out asm.Instructions, hooks []LookupHook, floor int16) (injectcheck.Certificate, injectcheck.Premises) {
 	t.Helper()
 	names := map[string]bool{}

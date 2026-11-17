@@ -267,9 +267,10 @@ func testCallHookCt(t *testing.T, typ ebpf.ProgramType, dport uint16, static boo
 		req := callReq(name)
 		req.Kernel, req.StaticUntrusted = kernel, static
 		coll, plan, obs := callHooked(t, ctFixture(typ, kfunc, status, dport, unchecked), req)
-		if h := plan.hooks[0]; !h.RetPtr || h.ArgReg != 4 || h.Static != static || h.Untrusted == static || h.Sites[0].SitePC != 17 {
+		if h := plan.hooks[0]; !h.RetPtr || h.ArgReg != 4 || h.Static != static || h.Untrusted == static || h.Sites[0].SitePC != 17 || h.RetType != "nf_conn" {
 			t.Fatalf("hook %+v", h)
 		}
+		checkRewrite(t, ctFixture(typ, kfunc, status, dport, unchecked), req)
 		pairs = append(pairs, pair{loadCallFixture(t, ctFixture(typ, kfunc, status, dport, unchecked)), coll, obs[name]})
 	}
 	_, pass, drop := callVerdicts(typ)

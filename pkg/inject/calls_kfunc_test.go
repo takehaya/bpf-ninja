@@ -364,12 +364,9 @@ func TestCallKfuncRetType(t *testing.T) {
 	spec := callFixtureSpec(ebpf.XDP, append(insns, asm.Mov.Imm(asm.R0, 2), asm.Return()))
 	req := callReq("k_ptr", "k_voidp")
 	req.Kernel = kernel
-	plan, err := transformLookup(spec, req)
-	if err != nil || len(plan.hooks) != 2 {
-		t.Fatalf("err %v hooks %+v", err, plan.hooks)
-	}
+	hooks := checkRewrite(t, spec, req)
 	out := spec.Programs["p"].Instructions
-	for _, h := range plan.hooks {
+	for _, h := range hooks {
 		fn, _ := callHookFn(t, out, h.Name)
 		want := map[string]string{"k_ptr": "foo", "k_voidp": ""}[h.Call]
 		if h.RetType != want || hookabi.RetType(fn.Tags) != want {

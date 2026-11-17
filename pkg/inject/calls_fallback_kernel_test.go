@@ -53,6 +53,10 @@ func testCallFallbackCt(t *testing.T, typ ebpf.ProgramType, dport uint16, static
 	coll, plan, obs := callHooked(t, ctFallbackFixture(t, typ, dport), req)
 	h := plan.hooks[0]
 	checkFallbackHook(t, h, static)
+	if h.RetType != "nf_conn" {
+		t.Fatalf("fallback hook %+v, want RetType nf_conn", h)
+	}
+	checkRewrite(t, ctFallbackFixture(t, typ, dport), req)
 	plain := loadCallFixture(t, ctFallbackFixture(t, typ, dport))
 	_, pass, drop := callVerdicts(typ)
 	step := func(run int, action int32) {
