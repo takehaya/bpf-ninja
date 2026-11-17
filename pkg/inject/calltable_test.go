@@ -271,20 +271,21 @@ func TestCallHookMetadataArgNotStack(t *testing.T) {
 	}
 }
 
-// The receive-metadata rows take their first value argument, whose size the
-// prototype gives.
+// The receive-metadata rows take a value argument, whose size the prototype
+// gives: the timestamp, the hash, or the VLAN tag control information.
 func TestKfuncArg(t *testing.T) {
 	kernel := metadataKernelSpec(t)
 	for _, tc := range []struct {
 		name, typ string
 		size      uint32
+		reg       asm.Register
 	}{
-		{"bpf_xdp_metadata_rx_timestamp", "u64", 8},
-		{"bpf_xdp_metadata_rx_hash", "u32", 4},
-		{"bpf_xdp_metadata_rx_vlan_tag", "__be16", 2},
+		{"bpf_xdp_metadata_rx_timestamp", "u64", 8, asm.R2},
+		{"bpf_xdp_metadata_rx_hash", "u32", 4, asm.R2},
+		{"bpf_xdp_metadata_rx_vlan_tag", "u16", 2, asm.R3},
 	} {
 		row := callRow(t, tc.name)
-		if row.ArgReg != asm.R2 || row.SizeReg != 0 || !row.Writes || row.RetSize != 4 || !row.RetSigned || row.RetPtr {
+		if row.ArgReg != tc.reg || row.SizeReg != 0 || !row.Writes || row.RetSize != 4 || !row.RetSigned || row.RetPtr {
 			t.Errorf("%s row %+v", tc.name, row)
 		}
 		typ, size := kfuncArg(row, kernel)
@@ -308,10 +309,11 @@ func TestCallHookMetadataArg(t *testing.T) {
 		name, typ string
 		size      uint32
 		third     bool
+		reg       int
 	}{
-		{"bpf_xdp_metadata_rx_timestamp", "u64", 8, false},
-		{"bpf_xdp_metadata_rx_hash", "u32", 4, true},
-		{"bpf_xdp_metadata_rx_vlan_tag", "__be16", 2, true},
+		{"bpf_xdp_metadata_rx_timestamp", "u64", 8, false, 2},
+		{"bpf_xdp_metadata_rx_hash", "u32", 4, true, 2},
+		{"bpf_xdp_metadata_rx_vlan_tag", "u16", 2, true, 3},
 	} {
 		for _, withKernel := range []bool{true, false} {
 			spec := xdpMetadataFixture(kfuncCall(-1).WithReference(tc.name), tc.third)
@@ -337,7 +339,7 @@ func TestCallHookMetadataArg(t *testing.T) {
 				}
 				continue
 			}
-			if h.ArgReg != 2 || h.ArgSize != tc.size || h.ArgType != tc.typ || h.Untrusted || h.Static || h.ArgReason != "" || h.RetSize != 4 || !h.RetSigned {
+			if h.ArgReg != tc.reg || h.ArgSize != tc.size || h.ArgType != tc.typ || h.Untrusted || h.Static || h.ArgReason != "" || h.RetSize != 4 || !h.RetSigned {
 				t.Fatalf("%s: hook %+v", tc.name, h)
 			}
 			if !slices.Equal(params, []string{"ctx", "site", "arg", "ret"}) {

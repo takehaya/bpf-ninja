@@ -327,7 +327,7 @@ func TestTypedRetMember(t *testing.T) {
 
 // TestScalarPointeeCallHookArg: the hook of an XDP receive-metadata kfunc
 // takes const T *arg, T the value the kfunc wrote (u64 timestamp, u32 hash,
-// __be16 vlan_proto). --arg-filter and --arg-echo read it as arg[0], and
+// u16 VLAN tag control information). --arg-filter and --arg-echo read it as arg[0], and
 // --record entry shows it.
 func TestScalarPointeeCallHookArg(t *testing.T) {
 	for _, c := range []struct {
@@ -337,8 +337,7 @@ func TestScalarPointeeCallHookArg(t *testing.T) {
 	}{
 		{&btf.Typedef{Name: "u64", Type: u64}, 8, "site=3 ret=-22 arg[0]=30064771074"},
 		{&btf.Typedef{Name: "u32", Type: u32}, 4, "site=3 ret=-22 arg[0]=2"},
-		// Network order is read as a host integer: bytes 02 00 show as 2.
-		{&btf.Typedef{Name: "__be16", Type: &btf.Int{Name: "__u16", Size: 2}}, 2, "site=3 ret=-22 arg[0]=2"},
+		{&btf.Typedef{Name: "u16", Type: &btf.Int{Name: "unsigned short", Size: 2}}, 2, "site=3 ret=-22 arg[0]=2"},
 	} {
 		params := callHook(t, []string{hookabi.SizeTag("ret", 4), hookabi.RetSignedTag},
 			btf.FuncParam{Name: "arg", Type: &btf.Pointer{Target: &btf.Const{Type: c.typ}}}, btf.FuncParam{Name: "ret", Type: u64})

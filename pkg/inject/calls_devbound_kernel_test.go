@@ -243,12 +243,14 @@ func firstLine(err error) string { s, _, _ := strings.Cut(err.Error(), "\n"); re
 
 // testCallHookRowMetadata runs the fixture of kfunc name on frames over a
 // veth pair, first unmodified and then with its call hooked, and checks
-// that the hook takes the value buffer as a typed argument of size bytes,
-// sees for each frame the value and status the program stores, and that
-// every frame gets the same action. With vlan the frames carry VLAN tag 100.
-// It returns the last value and the 8 bytes at fp-16.
+// that the hook takes the row's value buffer (fp-8 for R2, fp-16 for R3)
+// as a typed argument of size bytes, sees for each frame the value and
+// status the program stores, and that every frame gets the same action.
+// With vlan the frames carry VLAN tag 100. It returns the last 8 bytes at
+// fp-8 (masked to size) and at fp-16.
 func testCallHookRowMetadata(t *testing.T, name string, third, vlan bool, size uint32) (uint64, uint64) {
 	call, kernel := metadataKfunc(t, name)
+	row := callRow(t, name)
 	v := newMetadataVeth(t, vlan)
 	ifindex := v.rx.Attrs().Index
 	const frames = 3
@@ -280,7 +282,7 @@ func testCallHookRowMetadata(t *testing.T, name string, third, vlan bool, size u
 	if len(plan.hooks) != 1 || len(plan.skipped) != 0 {
 		t.Fatalf("hooks %+v skipped %+v", plan.hooks, plan.skipped)
 	}
-	if h := plan.hooks[0]; h.ArgReg != 2 || h.ArgSize != size || h.Untrusted || h.Static || h.ArgReason != "" || h.RetSize != 4 {
+	if h := plan.hooks[0]; h.ArgReg != int(row.ArgReg) || h.ArgSize != size || h.Untrusted || h.Static || h.ArgReason != "" || h.RetSize != 4 {
 		t.Fatalf("hook %+v", h)
 	}
 	out := work.Programs["p"].Instructions
@@ -302,9 +304,13 @@ func testCallHookRowMetadata(t *testing.T, name string, third, vlan bool, size u
 			t.Fatal(err)
 		}
 		saw := lastCall(t, obs, seq+1)
-		if saw[0] != uint64(plan.hooks[0].Sites[0].SitePC) || saw[1]&mask != got[0]&mask || uint32(saw[2]) != uint32(got[1]) {
+		value := got[0]
+		if row.ArgReg == asm.R3 {
+			value = got[2]
+		}
+		if saw[0] != uint64(plan.hooks[0].Sites[0].SitePC) || saw[1]&mask != value&mask || uint32(saw[2]) != uint32(got[1]) {
 			t.Fatalf("frame %d: hook site %d value %#x status %#x, program stored value %#x status %#x",
-				seq+1, saw[0], saw[1], saw[2], got[0], got[1])
+				seq+1, saw[0], saw[1], saw[2], value, got[1])
 		}
 	}
 	if int32(uint32(got[1])) != int32(uint32(plainOut[1])) {
@@ -326,8 +332,8 @@ func TestBpfCallHookRowXdpRxHash(t *testing.T) {
 	testCallHookRowMetadata(t, "bpf_xdp_metadata_rx_hash", true, false, 4)
 }
 
-// The VLAN protocol is in network byte order: 802.1Q (0x8100) is the bytes
-// 81 00, which the hook's u16 reads as 0x0081 on a little-endian host.
+// The hook takes the tag control information, whose low 12 bits are the
+// VLAN id the test pushes (100); the hook saw what the program stored.
 func TestBpfCallHookRowXdpRxVlanTag(t *testing.T) {
 	proto, tci := testCallHookRowMetadata(t, "bpf_xdp_metadata_rx_vlan_tag", true, true, 2)
 	if proto != 0x0081 || uint16(tci)&0xfff != 100 {

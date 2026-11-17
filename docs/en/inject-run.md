@@ -341,8 +341,8 @@ The hook receives the call's result as `ret` and, for a callee with a memory arg
 
 #### XDP receive metadata
 
-`bpf_xdp_metadata_rx_timestamp`, `bpf_xdp_metadata_rx_hash` and `bpf_xdp_metadata_rx_vlan_tag` return a status and write the value through a pointer, so their hooks take `(ctx, u32 site, const T *arg, u64 ret)`: `arg` is the first value buffer (R2) after the call, typed by the kernel prototype as `u64` (timestamp), `u32` (hash) or `__be16` (VLAN protocol, in network byte order), and `ret` is the `int` status.
-A capture reads the value as `arg[0]` in `--arg-filter`, `--arg-echo` and `--record`, such as `--arg-filter 'ret==0' --arg-echo 'arg[0]'`; the hash's `rss_type` and the VLAN TCI are not captured.
+`bpf_xdp_metadata_rx_timestamp`, `bpf_xdp_metadata_rx_hash` and `bpf_xdp_metadata_rx_vlan_tag` return a status and write the value through a pointer, so their hooks take `(ctx, u32 site, const T *arg, u64 ret)`: `arg` is a value buffer after the call, typed by the kernel prototype: the timestamp (R2, `u64`), the hash (R2, `u32`), or the VLAN tag control information (R3, `u16`, in host byte order), whose low 12 bits are the VLAN id; `ret` is the `int` status.
+A capture reads the value as `arg[0]` in `--arg-filter`, `--arg-echo` and `--record`, such as `--arg-filter 'ret==0' --arg-echo 'arg[0]'`; the hash's `rss_type` and the VLAN protocol are not captured.
 The program must be loaded bound to its device (`prog_ifindex` with `BPF_F_XDP_DEV_BOUND_ONLY`, as these kernel functions require); its trial load stays bound to the same device. A program loaded for hardware offload (`prog_ifindex` without that flag) still gets no hooks. A value buffer that is not on the program's own stack makes `arg` the untyped `const void *` described above, read as `arg->bytes[N]`.
 
 #### Read fields behind a pointer result

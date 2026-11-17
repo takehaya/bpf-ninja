@@ -46,10 +46,11 @@ var callTable = []CallRow{
 	{Name: "bpf_xdp_ct_lookup", RetPtr: true, ArgReg: asm.R4, SizeReg: asm.R5, ArgType: "bpf_ct_opts", Writes: true},
 	{Name: "bpf_skb_ct_lookup", RetPtr: true, ArgReg: asm.R4, SizeReg: asm.R5, ArgType: "bpf_ct_opts", Writes: true},
 	// The XDP receive-metadata kfuncs return a status and write the value
-	// through their first pointer argument; the hook takes that value.
+	// through their pointer arguments; the hook takes the timestamp, the
+	// hash, or the VLAN tag control information (which holds the VLAN id).
 	{Name: "bpf_xdp_metadata_rx_timestamp", ArgReg: asm.R2, Writes: true, RetSize: 4, RetSigned: true},
 	{Name: "bpf_xdp_metadata_rx_hash", ArgReg: asm.R2, Writes: true, RetSize: 4, RetSigned: true},
-	{Name: "bpf_xdp_metadata_rx_vlan_tag", ArgReg: asm.R2, Writes: true, RetSize: 4, RetSigned: true},
+	{Name: "bpf_xdp_metadata_rx_vlan_tag", ArgReg: asm.R3, Writes: true, RetSize: 4, RetSigned: true},
 }
 
 // pointerResults are the helpers with a pointer result and no row that get
