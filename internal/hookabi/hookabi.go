@@ -29,6 +29,21 @@ func SizeTag(name string, size uint32) string {
 // integer ret (the ret SizeTag) is signed.
 const RetSignedTag = sizePrefix + "ret_signed"
 
+// RetTypeTag is the func-level decl tag naming the kernel struct or union
+// behind a call hook's const void *ret: the type the callee returns. The
+// capture reads members of ret through it; inject-run does not read them.
+func RetTypeTag(name string) string { return sizePrefix + "ret_type=" + name }
+
+// RetType returns the name a RetTypeTag in tags carries, "" without one.
+func RetType(tags []string) string {
+	for _, tag := range tags {
+		if name, ok := strings.CutPrefix(tag, sizePrefix+"ret_type="); ok {
+			return name
+		}
+	}
+	return ""
+}
+
 // SizeTags parses the key, value, arg and ret sizes from a function's decl tags.
 func SizeTags(tags []string) map[string]uint32 {
 	out := map[string]uint32{}

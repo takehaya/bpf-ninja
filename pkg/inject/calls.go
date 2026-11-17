@@ -68,6 +68,17 @@ func selectCalls(sites []discoveredLookup, req LookupRequest, types *btf.Spec) (
 	var kept []lookupGroup
 	for _, group := range groups {
 		row := group.call
+		kernel := req.Kernel
+		if m := req.Modules[group.sites[0].module]; m != nil {
+			kernel = m // split on vmlinux: finds the module's structs and the kernel's
+		}
+		if row.RetPtr {
+			var proto *btf.FuncProto
+			if row.Helper == 0 {
+				proto = kfuncByName(row.Name, kernel, nil)
+			}
+			group.retType = retTypeOf(row.Helper, proto)
+		}
 		if !validIdent(group.name) {
 			skipped = skipGroup(skipped, group, fmt.Sprintf("hook name %q is longer than %d bytes", group.name, MaxHookName))
 			continue
@@ -94,10 +105,6 @@ func selectCalls(sites []discoveredLookup, req LookupRequest, types *btf.Spec) (
 				continue
 			}
 			group.argSize, group.typed = sizes[0], typed
-			kernel := req.Kernel
-			if m := req.Modules[group.sites[0].module]; m != nil {
-				kernel = m // split on vmlinux: finds the module's structs and the kernel's
-			}
 			group.argType, group.argName = callArgType(row, sizes[0], types, kernel)
 		}
 		kept = append(kept, group)
@@ -108,10 +115,21 @@ func selectCalls(sites []discoveredLookup, req LookupRequest, types *btf.Spec) (
 // callHook generates the hook of a call group (shape S, M or P) and its plan
 // entry. A typed hook takes const T *arg; an untyped one takes const void *arg
 // tagged arg:untrusted with its size, or with StaticUntrusted keeps the typed
-// prototype and an empty body. A pointer result is always untyped: a
-// result-only hook of a pointer takes const void *ret, tagged arg:untrusted
-// or, with StaticUntrusted, static with an empty body.
+// prototype and an empty body. A pointer result is always const void *ret,
+// tagged arg:untrusted or, with StaticUntrusted, static with an empty body;
+// when retTypeOf knows the struct behind it, a ret_type decl tag names it
+// (the verifier does not interpret func decl tags).
 func callHook(group lookupGroup, ctx btf.Type, req LookupRequest) (asm.Instructions, LookupHook) {
+	hook, plan := callHookBody(group, ctx, req)
+	if group.call.RetPtr && group.retType != "" {
+		fn := btf.FuncMetadata(&hook[0])
+		fn.Tags = append(fn.Tags, hookabi.RetTypeTag(group.retType))
+		plan.RetType = group.retType
+	}
+	return hook, plan
+}
+
+func callHookBody(group lookupGroup, ctx btf.Type, req LookupRequest) (asm.Instructions, LookupHook) {
 	row := group.call
 	plan := LookupHook{Name: group.name, Kind: HookCall, When: string(CallAny), SiteArg: true, Sites: publicLookupSites(group.sites),
 		Call: row.Name, RetPtr: row.RetPtr, RetSize: row.RetSize, ArgReason: group.argReason}

@@ -2,6 +2,7 @@ package inject
 
 import (
 	"bytes"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -281,5 +282,118 @@ func TestPremiseCallsAfterTransform(t *testing.T) {
 	want := []string{"bpf_spin_lock", "bpf_spin_unlock"}
 	if before, after := PremiseCalls(raw.Instructions, nil, nil), PremiseCalls(got.Instructions, nil, nil); !slices.Equal(before, want) || !slices.Equal(after, want) {
 		t.Errorf("premise calls before %v, after %v", before, after)
+	}
+}
+
+// retTypeOf: a helper's generated column, a kernel function's struct
+// pointee behind modifiers and typedefs, and "" for void *, a scalar
+// pointee, an anonymous struct or no prototype.
+func TestRetTypeOf(t *testing.T) {
+	proto := func(ret btf.Type) *btf.FuncProto { return &btf.FuncProto{Return: ret} }
+	foo := &btf.Struct{Name: "nf_conn", Size: 4}
+	for _, tc := range []struct {
+		helper asm.BuiltinFunc
+		proto  *btf.FuncProto
+		want   string
+	}{
+		{asm.FnSkLookupTcp, nil, "sock"},
+		{asm.FnSkcLookupTcp, nil, "sock_common"},
+		{asm.FnTcpSock, nil, "tcp_sock"},
+		{asm.FnGetCurrentTaskBtf, nil, "task_struct"},
+		{asm.FnMapLookupElem, nil, ""},
+		{asm.FnRingbufReserve, nil, ""},
+		{0, proto(&btf.Pointer{Target: foo}), "nf_conn"},
+		{0, proto(&btf.Pointer{Target: &btf.Const{Type: &btf.Typedef{Name: "conn_t", Type: foo}}}), "nf_conn"},
+		{0, proto(&btf.Pointer{Target: &btf.Union{Name: "u", Size: 4}}), "u"},
+		{0, proto(&btf.Pointer{Target: &btf.Void{}}), ""},
+		{0, proto(&btf.Pointer{Target: &btf.Int{Name: "int", Size: 4}}), ""},
+		{0, proto(&btf.Pointer{Target: &btf.Struct{Size: 4}}), ""},
+		{0, proto(&btf.Int{Name: "int", Size: 4}), ""},
+		{0, nil, ""},
+	} {
+		if got := retTypeOf(tc.helper, tc.proto); got != tc.want {
+			t.Errorf("%s %v: %q, want %q", tc.helper, tc.proto, got, tc.want)
+		}
+	}
+}
+
+// A pointer result with a known type gets the ret_type decl tag and RetType
+// in every form: result-only global and static, the with-arg forms of a row
+// (sk_lookup_tcp) and its size-conflict fallback. An untyped one gets
+// neither; the hook's parameters do not change.
+func TestCallRetTypeTag(t *testing.T) {
+	ctx := xdpFunc("p").Type.(*btf.FuncProto).Params[0].Type
+	sk := &callTable[slices.IndexFunc(callTable, func(r CallRow) bool { return r.Name == "bpf_sk_lookup_tcp" })]
+	tuple := orBytes(nil, 12)
+	for _, tc := range []struct {
+		name  string
+		group lookupGroup
+	}{
+		{"result-only", lookupGroup{name: "obs_x", call: &CallRow{Name: "bpf_x", Helper: 1, RetPtr: true}, retType: "nf_conn"}},
+		{"with arg", lookupGroup{name: "obs_sk", call: sk, argType: tuple, argSize: 12, retType: "sock"}},
+		{"fallback", lookupGroup{name: "obs_sk", call: &CallRow{Name: sk.Name, Helper: sk.Helper, RetPtr: true}, argReason: "two sizes", retType: "sock"}},
+		{"untyped", lookupGroup{name: "obs_r", call: &CallRow{Name: "bpf_ringbuf_reserve", Helper: asm.FnRingbufReserve, RetPtr: true}}},
+	} {
+		for _, static := range []bool{false, true} {
+			hook, plan := callHook(tc.group, ctx, LookupRequest{StaticUntrusted: static})
+			fn := btf.FuncMetadata(&hook[0])
+			bare, _ := callHookBody(tc.group, ctx, LookupRequest{StaticUntrusted: static})
+			params := fn.Type.(*btf.FuncProto).Params
+			ret := params[len(params)-1]
+			if _, ok := btf.UnderlyingType(ret.Type).(*btf.Pointer); !ok || ret.Name != "ret" {
+				t.Errorf("%s static %v: last parameter %+v", tc.name, static, ret)
+			}
+			if got := hookabi.RetType(fn.Tags); got != tc.group.retType || plan.RetType != tc.group.retType {
+				t.Errorf("%s static %v: tag %q plan %q, want %q", tc.name, static, got, plan.RetType, tc.group.retType)
+			}
+			if !reflect.DeepEqual(btf.FuncMetadata(&bare[0]).Type, fn.Type) || !sameInsns(bare, hook) {
+				t.Errorf("%s static %v: the tag changed the hook", tc.name, static)
+			}
+		}
+	}
+}
+
+// The transform types a kernel function's pointer result from its
+// prototype, and the listing names the type per callee.
+func TestCallKfuncRetType(t *testing.T) {
+	kernel := kfuncKernelSpec(t)
+	insns := asm.Instructions{asm.Mov.Imm(asm.R1, 0), testKfunc(t, kernel, "k_ptr")}
+	insns = append(insns, outStore(0, asm.R0)...)
+	insns = append(insns, asm.Mov.Imm(asm.R1, 0), testKfunc(t, kernel, "k_voidp"))
+	insns = append(insns, outStore(1, asm.R0)...)
+	spec := callFixtureSpec(ebpf.XDP, append(insns, asm.Mov.Imm(asm.R0, 2), asm.Return()))
+	req := callReq("k_ptr", "k_voidp")
+	req.Kernel = kernel
+	plan, err := transformLookup(spec, req)
+	if err != nil || len(plan.hooks) != 2 {
+		t.Fatalf("err %v hooks %+v", err, plan.hooks)
+	}
+	out := spec.Programs["p"].Instructions
+	for _, h := range plan.hooks {
+		fn, _ := callHookFn(t, out, h.Name)
+		want := map[string]string{"k_ptr": "foo", "k_voidp": ""}[h.Call]
+		if h.RetType != want || hookabi.RetType(fn.Tags) != want {
+			t.Errorf("%s: RetType %q tags %v, want %q", h.Call, h.RetType, fn.Tags, want)
+		}
+	}
+	listed := asm.Instructions{
+		btf.WithFuncMetadata(asm.Mov.Reg(asm.R6, asm.R1).WithSymbol("p").WithSource(asm.Comment("entry")), xdpFunc("p")),
+		testKfunc(t, kernel, "k_ptr"), asm.Mov.Imm(asm.R0, 0),
+		testKfunc(t, kernel, "k_voidp"), asm.Mov.Imm(asm.R0, 0),
+		asm.FnSkcLookupTcp.Call(),
+		asm.Mov.Imm(asm.R0, 2), asm.Return(),
+	}
+	raw := rawOf(t, listed)
+	raw.Kernel = kernel
+	d, err := DiscoverCallSitesRaw(raw, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]string{}
+	for _, c := range d.Callees {
+		got[c.Name] = c.RetType
+	}
+	if want := map[string]string{"k_ptr": "foo", "k_voidp": "", "bpf_skc_lookup_tcp": "sock_common"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("listed types %v, want %v", got, want)
 	}
 }

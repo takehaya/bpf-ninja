@@ -392,6 +392,7 @@ type LookupHook struct {
 	ArgSize   uint32 `json:",omitempty"` // size of arg's pointee in bytes
 	RetPtr    bool   `json:",omitempty"` // ret is const void *; false: u64 ret
 	RetSize   uint32 `json:",omitempty"` // byte size of the callee's integer result when narrower than 8: only its low bytes are the result
+	RetType   string `json:",omitempty"` // with RetPtr, the kernel struct or union ret points to (the ret_type decl tag); "": untyped
 	ArgReason string `json:",omitempty"` // why the hook of a callee whose row has an argument takes none (selectCalls); "" otherwise
 }
 
@@ -1343,6 +1344,7 @@ type lookupGroup struct {
 	argSize   uint32
 	typed     bool
 	argReason string
+	retType   string // the kernel struct or union behind a pointer result (retTypeOf); "" untyped
 }
 
 // readOnlyArg reports whether a site of group may pass a pointer into a

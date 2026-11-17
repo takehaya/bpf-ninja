@@ -224,6 +224,31 @@ func kfuncByName(name string, kernel *btf.Spec, modules map[int16]*btf.Spec) *bt
 	return nil
 }
 
+// retTypeOf names the kernel struct or union behind a callee's pointer
+// result: for helper id (non-zero) the generated RetType column, for a
+// kernel function the pointee of its prototype proto (modifiers and typedefs
+// skipped). "" when the result is untyped: void *, a scalar pointee, an
+// anonymous type, or a prototype that cannot be read. It is the one place
+// where a result's type is decided.
+func retTypeOf(helper asm.BuiltinFunc, proto *btf.FuncProto) string {
+	if helper != 0 {
+		h, _ := helperByID(int64(helper))
+		return h.RetType
+	}
+	if proto == nil {
+		return ""
+	}
+	ptr, ok := btf.UnderlyingType(proto.Return).(*btf.Pointer)
+	if !ok {
+		return ""
+	}
+	switch t := btf.UnderlyingType(ptr.Target).(type) {
+	case *btf.Struct, *btf.Union:
+		return t.TypeName()
+	}
+	return ""
+}
+
 // hookableHelpers returns the names of the helpers a rule's Calls may name, in id order.
 func hookableHelpers() []string {
 	var names []string

@@ -25,9 +25,12 @@ type Callee struct {
 	Kind   string // "helper" or "kfunc"
 	Module int16
 	Ret    CalleeRet // "" when unknown
-	Typed  bool
-	Sites  []uint32
-	Reason string
+	// RetType is the kernel struct or union behind a pointer result
+	// (retTypeOf), "" when untyped or unknown.
+	RetType string
+	Typed   bool
+	Sites   []uint32
+	Reason  string
 }
 
 // FuncRange is a BTF function and its raw instruction slots [Start, End).
@@ -160,11 +163,12 @@ func calleeOf(ins *asm.Instruction, kernel *btf.Spec, modules map[int16]*btf.Spe
 			c.Reason = fmt.Sprintf("helper id %d is past the helper table", ins.Constant)
 			return c
 		}
-		c.Name, c.Ret = h.Name, h.Ret
+		c.Name, c.Ret, c.RetType = h.Name, h.Ret, h.RetType
 		_, c.Reason = helperCall(asm.BuiltinFunc(ins.Constant))
 		return c
 	} else if named {
 		c.Ret = kfuncRet(ins, kernel, modules)
+		c.RetType = retTypeOf(0, kfuncProto(ins, kernel, modules))
 	}
 	switch {
 	case !named:
