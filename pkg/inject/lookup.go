@@ -21,7 +21,7 @@ import (
 // Empty names or zero Line mean the input did not supply that information.
 // Reason explains why a site cannot be injected; discovery still lists it.
 type LookupSite struct {
-	Op               HookKind // HookLookup, HookUpdate, HookDelete, HookPush, HookPop or HookPeek; HookTailCall on a tail call
+	Op               HookKind // HookLookup, HookUpdate, HookDelete, HookPush, HookPop or HookPeek; HookTailCall on a tail call; empty, with no pc, on a skipped Maps name that matches no site (SkipUnmatchedMaps)
 	MapName          string
 	KeyTypeName      string
 	ValueTypeName    string

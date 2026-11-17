@@ -1574,7 +1574,7 @@ func (s *supervisor) retryLoad(r *remote, attr []byte, rule Rule, form HookForm,
 		return 0, out.art, err
 	}
 	for i, site := range out.art.result.Skipped {
-		if reason, ok := out.dropped[site.SitePC]; ok && site.Op != "" {
+		if reason, ok := out.dropped[site.SitePC]; ok && !unmatchedMapsName(site) {
 			out.art.result.Skipped[i].Reason = reason
 		}
 	}
@@ -1656,7 +1656,8 @@ func copyReadOnlyHelps(hook inject.LookupHook) bool {
 //
 //	hook "NAME" (KIND[ map "MAP"][ generic[ map "MAP"...][ runtime map]][, untrusted pointers][, value copied to stack][, static][, dispatch][, site pc N, N])
 //
-// separated by ", ", then "; skipped pc N (reason)" for each skipped lookup.
+// separated by ", ", then "; skipped pc N (reason)" for each skipped lookup,
+// or "; skipped map "MAP" (reason)" for a Maps name that matches no site.
 // A generic hook names each map its sites reference directly, such as a
 // sockhash, and says "runtime map" when a site's map is known only at run
 // time.
@@ -1712,9 +1713,19 @@ func hookSummary(result *inject.LookupResultRaw) string {
 		b.WriteByte(')')
 	}
 	for _, site := range result.Skipped {
+		if unmatchedMapsName(site) {
+			fmt.Fprintf(&b, "; skipped map %q (%s)", site.MapName, site.Reason)
+			continue
+		}
 		fmt.Fprintf(&b, "; skipped pc %d (%s)", site.SitePC, site.Reason)
 	}
 	return b.String()
+}
+
+// unmatchedMapsName reports a skipped entry for a Maps name that matches no
+// site (inject.LookupRequest.SkipUnmatchedMaps): it has no op and no pc.
+func unmatchedMapsName(site inject.LookupSite) bool {
+	return site.Op == "" && site.SitePC == 0 && site.MapName != ""
 }
 
 func extractRaw(r *remote, attr []byte, spec *btf.Spec) (inject.RawProgram, error) {

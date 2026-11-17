@@ -55,6 +55,10 @@ func TestHookSummary(t *testing.T) {
 		{"copy", inject.LookupResultRaw{Hooks: []inject.LookupHook{
 			{Name: "obs_flows", Kind: inject.HookLookup, MapName: "flows", Copied: true, Sites: pcs(18)},
 		}}, `hook "obs_flows" (lookup map "flows", value copied to stack, site pc 18)`},
+		{"unmatched-maps-name", inject.LookupResultRaw{
+			Hooks:   []inject.LookupHook{{Name: "obs_a", Kind: inject.HookLookup, MapName: "a", Sites: pcs(4)}},
+			Skipped: []inject.LookupSite{{MapName: "b", Reason: `Maps name "b" matches no lookup`}},
+		}, `hook "obs_a" (lookup map "a", site pc 4); skipped map "b" (Maps name "b" matches no lookup)`},
 		{"dispatch-static", inject.LookupResultRaw{Hooks: []inject.LookupHook{
 			{Name: "d", Kind: inject.HookLookup, MapName: "sessions", Static: true, Dispatch: true, Sites: pcs(13)},
 			{Name: "d", Kind: inject.HookEntry, Static: true, Dispatch: true},
