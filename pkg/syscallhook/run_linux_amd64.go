@@ -126,14 +126,14 @@ type Injection struct {
 
 // Refusal is a matched load that ended without hooks; Reason is the message.
 // Cause is what ended it: "sites" (the rule's sites refused the load),
-// "stack" (the kernel cannot give the stack audit: errAuditUnavailable),
+// "stack" (the kernel cannot give the stack audit: errAuditUnavailable, or
+// the tracee failed a request of the audit: errTracee),
 // "analysis" (any other error of the stack analysis: see unanalysable),
-// "verifier" (the verifier
-// refused the trial load of the original program), "checker" (the load-time
-// checker refused the rewrite), "retry" (the kernel refused the rewrite and
-// the retry loaded none), "loader_log" (the rewrite passes with a log of its
-// own, but not with the loader's log buffer: see failedLoad), "selector"
-// (more than one rule matches the load) or
+// "verifier" (the verifier refused the trial load of the original program),
+// "checker" (the load-time checker refused the rewrite), "retry" (the kernel
+// refused the rewrite and the retry loaded none), "loader_log" (the rewrite
+// passes with a log of its own, but not with the loader's log buffer: see
+// failedLoad), "selector" (more than one rule matches the load) or
 // "transform" (the load could not be rewritten). Outcome is what happened:
 // "original_loaded", "original_refused" (the kernel refused the original
 // program as well) or "load_refused" (the supervisor refused the load: with
@@ -211,11 +211,28 @@ type supervisor struct {
 var errTrialVerifier = errors.New("trial load was rejected by the verifier")
 
 // errAuditUnavailable marks a stack audit the kernel cannot give: the program
-// is offloaded, the trial load failed other than in the verifier, or the
+// is offloaded, the trial load failed with no verdict on the program, or the
 // kernel did not return the loaded program's functions.
 var errAuditUnavailable = errors.New("stack audit unavailable")
 
 var errIndirectJump = errors.New("indirect jump")
+
+// errTracee marks a failure on the traced process's side, in whatever step:
+// its memory could not be allocated, read or written, or a query on one of
+// its descriptors failed. A query the kernel answers with nothing usable is
+// not one (see loadedFunctions). As for a trial that fails other than by the
+// kernel's refusal in the retry, the original then loads under every rule,
+// and only FailClosed refuses it (see refuseOriginal).
+var errTracee = errors.New("tracee")
+
+// traceeError marks err as a failure on the traced process's side
+// (errTracee); nil stays nil.
+func traceeError(err error) error {
+	if err == nil || errors.Is(err, errTracee) {
+		return err
+	}
+	return fmt.Errorf("%w: %w", errTracee, err)
+}
 
 // errAnalysisPanic marks a panic in the analysis of one load (see guard).
 var errAnalysisPanic = errors.New("analysis of the load panicked")
@@ -271,54 +288,70 @@ func (s *supervisor) loadKernel(load func() (*btf.Spec, error)) {
 // nonzero offset of a kfunc call in insns, keyed by that offset: as in the
 // verifier, the u32 at fdArray + 4*offset is a module BTF fd of the tracee.
 // read reads tracee memory, info returns the fd's 32-byte bpf_btf_info and
-// load opens a kernel BTF by id. An offset that fails is left out and logged,
-// so its calls stay unnamed and the load goes on.
+// load opens a kernel BTF by id and gives its module's name, which homes
+// keeps by the same offset. An offset that fails is left out and logged,
+// so its calls stay unnamed and the load goes on. A BTF whose name load
+// cannot read is kept with an empty home and logged: its calls are hooked
+// and reported as not reviewed.
 func (s *supervisor) moduleBTFs(insns asm.Instructions, fdArray uint64, read func(addr, size uint64) ([]byte, error),
-	info func(fd uint32) ([]byte, error), load func(id btf.ID, base *btf.Spec) (*btf.Spec, error)) map[int16]*btf.Spec {
-	var modules map[int16]*btf.Spec
+	info func(fd uint32) ([]byte, error), load func(id btf.ID, base *btf.Spec) (*btf.Spec, string, error)) (modules map[int16]*btf.Spec, homes map[int16]string) {
 	failed := map[int16]bool{}
 	for i := range insns {
 		off := insns[i].Offset
 		if !insns[i].IsKfuncCall() || off == 0 || modules[off] != nil || failed[off] {
 			continue
 		}
-		spec, err := func() (*btf.Spec, error) {
+		spec, home, err := func() (*btf.Spec, string, error) {
 			if off < 0 || fdArray == 0 {
-				return nil, fmt.Errorf("no fd_array entry")
+				return nil, "", fmt.Errorf("no fd_array entry")
 			}
 			fd, err := read(fdArray+4*uint64(off), 4)
 			if err != nil {
-				return nil, err
+				return nil, "", err
 			}
 			bi, err := info(u32(fd, 0))
 			if err != nil {
-				return nil, err
+				return nil, "", err
 			}
 			if u32(bi, 28) != 1 {
-				return nil, fmt.Errorf("fd %d is not a kernel BTF", u32(fd, 0))
+				return nil, "", fmt.Errorf("fd %d is not a kernel BTF", u32(fd, 0))
 			}
 			return load(btf.ID(u32(bi, 12)), s.kernel)
 		}()
-		if err != nil {
+		if err != nil && spec == nil {
 			failed[off] = true
 			s.log("module BTF at fd_array offset %d unavailable: its kernel-function calls are not hooked: %v", off, err)
 			continue
 		}
-		if modules == nil {
-			modules = map[int16]*btf.Spec{}
+		if err != nil {
+			s.log("module BTF at fd_array offset %d has no name: its kernel-function calls are reported as not reviewed: %v", off, err)
 		}
-		modules[off] = spec
+		if modules == nil {
+			modules, homes = map[int16]*btf.Spec{}, map[int16]string{}
+		}
+		modules[off], homes[off] = spec, home
 	}
-	return modules
+	return modules, homes
 }
 
-func loadModuleBTF(id btf.ID, base *btf.Spec) (*btf.Spec, error) {
+// loadModuleBTF opens the kernel BTF id, split on base, and gives the name
+// the kernel gives it: the module's. When only the name cannot be read it
+// returns the BTF with an empty name and the error.
+func loadModuleBTF(id btf.ID, base *btf.Spec) (*btf.Spec, string, error) {
 	h, err := btf.NewHandleFromID(id)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	defer func() { _ = h.Close() }()
-	return h.Spec(base)
+	spec, err := h.Spec(base)
+	if err != nil {
+		return nil, "", err
+	}
+	info, err := h.Info()
+	if err != nil {
+		return spec, "", fmt.Errorf("kernel BTF %d name: %w", id, err)
+	}
+	return spec, info.Name, nil
 }
 
 // loaderLog says whether the loader asked for a verifier log (log_level 1
@@ -387,13 +420,14 @@ func refuseOriginal(failClosed bool, rule Rule, stackErr error) bool {
 
 // unanalysable says whether the stack audit failed in the analysis of the
 // program rather than in the kernel: every error of preloadDepths but an
-// audit the kernel cannot give (errAuditUnavailable) and a trial the
-// verifier refused (errTrialVerifier). Among them are the analysis's own
+// audit the kernel cannot give (errAuditUnavailable), a trial the
+// verifier refused (errTrialVerifier) and a failure of the tracee
+// (errTracee). Among them are the analysis's own
 // refusals (inject.ErrRefused and the plain errors of the stack-depth and
 // frame-floor steps), a panic in it (errAnalysisPanic) and a trial load it
 // cannot run (errIndirectJump). No rewrite of such a program is possible.
 func unanalysable(stackErr error) bool {
-	return stackErr != nil && !errors.Is(stackErr, errAuditUnavailable) && !errors.Is(stackErr, errTrialVerifier)
+	return stackErr != nil && !errors.Is(stackErr, errAuditUnavailable) && !errors.Is(stackErr, errTrialVerifier) && !errors.Is(stackErr, errTracee)
 }
 
 func retryOriginalOrRefuse(failClosed bool, retry func() (int64, error)) (int64, error) {
@@ -1242,16 +1276,8 @@ func (s *supervisor) entry(pid int, t *thread, regs unix.PtraceRegs) error {
 				s.log("program %q: hook %q observes only the result of %s: %s", name, hook.Name, hook.Call, hook.ArgReason)
 			}
 		}
-		premise := rewrite.premise
-		if len(premise) != 0 {
-			s.log("program %q: outside the theorem's premise: calls %s", name, strings.Join(premise, ", "))
-		}
-		if len(rewrite.unread) != 0 {
-			s.log("program %q: kernel functions without a review record: calls %s", name, strings.Join(rewrite.unread, ", "))
-		}
+		inj := s.injection(name, entry, ebpf.ProgramType(u32(attr, 0)), form, stack, rewrite)
 		if s.options.OnInject != nil {
-			inj := Injection{HookForm: form, Program: name, Func: entry, Type: ebpf.ProgramType(u32(attr, 0)), Hooks: result.Hooks, Skipped: result.Skipped, Stack: stack,
-				Build: rewrite.build, Labels: rewrite.labels, OutsidePremise: premise, NotReviewed: rewrite.unread}
 			// bpf_prog_info starts with type, id and the 8-byte tag.
 			if info, err := r.info(uint32(ret), 16); err != nil {
 				s.log("program %q: cannot query program ID: %v", name, err)
@@ -1265,6 +1291,20 @@ func (s *supervisor) entry(pid int, t *thread, regs unix.PtraceRegs) error {
 		}
 	}
 	return r.finish(ret)
+}
+
+// injection is the report of the rewrite that loaded for program name, with
+// the marks of the original program (outside the premise, not reviewed),
+// which it also logs.
+func (s *supervisor) injection(name, entry string, typ ebpf.ProgramType, form HookForm, stack inject.StackReport, rewrite *transformed) Injection {
+	if len(rewrite.premise) != 0 {
+		s.log("program %q: outside the theorem's premise: calls %s", name, strings.Join(rewrite.premise, ", "))
+	}
+	if len(rewrite.unread) != 0 {
+		s.log("program %q: kernel functions without a review record: calls %s", name, strings.Join(rewrite.unread, ", "))
+	}
+	return Injection{HookForm: form, Program: name, Func: entry, Type: typ, Hooks: rewrite.result.Hooks, Skipped: rewrite.result.Skipped, Stack: stack,
+		Build: rewrite.build, Labels: rewrite.labels, OutsidePremise: rewrite.premise, NotReviewed: rewrite.unread}
 }
 
 // skipMatched ends a matched load that is not rewritten (skipEntry) and
@@ -1401,6 +1441,22 @@ func runningKernelInfo() inject.KernelInfo {
 	return info
 }
 
+// loadedFunctions names the functions of the loaded program fd from the
+// func_info query returns. A failure to reach the tracee's memory or
+// descriptor stays the tracee's (errTracee); any other failure is the
+// kernel's answer, as no func_info for a loader without CAP_BPF, so the
+// audit is unavailable (errAuditUnavailable).
+func loadedFunctions(query func(fd uint32) ([]byte, error), fd uint32, spec *btf.Spec) ([]string, error) {
+	records, err := query(fd)
+	if errors.Is(err, errTracee) {
+		return nil, err
+	}
+	if err != nil {
+		return nil, fmt.Errorf("%w: %w", errAuditUnavailable, err)
+	}
+	return loadedFunctionNames(records, spec)
+}
+
 func loadedFunctionNames(records []byte, spec *btf.Spec) ([]string, error) {
 	if len(records)%8 != 0 {
 		return nil, fmt.Errorf("loaded func_info has %d bytes, not 8-byte records", len(records))
@@ -1468,20 +1524,51 @@ func offloadAudit(attr []byte) error {
 }
 
 // trialLoadError is the error of a stack trial the kernel refused with
-// loadErr and log: errTrialVerifier for EACCES or EINVAL when the log has a
-// line other than the statistics the kernel prints after every check,
-// refused or not (the verifier's reason), or no line at all (the kernel
-// refused the program before the verifier ran, as for a device that is
-// gone); the original then gets the kernel's own error. Else
-// errAuditUnavailable.
+// loadErr and log. It is errTrialVerifier, and the original then gets the
+// kernel's own error and log, when the log has a line other than the
+// statistics the kernel prints after every check, refused or not (the
+// verifier's reason), whatever the errno (E2BIG for the complexity and frame
+// limits, EPERM for a capability the program needs), or for EACCES or EINVAL
+// when the log has no line at all (the kernel refused the program before the
+// verifier ran, as for a device that is gone). It is errAuditUnavailable when
+// the kernel gave no verdict on the program: an errno that carries none
+// (noVerdict), whatever the log, a statistics-only log, or an empty log with
+// an errno other than EACCES or EINVAL. Its message says so and names the
+// errno, because a rule that names a map then refuses the load.
 func trialLoadError(loadErr error, log string) error {
-	if (errors.Is(loadErr, unix.EACCES) || errors.Is(loadErr, unix.EINVAL)) && (strings.TrimSpace(log) == "" || !statsOnly(log)) {
+	if errors.Is(loadErr, errTracee) {
+		return loadErr
+	}
+	verdict := !noVerdict(loadErr) && !statsOnly(log)
+	if strings.TrimSpace(log) == "" {
+		verdict = errors.Is(loadErr, unix.EACCES) || errors.Is(loadErr, unix.EINVAL)
+	}
+	if verdict {
 		return fmt.Errorf("%w: %v: %s", errTrialVerifier, loadErr, strings.TrimSpace(log))
 	}
-	if log != "" {
-		return fmt.Errorf("%w: trial PROG_LOAD: %w: %s", errAuditUnavailable, loadErr, strings.TrimSpace(log))
+	ended := "trial PROG_LOAD ended without a verdict on the program"
+	if errno := unix.Errno(0); errors.As(loadErr, &errno) {
+		ended += " with " + unix.ErrnoName(errno)
 	}
-	return fmt.Errorf("%w: trial PROG_LOAD: %w", errAuditUnavailable, loadErr)
+	if log != "" {
+		return fmt.Errorf("%w: %s: %w: %s", errAuditUnavailable, ended, loadErr, strings.TrimSpace(log))
+	}
+	return fmt.Errorf("%w: %s: %w", errAuditUnavailable, ended, loadErr)
+}
+
+// noVerdict says whether a trial's errno says nothing of the program: ENOSPC
+// and EFAULT, which the log's finalisation returns in place of the verifier's
+// verdict, passed or not (bpf_check, bpf_vlog_finalize), and ENOMEM, EAGAIN
+// and EBUSY, which a later load need not meet. The errno decides over the
+// log: an EFAULT or EBUSY the verifier returns with a reason of its own is
+// taken as no verdict as well.
+func noVerdict(err error) bool {
+	for _, errno := range []unix.Errno{unix.ENOSPC, unix.EFAULT, unix.ENOMEM, unix.EAGAIN, unix.EBUSY} {
+		if errors.Is(err, errno) {
+			return true
+		}
+	}
+	return false
 }
 
 // statsOnly says whether every line of a verifier log is one of the
@@ -1494,6 +1581,16 @@ func statsOnly(log string) bool {
 		}
 	}
 	return true
+}
+
+// readStatsLog reads a trial's verifier log of size bytes at addr in the
+// tracee pid; a failed read is the tracee's (traceeError).
+func readStatsLog(pid int, addr, size uint64) (string, error) {
+	logBytes, err := readMemory(pid, addr, size)
+	if err != nil {
+		return "", traceeError(fmt.Errorf("reading verifier stats: %w", err))
+	}
+	return cstring(logBytes), nil
 }
 
 func (s *supervisor) preloadDepths(r *remote, attr []byte, rounding int) (report inject.StackReport, err error) {
@@ -1520,13 +1617,7 @@ func (s *supervisor) preloadDepths(r *remote, attr []byte, rounding int) (report
 	}
 	trial := statsLog(bytes.Clone(attr), logSize, logAddr)
 	fd, loadErr := r.bpf(unix.BPF_PROG_LOAD, trial)
-	readLog := func() (string, error) {
-		logBytes, readErr := readMemory(r.pid, logAddr, logSize)
-		if readErr != nil {
-			return "", fmt.Errorf("reading verifier stats: %w", readErr)
-		}
-		return cstring(logBytes), nil
-	}
+	readLog := func() (string, error) { return readStatsLog(r.pid, logAddr, logSize) }
 	if loadErr != nil {
 		log, readErr := readLog()
 		if readErr != nil {
@@ -1546,11 +1637,7 @@ func (s *supervisor) preloadDepths(r *remote, attr []byte, rounding int) (report
 		if parseErr != nil {
 			return parseErr
 		}
-		records, infoErr := r.progFuncInfo(uint32(fd))
-		if infoErr != nil {
-			return fmt.Errorf("%w: %w", errAuditUnavailable, infoErr)
-		}
-		names, namesErr := loadedFunctionNames(records, spec)
+		names, namesErr := loadedFunctions(r.progFuncInfo, uint32(fd), spec)
 		if namesErr != nil {
 			return namesErr
 		}
@@ -1574,7 +1661,8 @@ func (s *supervisor) discover(r *remote, attr []byte, name string, stack inject.
 	if err != nil {
 		return err
 	}
-	raw.Kernel, raw.Modules = s.kernel, s.programModules(r, attr, raw.Instructions)
+	raw.Kernel = s.kernel
+	raw.Modules, _ = s.programModules(r, attr, raw.Instructions)
 	calls, callSites, err := listing(raw)
 	if err != nil {
 		return err
@@ -1618,9 +1706,9 @@ func (e sitesRefusal) Unwrap() error { return e.error }
 
 // programModules returns the module BTFs of insns' kfunc calls when kernel
 // BTF loaded (see moduleBTFs).
-func (s *supervisor) programModules(r *remote, attr []byte, insns asm.Instructions) map[int16]*btf.Spec {
+func (s *supervisor) programModules(r *remote, attr []byte, insns asm.Instructions) (map[int16]*btf.Spec, map[int16]string) {
 	if s.kernel == nil {
-		return nil
+		return nil, nil
 	}
 	return s.moduleBTFs(insns, fdArray(attr),
 		func(addr, size uint64) ([]byte, error) { return readMemory(r.pid, addr, size) },
@@ -1673,25 +1761,28 @@ func (s *supervisor) transform(r *remote, attr []byte, rule Rule, form HookForm,
 		return nil, "", err
 	}
 	listed := raw
-	listed.Kernel, listed.Modules = s.kernel, s.programModules(r, attr, raw.Instructions)
+	var homes map[int16]string
+	listed.Kernel = s.kernel
+	listed.Modules, homes = s.programModules(r, attr, raw.Instructions)
 	if len(rule.Calls) > 0 {
 		raw.Kernel, raw.Modules = listed.Kernel, listed.Modules // only a rule with calls names kfunc calls and types their arguments
 	}
-	return s.rewrite(raw, listed, entry, rule, form, stack, missFirst, drop)
+	return s.rewrite(raw, listed, homes, entry, rule, form, stack, missFirst, drop)
 }
 
 // rewrite is the part of transform that issues no ptrace call: raw is the
-// load as the transform sees it and listed as a listing sees it. A panic in
-// it is an error (see guard).
-func (s *supervisor) rewrite(raw, listed inject.RawProgram, entry string, rule Rule, form HookForm, stack inject.StackReport, missFirst bool, drop map[uint32]string) (t *transformed, _ string, err error) {
+// load as the transform sees it and listed as a listing sees it, homes the
+// module names of listed.Modules (moduleBTFs). A panic in it is an error
+// (see guard).
+func (s *supervisor) rewrite(raw, listed inject.RawProgram, homes map[int16]string, entry string, rule Rule, form HookForm, stack inject.StackReport, missFirst bool, drop map[uint32]string) (t *transformed, _ string, err error) {
 	err = guard("rewriting the load", func() (err error) {
-		t, entry, err = s.rewriteLoad(raw, listed, entry, rule, form, stack, missFirst, drop)
+		t, entry, err = s.rewriteLoad(raw, listed, homes, entry, rule, form, stack, missFirst, drop)
 		return err
 	})
 	return t, entry, err
 }
 
-func (s *supervisor) rewriteLoad(raw, listed inject.RawProgram, entry string, rule Rule, form HookForm, stack inject.StackReport, missFirst bool, drop map[uint32]string) (t *transformed, _ string, err error) {
+func (s *supervisor) rewriteLoad(raw, listed inject.RawProgram, homes map[int16]string, entry string, rule Rule, form HookForm, stack inject.StackReport, missFirst bool, drop map[uint32]string) (t *transformed, _ string, err error) {
 	mapCalls, list, listErr := listing(listed)
 	if listErr != nil && rule.Sites != nil {
 		return nil, entry, sitesRefusal{fmt.Errorf("listing the load for the rule's sites: %w", listErr)}
@@ -1729,7 +1820,7 @@ func (s *supervisor) rewriteLoad(raw, listed inject.RawProgram, entry string, ru
 	}
 	t = &transformed{result: result, request: request, original: raw.Instructions, missFirst: missFirst, retry: drop != nil,
 		build: list.Fingerprint, labels: list.Labels, premise: inject.PremiseCalls(raw.Instructions, listed.Kernel, listed.Modules),
-		unread: inject.NotReviewed(raw.Instructions, listed.Kernel, listed.Modules)}
+		unread: inject.NotReviewed(raw.Instructions, listed.Kernel, listed.Modules, homes)}
 	t.cert, t.premises, err = loadCheckInputs(raw.Instructions, result, request.Stack, stack)
 	if errors.Is(err, inject.ErrCheckerNotApplicable) && drop == nil {
 		s.log("program %q: %v; load not validated", rule.Program, err)
@@ -2116,7 +2207,7 @@ func extractRaw(r *remote, attr []byte, spec *btf.Spec) (inject.RawProgram, erro
 	p := inject.RawProgram{Type: ebpf.ProgramType(u32(attr, 0)), BTF: spec, Maps: make(map[int32]inject.RawMap)}
 	insns, err := readMemory(r.pid, u64(attr, 8), uint64(u32(attr, 4))*8)
 	if err != nil {
-		return p, err
+		return p, traceeError(err)
 	}
 	if fdArray(attr) != 0 {
 		if err := fdArrayMapIndex(insns); err != nil {
@@ -2129,11 +2220,11 @@ func extractRaw(r *remote, attr []byte, spec *btf.Spec) (inject.RawProgram, erro
 	}
 	p.FuncInfo, err = readMemory(r.pid, u64(attr, 80), uint64(u32(attr, 88))*8)
 	if err != nil {
-		return p, err
+		return p, traceeError(err)
 	}
 	p.LineInfo, err = readMemory(r.pid, u64(attr, 96), uint64(u32(attr, 104))*16)
 	if err != nil {
-		return p, err
+		return p, traceeError(err)
 	}
 	for _, ins := range p.Instructions {
 		if !ins.IsLoadFromMap() {

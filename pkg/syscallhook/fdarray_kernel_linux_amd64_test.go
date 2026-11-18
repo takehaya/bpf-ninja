@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -294,4 +295,54 @@ func loadFdArrayProgram(t *testing.T, mode string) {
 		t.Fatalf("BPF_PROG_TEST_RUN: action=%d err=%v", action, err)
 	}
 	fmt.Printf("hook=%v action=%d\n", found, action)
+}
+
+// TestBpfModuleBTFName reads, as the supervisor does for a module's kernel
+// functions, the name the kernel gives each kernel BTF it has loaded:
+// vmlinux, and for a module BTF the module's name, under which the kernel
+// lists it in /sys/kernel/btf.
+func TestBpfModuleBTFName(t *testing.T) {
+	if os.Geteuid() != 0 {
+		t.Skip("requires root and BPF privileges")
+	}
+	vmlinux, err := btf.LoadKernelSpec()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var names []string
+	it := new(btf.HandleIterator)
+	for it.Next() {
+		info, err := it.Handle.Info()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !info.IsKernel {
+			continue
+		}
+		base := vmlinux
+		if info.IsVmlinux() {
+			base = nil
+		}
+		spec, name, err := loadModuleBTF(it.ID, base)
+		if err != nil || spec == nil || name != info.Name {
+			t.Fatalf("kernel BTF %d (%s): name %q, %v", it.ID, info.Name, name, err)
+		}
+		if _, err := os.Stat(filepath.Join("/sys/kernel/btf", name)); err != nil {
+			t.Errorf("kernel BTF %d is named %q: %v", it.ID, name, err)
+		}
+		if name == "nf_conntrack" {
+			var fn *btf.Func
+			if err := spec.TypeByName("bpf_ct_release", &fn); err != nil {
+				t.Errorf("nf_conntrack BTF: %v", err)
+			}
+		}
+		names = append(names, name)
+	}
+	if err := it.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(names, "vmlinux") {
+		t.Fatalf("kernel BTF names %v lack vmlinux", names)
+	}
+	t.Logf("kernel BTF names: %v", names)
 }

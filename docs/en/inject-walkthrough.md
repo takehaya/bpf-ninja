@@ -144,11 +144,11 @@ prog 464334  entry
 
 ```json
 "calls": [
-  {"kind": "peek", "pc": 11, "map": "seen", "func": "entry", "file": "prog.c", "line": 33},
-  {"kind": "push", "pc": 18, "map": "seen", "func": "entry", "file": "prog.c", "line": 34},
-  {"kind": "push", "pc": 24, "map": "recent", "func": "entry", "file": "prog.c", "line": 35},
-  {"kind": "pop", "pc": 30, "map": "recent", "func": "entry", "file": "prog.c", "line": 36},
-  {"kind": "lookup", "pc": 37, "map": "stats", "func": "entry", "file": "prog.c", "line": 37}
+  {"kind": "peek", "pc": 11, "map": "seen", "func": "entry", "file": "prog.c", "line": 33, "label": "seen/peek@entry:33", "ctx_source": "entry", "frame": "entry", "floor": -24},
+  {"kind": "push", "pc": 18, "map": "seen", "func": "entry", "file": "prog.c", "line": 34, "label": "seen/push@entry:34", "ctx_source": "entry", "frame": "entry", "floor": -24},
+  {"kind": "push", "pc": 24, "map": "recent", "func": "entry", "file": "prog.c", "line": 35, "label": "recent/push@entry:35", "ctx_source": "entry", "frame": "entry", "floor": -24},
+  {"kind": "pop", "pc": 30, "map": "recent", "func": "entry", "file": "prog.c", "line": 36, "label": "recent/pop@entry:36", "ctx_source": "entry", "frame": "entry", "floor": -24},
+  {"kind": "lookup", "pc": 37, "map": "stats", "func": "entry", "file": "prog.c", "line": 37, "label": "stats@entry:37", "ctx_source": "entry", "frame": "entry", "floor": -24}
 ],
 "rule": {"program": "entry", "auto": true, "maps": ["stats", "recent", "seen"], "entry": true,
          "ops": ["lookup:any", "push:any", "pop:any", "peek:any"], "hook_prefix": "ninja"}
@@ -186,12 +186,12 @@ inject-run: program "entry": injected hook "ninja_seen_peek" (peek map "seen", s
 `hooks.json` gives the kernel ID of the transformed program and each hook with its sites:
 
 ```json
-{"program": "entry", "func": "entry", "type": "XDP", "prog_id": 464331, "ctx_type": "xdp_md",
+{"program": "entry", "func": "entry", "type": "XDP", "prog_id": 8, "build": "sha256:88cc580b465df233df46acce75e98334a89bd256c1deccee048ffd5cb8827d85", "tag": "6865ec94df438983", "ctx_type": "xdp_md",
  "hook_form": {"form": "global", "reason": "probe_arg_untrusted_supported"}, "skipped": [],
  "hooks": [
   {"name": "ninja_seen_peek", "kind": "typed", "when": "error", "map": "seen",
-   "sites": [{"kind": "peek", "pc": 11, "map": "seen", "func": "entry", "file": "prog.c", "line": 33}],
-   "untrusted": false, "copied": false, "static": false, "read_only": false},
+   "sites": [{"kind": "peek", "pc": 11, "map": "seen", "func": "entry", "file": "prog.c", "line": 33, "label": "seen/peek@entry:33", "ctx_source": "entry", "frame": "entry", "floor": -24}],
+   "untrusted": false, "copied": false, "static": false, "read_only": false, "site_param": true},
   ...
  ]}
 ```

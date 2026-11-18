@@ -101,9 +101,17 @@ func forEachLink(next nextLinkFunc, visit func(link.ID, link.Link) error) error 
 		var l link.Link
 		var err error
 		id, l, err = next(id)
+		// next gives ID 0 both at the end of the list and with an error of
+		// the next-ID step.
 		if id == 0 {
 			return err
 		}
+		// ENOENT: the link went away. EAGAIN: bpf_link_by_id finds the link
+		// before bpf_link_settle gives it its ID, when its attach may already
+		// be in place; a retry would not cover a link that a later attach
+		// creates just after the walk, and in either case the kernel refuses
+		// an fentry or fexit attach to a function an extension replaces
+		// (EBUSY).
 		if errors.Is(err, os.ErrNotExist) || errors.Is(err, unix.EAGAIN) {
 			continue
 		}

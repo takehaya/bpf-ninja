@@ -64,9 +64,11 @@ func TestHelperPremiseTable(t *testing.T) {
 }
 
 // A load is reported as not reviewed for every kernel function without a
-// review record, the receive-metadata functions among them, and for a call
-// that cannot be named; the conntrack lookups and their release are
-// reviewed, and helpers never count.
+// review record for where it is defined, the receive-metadata functions
+// among them with the driver's note, and for a call that cannot be named;
+// the conntrack lookups and their release are reviewed in vmlinux and in
+// the nf_conntrack module, a function of the same name in another module
+// is not, and helpers never count.
 func TestNotReviewed(t *testing.T) {
 	fn := func(name string) *btf.Func {
 		return &btf.Func{Name: name, Type: &btf.FuncProto{Return: &btf.Int{Name: "int", Size: 4, Encoding: btf.Signed}}, Linkage: btf.GlobalFunc}
@@ -77,13 +79,29 @@ func TestNotReviewed(t *testing.T) {
 		testKfunc(t, kernel, "bpf_ct_release"), testKfunc(t, kernel, "k_int"), testKfunc(t, kernel, "bpf_xdp_metadata_rx_hash"),
 		testKfunc(t, kernel, "bpf_skb_ct_lookup"), asm.FnLoop.Call(),
 	}
-	if got := NotReviewed(insns, kernel, nil); !slices.Equal(got, []string{"bpf_xdp_metadata_rx_hash", "k_int"}) {
+	if got := NotReviewed(insns, kernel, nil, nil); !slices.Equal(got, []string{"bpf_xdp_metadata_rx_hash" + DriverNote, "k_int"}) {
 		t.Errorf("not reviewed %v", got)
 	}
-	if got := NotReviewed(insns, nil, nil); !slices.Equal(got, []string{UnnamedKfunc}) {
+	if got := NotReviewed(insns, nil, nil, nil); !slices.Equal(got, []string{UnnamedKfunc}) {
 		t.Errorf("without kernel BTF: %v", got)
 	}
-	if got := NotReviewed(insns[:2], kernel, nil); got != nil {
+	if got := NotReviewed(insns[:2], kernel, nil, nil); got != nil {
 		t.Errorf("reviewed calls only: %v", got)
+	}
+	module := specOf(t, fn("bpf_xdp_ct_lookup"), fn("bpf_ct_release"))
+	lookup, release := testKfunc(t, module, "bpf_xdp_ct_lookup"), testKfunc(t, module, "bpf_ct_release")
+	lookup.Offset, release.Offset = 1, 2
+	modules := map[int16]*btf.Spec{1: module, 2: module}
+	for _, tc := range []struct {
+		homes map[int16]string
+		want  []string
+	}{
+		{map[int16]string{1: "nf_conntrack", 2: "nf_conntrack"}, nil},
+		{map[int16]string{1: "other", 2: "nf_conntrack"}, []string{"bpf_xdp_ct_lookup (in other)"}},
+		{map[int16]string{2: "nf_conntrack"}, []string{"bpf_xdp_ct_lookup (in a module not named)"}},
+	} {
+		if got := NotReviewed(asm.Instructions{lookup, release}, kernel, modules, tc.homes); !slices.Equal(got, tc.want) {
+			t.Errorf("module calls with homes %v: %v, want %v", tc.homes, got, tc.want)
+		}
 	}
 }

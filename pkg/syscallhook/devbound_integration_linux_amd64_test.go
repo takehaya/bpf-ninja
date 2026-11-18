@@ -22,6 +22,8 @@ import (
 	"github.com/vishvananda/netlink"
 	"github.com/vishvananda/netns"
 	"golang.org/x/sys/unix"
+
+	"github.com/takehaya/bpf-ninja/pkg/inject"
 )
 
 // The XDP receive-metadata kfuncs need a device-bound program, and
@@ -378,7 +380,7 @@ func TestIntegrationDevBound(t *testing.T) {
 			t.Fatal("the device-bound program was not hooked as checked")
 		}
 		// The receive-metadata functions have no review record: the driver's function runs.
-		if nr := injected[0].NotReviewed; len(nr) != 2 || !slices.Contains(nr, "bpf_xdp_metadata_rx_timestamp") || !slices.Contains(nr, "bpf_xdp_metadata_rx_hash") ||
+		if nr := injected[0].NotReviewed; len(nr) != 2 || !slices.Contains(nr, "bpf_xdp_metadata_rx_timestamp"+inject.DriverNote) || !slices.Contains(nr, "bpf_xdp_metadata_rx_hash"+inject.DriverNote) ||
 			!strings.Contains(logs, "kernel functions without a review record: calls bpf_xdp_metadata_rx_") {
 			t.Fatalf("not reviewed %v", nr)
 		}

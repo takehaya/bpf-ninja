@@ -10,6 +10,7 @@ import (
 	"github.com/cilium/ebpf/asm"
 	"github.com/cilium/ebpf/btf"
 
+	"github.com/takehaya/bpf-ninja/internal/attach"
 	"github.com/takehaya/bpf-ninja/internal/hookabi"
 )
 
@@ -356,6 +357,55 @@ func TestCallHookMetadataArg(t *testing.T) {
 			}
 			if target.TypeName() != tc.typ {
 				t.Fatalf("%s: arg points to %v", tc.name, ptr.Target)
+			}
+		}
+	}
+}
+
+// The receive-metadata hooks carry the narrow signed ret in every form: as
+// the capture reads the hook's parameters (attach.GetFuncParamsFromSpec),
+// ret is a signed 4-byte result with the typed, result-only, untrusted and
+// static hooks alike.
+func TestCallHookMetadataRetEveryForm(t *testing.T) {
+	for _, name := range []string{"bpf_xdp_metadata_rx_timestamp", "bpf_xdp_metadata_rx_hash", "bpf_xdp_metadata_rx_vlan_tag"} {
+		for _, form := range []string{"typed", "no-kernel", "untrusted", "static"} {
+			spec := xdpMetadataFixture(kfuncCall(-1).WithReference(name), name != "bpf_xdp_metadata_rx_timestamp")
+			req := callReq(name)
+			if form != "no-kernel" {
+				req.Kernel = metadataKernelSpec(t)
+			}
+			if form == "untrusted" || form == "static" {
+				// The argument comes from the packet, not the stack.
+				insns := spec.Programs["p"].Instructions
+				reg := asm.R2
+				if name == "bpf_xdp_metadata_rx_vlan_tag" {
+					reg = asm.R3
+				}
+				at := slices.IndexFunc(insns, func(ins asm.Instruction) bool {
+					return ins.Dst == reg && ins.Src == asm.RFP && ins.OpCode.ALUOp() == asm.Mov
+				})
+				if at < 0 {
+					t.Fatalf("%s: no argument set from the stack", name)
+				}
+				insns[at] = asm.LoadMem(reg, asm.R6, 0, asm.Word)
+				insns[at+1] = asm.Mov.Reg(reg, reg)
+				req.StaticUntrusted = form == "static"
+			}
+			plan, err := transformLookup(spec, req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(plan.hooks) != 1 || (form == "untrusted") != plan.hooks[0].Untrusted || (form == "static") != plan.hooks[0].Static {
+				t.Fatalf("%s %s: hooks %+v skipped %+v", name, form, plan.hooks, plan.skipped)
+			}
+			fn, _ := callHookFn(t, spec.Programs["p"].Instructions, plan.hooks[0].Name)
+			params, err := attach.GetFuncParamsFromSpec(specOf(t, fn), plan.hooks[0].Name)
+			if err != nil {
+				t.Fatal(err)
+			}
+			i := slices.IndexFunc(params, func(p attach.FuncParamInfo) bool { return p.Name == "ret" })
+			if i < 0 || params[i].Size != 4 || !params[i].Signed || params[i].RetSize != 4 || !params[i].RetSigned {
+				t.Errorf("%s %s: ret is not a narrow signed result: %+v (tags %v)", name, form, params, fn.Tags)
 			}
 		}
 	}

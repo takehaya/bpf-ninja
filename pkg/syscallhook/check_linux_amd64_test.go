@@ -8,9 +8,11 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 
+	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/asm"
 	"github.com/takehaya/bpf-ninja/pkg/inject"
 	"github.com/takehaya/bpf-ninja/pkg/injectcheck"
@@ -296,11 +298,37 @@ func TestStackErrorClass(t *testing.T) {
 	_, ambiguous := frameFloors([]int{8, 8}, []string{"p", "p"}, raw, inject.KernelInfo{Major: 7})
 	_, badDepth := frameFloors([]int{600}, []string{"p"}, raw, inject.KernelInfo{Major: 7})
 	_, absent := frameFloors([]int{8}, []string{"q"}, raw, inject.KernelInfo{Major: 7})
+	_, funcInfoErr := loadedFunctions(func(uint32) ([]byte, error) {
+		return nil, traceeError(fmt.Errorf("tracee object info fd 3: %w", unix.EBADF))
+	}, 3, nil)
+	_, funcInfoCount := loadedFunctions(func(uint32) ([]byte, error) {
+		return nil, errors.New("tracee program fd 3 has invalid func_info count 0")
+	}, 3, nil)
+	// The loader's instructions, func_info and line_info, read from a pid
+	// this process does not trace.
+	extract := func(cntOff, addrOff int) error {
+		attr := make([]byte, progAttrSize)
+		put32(attr, cntOff, 1)
+		put64(attr, addrOff, 0x1000)
+		_, err := extractRaw(&remote{pid: os.Getpid()}, attr, nil)
+		if err == nil {
+			t.Fatalf("extractRaw read %d at an untraced pid", addrOff)
+		}
+		return err
+	}
 	offload := make([]byte, 128)
 	put32(offload, 64, 3)
 	const refusedStats = "verification time 6 usec\nstack depth 0\nprocessed 1 insns (limit 1000000) max_states_per_insn 0 total_states 0 peak_states 0 mark_read 0\n"
 	refusedLog := "0: R1=ctx() R10=fp0\n0: (95) exit\nR0 !read_ok\n" + refusedStats
 	mapRule := Rule{Program: "p", HookPrefix: "h", Map: "m"}
+	// A trial without a verdict says so in the supervisor's log line, with
+	// the errno, whatever the log holds.
+	for errno, log := range map[unix.Errno]string{unix.EFAULT: refusedLog, unix.EBUSY: "", unix.E2BIG: refusedStats} {
+		want := "stack audit unavailable: trial PROG_LOAD ended without a verdict on the program with " + unix.ErrnoName(errno) + ": "
+		if got := trialLoadError(errno, log).Error(); !strings.HasPrefix(got, want) {
+			t.Errorf("%s: %q, want prefix %q", unix.ErrnoName(errno), got, want)
+		}
+	}
 	for _, tc := range []struct {
 		name     string
 		stackErr error
@@ -308,9 +336,14 @@ func TestStackErrorClass(t *testing.T) {
 		cause    string
 	}{
 		{"offload", offloadAudit(offload), stepRefuse, "stack"},
+		// Not reachable for a matched load, which parseProgAttr needs whole.
 		{"short-attr", offloadAudit(make([]byte, 64)), stepRefuse, "stack"},
 		{"trial-enomem", trialLoadError(unix.ENOMEM, ""), stepRefuse, "stack"},
-		{"func-info", fmt.Errorf("%w: %w", errAuditUnavailable, unix.EFAULT), stepRefuse, "stack"},
+		// A failure on the tracee's side loads the original in every step.
+		{"func-info", funcInfoErr, stepOriginal, "stack"},
+		// The kernel gives no func_info to a loader without CAP_BPF: no audit.
+		{"func-info-count", funcInfoCount, stepRefuse, "stack"},
+		{"trial-tracee", trialLoadError(traceeError(fmt.Errorf("tracee mmap: %w", unix.ENOMEM)), ""), stepOriginal, "stack"},
 		{"trial-verifier", trialLoadError(unix.EACCES, "R0 !read_ok"), stepOriginal, "verifier"},
 		// The kernel prints the statistics after a refused check as well.
 		{"trial-verifier-stats", trialLoadError(unix.EACCES, refusedLog), stepOriginal, "verifier"},
@@ -319,7 +352,20 @@ func TestStackErrorClass(t *testing.T) {
 		{"trial-einval-no-log", trialLoadError(unix.EINVAL, ""), stepOriginal, "verifier"},
 		// The check passed and the load failed later.
 		{"trial-einval-stats-only", trialLoadError(unix.EINVAL, refusedStats), stepRefuse, "stack"},
-		{"trial-eperm-log", trialLoadError(unix.EPERM, refusedLog), stepRefuse, "stack"},
+		// The verifier's reason with an errno other than EACCES or EINVAL
+		// (kernel/bpf/verifier.c, 6.12 and 7.0).
+		{"trial-e2big-complexity", trialLoadError(unix.E2BIG, "BPF program is too large. Processed 1000001 insn\n"+refusedStats), stepOriginal, "verifier"},
+		{"trial-e2big-frames", trialLoadError(unix.E2BIG, "the call stack of 9 frames is too deep !\n"+refusedStats), stepOriginal, "verifier"},
+		{"trial-eperm-log", trialLoadError(unix.EPERM, "loading/calling other bpf or kernel functions are allowed for CAP_BPF and CAP_SYS_ADMIN\n"+refusedStats), stepOriginal, "verifier"},
+		// No verdict on the program: the log's finalisation replaced it, or
+		// the kernel was short of a resource.
+		{"trial-enospc-log", trialLoadError(unix.ENOSPC, refusedLog), stepRefuse, "stack"},
+		{"trial-efault-log", trialLoadError(unix.EFAULT, refusedLog), stepRefuse, "stack"},
+		{"trial-enomem-log", trialLoadError(unix.ENOMEM, refusedLog), stepRefuse, "stack"},
+		{"trial-eagain-log", trialLoadError(unix.EAGAIN, refusedLog), stepRefuse, "stack"},
+		{"trial-ebusy-log", trialLoadError(unix.EBUSY, refusedLog), stepRefuse, "stack"},
+		{"trial-e2big-no-log", trialLoadError(unix.E2BIG, ""), stepRefuse, "stack"},
+		{"trial-e2big-stats-only", trialLoadError(unix.E2BIG, refusedStats), stepRefuse, "stack"},
 		{"no-depth-line", analysisErr(noDepth), stepOriginal, "analysis"},
 		{"depth-count", analysisErr(depthCount), stepOriginal, "analysis"},
 		{"ambiguous-name", analysisErr(ambiguous), stepOriginal, "analysis"},
@@ -328,7 +374,10 @@ func TestStackErrorClass(t *testing.T) {
 		{"refused", deadRegisterStackErr(t), stepOriginal, "analysis"},
 		{"panic", guard("parsing verifier stats", func() error { panic("boom") }), stepOriginal, "analysis"},
 		{"indirect-jump", fmt.Errorf("%w at instruction 3 is unsupported", errIndirectJump), stepOriginal, "analysis"},
-		{"reading-log", fmt.Errorf("reading verifier stats: %w", unix.ESRCH), stepOriginal, "analysis"},
+		{"reading-log", traceeError(fmt.Errorf("reading verifier stats: %w", unix.ESRCH)), stepOriginal, "stack"},
+		{"reading-insns", extract(4, 8), stepOriginal, "stack"},
+		{"reading-func-info", extract(88, 80), stepOriginal, "stack"},
+		{"reading-line-info", extract(104, 96), stepOriginal, "stack"},
 	} {
 		step, cause := failedLoad(loadFailure{err: fmt.Errorf("stack depth unavailable: %w", tc.stackErr), stackErr: tc.stackErr}, false, mapRule)
 		if step != tc.step || cause != tc.cause {
@@ -359,5 +408,26 @@ func TestTrialKeepsDevice(t *testing.T) {
 	}
 	if err := offloadAudit(attr); err != nil {
 		t.Fatalf("device-bound load: %v", err)
+	}
+}
+
+// The supervisor hands the marks of the original program to the report of
+// an injected load and logs them: outside the premise and not reviewed.
+func TestInjectionMarks(t *testing.T) {
+	var logs bytes.Buffer
+	s := &supervisor{options: Options{Log: &logs}}
+	rewrite := &transformed{result: &inject.LookupResultRaw{}, premise: []string{"bpf_loop"}, unread: []string{"k_int"}}
+	inj := s.injection("p", "entry", ebpf.XDP, HookForm{}, inject.StackReport{}, rewrite)
+	if !slices.Equal(inj.OutsidePremise, []string{"bpf_loop"}) || !slices.Equal(inj.NotReviewed, []string{"k_int"}) || inj.Program != "p" || inj.Func != "entry" {
+		t.Fatalf("injection %+v", inj)
+	}
+	for _, want := range []string{`program "p": outside the theorem's premise: calls bpf_loop`, `program "p": kernel functions without a review record: calls k_int`} {
+		if !strings.Contains(logs.String(), want) {
+			t.Errorf("log %q lacks %q", logs.String(), want)
+		}
+	}
+	logs.Reset()
+	if inj := s.injection("p", "entry", ebpf.XDP, HookForm{}, inject.StackReport{}, &transformed{result: &inject.LookupResultRaw{}}); inj.OutsidePremise != nil || inj.NotReviewed != nil || logs.Len() != 0 {
+		t.Fatalf("unmarked load: %+v, log %q", inj, logs.String())
 	}
 }

@@ -197,7 +197,7 @@ The family in a socket's common part selects the IPv4 hits of a socket lookup:
 sudo bpf-ninja -p <ID> --func obs_bpf_skc_lookup_tcp --arg-filter 'ret->skc_family==2' --arg-echo 'ret->skc_num'
 ```
 
-Typed are kernel functions returning a pointer to a struct or union (`bpf_xdp_ct_lookup` and `bpf_skb_ct_lookup` give `nf_conn`), the socket helpers by the kernel struct behind them (`sock`, `sock_common` for `bpf_skc_lookup_tcp`, `tcp_sock` for `bpf_tcp_sock`), and the helpers whose prototype names a BTF type (the `bpf_skc_to_*` casts, `bpf_get_current_task_btf`, `bpf_task_pt_regs`, `bpf_sock_from_file`).
+Typed are kernel functions returning a pointer to a struct or union (`bpf_xdp_ct_lookup` and `bpf_skb_ct_lookup` give `nf_conn`), the socket helpers by the kernel struct behind them (`sock`, `sock_common` for `bpf_skc_lookup_tcp`, `tcp_sock` for `bpf_tcp_sock`), and the helpers whose prototype names a BTF type (the `bpf_skc_to_*` casts, `bpf_get_current_task_btf`, `bpf_task_pt_regs`).
 Map values, memory, dynptr data, kptrs and `void *` results stay untyped: `ret` takes only `ret==null` and `ret!=null`.
 Socket results are the kernel's `struct sock` family, not the `struct bpf_sock` view a program reads.
 

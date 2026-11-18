@@ -70,7 +70,7 @@ func TestAnalysisRefusesDeadRegister(t *testing.T) {
 		_, _, err := listing(raw)
 		ordinary("listing", err)
 		for _, rule := range []Rule{{Program: "p", HookPrefix: "h", Entry: true}, {Program: "p", HookPrefix: "h", Calls: []string{"bpf_ktime_get_ns"}}} {
-			_, _, err = s.rewrite(raw, raw, "p", rule, HookForm{}, inject.StackReport{Source: "verifier"}, false, nil)
+			_, _, err = s.rewrite(raw, raw, nil, "p", rule, HookForm{}, inject.StackReport{Source: "verifier"}, false, nil)
 			ordinary(fmt.Sprintf("rewrite %+v", rule), err)
 		}
 		_, err = frameFloors([]int{8}, []string{"p"}, raw, inject.KernelInfo{Major: 7})
@@ -120,7 +120,7 @@ func TestAnalysisPanicIsError(t *testing.T) {
 			}
 			return func() { transformLookupRaw = old }
 		}, func() error {
-			_, _, err := s.rewrite(raw, raw, "p", Rule{Program: "p", HookPrefix: "h", Entry: true}, HookForm{}, inject.StackReport{Source: "verifier"}, false, nil)
+			_, _, err := s.rewrite(raw, raw, nil, "p", Rule{Program: "p", HookPrefix: "h", Entry: true}, HookForm{}, inject.StackReport{Source: "verifier"}, false, nil)
 			return err
 		}},
 	} {

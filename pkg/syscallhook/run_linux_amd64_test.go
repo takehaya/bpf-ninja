@@ -128,11 +128,11 @@ func TestModuleBTFs(t *testing.T) {
 	kfunc := func(off int16) asm.Instruction {
 		return asm.Instruction{OpCode: asm.OpCode(asm.JumpClass).SetJumpOp(asm.Call), Src: asm.PseudoKfuncCall, Constant: 7, Offset: off}
 	}
-	insns := asm.Instructions{kfunc(0), kfunc(1), kfunc(1), kfunc(2), kfunc(3), kfunc(-1), asm.FnKtimeGetNs.Call()}
+	insns := asm.Instructions{kfunc(0), kfunc(1), kfunc(1), kfunc(2), kfunc(3), kfunc(-1), kfunc(4), asm.FnKtimeGetNs.Call()}
 	const base = 0x1000
-	fds := map[uint64]uint32{base + 4: 10, base + 8: 11} // offset 3 is unreadable
+	fds := map[uint64]uint32{base + 4: 10, base + 8: 11, base + 16: 12} // offset 3 is unreadable
 	infos := map[uint32][]byte{}
-	for fd, kernelBTF := range map[uint32]uint32{10: 1, 11: 0} {
+	for fd, kernelBTF := range map[uint32]uint32{10: 1, 11: 0, 12: 1} {
 		b := make([]byte, 32)
 		put32(b, 12, fd+100)
 		put32(b, 28, kernelBTF)
@@ -140,9 +140,9 @@ func TestModuleBTFs(t *testing.T) {
 	}
 	var log bytes.Buffer
 	s := supervisor{options: Options{Log: &log}, kernel: &btf.Spec{}}
-	mod := &btf.Spec{}
+	mod, unnamed := &btf.Spec{}, &btf.Spec{}
 	reads, loads := 0, 0
-	got := s.moduleBTFs(insns, base, func(addr, size uint64) ([]byte, error) {
+	got, homes := s.moduleBTFs(insns, base, func(addr, size uint64) ([]byte, error) {
 		reads++
 		fd, ok := fds[addr]
 		if !ok || size != 4 {
@@ -151,25 +151,31 @@ func TestModuleBTFs(t *testing.T) {
 		b := make([]byte, 4)
 		put32(b, 0, fd)
 		return b, nil
-	}, func(fd uint32) ([]byte, error) { return infos[fd], nil }, func(id btf.ID, b *btf.Spec) (*btf.Spec, error) {
+	}, func(fd uint32) ([]byte, error) { return infos[fd], nil }, func(id btf.ID, b *btf.Spec) (*btf.Spec, string, error) {
 		loads++
-		if id != 110 || b != s.kernel {
-			return nil, errors.New("wrong id or base")
+		switch {
+		case b != s.kernel:
+			return nil, "", errors.New("wrong base")
+		case id == 110:
+			return mod, "nf_conntrack", nil
+		case id == 112: // the name could not be read: kept, unnamed
+			return unnamed, "", errors.New("kernel BTF 112 name: bad address")
 		}
-		return mod, nil
+		return nil, "", errors.New("wrong id")
 	})
-	if len(got) != 1 || got[1] != mod || reads != 3 || loads != 1 {
-		t.Fatalf("modules=%v reads=%d loads=%d", got, reads, loads)
+	if len(got) != 2 || got[1] != mod || got[4] != unnamed || len(homes) != 2 || homes[1] != "nf_conntrack" || homes[4] != "" || reads != 4 || loads != 2 {
+		t.Fatalf("modules=%v homes=%v reads=%d loads=%d", got, homes, reads, loads)
 	}
-	for _, want := range []string{"offset 2 unavailable: its kernel-function calls are not hooked: fd 11 is not a kernel BTF", "offset 3 unavailable", "offset -1 unavailable"} {
+	for _, want := range []string{"offset 2 unavailable: its kernel-function calls are not hooked: fd 11 is not a kernel BTF", "offset 3 unavailable", "offset -1 unavailable",
+		"offset 4 has no name: its kernel-function calls are reported as not reviewed: kernel BTF 112 name: bad address"} {
 		if !strings.Contains(log.String(), want) {
 			t.Errorf("log %q lacks %q", log.String(), want)
 		}
 	}
-	if n := strings.Count(log.String(), "\n"); n != 3 {
-		t.Errorf("%d log lines, want 3", n)
+	if n := strings.Count(log.String(), "\n"); n != 4 {
+		t.Errorf("%d log lines, want 4", n)
 	}
-	if got := s.moduleBTFs(insns, 0, nil, nil, nil); got != nil {
+	if got, _ := s.moduleBTFs(insns, 0, nil, nil, nil); got != nil {
 		t.Errorf("no fd_array: modules=%v", got)
 	}
 }
@@ -439,4 +445,47 @@ func TestSeizeKeepsPendingSignal(t *testing.T) {
 	if err != nil || !status.Stopped() || status.StopSignal() != unix.SIGUSR1 || uint32(status)>>16 != 0 {
 		t.Fatalf("after seize: %#x %v, want the SIGUSR1 delivery stop", uint32(status), err)
 	}
+}
+
+// Every failure to reach the traced process's memory is marked errTracee
+// where it happens: the scratch mmap, the arena, a write, an info query and
+// the read of a trial's log.
+func TestTraceeMarks(t *testing.T) {
+	self := os.Getpid() // not traced by this process: ptrace gives ESRCH
+	check := func(what string, err error, want string) {
+		t.Helper()
+		if !errors.Is(err, errTracee) || !strings.Contains(fmt.Sprint(err), want) {
+			t.Errorf("%s: %v, want errTracee with %q", what, err, want)
+		}
+	}
+	_, err := (&remote{pid: self}).alloc([]byte{1})
+	check("mmap", err, "tracee mmap")
+	_, err = (&remote{pid: self, base: 0x1000, used: scratchSize}).alloc([]byte{1})
+	check("arena", err, "scratch arena exhausted")
+	_, err = (&remote{pid: self, base: 0x1000}).alloc([]byte{1})
+	check("write", err, "write tracee memory")
+	_, err = readStatsLog(self, 0x1000, 64)
+	check("stats log", err, "reading verifier stats")
+
+	// The query itself fails after its buffers were written: a stopped
+	// child traced by this thread, whose replayed syscall is lost.
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+	cmd := exec.Command("/bin/true")
+	cmd.SysProcAttr = &syscall.SysProcAttr{Ptrace: true}
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	pid := cmd.Process.Pid
+	defer func() { _ = unix.Kill(pid, unix.SIGKILL); _, _ = waitThread(pid) }()
+	if status, err := waitThread(pid); err != nil || !status.Stopped() {
+		t.Fatalf("exec stop: %#x %v", uint32(status), err)
+	}
+	var regs unix.PtraceRegs
+	if err := unix.PtraceGetRegs(pid, &regs); err != nil {
+		t.Fatal(err)
+	}
+	r := &remote{pid: pid, base: (regs.Rsp - 256) &^ 7, broken: errors.New("stop lost")}
+	_, err = r.info(3, 16)
+	check("info", err, "tracee object info fd 3: stop lost")
 }

@@ -179,21 +179,24 @@ func syscallError(ret int64, err error) error {
 	}
 	return nil
 }
+
+// alloc copies b into the tracee's scratch memory; an error is the tracee's
+// (traceeError).
 func (r *remote) alloc(b []byte) (uint64, error) {
 	if r.base == 0 {
 		ret, err := r.call(unix.SYS_MMAP, 0, scratchSize, unix.PROT_READ|unix.PROT_WRITE, unix.MAP_PRIVATE|unix.MAP_ANONYMOUS, ^uint64(0), 0)
 		if err = syscallError(ret, err); err != nil {
-			return 0, fmt.Errorf("tracee mmap: %w", err)
+			return 0, traceeError(fmt.Errorf("tracee mmap: %w", err))
 		}
 		r.base = uint64(ret)
 	}
 	size := (uint64(len(b)) + 7) &^ 7
 	if size > scratchSize-r.used {
-		return 0, fmt.Errorf("scratch arena exhausted")
+		return 0, traceeError(fmt.Errorf("scratch arena exhausted"))
 	}
 	addr := r.base + r.used
 	r.used += size
-	return addr, writeMemory(r.pid, addr, b)
+	return addr, traceeError(writeMemory(r.pid, addr, b))
 }
 func (r *remote) bpf(command uint64, attr []byte) (int64, error) {
 	addr, err := r.alloc(attr)
@@ -203,6 +206,9 @@ func (r *remote) bpf(command uint64, attr []byte) (int64, error) {
 	ret, err := r.call(unix.SYS_BPF, command, addr, uint64(len(attr)))
 	return ret, syscallError(ret, err)
 }
+
+// info queries the object behind the tracee's descriptor fd; an error is the
+// tracee's (traceeError).
 func (r *remote) info(fd uint32, size int) ([]byte, error) {
 	addr, err := r.alloc(make([]byte, size))
 	if err != nil {
@@ -213,11 +219,16 @@ func (r *remote) info(fd uint32, size int) ([]byte, error) {
 	put32(attr, 4, uint32(size))
 	put64(attr, 8, addr)
 	if _, err := r.bpf(unix.BPF_OBJ_GET_INFO_BY_FD, attr); err != nil {
-		return nil, fmt.Errorf("tracee object info fd %d: %w", fd, err)
+		return nil, traceeError(fmt.Errorf("tracee object info fd %d: %w", fd, err))
 	}
-	return readMemory(r.pid, addr, uint64(size))
+	info, err := readMemory(r.pid, addr, uint64(size))
+	return info, traceeError(err)
 }
 
+// progFuncInfo returns the func_info records of the program behind the
+// tracee's descriptor fd. A failure to reach the tracee's memory or
+// descriptor is the tracee's (traceeError); a count of zero or one that
+// changed is the kernel's answer and is not.
 func (r *remote) progFuncInfo(fd uint32) ([]byte, error) {
 	const (
 		infoSize       = 152
@@ -254,12 +265,13 @@ func (r *remote) progFuncInfo(fd uint32) ([]byte, error) {
 	}
 	updated, err := readMemory(r.pid, queryAddr, infoSize)
 	if err != nil {
-		return nil, err
+		return nil, traceeError(err)
 	}
 	if got := u32(updated, funcCountOff); got != count {
 		return nil, fmt.Errorf("tracee program func_info count changed from %d to %d", count, got)
 	}
-	return readMemory(r.pid, recordsAddr, uint64(count)*8)
+	records, err := readMemory(r.pid, recordsAddr, uint64(count)*8)
+	return records, traceeError(err)
 }
 func (r *remote) finish(ret int64) error {
 	if r.broken != nil {

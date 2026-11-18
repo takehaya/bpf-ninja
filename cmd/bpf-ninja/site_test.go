@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"slices"
 	"strings"
 	"testing"
@@ -52,11 +53,17 @@ func TestResolveSite(t *testing.T) {
 			t.Errorf("%d %s %s: %v, want %q", c.progID, c.tag, c.site, err, c.want)
 		}
 	}
-	// A version 2 file has no site_param: --site asks for a new one.
-	old := strings.Replace(file, `"version":3`, `"version":2`, 1)
-	if _, _, err := resolveSite([]byte(old), "hooks.json", 7, "0123456789abcdef", "2"); err == nil ||
-		err.Error() != "--site: hooks.json is a version 2 hooks file, written by an older build without site_param; write it again with this build's inject-run --hooks-json" {
-		t.Errorf("version 2: %v", err)
+	// An older file (version 2, 1, or none, read as 0) has no site_param:
+	// --site asks for a new one.
+	for version, field := range map[int]string{2: `"version":2`, 1: `"version":1`, 0: `"version":0`} {
+		old := strings.Replace(file, `"version":3`, field, 1)
+		if version == 0 {
+			old = strings.Replace(file, `"version":3,`, "", 1)
+		}
+		want := fmt.Sprintf("--site: hooks.json is a version %d hooks file, written by an older build without site_param; write it again with this build's inject-run --hooks-json", version)
+		if _, _, err := resolveSite([]byte(old), "hooks.json", 7, "0123456789abcdef", "2"); err == nil || err.Error() != want {
+			t.Errorf("version %d: %v", version, err)
+		}
 	}
 	newer := strings.Replace(file, `"version":3`, `"version":4`, 1)
 	if _, _, err := resolveSite([]byte(newer), "hooks.json", 7, "0123456789abcdef", "2"); err == nil || err.Error() != "--site: hooks.json: unsupported version 4" {
