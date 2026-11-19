@@ -63,6 +63,10 @@ func TestHookSummary(t *testing.T) {
 			Hooks:   []inject.LookupHook{{Name: "obs_bpf_jiffies64", Kind: inject.HookCall, Call: "bpf_jiffies64", Sites: pcs(4)}},
 			Skipped: []inject.LookupSite{{Call: "bpf_jifies64", Reason: `Calls name "bpf_jifies64" is neither a helper nor a kernel function of this load`}},
 		}, `hook "obs_bpf_jiffies64" (call, site pc 4); skipped call "bpf_jifies64" (Calls name "bpf_jifies64" is neither a helper nor a kernel function of this load)`},
+		{"kernel-added-call", inject.LookupResultRaw{
+			Hooks:   []inject.LookupHook{{Name: "obs_bpf_skb_pull_data", Kind: inject.HookCall, Call: "bpf_skb_pull_data", Sites: pcs(3)}},
+			Skipped: []inject.LookupSite{{Call: "bpf_skb_pull_data", Reason: "not hookable, added by the kernel at load", KernelAdded: true}},
+		}, `hook "obs_bpf_skb_pull_data" (call, site pc 3); call "bpf_skb_pull_data" (not hookable, added by the kernel at load)`},
 		{"dispatch-static", inject.LookupResultRaw{Hooks: []inject.LookupHook{
 			{Name: "d", Kind: inject.HookLookup, MapName: "sessions", Static: true, Dispatch: true, Sites: pcs(13)},
 			{Name: "d", Kind: inject.HookEntry, Static: true, Dispatch: true},

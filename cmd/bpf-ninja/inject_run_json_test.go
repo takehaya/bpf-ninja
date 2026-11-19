@@ -262,6 +262,16 @@ func TestInjectionJSONSkippedCalls(t *testing.T) {
 	}
 }
 
+// A calls name the kernel may also call from instructions it adds at load
+// is listed in kernel_added_calls, apart from the names it does not know.
+func TestInjectionJSONKernelAddedCalls(t *testing.T) {
+	out, err := json.Marshal(injectionJSON(syscallhook.Injection{Program: "p", Type: ebpf.SchedCLS,
+		Skipped: []inject.LookupSite{{Call: "bpf_skb_pull_data", Reason: "not hookable", KernelAdded: true}}}))
+	if err != nil || !strings.Contains(string(out), `"skipped":[],"kernel_added_calls":[{"name":"bpf_skb_pull_data","reason":"not hookable"}]`) {
+		t.Errorf("%s %v", out, err)
+	}
+}
+
 func mustRead(t *testing.T, path string) string {
 	t.Helper()
 	data, err := os.ReadFile(path)
