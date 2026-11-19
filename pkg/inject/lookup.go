@@ -43,6 +43,9 @@ type LookupSite struct {
 	// when its frame has no room for the slots (see lookupWrapper).
 	Wrapper string
 	Call    string `json:",omitempty"` // callee name of a HookCall site
+	// KernelAdded marks a Calls name, with no op and no pc, that the kernel
+	// may also call from instructions it adds at load (see kernelAddedCalls).
+	KernelAdded bool `json:",omitempty"`
 }
 
 // LookupSelector identifies lookups of one map. FuncName and Line optionally
@@ -313,7 +316,7 @@ func unknownCalls(req LookupRequest, groups []lookupGroup, skipped []LookupSite)
 // UnknownCallsName reports a skipped entry of unknownCalls: no op, no pc
 // and a callee name.
 func UnknownCallsName(site LookupSite) bool {
-	return site.Op == "" && site.SitePC == 0 && site.Call != ""
+	return site.Op == "" && site.SitePC == 0 && site.Call != "" && !site.KernelAdded
 }
 
 // normal is w with the empty set spelled LookupHit.
@@ -1711,6 +1714,11 @@ func transformLookupProgramGuarded(insns asm.Instructions, typ ebpf.ProgramType,
 	plan.skipped = append(plan.skipped, callSkipped...)
 	unknown := unknownCalls(req, callGroups, callSkipped)
 	plan.skipped = append(plan.skipped, unknown...)
+	added, err := kernelAddedCalls(insns, typ, req)
+	if err != nil {
+		return nil, plan, err
+	}
+	plan.skipped = append(plan.skipped, added...)
 	if err := CheckLookupStack(req); err != nil {
 		return nil, plan, err
 	}
@@ -1760,6 +1768,9 @@ func transformLookupProgramGuarded(insns asm.Instructions, typ ebpf.ProgramType,
 			names := ""
 			if len(quoted) != 0 {
 				names = "; Calls names that are neither a helper nor a kernel function of this load: " + strings.Join(quoted, ", ")
+			}
+			for _, site := range added {
+				names += fmt.Sprintf("; call %q (%s)", site.Call, site.Reason)
 			}
 			return refuse("no call site is instrumented (%d skipped)%s", len(plan.skipped), names)
 		}

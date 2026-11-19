@@ -2033,7 +2033,7 @@ func (s *supervisor) retryLoad(r *remote, attr []byte, rule Rule, form HookForm,
 		return 0, out.art, err
 	}
 	for i, site := range out.art.result.Skipped {
-		if reason, ok := out.dropped[site.SitePC]; ok && !unmatchedMapsName(site) && !inject.UnknownCallsName(site) {
+		if reason, ok := out.dropped[site.SitePC]; ok && !unmatchedMapsName(site) && !inject.UnknownCallsName(site) && !site.KernelAdded {
 			out.art.result.Skipped[i].Reason = reason
 		}
 	}
@@ -2126,7 +2126,9 @@ func copyReadOnlyHelps(hook inject.LookupHook) bool {
 //	hook "NAME" (KIND[ map "MAP"][ generic[ map "MAP"...][ runtime map]][, untrusted pointers][, value copied to stack][, static][, dispatch][, site pc N, N])
 //
 // separated by ", ", then "; skipped pc N (reason)" for each skipped lookup,
-// or "; skipped map "MAP" (reason)" for a Maps name that matches no site.
+// or "; skipped map "MAP" (reason)" for a Maps name that matches no site,
+// "; skipped call "NAME" (reason)" for an unknown Calls name, and
+// "; call "NAME" (reason)" for one the kernel may call from code it adds at load.
 // A generic hook names each map its sites reference directly, such as a
 // sockhash, and says "runtime map" when a site's map is known only at run
 // time.
@@ -2188,6 +2190,10 @@ func hookSummary(result *inject.LookupResultRaw) string {
 		}
 		if inject.UnknownCallsName(site) {
 			fmt.Fprintf(&b, "; skipped call %q (%s)", site.Call, site.Reason)
+			continue
+		}
+		if site.KernelAdded {
+			fmt.Fprintf(&b, "; call %q (%s)", site.Call, site.Reason)
 			continue
 		}
 		fmt.Fprintf(&b, "; skipped pc %d (%s)", site.SitePC, site.Reason)
