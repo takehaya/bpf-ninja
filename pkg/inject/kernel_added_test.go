@@ -4,6 +4,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/asm"
@@ -25,7 +26,9 @@ func pullFixture(typ ebpf.ProgramType, body ...asm.Instruction) *ebpf.Collection
 		asm.LoadMem(asm.R2, asm.R6, data, asm.Word), asm.LoadMem(asm.R3, asm.R6, end, asm.Word),
 		asm.Mov.Reg(asm.R4, asm.R2), asm.Add.Imm(asm.R4, 14), asm.JGT.Reg(asm.R4, asm.R3, "out"))
 	insns = append(append(insns, body...), asm.Mov.Imm(asm.R0, 0).WithSymbol("out"), asm.Return())
-	return callFixtureSpec(typ, insns)
+	spec := callFixtureSpec(typ, insns)
+	spec.Programs["p"].Type = typ
+	return spec
 }
 
 // A rule that hooks bpf_skb_pull_data in a tc program that writes packet
@@ -41,6 +44,7 @@ func TestKernelAddedPull(t *testing.T) {
 		want bool
 	}{
 		{"tc writes", pullFixture(ebpf.SchedCLS, write), true},
+		{"sched_act writes", pullFixture(ebpf.SchedACT, write), true},
 		{"tc reads", pullFixture(ebpf.SchedCLS, read...), false},
 		{"xdp writes", pullFixture(ebpf.XDP, write), false},
 	} {
@@ -62,12 +66,20 @@ func TestKernelAddedPull(t *testing.T) {
 			t.Fatalf("%s: err %v hooks %+v skipped %+v", tc.name, err, plan.hooks, plan.skipped)
 		}
 	}
-	// Without a call of its own, the rule has nothing to hook and the refusal names the added call.
+	// With no other hook selected, the refusal names the added call without counting it as skipped.
 	spec := pullFixture(ebpf.SchedCLS, write)
 	prog := spec.Programs["p"]
 	prog.Instructions[3] = asm.Mov.Imm(asm.R0, 0)
 	_, err := transformLookup(spec, callReq("bpf_skb_pull_data"))
-	if !errors.Is(err, ErrRefused) || !strings.Contains(err.Error(), `no call site is instrumented (1 skipped); call "bpf_skb_pull_data" (not hookable, added by the kernel at load: `) {
+	if !errors.Is(err, ErrRefused) || !strings.Contains(err.Error(), `no call site is instrumented (0 skipped); call "bpf_skb_pull_data" (not hookable, added by the kernel at load: `) {
+		t.Fatalf("err %v", err)
+	}
+	// A real skipped site is still counted alongside the kernel-added entry.
+	spec = pullFixture(ebpf.SchedCLS, write)
+	req := callReq("bpf_skb_pull_data")
+	req.Drop = map[uint32]string{3: "load: dropped"}
+	_, err = transformLookup(spec, req)
+	if !errors.Is(err, ErrRefused) || !strings.Contains(err.Error(), "no call site is instrumented (1 skipped)") {
 		t.Fatalf("err %v", err)
 	}
 	// A rule that does not name bpf_skb_pull_data lists nothing.
@@ -121,35 +133,28 @@ func TestWritesPacket(t *testing.T) {
 	}
 }
 
-// packetStackFixtures also load in the throwaway guest prologue check.
+// packetStackFixtures covers stack aliases, cross-frame values and callbacks.
 func packetStackFixtures() []struct {
 	name string
 	spec *ebpf.CollectionSpec
 	want bool
 } {
 	ptr := &btf.Pointer{Target: &btf.Void{}}
-	sub := func(spec *ebpf.CollectionSpec, name string, params []btf.FuncParam, body ...asm.Instruction) *ebpf.CollectionSpec {
-		fn := &btf.Func{Name: name, Linkage: btf.StaticFunc, Type: &btf.FuncProto{
-			Return: &btf.Int{Name: "long", Size: 8, Encoding: btf.Signed}, Params: params,
-		}}
-		body[0] = btf.WithFuncMetadata(body[0].WithSymbol(name).WithSource(asm.Comment(name)), fn)
-		spec.Programs["p"].Instructions = equivResolveBranches(append(spec.Programs["p"].Instructions, body...))
-		return spec
-	}
+
 	alias := pullFixture(ebpf.SchedCLS,
 		asm.StoreMem(asm.RFP, -8, asm.R2, asm.DWord), asm.Mov.Reg(asm.R7, asm.RFP), asm.Add.Imm(asm.R7, -8),
 		asm.Mov.Imm(asm.R2, 0), asm.LoadMem(asm.R5, asm.R7, 0, asm.DWord), asm.StoreImm(asm.R5, 0, 1, asm.Byte))
-	in := sub(pullFixture(ebpf.SchedCLS,
+	in := packetSubFixture(pullFixture(ebpf.SchedCLS,
 		asm.StoreMem(asm.RFP, -8, asm.R2, asm.DWord), asm.Mov.Reg(asm.R1, asm.RFP), asm.Add.Imm(asm.R1, -8), asm.Call.Label("in")),
 		"in", []btf.FuncParam{{Name: "slot", Type: ptr}},
 		asm.LoadMem(asm.R3, asm.R1, 0, asm.DWord), asm.StoreImm(asm.R3, 0, 1, asm.Byte), asm.Mov.Imm(asm.R0, 0), asm.Return())
-	out := sub(pullFixture(ebpf.SchedCLS,
+	out := packetSubFixture(pullFixture(ebpf.SchedCLS,
 		asm.Mov.Reg(asm.R1, asm.RFP), asm.Add.Imm(asm.R1, -8), asm.Call.Label("put"),
 		asm.LoadMem(asm.R5, asm.RFP, -8, asm.DWord), asm.StoreImm(asm.R5, 0, 1, asm.Byte)),
 		"put", []btf.FuncParam{{Name: "slot", Type: ptr}, {Name: "packet", Type: ptr}},
 		asm.StoreMem(asm.R1, 0, asm.R2, asm.DWord), asm.Mov.Imm(asm.R0, 0), asm.Return())
 	loadCallback := asm.Instruction{OpCode: asm.LoadImmOp(asm.DWord), Dst: asm.R2, Src: asm.PseudoFunc, Constant: -1}.WithReference("cb")
-	callback := sub(pullFixture(ebpf.SchedCLS,
+	callback := packetSubFixture(pullFixture(ebpf.SchedCLS,
 		asm.StoreMem(asm.RFP, -8, asm.R6, asm.DWord), asm.Mov.Imm(asm.R1, 1), loadCallback,
 		asm.Mov.Reg(asm.R3, asm.RFP), asm.Add.Imm(asm.R3, -8), asm.Mov.Imm(asm.R4, 0), asm.FnLoop.Call()),
 		"cb", []btf.FuncParam{{Name: "i", Type: &btf.Int{Name: "u32", Size: 4}}, {Name: "state", Type: ptr}},
@@ -192,7 +197,7 @@ func TestKernelAddedStack(t *testing.T) {
 // both symbolic and numeric function addresses.
 func TestKernelAddedCallbackInputs(t *testing.T) {
 	for _, numeric := range []bool{false, true} {
-		for _, call := range []asm.Instruction{asm.FnLoop.Call(), asm.FnForEachMapElem.Call(), kfuncCall(123)} {
+		for _, call := range []asm.Instruction{asm.FnLoop.Call(), asm.FnForEachMapElem.Call(), kfuncCall(123).WithReference("callback")} {
 			spec := packetStackFixtures()[3].spec
 			insns := spec.Programs["p"].Instructions
 			indices, cb := map[int]int{}, 0
@@ -225,7 +230,7 @@ func TestKernelAddedCallbackInputs(t *testing.T) {
 	}
 }
 
-// packetAtomicFixtures also load in the throwaway guest prologue check.
+// packetAtomicFixtures covers pointer reloads through atomic stack accesses.
 func packetAtomicFixtures() []struct {
 	name string
 	spec *ebpf.CollectionSpec
@@ -276,6 +281,147 @@ func TestKernelAddedAtomic(t *testing.T) {
 			added, err := kernelAddedCalls(p.Instructions, p.Type, callReq("bpf_skb_pull_data"))
 			if err != nil || (len(added) == 1) != tc.want {
 				t.Fatalf("added %+v, err %v, want listed %v", added, err, tc.want)
+			}
+		})
+	}
+}
+
+func packetSubFixture(spec *ebpf.CollectionSpec, name string, params []btf.FuncParam, body ...asm.Instruction) *ebpf.CollectionSpec {
+	fn := &btf.Func{Name: name, Linkage: btf.StaticFunc, Type: &btf.FuncProto{
+		Return: &btf.Int{Name: "long", Size: 8, Encoding: btf.Signed}, Params: params,
+	}}
+	body[0] = btf.WithFuncMetadata(body[0].WithSymbol(name).WithSource(asm.Comment(name)), fn)
+	spec.Programs["p"].Instructions = equivResolveBranches(append(spec.Programs["p"].Instructions, body...))
+	return spec
+}
+
+func TestKernelAddedRawKfunc(t *testing.T) {
+	kernel := specOf(t, &btf.Func{Name: "bpf_dynptr_slice_rdwr", Linkage: btf.GlobalFunc,
+		Type: &btf.FuncProto{Return: &btf.Pointer{Target: &btf.Void{}}}})
+	call := testKfunc(t, kernel, "bpf_dynptr_slice_rdwr")
+	other := specOf(t, &btf.Func{Name: "bpf_dynptr_slice", Linkage: btf.GlobalFunc,
+		Type: &btf.FuncProto{Return: &btf.Pointer{Target: &btf.Void{}}}})
+	for _, tc := range []struct {
+		name   string
+		call   asm.Instruction
+		kernel *btf.Spec
+		want   bool
+	}{
+		{"nil kernel", call, nil, true},
+		{"resolved rdwr", call, kernel, true},
+		{"missing ID", kfuncCall(1000000), kernel, true},
+		{"resolved read only", testKfunc(t, other, "bpf_dynptr_slice"), other, false},
+		{"unresolved module", func() asm.Instruction { c := call; c.Offset = 1; return c }(), nil, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.call.Reference() != "" {
+				t.Fatal("expected raw BTF-ID call")
+			}
+			spec := pullFixture(ebpf.SchedCLS, tc.call)
+			req := callReq("bpf_skb_pull_data")
+			req.Kernel = tc.kernel
+			added, err := kernelAddedCalls(spec.Programs["p"].Instructions, ebpf.SchedCLS, req)
+			if err != nil || (len(added) == 1) != tc.want {
+				t.Fatalf("added %+v, err %v, want %v", added, err, tc.want)
+			}
+		})
+	}
+}
+
+func TestKernelAddedNoExit(t *testing.T) {
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		spec := callFixtureSpec(ebpf.SchedCLS, asm.Instructions{
+			asm.Mov.Reg(asm.R6, asm.R1), asm.Mov.Imm(asm.R2, 14), asm.Mov.Reg(asm.R1, asm.R6),
+			asm.FnSkbPullData.Call(), asm.Mov.Imm(asm.R0, 0),
+		})
+		if got, err := writesPacket(spec.Programs["p"].Instructions, nil, nil); got || err != nil {
+			t.Errorf("writes %v, err %v", got, err)
+			return
+		}
+		plan, err := transformLookup(spec, callReq("bpf_skb_pull_data"))
+		if err != nil || len(plan.hooks) != 1 || len(plan.hooks[0].Sites) != 1 || plan.hooks[0].Sites[0].SitePC != 3 {
+			t.Errorf("err %v hooks %+v", err, plan.hooks)
+		}
+	}()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("analysis did not return for a program without exit")
+	}
+}
+
+func packetReadOnlyStackFixtures() []struct {
+	name string
+	spec *ebpf.CollectionSpec
+	want bool
+} {
+	ptr := &btf.Pointer{Target: &btf.Void{}}
+	parser := func(spec *ebpf.CollectionSpec) *ebpf.CollectionSpec {
+		return packetSubFixture(spec, "parse", []btf.FuncParam{{Name: "cursor", Type: ptr}, {Name: "skb", Type: ptr}},
+			asm.LoadMem(asm.R3, asm.R2, 76, asm.Word), asm.StoreMem(asm.R1, 0, asm.R3, asm.DWord),
+			asm.Mov.Imm(asm.R0, 0), asm.Return())
+	}
+	head := []asm.Instruction{
+		asm.Mov.Reg(asm.R1, asm.RFP), asm.Add.Imm(asm.R1, -16), asm.Mov.Reg(asm.R2, asm.R6), asm.Call.Label("parse"),
+	}
+	ctx := parser(pullFixture(ebpf.SchedCLS, append(append([]asm.Instruction{}, head...),
+		asm.StoreMem(asm.RFP, -8, asm.R6, asm.DWord), asm.FnKtimeGetNs.Call(),
+		asm.LoadMem(asm.R1, asm.RFP, -8, asm.DWord), asm.StoreMem(asm.R1, 8, asm.R0, asm.Word))...))
+	value := parser(pullFixture(ebpf.SchedCLS, append(append([]asm.Instruction{}, head...),
+		asm.StoreImm(asm.RFP, -24, 0, asm.Word), asm.LoadMapPtr(asm.R1, 0).WithReference("out"),
+		asm.Mov.Reg(asm.R2, asm.RFP), asm.Add.Imm(asm.R2, -24), asm.FnMapLookupElem.Call(), asm.JEq.Imm(asm.R0, 0, "out"),
+		asm.StoreMem(asm.RFP, -32, asm.R0, asm.DWord), asm.FnKtimeGetNs.Call(),
+		asm.LoadMem(asm.R1, asm.RFP, -32, asm.DWord), asm.StoreMem(asm.R1, 0, asm.R0, asm.DWord))...))
+	bump := packetSubFixture(pullFixture(ebpf.SchedCLS,
+		asm.StoreMem(asm.RFP, -8, asm.R2, asm.DWord), asm.StoreImm(asm.RFP, -24, 0, asm.Word),
+		asm.LoadMapPtr(asm.R1, 0).WithReference("out"), asm.Mov.Reg(asm.R2, asm.RFP), asm.Add.Imm(asm.R2, -24),
+		asm.FnMapLookupElem.Call(), asm.JEq.Imm(asm.R0, 0, "out"), asm.StoreMem(asm.RFP, -16, asm.R0, asm.DWord),
+		asm.Mov.Reg(asm.R1, asm.RFP), asm.Add.Imm(asm.R1, -16), asm.Call.Label("bump")),
+		"bump", []btf.FuncParam{{Name: "val", Type: ptr}},
+		asm.LoadMem(asm.R2, asm.R1, 0, asm.DWord), asm.StoreImm(asm.R2, 0, 1, asm.Word), asm.Mov.Imm(asm.R0, 0), asm.Return())
+	return []struct {
+		name string
+		spec *ebpf.CollectionSpec
+		want bool
+	}{
+		{"cursor then ctx mark", ctx, false},
+		{"cursor then map value", value, false},
+		{"packet spill then bump value", bump, false},
+	}
+}
+
+func TestKernelAddedReadOnlyStack(t *testing.T) {
+	for _, tc := range packetReadOnlyStackFixtures() {
+		t.Run(tc.name, func(t *testing.T) {
+			p := tc.spec.Programs["p"]
+			added, err := kernelAddedCalls(p.Instructions, p.Type, callReq("bpf_skb_pull_data"))
+			if err != nil || len(added) != 0 {
+				t.Fatalf("added %+v, err %v", added, err)
+			}
+		})
+	}
+}
+
+func TestKernelAddedStackFixpoint(t *testing.T) {
+	for _, unknown := range []bool{false, true} {
+		t.Run(map[bool]string{false: "constant alias", true: "variable alias"}[unknown], func(t *testing.T) {
+			insns := asm.Instructions{
+				asm.LoadMem(asm.R2, asm.R1, 76, asm.Word), asm.LoadMem(asm.R3, asm.R1, 80, asm.Word),
+				asm.StoreImm(asm.RFP, -8, 0, asm.DWord), asm.Mov.Reg(asm.R7, asm.RFP), asm.Add.Imm(asm.R7, -8), asm.Mov.Imm(asm.R6, 0),
+			}
+			if unknown {
+				insns = append(insns, asm.Mov.Imm(asm.R0, 0), asm.Add.Reg(asm.R7, asm.R0))
+			}
+			insns = append(insns,
+				asm.LoadMem(asm.R5, asm.RFP, -8, asm.DWord).WithSymbol("top"), asm.JNE.Imm(asm.R6, 0, "w"),
+				asm.StoreMem(asm.R7, 0, asm.R2, asm.DWord), asm.Mov.Imm(asm.R6, 1), asm.Ja.Label("top"),
+				asm.Mov.Reg(asm.R4, asm.R5).WithSymbol("w"), asm.Add.Imm(asm.R4, 1), asm.JGT.Reg(asm.R4, asm.R3, "out"),
+				asm.StoreImm(asm.R5, 0, 1, asm.Byte), asm.Mov.Imm(asm.R0, 0).WithSymbol("out"), asm.Return())
+			insns = callFixtureSpec(ebpf.SchedCLS, insns).Programs["p"].Instructions
+			if got, err := writesPacket(insns, nil, nil); !got || err != nil {
+				t.Fatalf("writes %v, err %v", got, err)
 			}
 		})
 	}

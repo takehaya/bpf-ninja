@@ -16,8 +16,9 @@ const uncloneReason = "not hookable, added by the kernel at load: the verifier p
 // kernelAddedCalls lists, without a site, each Calls name that the kernel
 // may also call from instructions it adds to this program at load, after the
 // rewrite: no hook can follow such a call. For sched_cls and sched_act, the
-// verifier's prologue (bpf_unclone_prologue in net/core/filter.c, kernels 6.12
-// and 7.0) calls bpf_skb_pull_data when the program writes packet data directly.
+// verifier adds bpf_unclone_prologue (net/core/filter.c) for direct packet
+// writes; it calls bpf_skb_pull_data only for a cloned skb. Checked on 6.12
+// and 7.0.
 func kernelAddedCalls(insns asm.Instructions, typ ebpf.ProgramType, req LookupRequest) ([]LookupSite, error) {
 	if typ != ebpf.SchedCLS && typ != ebpf.SchedACT || !slices.Contains(req.Calls, "bpf_skb_pull_data") {
 		return nil, nil
@@ -35,23 +36,54 @@ const (
 	holdsStack
 )
 
-// packetState is the state before one instruction: registers and the 8-byte
-// slots spilled at R10 plus a constant in the current frame.
+// packetValue follows pointer kinds and, when known, a stack frame and offset.
+// stackKind is shared with the read-only pointer analysis.
+type packetValue struct {
+	kind  uint8
+	stack stackKind
+	frame int
+	off   int64
+}
+
+func joinPacket(a, b packetValue) packetValue {
+	if a == (packetValue{}) {
+		return b
+	}
+	if b == (packetValue{}) {
+		return a
+	}
+	out := a
+	out.kind |= b.kind
+	if a.stack != b.stack || a.frame != b.frame || a.off != b.off {
+		out.stack, out.frame, out.off = notStack, 0, 0
+		if out.kind&holdsStack != 0 {
+			out.stack = stackUnknown
+		}
+	}
+	return out
+}
+
+type packetSlot struct {
+	frame int
+	off   int64
+}
+
+// packetState is the state before one instruction, with exact local spills.
 type packetState struct {
-	regs  [asm.R10 + 1]uint8
-	slots map[int16]uint8
+	regs  [asm.R10 + 1]packetValue
+	slots map[int64]packetValue
 }
 
 func (s packetState) join(o packetState) packetState {
 	out := packetState{slots: maps.Clone(s.slots)}
 	for r := range s.regs {
-		out.regs[r] = s.regs[r] | o.regs[r]
+		out.regs[r] = joinPacket(s.regs[r], o.regs[r])
 	}
 	for off, k := range o.slots {
 		if out.slots == nil {
-			out.slots = map[int16]uint8{}
+			out.slots = map[int64]packetValue{}
 		}
-		out.slots[off] |= k
+		out.slots[off] = joinPacket(out.slots[off], k)
 	}
 	return out
 }
@@ -62,8 +94,8 @@ func (s packetState) join(o packetState) packetState {
 // context's data or data_meta, or a call of bpf_dynptr_slice_rdwr. Every
 // path counts, reachable or not. Pointers follow moves, additions, spills to
 // R10 and stack aliases, bpf-to-bpf arguments and results, and callback inputs.
-// Aliased stack accesses share a summary across frames; literal R10 slots stay
-// precise except for possible writes through aliases.
+// Constant stack offsets retain their frame through aliases and call arguments.
+// Cross-frame slots have per-slot summaries; unknown targets share a summary.
 func writesPacket(insns asm.Instructions, kernel *btf.Spec, modules map[int16]*btf.Spec) (bool, error) {
 	const skbData, skbDataMeta = 76, 140 // offsets in struct __sk_buff
 	indices := map[int]int{}
@@ -93,13 +125,19 @@ func writesPacket(insns asm.Instructions, kernel *btf.Spec, modules map[int16]*b
 		}
 	}
 	// Summaries grow across passes, including stores into a caller's frame.
-	rets := map[int]uint8{}
-	var spilled, aliasedStores uint8
+	rets := map[int]packetValue{}
+	slots, crossStores := map[packetSlot]packetValue{}, map[packetSlot]packetValue{}
+	var spilled, aliasedStores packetValue
+	framePointer := func(frame int) packetValue { return packetValue{kind: holdsStack, stack: stackKnown, frame: frame} }
 	for {
 		oldSpilled, oldAliasedStores := spilled, aliasedStores
+		oldSlots, oldCrossStores := maps.Clone(slots), maps.Clone(crossStores)
 		before := map[int]packetState{}
 		var work []int
 		reach := func(pc int, s packetState) {
+			if _, ok := indices[pc]; !ok {
+				return
+			}
 			if old, seen := before[pc]; seen {
 				if s = old.join(s); s.regs == old.regs && maps.Equal(s.slots, old.slots) {
 					return
@@ -111,13 +149,13 @@ func writesPacket(insns asm.Instructions, kernel *btf.Spec, modules map[int16]*b
 		// Callers and helper arguments add inputs to these initial states.
 		for _, start := range starts {
 			s := packetState{}
-			s.regs[asm.R10] = holdsStack
+			s.regs[asm.R10] = framePointer(start)
 			if start == 0 {
-				s.regs[asm.R1] = holdsCtx
+				s.regs[asm.R1] = packetValue{kind: holdsCtx}
 			}
 			reach(start, s)
 		}
-		found := map[int]uint8{}
+		found := map[int]packetValue{}
 		for len(work) > 0 {
 			pc := work[len(work)-1]
 			work = work[:len(work)-1]
@@ -126,43 +164,79 @@ func writesPacket(insns asm.Instructions, kernel *btf.Spec, modules map[int16]*b
 			s.slots = maps.Clone(s.slots)
 			next := pc + int(ins.Size()/asm.InstructionSize)
 			op, class := ins.OpCode, ins.OpCode.Class()
-			load := func(base asm.Register) uint8 {
-				var k uint8
-				if s.regs[base]&holdsCtx != 0 && (ins.Offset == skbData || ins.Offset == skbDataMeta) {
-					k |= holdsPacket
+			load := func(base asm.Register) packetValue {
+				var value packetValue
+				p := s.regs[base]
+				if p.kind&holdsCtx != 0 && (ins.Offset == skbData || ins.Offset == skbDataMeta) {
+					value.kind |= holdsPacket
 				}
-				if op.Size() == asm.DWord {
-					switch {
-					case base == asm.R10:
-						k |= s.slots[ins.Offset] | aliasedStores
-					case s.regs[base]&holdsStack != 0:
-						k |= spilled
+				if op.Size() == asm.DWord && p.kind&holdsStack != 0 {
+					switch p.stack {
+					case stackKnown:
+						slot := packetSlot{p.frame, p.off + int64(ins.Offset)}
+						k := slots[slot]
+						if p.frame == funcOf[pc] {
+							k = joinPacket(s.slots[slot.off], crossStores[slot])
+						}
+						value = joinPacket(value, joinPacket(k, aliasedStores))
+					case stackUnknown:
+						value = joinPacket(value, spilled)
 					}
 				}
-				return k
+				return value
+			}
+			store := func(value packetValue) {
+				p := s.regs[ins.Dst]
+				if p.kind&holdsStack == 0 {
+					return
+				}
+				spilled = joinPacket(spilled, value)
+				if p.stack != stackKnown {
+					aliasedStores = joinPacket(aliasedStores, value)
+					return
+				}
+				off := p.off + int64(ins.Offset)
+				if p.frame == funcOf[pc] {
+					for slot := off &^ 7; slot < off+int64(op.Size().Sizeof()); slot += 8 {
+						delete(s.slots, slot)
+					}
+					if value != (packetValue{}) && off%8 == 0 {
+						if s.slots == nil {
+							s.slots = map[int64]packetValue{}
+						}
+						s.slots[off] = value
+					}
+				}
+				if value != (packetValue{}) && off%8 == 0 {
+					slot := packetSlot{p.frame, off}
+					slots[slot] = joinPacket(slots[slot], value)
+					if p.frame != funcOf[pc] {
+						crossStores[slot] = joinPacket(crossStores[slot], value)
+					}
+				}
 			}
 			switch {
 			case op.JumpOp() == asm.Exit:
-				found[funcOf[pc]] |= s.regs[asm.R0]
+				found[funcOf[pc]] = joinPacket(found[funcOf[pc]], s.regs[asm.R0])
 				continue
 			case ins.IsKfuncCall():
-				if _, name, _ := callee(ins, kernel, modules); name == "bpf_dynptr_slice_rdwr" {
+				if _, name, named := callee(ins, kernel, modules); name == "bpf_dynptr_slice_rdwr" || !named && ins.Offset == 0 {
 					return true, nil
 				}
 				fallthrough
 			case ins.IsBuiltinCall():
 				// Callback signatures differ: any helper argument may reach any
 				// callback parameter, including a pointer to a caller's stack.
-				var input uint8
+				var input packetValue
 				for _, k := range s.regs[asm.R1 : asm.R5+1] {
-					input |= k
+					input = joinPacket(input, k)
 				}
 				for target := range callbacks {
 					args := packetState{}
 					for r := asm.R1; r <= asm.R5; r++ {
 						args.regs[r] = input
 					}
-					args.regs[asm.R10] = holdsStack
+					args.regs[asm.R10] = framePointer(target)
 					reach(target, args)
 				}
 				clear(s.regs[asm.R0 : asm.R5+1])
@@ -174,10 +248,10 @@ func writesPacket(insns asm.Instructions, kernel *btf.Spec, modules map[int16]*b
 					_, ok = indices[pc+1+int(ins.Constant)]
 					target = pc + 1 + int(ins.Constant)
 				}
-				r0 := holdsCtx | holdsPacket | holdsStack
+				r0 := packetValue{kind: holdsCtx | holdsPacket | holdsStack, stack: stackUnknown}
 				if ok {
 					args := packetState{}
-					args.regs[asm.R10] = holdsStack
+					args.regs[asm.R10] = framePointer(target)
 					copy(args.regs[asm.R1:asm.R5+1], s.regs[asm.R1:asm.R5+1])
 					reach(target, args)
 					r0 = rets[target]
@@ -191,9 +265,7 @@ func writesPacket(insns asm.Instructions, kernel *btf.Spec, modules map[int16]*b
 			case class == asm.StXClass && op.Mode() == asm.AtomicMode && op.AtomicOp() != atomicStoreRelease:
 				// A fetch returns the old slot value, including spilled pointers.
 				old := load(ins.Dst)
-				if ins.Dst == asm.R10 {
-					delete(s.slots, ins.Offset&^7)
-				}
+				store(packetValue{})
 				switch atomic := op.AtomicOp(); {
 				case atomic == asm.CmpXchg:
 					s.regs[asm.R0] = old
@@ -201,33 +273,22 @@ func writesPacket(insns asm.Instructions, kernel *btf.Spec, modules map[int16]*b
 					s.regs[ins.Src] = old
 				}
 			case class.IsStore():
-				if s.regs[ins.Dst]&holdsPacket != 0 && ins.OpCode.Mode() == asm.MemMode {
+				if s.regs[ins.Dst].kind&holdsPacket != 0 && ins.OpCode.Mode() == asm.MemMode {
 					return true, nil
 				}
-				spill := class == asm.StXClass && (op.Mode() == asm.MemMode || op.AtomicOp() == atomicStoreRelease) && op.Size() == asm.DWord
-				if s.regs[ins.Dst]&holdsStack != 0 && spill {
-					spilled |= s.regs[ins.Src]
-					if ins.Dst != asm.R10 {
-						aliasedStores |= s.regs[ins.Src]
-					}
+				value := packetValue{}
+				if class == asm.StXClass && (op.Mode() == asm.MemMode || op.AtomicOp() == atomicStoreRelease) && op.Size() == asm.DWord {
+					value = s.regs[ins.Src]
 				}
-				if ins.Dst == asm.R10 {
-					delete(s.slots, ins.Offset&^7)
-					if spill && s.regs[ins.Src] != 0 {
-						if s.slots == nil {
-							s.slots = map[int16]uint8{}
-						}
-						s.slots[ins.Offset] = s.regs[ins.Src]
-					}
-				}
+				store(value)
 			case class.IsLoad():
 				if class == asm.LdXClass {
 					s.regs[ins.Dst] = load(ins.Src)
 				} else {
-					s.regs[ins.Dst] = 0
+					s.regs[ins.Dst] = packetValue{}
 				}
 			case class == asm.ALU64Class:
-				switch src := uint8(0); op.ALUOp() {
+				switch src := (packetValue{}); op.ALUOp() {
 				case asm.Mov:
 					if op.Source() == asm.RegSource {
 						src = s.regs[ins.Src]
@@ -237,12 +298,23 @@ func writesPacket(insns asm.Instructions, kernel *btf.Spec, modules map[int16]*b
 					if op.ALUOp() == asm.Add && op.Source() == asm.RegSource {
 						src = s.regs[ins.Src]
 					}
-					s.regs[ins.Dst] |= src
+					p := joinPacket(s.regs[ins.Dst], src)
+					switch {
+					case p.stack == stackKnown && op.Source() == asm.ImmSource:
+						if op.ALUOp() == asm.Add {
+							p.off += ins.Constant
+						} else {
+							p.off -= ins.Constant
+						}
+					case p.kind&holdsStack != 0:
+						p.stack, p.frame, p.off = stackUnknown, 0, 0
+					}
+					s.regs[ins.Dst] = p
 				default:
-					s.regs[ins.Dst] = 0
+					s.regs[ins.Dst] = packetValue{}
 				}
 			case class == asm.ALUClass:
-				s.regs[ins.Dst] = 0
+				s.regs[ins.Dst] = packetValue{}
 			}
 			if !class.IsJump() {
 				reach(next, s)
@@ -260,7 +332,7 @@ func writesPacket(insns asm.Instructions, kernel *btf.Spec, modules map[int16]*b
 			}
 		}
 		delete(found, 0)
-		if maps.Equal(found, rets) && spilled == oldSpilled && aliasedStores == oldAliasedStores {
+		if maps.Equal(found, rets) && spilled == oldSpilled && aliasedStores == oldAliasedStores && maps.Equal(slots, oldSlots) && maps.Equal(crossStores, oldCrossStores) {
 			return false, nil
 		}
 		rets = found
