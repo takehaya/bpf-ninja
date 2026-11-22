@@ -45,7 +45,7 @@ A ready rule selects its program by the entry function's name, which may not mat
 - stderr reports each injection, for example `inject-run: program "xdp_ingress": injected hook "ninja_sessions" (lookup map "sessions", site pc 6), tracee fd 9`.
   The line ends with each site the rule skipped and why, and the [hooks file](#hooks-file) lists the same.
 - A `calls` name that is neither a helper nor a kernel function of the load, such as a misspelt one, has no site.
-  The injection line ends with `; skipped call "NAME" (Calls name "NAME" is neither a helper nor a kernel function of this load)`, and the hooks file lists it in `skipped_calls`.
+  The injection line includes `; skipped call "NAME" (Calls name "NAME" is neither a helper nor a kernel function of this load)`, and the hooks file lists it in `skipped_calls`.
   When nothing else is left to hook, the load is not rewritten: `no call site is instrumented (N skipped); Calls names that are neither a helper nor a kernel function of this load: "NAME"`.
 - If `inject-run` cannot rewrite a load, it logs `injection skipped` with the cause and lets the original program load; see [When the kernel refuses a rewrite](#when-the-kernel-refuses-a-rewrite).
 
@@ -320,7 +320,7 @@ The hook receives the call's result as `ret` and, for a callee with a memory arg
   - helpers with a pointer result other than those in the table (`bpf_get_local_storage`, `bpf_inode_storage_get` and `bpf_sock_from_file`): each helper's pointer kind is enabled only with a kernel test.
 - Such a name is refused with `Calls name "NAME" cannot be hooked: REASON`. An empty name or a name given twice is a configuration error.
 - A name that is neither a helper nor a kernel function of the load has no site and is listed in `skipped_calls`; see [List the calls and load the ready rule](#list-the-calls-and-load-the-ready-rule).
-- The kernel may add its own call of a callee to the program at load, where no hook can follow it. For `bpf_skb_pull_data` in a tc program that may write packet data directly, the injection line includes `; call "bpf_skb_pull_data" (not hookable, added by the kernel at load: ...)` and the hooks file lists it in [`kernel_added_calls`](#hooks-file). When nothing else is left to hook, the load is refused; the added call appears only in the refusal reason, not in `kernel_added_calls`.
+- The kernel may add its own call of a callee to the program at load, where no hook can follow it. For `bpf_skb_pull_data` in a tc program that may write packet data directly, the injection line includes `; call "bpf_skb_pull_data" (not hookable, added by the kernel at load: ...)` and the hooks file lists it in [`kernel_added_calls`](#hooks-file). When nothing else is left to hook, the load is refused and no `kernel_added_calls` entry is written; the refusal `no call site is instrumented` names the added call.
 - A kernel function's integer result narrower than 8 bytes fills only the low bytes of `ret`; the bytes above it are not part of the result. The hooks file gives the width as `ret_size`, and a capture records only those bytes.
   A filter compares only those bytes, sign-extended when the result is signed, so a failing `int` result is `--arg-filter 'ret==-22'`; an unsigned result takes an unsigned number of its width.
   An 8-byte result, a helper's or a `long` kernel function's, compares unsigned: `ret<=-1` matches every call. A capture writes a narrow signed result as a signed decimal (`ret=-22`), and every 8-byte result as a signed 64-bit decimal too (`ret=-1`), although a filter compares it unsigned.

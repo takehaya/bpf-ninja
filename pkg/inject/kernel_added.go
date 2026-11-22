@@ -91,9 +91,9 @@ func (s packetState) join(o packetState) packetState {
 // writesPacket reports whether a tc program may write packet data directly,
 // which makes the verifier set seen_direct_write (may_access_direct_pkt_data
 // in kernel/bpf/verifier.c): a store through a pointer derived from the
-// context's data or data_meta, or a call of bpf_dynptr_slice_rdwr. Every
-// path counts, reachable or not. Pointers follow moves, additions, spills to
-// R10 and stack aliases, bpf-to-bpf arguments and results, and callback inputs.
+// context's data or data_meta, or a call of bpf_dynptr_slice_rdwr. Both
+// successors of every conditional jump count. Pointers follow moves, additions,
+// spills to R10 and stack aliases, bpf-to-bpf arguments and results, and callback inputs.
 // Constant stack offsets retain their frame through aliases and call arguments.
 // Cross-frame slots have per-slot summaries; unknown targets share a summary.
 func writesPacket(insns asm.Instructions, kernel *btf.Spec, modules map[int16]*btf.Spec) (bool, error) {
@@ -197,14 +197,17 @@ func writesPacket(insns asm.Instructions, kernel *btf.Spec, modules map[int16]*b
 				}
 				off := p.off + int64(ins.Offset)
 				if p.frame == funcOf[pc] {
-					for slot := off &^ 7; slot < off+int64(op.Size().Sizeof()); slot += 8 {
-						delete(s.slots, slot)
+					// Only R10 certainly targets this slot; aliases may also hold untracked pointers.
+					if ins.Dst == asm.R10 {
+						for slot := off &^ 7; slot < off+int64(op.Size().Sizeof()); slot += 8 {
+							delete(s.slots, slot)
+						}
 					}
 					if value != (packetValue{}) && off%8 == 0 {
 						if s.slots == nil {
 							s.slots = map[int64]packetValue{}
 						}
-						s.slots[off] = value
+						s.slots[off] = joinPacket(s.slots[off], value)
 					}
 				}
 				if value != (packetValue{}) && off%8 == 0 {

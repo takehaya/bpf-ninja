@@ -2,6 +2,7 @@ package inject
 
 import (
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -91,6 +92,11 @@ func TestKernelAddedPull(t *testing.T) {
 // writesPacket follows a packet pointer through stack spills, bpf-to-bpf
 // calls and their results, and counts bpf_dynptr_slice_rdwr.
 func TestWritesPacket(t *testing.T) {
+	write := []asm.Instruction{
+		asm.Mov.Reg(asm.R4, asm.R5), asm.Add.Imm(asm.R4, 1), asm.LoadMem(asm.R3, asm.R6, 80, asm.Word),
+		asm.JGT.Reg(asm.R4, asm.R3, "out"), asm.StoreImm(asm.R5, 0, 1, asm.Byte),
+		asm.Mov.Imm(asm.R0, 0).WithSymbol("out"), asm.Return(),
+	}
 	ctxData := asm.LoadMem(asm.R2, asm.R1, 76, asm.Word)
 	sub := func(name string, body ...asm.Instruction) asm.Instructions {
 		fn := &btf.Func{Name: name, Linkage: btf.StaticFunc, Type: &btf.FuncProto{Return: &btf.Int{Name: "long", Size: 8}}}
@@ -123,6 +129,83 @@ func TestWritesPacket(t *testing.T) {
 			sub("d", asm.LoadMem(asm.R0, asm.R1, 76, asm.Word), asm.Return())...), true},
 		{"scalar result", append(asm.Instructions{asm.Call.Label("d"), asm.StoreImm(asm.R0, 0, 1, asm.Byte), asm.Return()},
 			sub("d", asm.Mov.Imm(asm.R0, 0), asm.Return())...), false},
+		// A later return summary must reach the caller through cross-frame stores.
+		{"late cross-frame store", slices.Concat([]asm.Instruction{
+			asm.Mov.Reg(asm.R6, asm.R1), asm.LoadMem(asm.R2, asm.R6, 76, asm.Word),
+			asm.StoreMem(asm.RFP, -8, asm.R2, asm.DWord), asm.Mov.Imm(asm.R0, 0), asm.StoreMem(asm.RFP, -8, asm.R0, asm.DWord),
+			asm.Mov.Reg(asm.R1, asm.RFP), asm.Add.Imm(asm.R1, -8), asm.Mov.Reg(asm.R2, asm.R6), asm.Call.Label("put"),
+			asm.LoadMem(asm.R5, asm.RFP, -8, asm.DWord)}, write,
+			sub("put", asm.Mov.Reg(asm.R7, asm.R1), asm.Mov.Reg(asm.R1, asm.R2), asm.Call.Label("data"),
+				asm.StoreMem(asm.R7, 0, asm.R0, asm.DWord), asm.Mov.Imm(asm.R0, 0), asm.Return()),
+			sub("data", asm.LoadMem(asm.R0, asm.R1, 76, asm.Word), asm.Return())), true},
+		{"late aliased store", slices.Concat([]asm.Instruction{
+			asm.Mov.Reg(asm.R6, asm.R1), asm.LoadMem(asm.R2, asm.R6, 76, asm.Word),
+			asm.StoreMem(asm.RFP, -16, asm.R2, asm.DWord), asm.Mov.Imm(asm.R0, 0), asm.StoreMem(asm.RFP, -8, asm.R0, asm.DWord),
+			asm.Mov.Reg(asm.R7, asm.RFP), asm.Add.Imm(asm.R7, -8), asm.Mov.Imm(asm.R0, 0), asm.Add.Reg(asm.R7, asm.R0),
+			asm.Mov.Imm(asm.R8, 0),
+			asm.LoadMem(asm.R5, asm.RFP, -8, asm.DWord).WithSymbol("top"), asm.JNE.Imm(asm.R8, 0, "w"),
+			asm.Mov.Reg(asm.R1, asm.R6), asm.Call.Label("data"), asm.StoreMem(asm.R7, 0, asm.R0, asm.DWord),
+			asm.Mov.Imm(asm.R0, 0), asm.Mov.Imm(asm.R8, 1), asm.Ja.Label("top"),
+			asm.Mov.Reg(asm.R4, asm.R5).WithSymbol("w"), asm.Add.Imm(asm.R4, 1), asm.LoadMem(asm.R3, asm.R6, 80, asm.Word),
+			asm.JGT.Reg(asm.R4, asm.R3, "out"), asm.StoreImm(asm.R5, 0, 1, asm.Byte),
+			asm.Mov.Imm(asm.R0, 0).WithSymbol("out"), asm.Return()},
+			sub("data", asm.LoadMem(asm.R0, asm.R1, 76, asm.Word), asm.Return())), true},
+		{"sub alias", slices.Concat([]asm.Instruction{
+			asm.Mov.Reg(asm.R6, asm.R1), asm.LoadMem(asm.R2, asm.R6, 76, asm.Word),
+			asm.Mov.Reg(asm.R7, asm.RFP), asm.Sub.Imm(asm.R7, 8), asm.StoreMem(asm.R7, 0, asm.R2, asm.DWord),
+			asm.LoadMem(asm.R5, asm.RFP, -8, asm.DWord)}, write), true},
+		{"joined aliases read -16", slices.Concat([]asm.Instruction{
+			asm.Mov.Reg(asm.R6, asm.R1), asm.LoadMem(asm.R2, asm.R6, 76, asm.Word),
+			asm.Mov.Imm(asm.R0, 0), asm.StoreMem(asm.RFP, -8, asm.R0, asm.DWord), asm.Mov.Imm(asm.R0, 0), asm.StoreMem(asm.RFP, -16, asm.R0, asm.DWord),
+			asm.Mov.Reg(asm.R7, asm.RFP), asm.Add.Imm(asm.R7, -8), asm.LoadMem(asm.R0, asm.R6, 8, asm.Word),
+			asm.JEq.Imm(asm.R0, 0, "j"), asm.Add.Imm(asm.R7, -8),
+			asm.StoreMem(asm.R7, 0, asm.R2, asm.DWord).WithSymbol("j"),
+			asm.LoadMem(asm.R5, asm.RFP, -16, asm.DWord)}, write), true},
+		{"joined aliases read -8", slices.Concat([]asm.Instruction{
+			asm.Mov.Reg(asm.R6, asm.R1), asm.LoadMem(asm.R2, asm.R6, 76, asm.Word),
+			asm.Mov.Imm(asm.R0, 0), asm.StoreMem(asm.RFP, -8, asm.R0, asm.DWord), asm.Mov.Imm(asm.R0, 0), asm.StoreMem(asm.RFP, -16, asm.R0, asm.DWord),
+			asm.Mov.Reg(asm.R7, asm.RFP), asm.Add.Imm(asm.R7, -8), asm.LoadMem(asm.R0, asm.R6, 8, asm.Word),
+			asm.JEq.Imm(asm.R0, 0, "j"), asm.Add.Imm(asm.R7, -8),
+			asm.StoreMem(asm.R7, 0, asm.R2, asm.DWord).WithSymbol("j"),
+			asm.LoadMem(asm.R5, asm.RFP, -8, asm.DWord)}, write), true},
+		{"shared out-param callee", slices.Concat([]asm.Instruction{
+			asm.Mov.Reg(asm.R6, asm.R1), asm.Mov.Imm(asm.R0, 0), asm.StoreMem(asm.RFP, -8, asm.R0, asm.DWord),
+			asm.Mov.Reg(asm.R1, asm.RFP), asm.Add.Imm(asm.R1, -8), asm.Mov.Reg(asm.R2, asm.R6), asm.Call.Label("put"),
+			asm.Mov.Reg(asm.R1, asm.R6), asm.Call.Label("sub"), asm.Mov.Imm(asm.R0, 0), asm.Return()},
+			sub("sub", asm.Mov.Reg(asm.R6, asm.R1), asm.Mov.Imm(asm.R0, 0), asm.StoreMem(asm.RFP, -8, asm.R0, asm.DWord),
+				asm.Mov.Reg(asm.R1, asm.RFP), asm.Add.Imm(asm.R1, -8), asm.Mov.Reg(asm.R2, asm.R6), asm.Call.Label("put"),
+				asm.LoadMem(asm.R5, asm.RFP, -8, asm.DWord),
+				asm.Mov.Reg(asm.R4, asm.R5), asm.Add.Imm(asm.R4, 1), asm.LoadMem(asm.R3, asm.R6, 80, asm.Word),
+				asm.JGT.Reg(asm.R4, asm.R3, "sub_out"), asm.StoreImm(asm.R5, 0, 1, asm.Byte),
+				asm.Mov.Imm(asm.R0, 0).WithSymbol("sub_out"), asm.Return()),
+			sub("put", asm.LoadMem(asm.R3, asm.R2, 76, asm.Word), asm.StoreMem(asm.R1, 0, asm.R3, asm.DWord),
+				asm.Mov.Imm(asm.R0, 0), asm.Return())), true},
+		{"shared out-param callee, main reads", slices.Concat([]asm.Instruction{
+			asm.Mov.Reg(asm.R6, asm.R1), asm.Mov.Imm(asm.R0, 0), asm.StoreMem(asm.RFP, -8, asm.R0, asm.DWord),
+			asm.Mov.Reg(asm.R1, asm.R6), asm.Call.Label("sub"),
+			asm.Mov.Reg(asm.R1, asm.RFP), asm.Add.Imm(asm.R1, -8), asm.Mov.Reg(asm.R2, asm.R6), asm.Call.Label("put"),
+			asm.LoadMem(asm.R5, asm.RFP, -8, asm.DWord)}, write,
+			sub("sub", asm.Mov.Reg(asm.R6, asm.R1), asm.Mov.Imm(asm.R0, 0), asm.StoreMem(asm.RFP, -8, asm.R0, asm.DWord),
+				asm.Mov.Reg(asm.R1, asm.RFP), asm.Add.Imm(asm.R1, -8), asm.Mov.Reg(asm.R2, asm.R6), asm.Call.Label("put"),
+				asm.Mov.Imm(asm.R0, 0), asm.Return()),
+			sub("put", asm.LoadMem(asm.R3, asm.R2, 76, asm.Word), asm.StoreMem(asm.R1, 0, asm.R3, asm.DWord),
+				asm.Mov.Imm(asm.R0, 0), asm.Return())), true},
+		{"nonzero register offset", slices.Concat([]asm.Instruction{
+			asm.Mov.Reg(asm.R6, asm.R1), asm.LoadMem(asm.R2, asm.R6, 76, asm.Word),
+			asm.Mov.Imm(asm.R0, 0), asm.StoreMem(asm.RFP, -16, asm.R0, asm.DWord),
+			asm.Mov.Reg(asm.R7, asm.RFP), asm.Add.Imm(asm.R7, -8), asm.Mov.Imm(asm.R0, -8), asm.Add.Reg(asm.R7, asm.R0),
+			asm.StoreMem(asm.R7, 0, asm.R2, asm.DWord),
+			asm.LoadMem(asm.R5, asm.RFP, -16, asm.DWord)}, write), true},
+		{"branch shares slots", slices.Concat([]asm.Instruction{
+			asm.Mov.Reg(asm.R6, asm.R1), asm.LoadMem(asm.R2, asm.R6, 76, asm.Word),
+			asm.StoreMem(asm.RFP, -8, asm.R2, asm.DWord), asm.LoadMem(asm.R0, asm.R6, 8, asm.Word),
+			asm.JEq.Imm(asm.R0, 0, "r"), asm.Mov.Imm(asm.R0, 0), asm.StoreMem(asm.RFP, -8, asm.R0, asm.DWord),
+			asm.LoadMem(asm.R5, asm.RFP, -8, asm.DWord).WithSymbol("r")}, write), true},
+		{"two exits", slices.Concat([]asm.Instruction{
+			asm.Mov.Reg(asm.R6, asm.R1), asm.Call.Label("get"), asm.JEq.Imm(asm.R0, 0, "out"), asm.Mov.Reg(asm.R5, asm.R0)}, write,
+			sub("get", asm.LoadMem(asm.R2, asm.R1, 0, asm.Word), asm.JEq.Imm(asm.R2, 0, "get_null"),
+				asm.LoadMem(asm.R0, asm.R1, 76, asm.Word), asm.Return(),
+				asm.Mov.Imm(asm.R0, 0).WithSymbol("get_null"), asm.Return())), true},
 		{"dynptr", asm.Instructions{asm.Instruction{OpCode: asm.OpCode(asm.JumpClass).SetJumpOp(asm.Call), Src: asm.PseudoKfuncCall, Constant: -1}.
 			WithReference("bpf_dynptr_slice_rdwr"), asm.Return()}, true},
 	} {
@@ -393,12 +476,12 @@ func packetReadOnlyStackFixtures() []struct {
 }
 
 func TestKernelAddedReadOnlyStack(t *testing.T) {
-	for _, tc := range packetReadOnlyStackFixtures() {
+	for _, tc := range append(packetReadOnlyStackFixtures(), packetAliasedStoreFixtures()...) {
 		t.Run(tc.name, func(t *testing.T) {
 			p := tc.spec.Programs["p"]
 			added, err := kernelAddedCalls(p.Instructions, p.Type, callReq("bpf_skb_pull_data"))
-			if err != nil || len(added) != 0 {
-				t.Fatalf("added %+v, err %v", added, err)
+			if err != nil || (len(added) == 1) != tc.want {
+				t.Fatalf("added %+v, err %v, want listed %v", added, err, tc.want)
 			}
 		})
 	}
@@ -409,7 +492,7 @@ func TestKernelAddedStackFixpoint(t *testing.T) {
 		t.Run(map[bool]string{false: "constant alias", true: "variable alias"}[unknown], func(t *testing.T) {
 			insns := asm.Instructions{
 				asm.LoadMem(asm.R2, asm.R1, 76, asm.Word), asm.LoadMem(asm.R3, asm.R1, 80, asm.Word),
-				asm.StoreImm(asm.RFP, -8, 0, asm.DWord), asm.Mov.Reg(asm.R7, asm.RFP), asm.Add.Imm(asm.R7, -8), asm.Mov.Imm(asm.R6, 0),
+				asm.Mov.Imm(asm.R0, 0), asm.StoreMem(asm.RFP, -8, asm.R0, asm.DWord), asm.Mov.Reg(asm.R7, asm.RFP), asm.Add.Imm(asm.R7, -8), asm.Mov.Imm(asm.R6, 0),
 			}
 			if unknown {
 				insns = append(insns, asm.Mov.Imm(asm.R0, 0), asm.Add.Reg(asm.R7, asm.R0))
@@ -424,5 +507,127 @@ func TestKernelAddedStackFixpoint(t *testing.T) {
 				t.Fatalf("writes %v, err %v", got, err)
 			}
 		})
+	}
+}
+
+// A map value can join with fp-8 without proving the store targets the stack.
+func packetAliasedStoreFixtures() []struct {
+	name string
+	spec *ebpf.CollectionSpec
+	want bool
+} {
+	fixtures := []struct {
+		name string
+		spec *ebpf.CollectionSpec
+		want bool
+	}{}
+	for _, tc := range []struct {
+		name  string
+		store asm.Instruction
+	}{
+		{"maybe alias STX DW", asm.StoreMem(asm.R7, 0, asm.R9, asm.DWord)},
+		{"maybe alias ST DW", asm.Instruction{OpCode: asm.StoreImmOp(asm.DWord), Dst: asm.R7}},
+		{"maybe alias STX W +4", asm.StoreMem(asm.R7, 4, asm.R9, asm.Word)},
+		{"maybe alias fetch_add", atomicMem(asm.FetchAdd, asm.R7, asm.R9, 0)},
+	} {
+		spec := callFixtureSpec(ebpf.SchedCLS, asm.Instructions{
+			asm.Mov.Reg(asm.R6, asm.R1), asm.Mov.Imm(asm.R9, 0),
+			asm.LoadMem(asm.R2, asm.R6, 76, asm.Word),
+			asm.StoreMem(asm.RFP, -8, asm.R2, asm.DWord),
+			asm.StoreImm(asm.RFP, -16, 0, asm.Word),
+			asm.LoadMapPtr(asm.R1, 0).WithReference("out"),
+			asm.Mov.Reg(asm.R2, asm.RFP), asm.Add.Imm(asm.R2, -16),
+			asm.FnMapLookupElem.Call(),
+			asm.JEq.Imm(asm.R0, 0, "out"),
+			asm.Mov.Reg(asm.R7, asm.R0),
+			asm.LoadMem(asm.R8, asm.R6, 8, asm.Word),
+			asm.JLE.Imm(asm.R8, 0, "use"),
+			asm.Mov.Reg(asm.R7, asm.RFP), asm.Add.Imm(asm.R7, -8),
+			tc.store.WithSymbol("use"),
+			asm.JGT.Imm(asm.R8, 0, "out"),
+			asm.LoadMem(asm.R5, asm.RFP, -8, asm.DWord),
+			asm.LoadMem(asm.R4, asm.R6, 80, asm.Word),
+			asm.Mov.Reg(asm.R3, asm.R5), asm.Add.Imm(asm.R3, 1),
+			asm.JGT.Reg(asm.R3, asm.R4, "out"),
+			asm.StoreImm(asm.R5, 0, 1, asm.Byte),
+			asm.Mov.Imm(asm.R0, 0).WithSymbol("out"), asm.Return(),
+		})
+		fixtures = append(fixtures, struct {
+			name string
+			spec *ebpf.CollectionSpec
+			want bool
+		}{tc.name, spec, true})
+	}
+	// An unknown-offset spill can also make a reloaded map value look like fp-8.
+	spec := pullFixture(ebpf.SchedCLS,
+		asm.StoreMem(asm.RFP, -8, asm.R2, asm.DWord),
+		asm.Mov.Reg(asm.R8, asm.RFP), asm.Add.Imm(asm.R8, -8),
+		asm.LoadMem(asm.R4, asm.R6, 8, asm.Word), asm.And.Imm(asm.R4, 8),
+		asm.Mov.Reg(asm.R7, asm.RFP), asm.Add.Imm(asm.R7, -32), asm.Add.Reg(asm.R7, asm.R4),
+		asm.StoreMem(asm.R7, 0, asm.R8, asm.DWord),
+		asm.StoreImm(asm.RFP, -48, 0, asm.Word), asm.LoadMapPtr(asm.R1, 0).WithReference("out"),
+		asm.Mov.Reg(asm.R2, asm.RFP), asm.Add.Imm(asm.R2, -48), asm.FnMapLookupElem.Call(), asm.JEq.Imm(asm.R0, 0, "out"),
+		asm.StoreMem(asm.RFP, -56, asm.R0, asm.DWord), asm.LoadMem(asm.R9, asm.RFP, -56, asm.DWord),
+		asm.Mov.Imm(asm.R3, 0), asm.StoreMem(asm.R9, 0, asm.R3, asm.DWord),
+		asm.LoadMem(asm.R5, asm.RFP, -8, asm.DWord), asm.LoadMem(asm.R3, asm.R6, 80, asm.Word),
+		asm.Mov.Reg(asm.R4, asm.R5), asm.Add.Imm(asm.R4, 1), asm.JGT.Reg(asm.R4, asm.R3, "out"), asm.StoreImm(asm.R5, 0, 1, asm.Byte))
+	return append(fixtures, struct {
+		name string
+		spec *ebpf.CollectionSpec
+		want bool
+	}{"misattributed alias store", spec, true})
+}
+
+func packetOscillatingFixture() *ebpf.CollectionSpec {
+	ptr := &btf.Pointer{Target: &btf.Void{}}
+	main := asm.Instructions{
+		asm.Mov.Reg(asm.R6, asm.R1),
+		asm.StoreMem(asm.RFP, -8, asm.R6, asm.DWord),
+		asm.Mov.Imm(asm.R1, 0), asm.Mov.Reg(asm.R3, asm.RFP), asm.Add.Imm(asm.R3, -8), asm.Call.Label("h"),
+		asm.JEq.Imm(asm.R0, 0, "out"),
+		asm.Mov.Imm(asm.R3, 0), asm.StoreMem(asm.R0, 0, asm.R3, asm.DWord),
+		asm.LoadMem(asm.R1, asm.RFP, -8, asm.DWord), asm.Call.Label("g"),
+		asm.Mov.Reg(asm.R1, asm.R0), asm.Mov.Reg(asm.R3, asm.RFP), asm.Add.Imm(asm.R3, -8), asm.Call.Label("h"),
+		asm.Mov.Imm(asm.R0, 0).WithSymbol("out"), asm.Return(),
+	}
+	spec := callFixtureSpec(ebpf.SchedCLS, main)
+	spec = packetSubFixture(spec, "g", []btf.FuncParam{{Name: "x", Type: ptr}}, asm.Mov.Reg(asm.R0, asm.R1), asm.Return())
+	spec = packetSubFixture(spec, "h", []btf.FuncParam{{Name: "x", Type: ptr}, {Name: "y", Type: ptr}, {Name: "slot", Type: ptr}},
+		asm.Mov.Reg(asm.R6, asm.R1), asm.Mov.Reg(asm.R8, asm.R3),
+		asm.FnGetPrandomU32.Call(), asm.And.Imm(asm.R0, 8),
+		asm.Mov.Reg(asm.R7, asm.RFP), asm.Add.Imm(asm.R7, -32), asm.Add.Reg(asm.R7, asm.R0),
+		asm.StoreMem(asm.R7, 0, asm.R8, asm.DWord),
+		asm.StoreImm(asm.RFP, -4, 0, asm.Word),
+		asm.LoadMapPtr(asm.R1, 0).WithReference("out"),
+		asm.Mov.Reg(asm.R2, asm.RFP), asm.Add.Imm(asm.R2, -4),
+		asm.FnMapLookupElem.Call(),
+		asm.JEq.Imm(asm.R0, 0, "h_ret"),
+		asm.StoreMem(asm.RFP, -16, asm.R0, asm.DWord),
+		asm.LoadMem(asm.R0, asm.RFP, -16, asm.DWord),
+		asm.JEq.Imm(asm.R6, 0, "h_ret"),
+		asm.Mov.Reg(asm.R0, asm.R6),
+		asm.Return().WithSymbol("h_ret"))
+	spec.Programs["p"].Instructions = equivResolveBranches(spec.Programs["p"].Instructions)
+	return spec
+}
+
+func TestKernelAddedAliasedFixpoint(t *testing.T) {
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		spec := packetOscillatingFixture()
+		if got, err := writesPacket(spec.Programs["p"].Instructions, nil, nil); got || err != nil {
+			t.Errorf("writes %v, err %v", got, err)
+			return
+		}
+		_, err := transformLookup(spec, callReq("bpf_skb_pull_data"))
+		if !errors.Is(err, ErrRefused) || !strings.Contains(err.Error(), "no call site is instrumented (0 skipped)") {
+			t.Errorf("err %v", err)
+		}
+	}()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("analysis did not return for variable-offset stack store")
 	}
 }
