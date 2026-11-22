@@ -43,6 +43,9 @@ type LookupSite struct {
 	// when its frame has no room for the slots (see lookupWrapper).
 	Wrapper string
 	Call    string `json:",omitempty"` // callee name of a HookCall site
+	// KernelAdded marks a Calls name, with no op and no pc, that the kernel
+	// may also call from instructions it adds at load (see kernelAddedCalls).
+	KernelAdded bool `json:",omitempty"`
 }
 
 // LookupSelector identifies lookups of one map. FuncName and Line optionally
@@ -313,7 +316,7 @@ func unknownCalls(req LookupRequest, groups []lookupGroup, skipped []LookupSite)
 // UnknownCallsName reports a skipped entry of unknownCalls: no op, no pc
 // and a callee name.
 func UnknownCallsName(site LookupSite) bool {
-	return site.Op == "" && site.SitePC == 0 && site.Call != ""
+	return site.Op == "" && site.SitePC == 0 && site.Call != "" && !site.KernelAdded
 }
 
 // normal is w with the empty set spelled LookupHit.
@@ -1711,6 +1714,11 @@ func transformLookupProgramGuarded(insns asm.Instructions, typ ebpf.ProgramType,
 	plan.skipped = append(plan.skipped, callSkipped...)
 	unknown := unknownCalls(req, callGroups, callSkipped)
 	plan.skipped = append(plan.skipped, unknown...)
+	added, err := kernelAddedCalls(insns, typ, req)
+	if err != nil {
+		return nil, plan, err
+	}
+	plan.skipped = append(plan.skipped, added...)
 	if err := CheckLookupStack(req); err != nil {
 		return nil, plan, err
 	}
@@ -1751,6 +1759,15 @@ func transformLookupProgramGuarded(insns asm.Instructions, typ ebpf.ProgramType,
 		plan.skipped = skipGroup(plan.skipped, group, reason)
 	}
 	groups = append(kept, callGroups...)
+	skippedCount := func() int {
+		count := 0
+		for _, site := range plan.skipped {
+			if !site.KernelAdded {
+				count++
+			}
+		}
+		return count
+	}
 	noCalls := func() error {
 		if len(req.Calls) != 0 && len(groups) == 0 && !req.Entry && !req.TailCalls {
 			var quoted []string
@@ -1761,7 +1778,10 @@ func transformLookupProgramGuarded(insns asm.Instructions, typ ebpf.ProgramType,
 			if len(quoted) != 0 {
 				names = "; Calls names that are neither a helper nor a kernel function of this load: " + strings.Join(quoted, ", ")
 			}
-			return refuse("no call site is instrumented (%d skipped)%s", len(plan.skipped), names)
+			for _, site := range added {
+				names += fmt.Sprintf("; call %q (%s)", site.Call, site.Reason)
+			}
+			return refuse("no call site is instrumented (%d skipped)%s", skippedCount(), names)
 		}
 		return nil
 	}
@@ -1769,7 +1789,7 @@ func transformLookupProgramGuarded(insns asm.Instructions, typ ebpf.ProgramType,
 		return nil, plan, err
 	}
 	if len(groups) == 0 && !req.Entry && !req.TailCalls {
-		return nil, plan, refuse("no lookup site fits the audited stack (%d skipped)", len(plan.skipped))
+		return nil, plan, refuse("no lookup site fits the audited stack (%d skipped)", skippedCount())
 	}
 	allTails := tailCallSites(insns)
 	var tails []tailCallSite
@@ -1812,7 +1832,7 @@ func transformLookupProgramGuarded(insns asm.Instructions, typ ebpf.ProgramType,
 			// kernel, which then refuses the func_info that lists it.
 			req.TailCalls = false
 			if len(groups) == 0 && !req.Entry {
-				return nil, plan, refuse("no tail-call site can be hooked (%d skipped)", len(plan.skipped))
+				return nil, plan, refuse("no tail-call site can be hooked (%d skipped)", skippedCount())
 			}
 		}
 	}
@@ -1957,7 +1977,7 @@ func transformLookupProgramGuarded(insns asm.Instructions, typ ebpf.ProgramType,
 			// must say so, as when no tail call fits.
 			emit, req.TailCalls = guardedEmit, guardedEmit.req.TailCalls
 			if len(groups) == 0 && !emit.req.Entry && !emit.req.TailCalls {
-				return nil, plan, refuse("no hook site is safe on this kernel (%d skipped): %s", len(plan.skipped), reason)
+				return nil, plan, refuse("no hook site is safe on this kernel (%d skipped): %s", skippedCount(), reason)
 			}
 			spliced, hooks, err = emit.splice(groups)
 			if err != nil {
@@ -2038,7 +2058,7 @@ func transformLookupProgramGuarded(insns asm.Instructions, typ ebpf.ProgramType,
 			continue
 		}
 		if groups = fewer; len(groups) == 0 && !req.Entry && !req.TailCalls {
-			return nil, plan, refuse("no lookup site fits the audited stack (%d skipped): %s", len(plan.skipped), broken)
+			return nil, plan, refuse("no lookup site fits the audited stack (%d skipped): %s", skippedCount(), broken)
 		}
 		if spliced, hooks, err = emit.splice(groups); err != nil {
 			return nil, plan, err
@@ -2073,7 +2093,7 @@ func transformLookupProgramGuarded(insns asm.Instructions, typ ebpf.ProgramType,
 		return nil, plan, refuse("the program would have %d functions, more than the kernel's %d", n, maxFuncs)
 	}
 	if len(hooks) == 0 {
-		return nil, plan, refuse("no hook is left to generate (%d skipped)", len(plan.skipped))
+		return nil, plan, refuse("no hook is left to generate (%d skipped)", skippedCount())
 	}
 	var selected []discoveredLookup
 	for _, group := range groups {

@@ -63,8 +63,11 @@ type injectedProgJSON struct {
 	SkippedMaps []skippedMapJSON `json:"skipped_maps,omitempty"`
 	// SkippedCalls lists the calls names of a rule that are neither a helper
 	// nor a kernel function of the load: they have no pc either.
-	SkippedCalls   []skippedCallJSON `json:"skipped_calls,omitempty"`
-	OutsidePremise string            `json:"outside_premise,omitempty"`
+	SkippedCalls []skippedCallJSON `json:"skipped_calls,omitempty"`
+	// KernelAddedCalls lists the calls names of a rule that the kernel may
+	// also call from instructions it adds at load, where no hook can follow.
+	KernelAddedCalls []skippedCallJSON `json:"kernel_added_calls,omitempty"`
+	OutsidePremise   string            `json:"outside_premise,omitempty"`
 	// NotReviewed, "calls NAME, ...", names the kernel functions the
 	// original program calls that have no review record.
 	NotReviewed string              `json:"not_reviewed,omitempty"`
@@ -353,6 +356,10 @@ func injectionJSON(inj syscallhook.Injection) injectedProgJSON {
 		}
 		if inject.UnknownCallsName(site) {
 			out.SkippedCalls = append(out.SkippedCalls, skippedCallJSON{Name: site.Call, Reason: site.Reason})
+			continue
+		}
+		if site.KernelAdded {
+			out.KernelAddedCalls = append(out.KernelAddedCalls, skippedCallJSON{Name: site.Call, Reason: site.Reason})
 			continue
 		}
 		kind := site.Op
