@@ -161,6 +161,7 @@ func writesPacket(insns asm.Instructions, kernel *btf.Spec, modules map[int16]*b
 			work = work[:len(work)-1]
 			ins := &insns[indices[pc]]
 			s := before[pc]
+			s.regs[asm.R10] = framePointer(funcOf[pc])
 			s.slots = maps.Clone(s.slots)
 			next := pc + int(ins.Size()/asm.InstructionSize)
 			op, class := ins.OpCode, ins.OpCode.Class()
