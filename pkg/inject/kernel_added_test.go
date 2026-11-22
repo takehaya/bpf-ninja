@@ -224,3 +224,59 @@ func TestKernelAddedCallbackInputs(t *testing.T) {
 		}
 	}
 }
+
+// packetAtomicFixtures also load in the throwaway guest prologue check.
+func packetAtomicFixtures() []struct {
+	name string
+	spec *ebpf.CollectionSpec
+	want bool
+} {
+	var fixtures []struct {
+		name string
+		spec *ebpf.CollectionSpec
+		want bool
+	}
+	for _, base := range []asm.Register{asm.RFP, asm.R7} {
+		off := int16(-8)
+		var prefix []asm.Instruction
+		if base != asm.RFP {
+			off = 0
+			prefix = []asm.Instruction{asm.Mov.Reg(base, asm.RFP), asm.Add.Imm(base, -8)}
+		}
+		spill := asm.StoreMem(asm.RFP, -8, asm.R2, asm.DWord)
+		for _, tc := range []struct {
+			name string
+			body []asm.Instruction
+		}{
+			{"xchg", []asm.Instruction{spill, asm.Mov.Imm(asm.R5, 0), atomicMem(asm.Xchg, base, asm.R5, off),
+				asm.StoreImm(asm.R5, 0, 1, asm.Byte)}},
+			{"cmpxchg R0", []asm.Instruction{spill, asm.Mov.Imm(asm.R0, 0), asm.Mov.Imm(asm.R5, 0),
+				atomicMem(asm.CmpXchg, base, asm.R5, off), asm.StoreImm(asm.R0, 0, 1, asm.Byte)}},
+			{"fetch_add", []asm.Instruction{spill, asm.Mov.Imm(asm.R5, 0), atomicMem(asm.FetchAdd, base, asm.R5, off),
+				asm.StoreImm(asm.R5, 0, 1, asm.Byte)}},
+			{"load-acquire", []asm.Instruction{spill, atomicMem(atomicLoadAcquire, asm.R5, base, off),
+				asm.StoreImm(asm.R5, 0, 1, asm.Byte)}},
+			{"store-release reload", []asm.Instruction{atomicMem(atomicStoreRelease, base, asm.R2, off),
+				asm.LoadMem(asm.R5, asm.RFP, -8, asm.DWord), asm.StoreImm(asm.R5, 0, 1, asm.Byte)}},
+		} {
+			fixtures = append(fixtures, struct {
+				name string
+				spec *ebpf.CollectionSpec
+				want bool
+			}{tc.name + " through " + base.String(), pullFixture(ebpf.SchedCLS, append(prefix, tc.body...)...), true})
+		}
+	}
+	return fixtures
+}
+
+func TestKernelAddedAtomic(t *testing.T) {
+	for _, tc := range packetAtomicFixtures() {
+		t.Run(tc.name, func(t *testing.T) {
+			p := tc.spec.Programs["p"]
+			added, err := kernelAddedCalls(p.Instructions, p.Type, callReq("bpf_skb_pull_data"))
+			if err != nil || (len(added) == 1) != tc.want {
+				t.Fatalf("added %+v, err %v, want listed %v", added, err, tc.want)
+			}
+		})
+	}
+}

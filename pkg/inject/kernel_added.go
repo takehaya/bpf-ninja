@@ -126,6 +126,21 @@ func writesPacket(insns asm.Instructions, kernel *btf.Spec, modules map[int16]*b
 			s.slots = maps.Clone(s.slots)
 			next := pc + int(ins.Size()/asm.InstructionSize)
 			op, class := ins.OpCode, ins.OpCode.Class()
+			load := func(base asm.Register) uint8 {
+				var k uint8
+				if s.regs[base]&holdsCtx != 0 && (ins.Offset == skbData || ins.Offset == skbDataMeta) {
+					k |= holdsPacket
+				}
+				if op.Size() == asm.DWord {
+					switch {
+					case base == asm.R10:
+						k |= s.slots[ins.Offset] | aliasedStores
+					case s.regs[base]&holdsStack != 0:
+						k |= spilled
+					}
+				}
+				return k
+			}
 			switch {
 			case op.JumpOp() == asm.Exit:
 				found[funcOf[pc]] |= s.regs[asm.R0]
@@ -171,11 +186,26 @@ func writesPacket(insns asm.Instructions, kernel *btf.Spec, modules map[int16]*b
 				s.regs[asm.R0] = r0
 				reach(next, s)
 				continue
+			case class == asm.StXClass && op.AtomicOp() == atomicLoadAcquire:
+				s.regs[ins.Dst] = load(ins.Src)
+			case class == asm.StXClass && op.Mode() == asm.AtomicMode && op.AtomicOp() != atomicStoreRelease:
+				// A fetch returns the old slot value, including spilled pointers.
+				old := load(ins.Dst)
+				if ins.Dst == asm.R10 {
+					delete(s.slots, ins.Offset&^7)
+				}
+				switch atomic := op.AtomicOp(); {
+				case atomic == asm.CmpXchg:
+					s.regs[asm.R0] = old
+				case atomic&atomicFetch != 0:
+					s.regs[ins.Src] = old
+				}
 			case class.IsStore():
 				if s.regs[ins.Dst]&holdsPacket != 0 && ins.OpCode.Mode() == asm.MemMode {
 					return true, nil
 				}
-				if s.regs[ins.Dst]&holdsStack != 0 && class == asm.StXClass && ins.OpCode.Mode() == asm.MemMode && ins.OpCode.Size() == asm.DWord {
+				spill := class == asm.StXClass && (op.Mode() == asm.MemMode || op.AtomicOp() == atomicStoreRelease) && op.Size() == asm.DWord
+				if s.regs[ins.Dst]&holdsStack != 0 && spill {
 					spilled |= s.regs[ins.Src]
 					if ins.Dst != asm.R10 {
 						aliasedStores |= s.regs[ins.Src]
@@ -183,7 +213,7 @@ func writesPacket(insns asm.Instructions, kernel *btf.Spec, modules map[int16]*b
 				}
 				if ins.Dst == asm.R10 {
 					delete(s.slots, ins.Offset&^7)
-					if class == asm.StXClass && ins.OpCode.Mode() == asm.MemMode && ins.OpCode.Size() == asm.DWord && s.regs[ins.Src] != 0 {
+					if spill && s.regs[ins.Src] != 0 {
 						if s.slots == nil {
 							s.slots = map[int16]uint8{}
 						}
@@ -191,17 +221,11 @@ func writesPacket(insns asm.Instructions, kernel *btf.Spec, modules map[int16]*b
 					}
 				}
 			case class.IsLoad():
-				var k uint8
-				if class == asm.LdXClass && s.regs[ins.Src]&holdsCtx != 0 && (ins.Offset == skbData || ins.Offset == skbDataMeta) {
-					k |= holdsPacket
+				if class == asm.LdXClass {
+					s.regs[ins.Dst] = load(ins.Src)
+				} else {
+					s.regs[ins.Dst] = 0
 				}
-				switch {
-				case class == asm.LdXClass && ins.Src == asm.R10 && ins.OpCode.Size() == asm.DWord:
-					k |= s.slots[ins.Offset] | aliasedStores
-				case class == asm.LdXClass && s.regs[ins.Src]&holdsStack != 0 && ins.OpCode.Size() == asm.DWord:
-					k |= spilled
-				}
-				s.regs[ins.Dst] = k
 			case class == asm.ALU64Class:
 				switch src := uint8(0); op.ALUOp() {
 				case asm.Mov:
