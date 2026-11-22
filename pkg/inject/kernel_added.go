@@ -32,6 +32,7 @@ func kernelAddedCalls(insns asm.Instructions, typ ebpf.ProgramType, req LookupRe
 const (
 	holdsCtx uint8 = 1 << iota
 	holdsPacket
+	holdsStack
 )
 
 // packetState is the state before one instruction: registers and the 8-byte
@@ -60,8 +61,9 @@ func (s packetState) join(o packetState) packetState {
 // in kernel/bpf/verifier.c): a store through a pointer derived from the
 // context's data or data_meta, or a call of bpf_dynptr_slice_rdwr. Every
 // path counts, reachable or not. Pointers follow moves, additions, spills to
-// R10 plus a constant, bpf-to-bpf call arguments and results.
-// shortcut: a packet pointer stored through another stack pointer is lost; follow it if a program shows one.
+// R10 and stack aliases, bpf-to-bpf arguments and results, and callback inputs.
+// Aliased stack accesses share a summary across frames; literal R10 slots stay
+// precise except for possible writes through aliases.
 func writesPacket(insns asm.Instructions, kernel *btf.Spec, modules map[int16]*btf.Spec) (bool, error) {
 	const skbData, skbDataMeta = 76, 140 // offsets in struct __sk_buff
 	indices := map[int]int{}
@@ -79,9 +81,22 @@ func writesPacket(insns asm.Instructions, kernel *btf.Spec, modules map[int16]*b
 		}
 		indices[pc], funcOf[pc] = it.Index, starts[len(starts)-1]
 	}
-	// rets is what each subprogram may return; the passes repeat until it holds.
+	// Resolve address-taken functions for helper and kfunc callbacks.
+	callbacks := map[int]bool{}
+	for pc, idx := range indices {
+		if ins := &insns[idx]; ins.IsLoadOfFunctionPointer() {
+			target, _, _, err := relocTarget(ins, pc, indices, insns)
+			if err != nil {
+				return false, err
+			}
+			callbacks[target] = true
+		}
+	}
+	// Summaries grow across passes, including stores into a caller's frame.
 	rets := map[int]uint8{}
+	var spilled, aliasedStores uint8
 	for {
+		oldSpilled, oldAliasedStores := spilled, aliasedStores
 		before := map[int]packetState{}
 		var work []int
 		reach := func(pc int, s packetState) {
@@ -93,9 +108,10 @@ func writesPacket(insns asm.Instructions, kernel *btf.Spec, modules map[int16]*b
 			before[pc] = s
 			work = append(work, pc)
 		}
-		// Callbacks and unreached functions start empty; callers add to that.
+		// Callers and helper arguments add inputs to these initial states.
 		for _, start := range starts {
 			s := packetState{}
+			s.regs[asm.R10] = holdsStack
 			if start == 0 {
 				s.regs[asm.R1] = holdsCtx
 			}
@@ -120,6 +136,20 @@ func writesPacket(insns asm.Instructions, kernel *btf.Spec, modules map[int16]*b
 				}
 				fallthrough
 			case ins.IsBuiltinCall():
+				// Callback signatures differ: any helper argument may reach any
+				// callback parameter, including a pointer to a caller's stack.
+				var input uint8
+				for _, k := range s.regs[asm.R1 : asm.R5+1] {
+					input |= k
+				}
+				for target := range callbacks {
+					args := packetState{}
+					for r := asm.R1; r <= asm.R5; r++ {
+						args.regs[r] = input
+					}
+					args.regs[asm.R10] = holdsStack
+					reach(target, args)
+				}
 				clear(s.regs[asm.R0 : asm.R5+1])
 				reach(next, s)
 				continue
@@ -129,9 +159,10 @@ func writesPacket(insns asm.Instructions, kernel *btf.Spec, modules map[int16]*b
 					_, ok = indices[pc+1+int(ins.Constant)]
 					target = pc + 1 + int(ins.Constant)
 				}
-				r0 := holdsCtx | holdsPacket
+				r0 := holdsCtx | holdsPacket | holdsStack
 				if ok {
 					args := packetState{}
+					args.regs[asm.R10] = holdsStack
 					copy(args.regs[asm.R1:asm.R5+1], s.regs[asm.R1:asm.R5+1])
 					reach(target, args)
 					r0 = rets[target]
@@ -144,6 +175,12 @@ func writesPacket(insns asm.Instructions, kernel *btf.Spec, modules map[int16]*b
 				if s.regs[ins.Dst]&holdsPacket != 0 && ins.OpCode.Mode() == asm.MemMode {
 					return true, nil
 				}
+				if s.regs[ins.Dst]&holdsStack != 0 && class == asm.StXClass && ins.OpCode.Mode() == asm.MemMode && ins.OpCode.Size() == asm.DWord {
+					spilled |= s.regs[ins.Src]
+					if ins.Dst != asm.R10 {
+						aliasedStores |= s.regs[ins.Src]
+					}
+				}
 				if ins.Dst == asm.R10 {
 					delete(s.slots, ins.Offset&^7)
 					if class == asm.StXClass && ins.OpCode.Mode() == asm.MemMode && ins.OpCode.Size() == asm.DWord && s.regs[ins.Src] != 0 {
@@ -155,11 +192,14 @@ func writesPacket(insns asm.Instructions, kernel *btf.Spec, modules map[int16]*b
 				}
 			case class.IsLoad():
 				var k uint8
+				if class == asm.LdXClass && s.regs[ins.Src]&holdsCtx != 0 && (ins.Offset == skbData || ins.Offset == skbDataMeta) {
+					k |= holdsPacket
+				}
 				switch {
-				case class == asm.LdXClass && s.regs[ins.Src]&holdsCtx != 0 && (ins.Offset == skbData || ins.Offset == skbDataMeta):
-					k = holdsPacket
 				case class == asm.LdXClass && ins.Src == asm.R10 && ins.OpCode.Size() == asm.DWord:
-					k = s.slots[ins.Offset]
+					k |= s.slots[ins.Offset] | aliasedStores
+				case class == asm.LdXClass && s.regs[ins.Src]&holdsStack != 0 && ins.OpCode.Size() == asm.DWord:
+					k |= spilled
 				}
 				s.regs[ins.Dst] = k
 			case class == asm.ALU64Class:
@@ -196,7 +236,7 @@ func writesPacket(insns asm.Instructions, kernel *btf.Spec, modules map[int16]*b
 			}
 		}
 		delete(found, 0)
-		if maps.Equal(found, rets) {
+		if maps.Equal(found, rets) && spilled == oldSpilled && aliasedStores == oldAliasedStores {
 			return false, nil
 		}
 		rets = found

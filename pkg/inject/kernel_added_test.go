@@ -94,6 +94,14 @@ func TestWritesPacket(t *testing.T) {
 			asm.LoadMem(asm.R5, asm.RFP, -16, asm.DWord), asm.StoreImm(asm.R5, 0, 1, asm.Byte), asm.Return()}, true},
 		{"spill overwritten", asm.Instructions{ctxData, asm.StoreMem(asm.RFP, -16, asm.R2, asm.DWord), asm.StoreImm(asm.RFP, -12, 0, asm.Word),
 			asm.LoadMem(asm.R5, asm.RFP, -16, asm.DWord), asm.StoreImm(asm.R5, 0, 1, asm.Byte), asm.Return()}, false},
+		{"alias spill", asm.Instructions{ctxData, asm.Mov.Reg(asm.R7, asm.RFP), asm.Add.Imm(asm.R7, -8),
+			asm.StoreMem(asm.R7, 0, asm.R2, asm.DWord), asm.LoadMem(asm.R5, asm.RFP, -8, asm.DWord), asm.StoreImm(asm.R5, 0, 1, asm.Byte), asm.Return()}, true},
+		{"stack pointer spill", asm.Instructions{ctxData, asm.StoreMem(asm.RFP, -8, asm.R2, asm.DWord),
+			asm.Mov.Reg(asm.R7, asm.RFP), asm.Add.Imm(asm.R7, -8), asm.StoreMem(asm.RFP, -16, asm.R7, asm.DWord),
+			asm.LoadMem(asm.R4, asm.RFP, -16, asm.DWord), asm.LoadMem(asm.R5, asm.R4, 0, asm.DWord), asm.StoreImm(asm.R5, 0, 1, asm.Byte), asm.Return()}, true},
+		{"caller context output", append(asm.Instructions{asm.Mov.Reg(asm.R2, asm.RFP), asm.Add.Imm(asm.R2, -8), asm.Call.Label("put"),
+			asm.LoadMem(asm.R3, asm.RFP, -8, asm.DWord), asm.LoadMem(asm.R4, asm.R3, 76, asm.Word), asm.StoreImm(asm.R4, 0, 1, asm.Byte), asm.Return()},
+			sub("put", asm.StoreMem(asm.R2, 0, asm.R1, asm.DWord), asm.Return())...), true},
 		{"data_end", asm.Instructions{asm.LoadMem(asm.R2, asm.R1, 80, asm.Word), asm.StoreImm(asm.R2, 0, 1, asm.Byte), asm.Return()}, false},
 		{"argument", append(asm.Instructions{ctxData, asm.Mov.Reg(asm.R1, asm.R2), asm.Call.Label("w"), asm.Return()},
 			sub("w", asm.StoreImm(asm.R1, 0, 1, asm.Byte), asm.Return())...), true},
@@ -109,6 +117,110 @@ func TestWritesPacket(t *testing.T) {
 		insns := callFixtureSpec(ebpf.SchedCLS, tc.insns).Programs["p"].Instructions
 		if got, err := writesPacket(insns, nil, nil); got != tc.want || err != nil {
 			t.Errorf("%s: %v %v", tc.name, got, err)
+		}
+	}
+}
+
+// packetStackFixtures also load in the throwaway guest prologue check.
+func packetStackFixtures() []struct {
+	name string
+	spec *ebpf.CollectionSpec
+	want bool
+} {
+	ptr := &btf.Pointer{Target: &btf.Void{}}
+	sub := func(spec *ebpf.CollectionSpec, name string, params []btf.FuncParam, body ...asm.Instruction) *ebpf.CollectionSpec {
+		fn := &btf.Func{Name: name, Linkage: btf.StaticFunc, Type: &btf.FuncProto{
+			Return: &btf.Int{Name: "long", Size: 8, Encoding: btf.Signed}, Params: params,
+		}}
+		body[0] = btf.WithFuncMetadata(body[0].WithSymbol(name).WithSource(asm.Comment(name)), fn)
+		spec.Programs["p"].Instructions = equivResolveBranches(append(spec.Programs["p"].Instructions, body...))
+		return spec
+	}
+	alias := pullFixture(ebpf.SchedCLS,
+		asm.StoreMem(asm.RFP, -8, asm.R2, asm.DWord), asm.Mov.Reg(asm.R7, asm.RFP), asm.Add.Imm(asm.R7, -8),
+		asm.Mov.Imm(asm.R2, 0), asm.LoadMem(asm.R5, asm.R7, 0, asm.DWord), asm.StoreImm(asm.R5, 0, 1, asm.Byte))
+	in := sub(pullFixture(ebpf.SchedCLS,
+		asm.StoreMem(asm.RFP, -8, asm.R2, asm.DWord), asm.Mov.Reg(asm.R1, asm.RFP), asm.Add.Imm(asm.R1, -8), asm.Call.Label("in")),
+		"in", []btf.FuncParam{{Name: "slot", Type: ptr}},
+		asm.LoadMem(asm.R3, asm.R1, 0, asm.DWord), asm.StoreImm(asm.R3, 0, 1, asm.Byte), asm.Mov.Imm(asm.R0, 0), asm.Return())
+	out := sub(pullFixture(ebpf.SchedCLS,
+		asm.Mov.Reg(asm.R1, asm.RFP), asm.Add.Imm(asm.R1, -8), asm.Call.Label("put"),
+		asm.LoadMem(asm.R5, asm.RFP, -8, asm.DWord), asm.StoreImm(asm.R5, 0, 1, asm.Byte)),
+		"put", []btf.FuncParam{{Name: "slot", Type: ptr}, {Name: "packet", Type: ptr}},
+		asm.StoreMem(asm.R1, 0, asm.R2, asm.DWord), asm.Mov.Imm(asm.R0, 0), asm.Return())
+	loadCallback := asm.Instruction{OpCode: asm.LoadImmOp(asm.DWord), Dst: asm.R2, Src: asm.PseudoFunc, Constant: -1}.WithReference("cb")
+	callback := sub(pullFixture(ebpf.SchedCLS,
+		asm.StoreMem(asm.RFP, -8, asm.R6, asm.DWord), asm.Mov.Imm(asm.R1, 1), loadCallback,
+		asm.Mov.Reg(asm.R3, asm.RFP), asm.Add.Imm(asm.R3, -8), asm.Mov.Imm(asm.R4, 0), asm.FnLoop.Call()),
+		"cb", []btf.FuncParam{{Name: "i", Type: &btf.Int{Name: "u32", Size: 4}}, {Name: "state", Type: ptr}},
+		asm.LoadMem(asm.R1, asm.R2, 0, asm.DWord), asm.LoadMem(asm.R2, asm.R1, 76, asm.Word), asm.LoadMem(asm.R3, asm.R1, 80, asm.Word),
+		asm.Mov.Reg(asm.R4, asm.R2), asm.Add.Imm(asm.R4, 1), asm.JGT.Reg(asm.R4, asm.R3, "cb_out"),
+		asm.StoreImm(asm.R2, 0, 1, asm.Byte), asm.Mov.Imm(asm.R0, 0).WithSymbol("cb_out"), asm.Return())
+	keys := pullFixture(ebpf.SchedCLS,
+		asm.LoadMem(asm.R5, asm.R2, 0, asm.Word), asm.StoreMem(asm.RFP, -8, asm.R5, asm.Word),
+		asm.Mov.Reg(asm.R2, asm.RFP), asm.Add.Imm(asm.R2, -8), asm.LoadMapPtr(asm.R1, 0).WithReference("out"), asm.FnMapLookupElem.Call())
+	read := pullFixture(ebpf.SchedCLS,
+		asm.StoreMem(asm.RFP, -8, asm.R2, asm.DWord), asm.Mov.Imm(asm.R2, 0),
+		asm.LoadMem(asm.R5, asm.RFP, -8, asm.DWord), asm.LoadMem(asm.R5, asm.R5, 0, asm.Byte), asm.StoreMem(asm.RFP, -16, asm.R5, asm.DWord))
+	return []struct {
+		name string
+		spec *ebpf.CollectionSpec
+		want bool
+	}{
+		{"stack alias write", alias, true},
+		{"caller stack input write", in, true},
+		{"caller stack output write", out, true},
+		{"loop callback stack context write", callback, true},
+		{"read only stack map key", keys, false},
+		{"read only R10 packet spill", read, false},
+	}
+}
+
+func TestKernelAddedStack(t *testing.T) {
+	for _, tc := range packetStackFixtures() {
+		t.Run(tc.name, func(t *testing.T) {
+			p := tc.spec.Programs["p"]
+			added, err := kernelAddedCalls(p.Instructions, p.Type, callReq("bpf_skb_pull_data"))
+			if err != nil || (len(added) == 1) != tc.want {
+				t.Fatalf("added %+v, err %v, want listed %v", added, err, tc.want)
+			}
+		})
+	}
+}
+
+// The callback input summary applies to every helper/kfunc signature and to
+// both symbolic and numeric function addresses.
+func TestKernelAddedCallbackInputs(t *testing.T) {
+	for _, numeric := range []bool{false, true} {
+		for _, call := range []asm.Instruction{asm.FnLoop.Call(), asm.FnForEachMapElem.Call(), kfuncCall(123)} {
+			spec := packetStackFixtures()[3].spec
+			insns := spec.Programs["p"].Instructions
+			indices, cb := map[int]int{}, 0
+			it := insns.Iterate()
+			for it.Next() {
+				indices[int(it.Offset)] = it.Index
+				if it.Ins.Symbol() == "cb" {
+					cb = int(it.Offset)
+				}
+			}
+			for pc, idx := range indices {
+				ins := &insns[idx]
+				if numeric && ins.IsLoadOfFunctionPointer() {
+					*ins = asm.Instruction{OpCode: ins.OpCode, Dst: ins.Dst, Src: asm.PseudoFunc, Constant: int64(cb - pc - 1)}
+				}
+				if ins.IsBuiltinCall() && ins.Constant == int64(asm.FnLoop) {
+					*ins = call
+				}
+			}
+			// foreach passes the caller's context as R4, rather than loop's R2.
+			if call.IsKfuncCall() {
+				insns[indices[cb]].Src = asm.R5
+			} else if call.Constant == int64(asm.FnForEachMapElem) {
+				insns[indices[cb]].Src = asm.R4
+			}
+			if got, err := writesPacket(insns, nil, nil); !got || err != nil {
+				t.Fatalf("numeric %v, call %v: writes %v, err %v", numeric, call, got, err)
+			}
 		}
 	}
 }
