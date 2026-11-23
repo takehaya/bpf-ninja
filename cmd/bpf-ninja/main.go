@@ -190,7 +190,7 @@ func rootFlags() []cli.Flag {
 		&cli.IntFlag{
 			Name:  "ringbuf-size",
 			Value: 64,
-			Usage: "total ringbuf capacity in MiB (power of two); in sharded modes split evenly across CPUs",
+			Usage: "total ringbuf capacity in MiB (power of two, at most 2048); in sharded modes split evenly across CPUs",
 		},
 		&cli.BoolFlag{
 			Name:  "legacy-timestamp",
@@ -340,6 +340,16 @@ func main() {
 	}
 }
 
+// ringbufBytes converts --ringbuf-size from MiB to the uint32 byte count
+// program.RingbufSize holds. It checks the range before converting so a
+// size such as 4096 MiB cannot wrap to 0 and slip past the power-of-two check.
+func ringbufBytes(mib int) (uint32, error) {
+	if mib <= 0 || mib > 2048 || mib&(mib-1) != 0 {
+		return 0, fmt.Errorf("--ringbuf-size %d MiB must be a power of two from 1 to 2048", mib)
+	}
+	return uint32(mib) << 20, nil
+}
+
 // newRootCommand builds the top-level CLI. Extracted from main so tests can
 // assert its parsing behaviour (see TestSetFlagNotCommaSplit). Every
 // call builds fresh commands and flags, subcommands included: urfave/cli
@@ -426,13 +436,11 @@ func run(ctx context.Context, cmd *cli.Command) error {
 	if capture.SplitCoreRX > 0 && !cmd.Bool("fast-reader") {
 		return fmt.Errorf("--rx-cores requires --fast-reader (split-core mode only applies to the in-tree fast reader)")
 	}
-	if mib := cmd.Int("ringbuf-size"); mib > 0 {
-		sz := uint32(mib) * 1024 * 1024
-		if sz&(sz-1) != 0 {
-			return fmt.Errorf("--ringbuf-size %d MiB is not a power of two", mib)
-		}
-		program.RingbufSize = sz
+	sz, err := ringbufBytes(cmd.Int("ringbuf-size"))
+	if err != nil {
+		return err
 	}
+	program.RingbufSize = sz
 	if cmd.Bool("no-wakeup") {
 		if !cmd.Bool("fast-reader") {
 			return fmt.Errorf("--no-wakeup requires --fast-reader")
