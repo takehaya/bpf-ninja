@@ -526,6 +526,7 @@ func packetAliasedStoreFixtures() []struct {
 		store asm.Instruction
 	}{
 		{"maybe alias STX DW", asm.StoreMem(asm.R7, 0, asm.R9, asm.DWord)},
+		{"maybe alias STX DW pointer", asm.StoreMem(asm.R7, 0, asm.R7, asm.DWord)},
 		{"maybe alias ST DW", asm.Instruction{OpCode: asm.StoreImmOp(asm.DWord), Dst: asm.R7}},
 		{"maybe alias STX W +4", asm.StoreMem(asm.R7, 4, asm.R9, asm.Word)},
 		{"maybe alias fetch_add", atomicMem(asm.FetchAdd, asm.R7, asm.R9, 0)},
@@ -629,5 +630,60 @@ func TestKernelAddedAliasedFixpoint(t *testing.T) {
 	case <-done:
 	case <-time.After(time.Second):
 		t.Fatal("analysis did not return for variable-offset stack store")
+	}
+}
+
+func TestKernelAddedReadOnlyR10(t *testing.T) {
+	// Each write sets R10 to what g returns.
+	for _, tc := range []struct {
+		name  string
+		write []asm.Instruction
+	}{
+		{"mov", []asm.Instruction{asm.Mov.Reg(asm.RFP, asm.R0)}},
+		{"ldx", []asm.Instruction{asm.StoreMem(asm.RFP, -16, asm.R0, asm.DWord), asm.LoadMem(asm.RFP, asm.RFP, -16, asm.DWord)}},
+		{"xchg", []asm.Instruction{asm.StoreMem(asm.RFP, -16, asm.R0, asm.DWord), asm.Mov.Reg(asm.R4, asm.RFP), atomicMem(asm.Xchg, asm.R4, asm.RFP, -16)}},
+		{"load-acquire", []asm.Instruction{asm.StoreMem(asm.RFP, -16, asm.R0, asm.DWord), asm.Mov.Reg(asm.R4, asm.RFP), atomicMem(atomicLoadAcquire, asm.RFP, asm.R4, -16)}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			spec := callFixtureSpec(ebpf.SchedCLS, asm.Instructions{
+				asm.Mov.Imm(asm.R2, 14), asm.FnSkbPullData.Call(),
+				asm.Mov.Imm(asm.R0, 0), asm.Return(),
+			})
+			// An invalid R10 write must not make slot deletion depend on return summaries.
+			body := append([]asm.Instruction{
+				asm.Mov.Reg(asm.R7, asm.RFP),
+				asm.StoreMem(asm.RFP, -8, asm.R7, asm.DWord),
+				asm.Call.Label("g"),
+				asm.Mov.Imm(asm.R3, 0),
+			}, tc.write...)
+			body = append(body,
+				asm.StoreMem(asm.RFP, -8, asm.R3, asm.DWord),
+				asm.LoadMem(asm.R0, asm.R7, -8, asm.DWord),
+				asm.Return())
+			spec = packetSubFixture(spec, "g", []btf.FuncParam{{Name: "x", Type: &btf.Pointer{Target: &btf.Void{}}}}, body...)
+			raw := rawLookupFixture(t, spec, "p", true)
+			raw.Type = ebpf.SchedCLS
+			done := make(chan struct{})
+			go func() {
+				defer close(done)
+				if got, err := writesPacket(spec.Programs["p"].Instructions, nil, nil); got || err != nil {
+					t.Errorf("writes %v, err %v", got, err)
+					return
+				}
+				_, err := transformLookup(spec, callReq("bpf_skb_pull_data"))
+				if !errors.Is(err, ErrRefused) || !strings.Contains(err.Error(), "recursive call through g") {
+					t.Errorf("transformLookup: %v", err)
+				}
+				_, err = TransformLookupRaw(raw, LookupRequestRaw{HookName: "h", Calls: []string{"bpf_skb_pull_data"}})
+				if !errors.Is(err, ErrRefused) {
+					t.Errorf("TransformLookupRaw: %v", err)
+				}
+			}()
+			select {
+			case <-done:
+			case <-time.After(time.Second):
+				t.Fatal("analysis did not return for a program that overwrites R10")
+			}
+		})
 	}
 }
