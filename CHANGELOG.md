@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.33.1](https://github.com/takehaya/bpf-ninja/compare/v0.33.0...v0.33.1) (2026-11-24)
+
+
+### 🐛 Bug Fixes
+
+* **cli:** refuse --ringbuf-size values that do not fit in 32 bits ([#341](https://github.com/takehaya/bpf-ninja/issues/341)) ([0bc5757](https://github.com/takehaya/bpf-ninja/commit/0bc5757a11591714dc01ac85ac7bdcbbc8085b5b))
+* **inject:** keep R10 read-only in packet analysis ([#340](https://github.com/takehaya/bpf-ninja/issues/340)) ([d35dd50](https://github.com/takehaya/bpf-ninja/commit/d35dd50457d204cec4f80604348bf4360fc46d7c))
+
 ## [0.33.0](https://github.com/takehaya/bpf-ninja/compare/v0.32.0...v0.33.0) (2026-11-22)
 
 
